@@ -8681,3 +8681,968 @@ bytes changed and the §18.3a final-bytes full-suite record remains the gate of 
 unchanged research implementation. The Task-1 offline verifications (the retained re-adjudication
 script and transport harness, paths and digests in §19.2/§19.3) were evidence-producing commands and
 retained verification artifacts, not repository code.
+
+### 19.8 Task 2 implementation record: attributable stdout capture and the passive durable snapshot reader (offline; zero model turns)
+
+Task 2 of the 2026-10-21 plan, executed 2026-10-21 in the same worktree on top of the Task-1 commit
+`e0413d937fc4acddd37e722fadc82d27f9f65957`. Zero model turns, zero live launches, zero
+`ZCODE_SHELL_WAIT_E2E=1` runs, zero production/source/config edits: the prohibited tracked-path diff
+against `0b522b7` (`skills/ agents/ scripts/ hooks/ .codex-plugin/ marketplace/
+docs/superpowers/specs/ package.json npm-shrinkwrap.json`) is EMPTY at this HEAD. Changed research
+bytes: `tools/shell-wait-probe/closure-observation.mjs` (NEW), `tools/shell-wait-probe/fixture.mjs`,
+`tools/shell-wait-probe/driver.mjs`, `tests/shell-wait-probe.test.mjs`, this section, and the plan's
+Task-2 checkbox ticks. Untracked drafting scratch (`findings.md`, `progress.md`, `task_plan.md`) was
+preserved untouched and never staged. Every frozen §19.3/§19.5 parameter was implemented as frozen —
+no frozen decision was re-decided; §19.3(e)'s two dependent blockers remain exactly as registered
+(NODE_OPTIONS through the LIVE host spawn stays the first registered O1/I preflight duty; the PTY
+transcript stays a different basis from the capture and is never used to reconstruct stdout).
+
+**SLICE A — the §19.3 stdout seam, implemented and pipeline-proven.**
+`closure-observation.mjs` is the conditional module the plan §3 allowed: the FIXTURE-GENERATED
+preload (`closurePreloadSource`/`writeClosurePreload`, :112/:299) ships only as a source string — an
+executable copy exists exclusively inside the disposable fixture (or an offline test's temp root),
+composed into `NODE_OPTIONS` by `captureEnvironment` (:332). The gate is the frozen §19.3(b)
+selector: fixture-only capture environment present and well-formed (four `ZCODE_SHELL_WAIT_*`
+variables, :79-82), `realpathSync(argv[1])` equal to the fixture-declared installed launcher
+realpath, and argv exactly `['invoke-prepared','rescue']` — inert everywhere else (pipeline-proven:
+wrong argv, companion entry, preparation/Status argv, background runner argv, foreign `node -e`,
+non-declared replacement paths and symlink paths, and — review round — SPAWN-LEVEL malformed
+environment fed to the GENERATED PRELOAD ITSELF: a corrupted nonce (`../escape`) and a malformed
+max-bytes value leave the preload inert with no file created inside or outside the capture
+directory; a symlink RESOLVING to the declared entry is the same entry and its capture is
+byte-exact, including production's own `PLUGIN_DATA_ROOT_INVALID` rejection envelope). The
+underlying write's error/backpressure surface is pipeline-proven too: with the parent's pipe end
+destroyed before the child writes (EPIPE), the wrapped write passes the ORIGINAL call's `false`
+return through and dispatches the caller's error callback (`EPIPE`), while the fd-level tee still
+attributes exactly the bytes the process wrote. On match: one `wx` 0600 capture + one `wx` 0600
+meta in the nonce-keyed capture
+directory, the ORIGINAL `process.stdout.write` delegated through unchanged (same arguments, same
+return value, same callback dispatch), 64 KiB fail-closed truncation, and at exit the bounded meta
+record with `captureSha256` computed AT CAPTURE CLOSE (:112-285). The read side
+(`admitStdoutCapture`, :489) re-verifies the bytes against the capture-time digest before any use;
+`missing`/`incomplete` (no final exit/flush meta)/`truncated`/digest-mismatch/byte-count-mismatch
+are NAMED observer failures exposing NO stdout. `closureExactLinkage` (:635) joins an admitted
+capture and an independently derived expectation to the UNCHANGED `evaluateExactTerminalLinkage`
+(`RELEASE_QUALIFICATION_VERSION` stayed 1). §19.7's deferred "Independent stderr count" fact is
+resolved here as a NAMED deferral, never silently dropped: the seam captures STDOUT ONLY by
+construction (the §19.3(b) argv gate selects the terminal invocation; the §19.3(a) analysis pinned
+the merged transcript's stderr as empty-by-construction on the managed-Child path), the capture
+meta deliberately carries NO stderr field, and the independent stderr observation remains with the
+PRE-EXISTING launch-handle evidence surface (the linked poll's stderr reporting) — the implemented
+seam adds no second stderr source. Expected bytes are built ONLY through the real
+production formatter/renderer (`exactRescueRenderedExpectation`, the §16.6-established
+`formatDirectInvocationError` fast-fail envelope — 207 bytes pinned), never by copying captured
+bytes. The fixture seam is a closed opt-in flag (`stdoutCapture`, fixture.mjs :414-417, seam block
+:613-658): preload + 0700 capture directory + fresh 64-hex nonce + composed environment, record
+provenance limited to digests/closed configuration (never private paths), installed production
+files untouched. Driver join: `shellWaitEvidenceRequest` accepts the validated capture as
+`observedTerminalStdout` (driver.mjs :2645-2686, threaded into the existing evidence boundary), the
+default executor admits the capture BEFORE evidence adjudication (:3307-3327) and persists a
+bounded statuses/digests-only `result.stdoutCapture` block (record :998-1003) through
+`stdoutCaptureProvenance` (driver.mjs :3347; review round): an admission FAILURE's reason is routed
+through the same `redactPrivatePaths` treatment as the rollouts failure, so a raw fs error
+embedding the private capture path never persists (pipeline-proven). Plan §3's
+observer-digest duty: the observer construction is bumped to **v4**
+(`zcode-shell-wait-observer-v4`, FINAL executing digest
+`94340f3e73f0a621b81c8e12ef359725e8217427f7c668a8a128f291ae887f91` — recomputed after EVERY
+review/fix round below, most recently the round-12 closure edits; the pre-review v4 digest was
+`4b5fc7ee2d8eedd312e3be342b2b4e3c19250c0fd64f595c123b656aca8ff4b1`, the first review-round v4
+digest `bdbbf9a1eef5ccd628b37c20be3607ce7a7af8dbd699c92235b79afae07bceb2`, the round-2 v4 digest
+`7412f81126fa33883cd5fb61ce7c1294a70a8ccde121eab98722c82ce9ec0a49`, the codex round-1 v4 digest
+`87d5ba9dbc78efbf98be17f637e828a50e8fdc7ec93f7080df1147c9525137ba`, the codex round-2 v4 digest
+`40aec6c032c0b3b4587831e14d234c76d01014b537a58a59385dbc68aceb1325`, the codex round-3 v4 digest
+`3248b7b22d5ff85a4600290a6d07fbbcb30f88c0f99809536c2afbcff7a76719`, the codex round-4 v4 digest
+`09f4b431c4a7a54e381b2a61a6bd3f88656bf77da8d57e0feae70b3aab364195`, the codex round-5
+(fresh fixer) v4 digest
+`e20e397e624b5d3e9da74f1e1eb626888d867d96050884a0c63eb15d494fd3af`, the codex round-6 v4 digest
+`b0722173c3c07c999b6d4bc7eda05da08497f5004cea81622c031ee9f5b3e485`, the codex round-7 v4 digest
+`f9d80b14465ef4865621c242a95676b5d2cab4bbb6c7354d8a63a88659fcb764`, the codex round-8 v4 digest
+`a80b7c3ce221165e40f3096701edba227c914125dbbd88ab8b82135be2069eea`, the codex round-9 v4 digest
+`432c76b63d50fa6feff98064aeb73f895a6c721a3e091ad358a8e6d8c6ead365`, the codex round-10 v4 digest
+`a7e19bc12ddbcb1db57cca1e3f41eacbf74e32b77acf772b75f20d9b2c6e3078`, the codex round-11 v4 digest
+`c296d1ae9f52a6a59803979977131cc0d7b2c364a200ae67aa59fd8d40a0d32c`, and the codex round-12 FINAL
+v4 digest
+`94340f3e73f0a621b81c8e12ef359725e8217427f7c668a8a128f291ae887f91`)
+— the closure-observation module-init bytes now join evidence/shape-diagnostic/
+release-qualification/driver in BOTH the case-start and record-time constructions; the v3-pinning
+tests were updated to the v4 construction in the same research test file. In-fixture
+NODE_OPTIONS propagation to the REAL launcher child is PIPELINE-PROVEN (the fast-fail capture only
+exists because the composed NODE_OPTIONS reached the child; the negative control proves no capture
+without the environment) — the LIVE host-spawn propagation of §19.3(e)(1) is NOT claimed and stays
+the registered preflight duty.
+
+**SLICE B — the §19.5 passive durable reader, implemented and pipeline-proven.**
+`readDurableObligationSnapshot` (closure-observation.mjs :1399, `DURABLE_SNAPSHOT_VERSION = 1` at
+:697) resolves the partition exactly as the `existingJobStorageForRepair` precedent (pure lstat
+chain, no symlink, 0700, realpath identity; any incompleteness is a NAMED incomplete state, never
+mkdir), enumerates only the exact fixture-owned owner partition under hard bounds (research entry
+bound 32 admitted over an fs-level enumeration guard mirroring the production owner-index bound,
+record bound 1 MiB, production-derived owner-index directory name), reads the exact bound job
+through the production bounded-read contract (`readBoundedJsonFile` + private-permission contract),
+and evaluates obligations ONLY with the EXPORTED production predicates (`TERMINAL`,
+`endedObligationSettled`, `isMarkedRunnerClaim`, `validStopIntent`, `resumableJobIndicator`) — it
+is NOT another lifecycle state machine and authorizes nothing. **Freeze deviation REGISTERED
+(review round, 2026-10-21; tightened in the 2026-10-21 round-2 self-review):** §19.5's "read the exact bound job via the
+production bounded read + `validateJobRecord` contract" is implemented as the production bounded
+read (`readBoundedJsonFile`, no-follow final symlink, declared-size rejection) PLUS a closed
+field-set projection of the record — `validateJobRecord` is module-private in
+`scripts/lib/state.mjs` and therefore unimportable under the exported-contracts-only rule
+(production files are read-only). Round 2 closed the projection's only LOOSER dimension: the
+projection now enforces the same RECORD-FIELD IDENTITY equalities production `readJobRecord`
+enforces — `job.id` vs the queried job id, `job.workspace` vs the partition's resolved workspace
+path, and `job.ownerSessionId` vs the queried owner (the owner-index-linked path's third anchor) —
+and a disagreement with the record's filename/partition/owner-index placement is the NAMED
+`job-record-identity-mismatch` → invalid → unestablished, never settled (pipeline-proven per field,
+with the restored intact record still settling). The REMAINING deviation vs module-private
+`validateJobRecord` is validation DEPTH only (status enum, ISO-timestamp and field-cross checks are
+not re-implemented): any deviation in or beyond the fields the frozen predicates consume is the
+named `job-record-shape-invalid`/unestablished, so an obligation can be MISSED as unestablished but
+never falsely settled, and no validation authority is claimed beyond the exported predicates.
+Binding currency is decided by the
+EXACT rescue-binding partition through the exported pure readers
+(`readRescueBindingPartitionFile`/`readRescueBindingAuthorityFile` with the production
+partition-key derivation): `current`/`not-current`/`unknown` stay per-layer facts. Passivity is
+PROVEN per read: whole-partition entries/content/mode fingerprints (per-file BYTE-BOUNDED reads,
+head+tail halves beyond 1 MiB — no unbounded file read) before and after every pass with
+equality REQUIRED for settlement; `.state.lock` presence is an observed fact only (production never
+unlinks lock files — presence is not hold-evidence; the held-lock test proves the reader never
+waits); no lease is ever acquired or probed. Aggregate `settled` ONLY when every applicable duty is
+positively established with an intact fingerprint; positively observed retained duties (marked
+runner claim, writable guard) aggregate `unresolved`; a torn snapshot, missing record, wrong
+declared epoch, or any named failure aggregates `unestablished` — null never becomes zero or
+not-applicable without a demonstrated path reason (every not-applicable layer carries its reason
+string). Driver join: `runHeldHostTurn` accepts `readDurableSnapshot`; the read STARTS before the
+Child-settlement watch in BOTH orderings and finishes before settlement cleanup
+(`startDurableSnapshotRead` :1904, `buildDurableSettlementLayer` :1956, join sites :1488/:1545,
+:1740/:1794, the no-watcher gate-first join :1816, and the deadline-flow sampling sites :1590/:1591 and :1696/:1697); the typed snapshot rides `childSettlement.durableSnapshot`, mirrors into the live
+facts, and persists as `child.durableSnapshot` ONLY when carried (record :1082-1085). The default
+executor wires the supplier for the ONE case with a pre-known exact bound job identity
+(`statusWaitDurableSnapshotSupplier` — status-wait's production-reserved owned job); every other
+case keeps the named null-supplier contract (its job is created inside the live host session and is
+not addressable pre-run) — the not-applicable branch is source-documented, never a silent null.
+
+**RED→GREEN evidence (focused runs; all pipeline tests live in the existing opt-in research
+selection — `tests/test-selection.test.mjs` unchanged, digest identical to §19.1).**
+SLICE A RED: `node --test --test-name-pattern="closure stdout capture seam"` → the entire describe
+failed with `ERR_MODULE_NOT_FOUND: …/tools/shell-wait-probe/closure-observation.mjs` (the seam
+module did not exist); after the implementation, first GREEN iterations surfaced and fixed the
+frozen-argv invocation shape and the harness's own realpath/decoding discipline, then 20/20, then
+21/21 with the fixture-seam test. SLICE B RED: the durable-reader describe → **14 tests / 0 pass /
+14 fail**, each `TypeError: readDurableObligationSnapshot is not a function`; the driver-join
+describe → **6 tests / 1 pass / 5 fail** (`readDurableSnapshot` unsatisfied, `durableSnapshot` not
+persisted, `statusWaitDurableSnapshotSupplier` not exported). GREEN: 14/14 and 6/6. Review-round
+tests (2026-10-21 self-review) were proven by TEMPORARY IMPLEMENTATION BREAKS, each restored to
+GREEN immediately after (recorded verbatim during the run): (1) routing the admission-failure
+reason through `redactPrivatePaths` disabled → the path-leak assertion failed ("the private fixture
+path must never persist in the provenance block"), restored → pass; (2) the GENERATED PRELOAD's
+64-hex nonce guard disabled → the escape file appeared OUTSIDE the capture directory
+("no escape.stdout may exist outside the capture directory"), restored → pass; (3) the preload's
+write wrapper rewriting its return to `true` → the false-return passthrough assertion failed,
+restored → pass; (4) `captureEnvironment` accepting a smaller `maxBytes` → the dead-flexibility
+construction rejection assertion failed, restored → pass. 2026-10-21 round-2 self-review: (5) the record-identity
+projection equalities written RED-first — against the shape-only projection, a record whose
+internal `id`/`workspace`/`ownerSessionId` disagrees with its filename/partition/owner-index
+placement was admitted `found` and aggregated `settled` (assertion failed "id mismatch must
+invalidate the record — 'found' !== 'invalid'"); the three equalities added → the mutated record is
+`job-record-identity-mismatch`/unestablished per field and the restored intact record still
+settles (GREEN). (An earlier break-2 attempt against an
+unfixed escape test stayed green because the scope then declared the launcher as the entry — the
+test was strengthened to declare the probe entry FIRST, and only then did the break cycle fail it;
+recorded for honesty.)
+
+**Gates on the FINAL implementation bytes (2026-10-21, verbatim counts; every exit 0; re-run
+after the codex round-12 boundary clarifications on the same final bytes — the counts below are
+that final run):**
+`npm run test:shell-research` → **ℹ tests 812 / ℹ suites 66 / ℹ pass 812 / ℹ fail 0 / ℹ cancelled 0 /
+ℹ skipped 0 / ℹ todo 0** (709 pre-existing + 103 new pipeline tests — 45 pre-review, nine codex
+round-1, four codex round-2, three codex round-3, three codex round-4, four codex round-5, two
+codex round-6, three codex round-7, three codex round-8, four codex round-9, five codex
+round-10, fourteen codex round-11 matrix tests, four codex round-12 boundary matrix rows; the
+pre-existing 709 include the updated v3→v4 observer-digest pins and ONE round-9 test FOLDED into
+the round-11 matrix (recorded below) — no other pre-existing test was deleted or weakened);
+`node --test tests/test-selection.test.mjs` → **6/6, fail 0** (the shell-research selection still
+contains exactly `tests/shell-wait-probe.test.mjs`); `npm run lint` → clean, exit 0;
+`npm run typecheck` → clean, exit 0; `node scripts/check-line-endings.mjs` → "LF line endings
+verified in 542 tracked files.", exit 0 (the review-round figure ON THE FINAL AMENDED TREE: 541
+Task-1-tracked files + the new closure-observation.mjs); `git diff --check` → clean, exit 0; the
+prohibited-diff command above → EMPTY, exit 0.
+
+**Codex round-1 fixes (2026-10-21; seven P2 behavior defects in the new observer, each
+test-first).** Every fix is passive and fail-closed; no new lifecycle authority; production files
+untouched. Finding → change → RED evidence:
+(1) **Live status-wait durable binding** — `statusWaitDurableSnapshotSupplier`
+(driver.mjs :2099) now binds the OBSERVED launch-acknowledgement identity (job id + owning
+session, captured at driver.mjs :3248-3249 after the acknowledgement validates; fixture-owned
+reservation stays the fallback; a missing identity is the NAMED `durable-identity-unobserved`
+reason, never silent), and BOTH statusDeadlineFlow branches sample the reader at the verified
+deadline BEFORE the Status cleanup and attach the typed snapshot + durable layer
+(driver.mjs :1590-1605 and :1696-1697; the sampling sites join :1488/:1545 and :1740/:1794).
+RED: the deadline-flow test failed `Cannot read properties of undefined (reading 'layers')` (the
+branch never invoked the reader) and the supplier test failed "the observed acknowledgement
+identity binds the live reader" (actual null). GREEN:
+`the status deadline flow samples the durable reader BEFORE cleanup and records it` +
+`the status-wait supplier binds the OBSERVED acknowledgement identity, never a guess`.
+(2) **Persisted-snapshot redaction** — `redactDurableSnapshotForRecord` (driver.mjs :1154-1168)
+gives the persisted `child.durableSnapshot` (record :1082-1085) the same `redactPrivatePaths`
+treatment as every other observation block: a bounded deep clone with private paths redacted.
+RED: "the private workspace path must never persist in the durable snapshot block" (raw copy
+persisted it). GREEN: `the persisted durable snapshot is redacted of private fixture paths`.
+(3) **Runner markers validated before settlement** — a present `rescueRunnerVersion`/
+`rescueExecutionInput` is validated with the EXPORTED production validator
+`validDetachedRescueRunnerJob` (scripts/lib/rescue-execution-input.mjs — surveyed: both it and
+`markedRescueRunnerVersion` are exported, so NO closed-projection substitute is needed) before any
+predicate is interpreted; the invalid-string-marker record ("2" + childPid + digest lease, which
+production state validation would never publish) is the named `job-record-runner-marker-invalid`
+→ invalid, layers null (predicates never interpreted), unestablished
+(closure-observation.mjs :1573-1585). RED: "'found' !== 'invalid'" (the corrupt record aggregated
+settled). GREEN: `an invalid detached-runner marker rejects the record before settlement`.
+(4) **Owner-binding ENTRIES validated, not filenames** — the exact entry is read through the
+bounded no-follow reader and its tuple validated exactly as production `readOwnedJobs` defines
+(closed legacy-v1/modern-v2 key sets with the bounded reservation kind, jobId = entry filename,
+ownerSessionId = queried owner; the two closed literals pin module-private
+`validRescueReservationKind` — registered closed-projection substitute, pipeline-proven against
+production-written indexes) — corrupt JSON / conflicting tuple / unknown shape / symlinked entry
+→ named `owner-binding-invalid` → unestablished (closure-observation.mjs :673-683, :1517-1533).
+RED: "'found' !== 'invalid'" for corrupt entry JSON. GREEN:
+`a corrupt owner-binding ENTRY is named and never grounds ownership`.
+(5) **Missing binding authority** — the authority file is REQUIRED whenever the partition exists
+(production `readBindingPartitionSnapshot` rejects the partition-only pair; the legitimate
+authority-only case never justified accepting a partition-only one): missing →
+`binding-authority-missing`/unknown, `resumable` never asserted from an unknown binding, and the
+settled gate now requires POSITIVELY resolved binding currency (closure-observation.mjs
+:1697-1705, :1738, resumable :1714-1716). RED: "'current' !== 'unknown'".
+GREEN: `a binding partition without its authority file is unestablished and never asserts
+resumability`.
+(6) **Byte-exact decoding** — the capture decode is `TextDecoder('utf-8', {ignoreBOM: true,
+fatal: true})` (closure-observation.mjs :567): a leading BOM is preserved (a BOM-prefixed
+capture is matched FALSE against the BOM-less expectation — the three bytes are content) and
+invalid UTF-8 is the NAMED `capture-utf8-invalid` state with the byte-level facts (digest/
+byteCount) still verified and only the lossy string surface refused → the oracle verdict is
+unestablished, never a replacement-character match. The mixed-encoding mechanics test now pins
+exactly that contract (byte-exactness via the verified digest). RED: BOM test "true !== false"
+(lossy decode stripped the BOM and matched). GREEN:
+`a BOM-prefixed capture is preserved byte-exact and never equals the BOM-less expectation` +
+`a capture with invalid UTF-8 never yields a comparable stdout`.
+(7) **Nonregular fingerprint entries never opened** — FIFOs/sockets/devices are typed from the
+`lstat` result and NEVER opened (a FIFO open blocks forever without a writer); each is a typed
+entry plus the named `partition-nonregular-entry` condition, the aggregate can never settle, and
+the reader is pipeline-proven HANG-FREE with a real `mkfifo` (closure-observation.mjs
+:790-801, :805-821, :1454-1462, :1764-1770). RED: the test run HUNG (the reader's `open` on the
+FIFO blocked the test process; the run had to be killed). GREEN:
+`a nonregular partition entry (FIFO) is classified and never opened — the reader never hangs`.
+
+**Codex round-2 fixes (2026-10-21; four P2 findings, each test-first).** Finding → change → RED
+evidence:
+(1) **Malformed PRESENT stop intents never settle** — the record projection gates a present
+`stopIntent` through the EXPORTED production `validStopIntent` (rescue-binding.mjs; NO
+closed-projection substitute needed) before admission: a malformed intent on disk is corruption
+(production validateJobRecord rejects it at write time) → the named
+`job-record-stop-intent-invalid` → invalid → unestablished, never settled
+(closure-observation.mjs :1264). RED: "'found' !== 'invalid'" (the raw-terminal projection
+accepted it and aggregated settled). GREEN:
+`a malformed PRESENT stop intent rejects the record before settlement` (+ restored-intact
+still-settles check).
+(2) **The durable-read await is bounded by the shared budget** —
+`buildDurableSettlementLayer` (driver.mjs :1956-2055) takes the budget state; the read is raced
+against the budget abort and a snapshot resolving at/after budget expiry (or after the earliest
+cleanup boundary) is recorded as the NAMED `durable-observation-after-budget-expiry`
+unestablished observation with the late snapshot's own aggregate kept only as `sampledAggregate`
+(driver.mjs :1964-2022) — it can NEVER credit `settled`. All four join sites pass the budget
+state. RED: "a after-budget snapshot can never credit settled" (actual 'settled' — the late
+snapshot was credited). GREEN:
+`a durable read resolving after budget expiry is named after-budget and never credits settled`.
+(3) **Oversized partition files fail the pass closed** — files beyond the per-file 1 MiB bound
+are head+tail fingerprinted for equality DETECTION but equality is never trusted on their
+account (a same-length mid-file mutation is invisible to a partial digest; production binding
+partitions reach 16 MiB): the named `partition-file-oversized` condition forces
+`snapshotEqual: false`, blocks a settled aggregate, and reasons into the record
+(closure-observation.mjs :805-821, :1462-1467, :1765-1767, :1700/:1710). RED: "the oversized file is the
+NAMED reason" (actual null — the head+tail fingerprint passed a mid-file same-length mutation as
+equal). GREEN: `an oversized partition file is named and a mid-file mutation can never pass as
+equal`.
+(4) **The preload NODE_OPTIONS fragment quotes the full path** — `nodeOptionsFragment` quotes and
+escapes the preload path per Node's NODE_OPTIONS parsing (space-separated arguments, quoted
+segments, in-quote backslash escapes), so a custom TMPDIR containing spaces loads the preload
+instead of exiting before any entry runs (closure-observation.mjs :293-304). RED: "the fragment
+must quote the preload path" (unquoted) and the spaced-path child could not execute. GREEN:
+`the preload NODE_OPTIONS fragment quotes a spaced temporary path` — gate-matched entry executes
+and CAPTURES through the quoted fragment; a foreign entry stays inert and uncaptured.
+
+**Codex round-3 fixes (2026-10-21; one P1 + two P2, each test-first).** Finding → change → RED
+evidence:
+(1) **[P1] The losing durable read is never awaited after budget expiry** — the round-2 race was
+defeated by an unconditional `await durableRead` in the after-budget branch: a stalled reader
+left `runHeldHostTurn` pending indefinitely and blocked the safety cleanup. The branch now
+returns the NAMED `durable-observation-after-budget-expiry` unestablished block IMMEDIATELY; the
+losing promise gets a no-op rejection handler (never an unhandled rejection) and a late
+RESOLUTION updates only the non-authoritative `sampledAggregate` field on the already-returned
+block, never the recorded observation status (driver.mjs :2021-2043). RED: the never-resolving
+reader test timed out at 5000 ms ("runHeldHostTurn must complete despite the stalled reader
+(outcome timeout)" — the turn was still pending behind the await). GREEN:
+`a NEVER-resolving durable read never blocks cleanup after budget expiry` (turn completes,
+cleanup terminates the controlled processes, recorded block is the named unestablished one; the
+round-2 after-budget test now additionally pins that the late resolution updates only
+`sampledAggregate` while the recorded aggregate stays unestablished).
+(2) **Cancelled Host-owned records require their stop evidence** — a `cancelled` writable Rescue
+record satisfying the EXPORTED `validHostLifecycleRecord` (rescue-binding.mjs) without its
+required `stopIntent` + confirmed `stopCause` is post-write corruption (production
+validateJobRecord forces stopCause on every cancelled Host-owned record): without this gate the
+raw-terminal `endedObligationSettled` accepted it while the snapshot simultaneously reported
+`stopIntent.applicable: true` / `valid: false` — a false settlement. The projection rejects it
+with the named `job-record-cancellation-evidence-missing` → invalid → unestablished, layers null
+(closure-observation.mjs :1314-1319 checklist clause c12). RED: "'found' !== 'invalid'" (the stripped record was
+admitted and settled). GREEN:
+`a cancelled Host-owned record missing its required stop evidence never settles`.
+(3) **Numeric runner versions persist their identity** — the projection's string-only check
+turned every valid marker (production defines the NUMBERS 1 and 2,
+rescue-execution-input.mjs) into `null`; the validated marker now persists its numeric identity
+(closure-observation.mjs :1596-1603) and the marked-claim duty stays recognized. RED: "the
+validated numeric marker persists as the number production defines — null !== 2". GREEN:
+`a valid numeric runner version persists its numeric identity` (the round-1 invalid-string-marker
+test stays green).
+
+**Codex round-4 fixes + admission-checklist structural closure (2026-10-21; three P2 + the
+root-authorized structural response, each test-first).**
+
+*F1 — the cleanup-boundary fence (driver.mjs).* The round-2 fence compared only budget
+expiry/abort; a runner-side `recordCleanupBoundary()` (recorded BEFORE the budget expires, at the
+runner's own timeout initiation) left `budgetExpired: false` while sampling after cleanup began.
+`buildDurableSettlementLayer` (:1956-2055) now takes the held `cleanup` record, reads the EARLIEST
+`cleanupBoundaryAtMs` both before and after the await, and compares the read's COMPLETION instant
+against it: completion at/after the earliest boundary → the NAMED
+`durable-observation-after-cleanup-boundary` unestablished block (late fact kept as
+`sampledAggregate`), with the budget-expiry reason winning when both fences fire. All four join
+sites pass `cleanup`. RED: "the after-boundary status is the NAMED reason" (actual undefined —
+the boundary-then-read ordering credited `settled` with no reason). GREEN:
+`the cleanup boundary fences durable settlement credit in every ordering` — boundary-then-read →
+after-boundary named; boundary-before-budget-expiry → after-budget named; read-then-boundary →
+full credit stands (control).
+
+*F2-F4 — the WHOLESALE admission checklist (structural closure, root-authorized).* The three
+point findings (stop-cause/intent conflict; ambiguous binding anchor; authority-only pair) are
+closed NOT by three more guards but by ONE complete ordered admission checklist applied
+wholesale before any settlement predicate: `DURABLE_JOB_RECORD_ADMISSION`
+(closure-observation.mjs :1267-1356, evaluated by `projectDurableJobRecord` :1370-1377) for the
+record, and the pair-completeness + anchor-cardinality clauses inside the binding classification
+(:1656-1701). Clause → production derivation:
+
+| Clause (reason) | Production source mirrored | Substitute? |
+| --- | --- | --- |
+| c01 plain object → shape-invalid | validateJobRecord isPlainJsonObject (state.mjs) | no |
+| c02 id 64-hex → shape-invalid | validateJobRecord id type arm | no (literal) |
+| c03 canonical bounded workspace → shape-invalid | validateJobRecord workspace bound | no (literal) |
+| c04 bounded owner fields → shape-invalid | isBoundedOwnerSessionId / ownerTurnId (private leaf checks) | retired round 8 — the exact leaf port (byte bound + control scan) lives in the validateJobRecord port |
+| c05 command ∈ JOB_COMMANDS → shape-invalid | JOB_COMMANDS (EXPORTED, state.mjs) | no |
+| c06 readOnly/permissionSnapshot → shape-invalid | validateJobRecord | no |
+| c07 status ∈ JOB_STATUSES → shape-invalid | JOB_STATUSES (EXPORTED, state.mjs) | no |
+| c08 childPid/workerLeaseId types → shape-invalid | validateJobRecord | no (literal) |
+| c09 epoch type → shape-invalid | validLifecycleEpoch leaf (private) | retired round 8 — covered by the ported lifecycle-trio arm in the validateJobRecord port |
+| c09b ANY lifecycle field present ⇒ complete valid trio (executionOwner+hostPlacement+ownerLifecycleEpoch, command rescue, readOnly false) → lifecycle-trio-incomplete | validateJobRecord `!HOST_LIFECYCLE_FIELDS.some((field) => field in job) \|\| hasHostOwnedLifecycle(job)` (validHostLifecycleRecord EXPORTED, rescue-binding.mjs) — round 5; without it a `cancelled` record with a valid epoch but missing owner/placement skipped c12 and settled without stop evidence | no |
+| c10 identity equalities → identity-mismatch | readJobRecord id/workspace + readOwnedJobs owner tuple | no |
+| c11 stopIntent present ⇒ validStopIntent → stop-intent-invalid | validateJobRecord stopIntent arm (EXPORTED validStopIntent, rescue-binding.mjs) | no |
+| c11b stopIntent present ⇒ command rescue ∧ readOnly false → stop-intent-command-mismatch | the SAME validateJobRecord stopIntent arm's command/read-only scope (`job.command === 'rescue' && job.readOnly === false`, state.mjs) — round 7; the arm is COMMAND-SCOPED, so a structurally valid intent on a read-only Rescue or a Review record is post-write corruption that `endedObligationSettled` (cancelling + valid intent) would otherwise settle despite a nonterminal winner | no |
+| c12 cancelled Host-owned writable ⇒ stopIntent+stopCause present → cancellation-evidence-missing | validateJobRecord `hasHostOwnedLifecycle ⇒ cancelled ⇒ 'stopCause' in job` (validHostLifecycleRecord EXPORTED) | no |
+| c13 stopCause present ⇒ cancelled writable ∧ STOP_CAUSES.has ∧ validStopIntent ∧ intent.cause === stopCause → cancellation-evidence-mismatch | validateJobRecord stopCause arm (STOP_CAUSES EXPORTED) | no |
+| c14 runner marker ⇒ validDetachedRescueRunnerJob → runner-marker-invalid | validDetachedRescueRunnerJob (EXPORTED, rescue-execution-input.mjs) | no |
+| c17 (round 8) THE COMPLETE validateJobRecord PORT → job-record-schema-invalid | every JOB_RECORD_INVALID arm of state.mjs:3141-3257, ported arm-for-arm with the production line cited in the function doc (closure-observation.mjs :858-1360); the ported leaf validators are verbatim ports of the private leaves (the private leaves of state.mjs: isNonEmptyString :3434, isValidDateString :3439, isIsoTimestamp :3428, isBoundedThreadId :3364, isBoundedOwnerSessionId :3367, isTrackedError :3359, isModel :3376, isSafeArtifact :3385, validBeforeMessageIds :3392, validProgressPreview :3404, validCanonicalWorkspacePath :1580, isPlainJsonObject :3444+isJsonValue :3450, expectedJobLogPath :3484) plus the EXPORTED contracts (EFFORT_LEVELS, JOB_COMMANDS, JOB_STATUSES, validProgressProbe, PROGRESS_PHASES/MAX_PROGRESS_* from progress.mjs, validateRescueExecutionInput, isSafeIdentifier, validStopIntent, validHostLifecycleRecord, STOP_CAUSES, validDetachedRescueRunnerJob) | no — complete |
+| c18-c21 (round 8) the FOUR binding-validator-dependent arms → fail-closed rejects | execution-claim 'bound' kind (state.mjs :1930-1949), migration-rollback priorBinding (:2094-2109), continuation origin (:2112-2143): every record-local arm is ported; exactly where the module-private binding validator (validateRescueBinding) would be required the port REJECTS — narrower-than-production substitutes in the registered fail-safe direction (production-valid shapes of these four arms are lost as unestablished, never settled; all four arms only occur on QUEUED records, which are nonterminal and can never settle) | YES — registered, fail-closed |
+| c15 binding pair completeness → binding-pair-incomplete (unknown) | readBindingPartitionSnapshot pair rule; `allowAuthorityOnly` is REPAIR-ONLY and never set by the passive reader (state.mjs) | no |
+| c16 anchor cardinality = 1 + active → current; >1 → binding-anchor-ambiguous (unknown) | rescueBindingPointsAtJob `matches.length === 1 && active` (state.mjs) | no |
+
+**Codex round 8 residue CORRECTION:** the paragraph previously registered here claimed the
+checklist's unenumerated validation depth was fail-safe ("never accepted as settled"). That
+claim was FALSE — codex round 8 demonstrated an otherwise-valid terminal record passing
+admission after deleting `createdAt`, adding `inputId` alone, or setting `resultArtifact` to
+`../../foreign-file`, each settling. The structural endgame below (c17-c21) REPLACES the
+residue: the validateJobRecord port is COMPLETE against state.mjs:3141-3257 (every
+JOB_RECORD_INVALID arm, cited in the function doc), the pipeline mutation sweep exercises
+fifteen production-rejected mutations (the three codex-named ones first) plus the intact
+control, and every mutation yields invalid/unestablished. The ONLY remaining substitutes are
+the four registered binding-validator-dependent arms (c18-c21), which are fail-closed. Every
+production-rejected shape the pipeline tests construct yields its named reason → unestablished;
+every production-accepted shape passes unchanged (all settle-path tests green, including numeric
+runner version and restore-still-settles). New tests (RED evidence):
+`conflicting or null stop causes reject a cancelled Host-owned record` (RED: "'found' !==
+'invalid'" — the intent/cause conflict settled), `an ambiguous binding anchor and an
+authority-only pair stay unestablished` (RED: "'current' !== 'unknown'" — `.find()` took the
+first active anchor; the authority-only pair reported confirmed not-current), and the F1
+three-ordering fence test above.
+
+**Codex round-5 fixes (2026-10-21; a FRESH fixer subagent after the repeat-failure ladder
+escalation; four P2 findings, each test-first).** The destabilizing-fix history of the fence
+family (round-2 = budget-only race; round-3 = still awaited the losing read after expiry; round-4
+= added the boundary comparison but EVALUATED it at JOIN time — each fix locally correct and
+tested, each review finding the adjacent gap) was closed by designing the fence ONCE, completely,
+to the contract stated in (4) below, with tests enumerating every ordering. Finding → test → RED
+evidence → fix:
+
+(1) **Incomplete Host lifecycle metadata rejected before settlement** — new admission clause c09b
+`job-record-lifecycle-trio-incomplete` (closure-observation.mjs :1280-1297, table row added above):
+mirroring production validateJobRecord's
+`!HOST_LIFECYCLE_FIELDS.some((field) => field in job) || hasHostOwnedLifecycle(job)` (state.mjs),
+ANY of ownerLifecycleEpoch/executionOwner/hostPlacement present now requires the COMPLETE valid
+trio (`validHostLifecycleRecord`, command rescue, readOnly false). Previously a `cancelled`
+record with a VALID epoch but missing executionOwner/hostPlacement passed the checklist AND
+skipped clause c12 (whose `validHostLifecycleRecord` guard is false for the partial trio),
+admitting the record and settling it without its required stop evidence — exactly what
+production validateJobRecord rejects. RED: `an incomplete Host lifecycle trio rejects the record
+before settlement (codex round 5)` failed with "the partial lifecycle trio invalidates the
+record — 'found' !== 'invalid'" (the stripped record was admitted `found`); GREEN for both the
+missing-member shape and the invalid-member shape (`hostPlacement: 'teleport'`), with the
+restored-intact record still settling and no layers block on the rejection.
+
+(2) **Durable snapshots retained when the Child watch fails** — in BOTH watch orderings
+(acknowledgement-first driver.mjs :1491-1556; gate-first :1753-1806) a REJECTED settlement watch
+no longer collapses the record's `childSettlement` to null (which discarded the layers and the
+typed snapshot entirely): the rejection is tracked and persisted as its own NAMED unestablished
+block `{ observed: false, basis: 'child-settlement-watch-failed', layers, durableSnapshot }` —
+the independently obtained durable facts are computed and persisted regardless of the watch
+outcome (the two status-deadline branches have no watch and already persisted unconditionally).
+RED: `a rejected Child-settlement watch never discards the durable facts (codex round 5)` failed
+with "a rejected watch still records its own settlement block (actual null)"; GREEN in both
+orderings (durableObligations 'settled' and the verbatim typed snapshot ride the record; the
+watch failure neither blocks nor replaces cleanup).
+
+(3) **Persisted stop intents reported on natural terminal winners** — the stopIntent projection
+(closure-observation.mjs :1621-1632, layers :1650-1657) now derives `present`/`valid` from the
+record's persisted stopIntent for ANY status: production `stopAndSettle` (rescue-lifecycle.mjs)
+persists the intent FIRST and only then elects the winner, so a natural success/failure may win
+with the intent validly retained — restricting the projection to cancelling/cancelled reported
+`present: null`/`valid: null` for those valid terminal records. `applicable` stays the separate
+cancellation-duty fact with its recorded not-applicable reason. RED: `a persisted stop intent is
+reported on natural terminal winners (codex round 5)` failed with "the persisted intent is
+PRESENT on the natural winner — null !== true" (a production-path succeeded record carrying a
+valid persisted intent reported present:null); GREEN with the record still settling
+(present:true / valid:true / applicable:false — production allows natural winners after intent).
+
+(4) **The fence uses the read's OWN completion time, not the join time** — ONE complete fence,
+implemented exactly to this contract:
+  - `startDurableSnapshotRead` (driver.mjs :1874-1915) wraps the read AT START: a `.then` carrier
+    stamps `completedAtMs` (Date.now — the same wall clock as `cleanupBoundaryAtMs`) at the
+    read's OWN resolution, fulfillment and reader-failure alike, independent of any consumer
+    await; the carrier instant (not an attached field) is the fence input.
+  - Earliest cleanup boundary = the FIRST `cleanupBoundaryAtMs` ever recorded on the held cleanup
+    record (monotonic min via `recordTerminationInitiation`, driver.mjs :1304-1310), re-read at
+    the final join.
+  - Settlement credit (any aggregate other than the named-unestablished block) requires: read
+    completed (`completedAtMs` set by the carrier) AND `completedAtMs < earliestBoundaryAtMs`
+    (or no boundary recorded at final join) AND completion before budget expiry (entry
+    flag/signal check plus the budget race).
+  - Budget expires while the read is pending → the named `durable-observation-after-budget-expiry`
+    block is returned IMMEDIATELY — the losing read is NEVER awaited (the round-3 discipline
+    stands), a no-op rejection handler is attached, and a late resolution fills only
+    `sampledAggregate` (+ the late completion instant), never the recorded status.
+  - Read completed at/after the earliest boundary → the named
+    `durable-observation-after-cleanup-boundary` block (the budget reason wins if both fire);
+    the snapshot's own aggregate stays only as `sampledAggregate`.
+  - Read completed BEFORE the boundary but joined after (watch returned later) → NORMAL credit
+    (the finding-4 case; the credited snapshot now also carries its `completedAtMs` sample time,
+    the §19.6 sample-time discipline).
+  Ordering matrix (tests in `tests/shell-wait-probe.test.mjs`, timeout-bounded, real-timer
+  deterministic like the pre-existing fence tests): (a) read-before-boundary/watch-after →
+  CREDITED — new `a read completed BEFORE the boundary but joined after it keeps full credit
+  (codex round 5)`; RED: "an observation that COMPLETED before the earliest cleanup boundary
+  keeps full credit — the join-time comparison fenced a pre-cleanup-completed read (actual
+  {\"aggregate\":\"unestablished\",\"reasons\":[\"durable-observation-after-cleanup-boundary\"],
+  \"sampledAggregate\":\"settled\"}) — null !== 'settled'" (the round-4 code compared
+  `Date.now()` AT JOIN, fencing a read that had completed ~230 ms before the boundary); GREEN
+  also pins the stamped `completedAtMs` and the exact event order read-resolved → boundary →
+  watch → cleanup. (b) read-after-boundary → NAMED (the round-4 ordering-1 test, unchanged
+  green). (c) budget-expiry-while-pending → immediate named return, runHeldHostTurn completes,
+  cleanup runs (the round-2 after-budget test and the round-3 never-resolving test, unchanged
+  green). (d) boundary-before-budget-expiry then read → the budget reason named (the round-4
+  ordering-2 test, unchanged green). (e) watch rejects → durable facts preserved (the finding-2
+  test above). (f) never-resolving read → no hang (the round-3 test, unchanged green); plus the
+  read-then-boundary control keeping full credit (the round-4 ordering-3 test, unchanged green).
+  The round-2/3/4 fence tests stayed GREEN UNCHANGED — the contract subsumes them (this sentence
+  is the recorded alignment check; no fence test was weakened or rewritten).
+
+**Codex round-6 fixes (2026-10-21; two P2 findings over the round-5 bytes — both pre-existing
+corners, no fix-introduced findings; each test-first).** Finding → test → RED evidence → fix:
+
+(1) **Consumed session identifiers validated before resumability is derived** — new admission
+clause c08b `job-record-session-identifier-invalid` (closure-observation.mjs :1236-1251, table row
+added above): a PRESENT `zcodeSessionId` must satisfy the EXPORTED production
+`isSafeIdentifier` (scripts/lib/identifier.mjs — no closed substitute needed), mirroring
+validateJobRecord's `!('zcodeSessionId' in job) || isSafeIdentifier(job.zcodeSessionId)` arm
+(state.mjs). The resumability projection CONSUMES this field: `resumableJobIndicator`'s
+accepted-session check is `typeof job.zcodeSessionId === 'string'` (job-control.mjs), so a
+terminal record corrupted to `zcodeSessionId: ""` passed the checklist, reported
+`resumable: true` under an active binding with a matching viewing permission, and aggregated
+`settled` from corrupted state. RED: `an empty zcodeSessionId is rejected before resumability is
+derived (codex round 6)` failed with "the empty session identifier invalidates the record before
+any predicate runs — 'found' !== 'invalid'" (the corrupted record was admitted); GREEN with the
+record `invalid`/unestablished and NO layers block, and the restored-intact record still deriving
+`resumable: true` and settling through the same path (positive control that the indicator is
+reachable). Scope note: the checklist's other consumed identifiers were already validated
+(ownerSessionId c04, workerLeaseId c08 digest) — `zcodeSessionId` was the only unvalidated
+consumed field.
+
+(2) **Durable snapshots preserved when the settlement watch times out** — when the budget
+expired while the Child-settlement watch was still pending, the pre-join budget check threw and
+the outer catch replaced the answer with the bare failure shape (no `childSettlement`),
+discarding the independently COMPLETED durable snapshot — in BOTH watch orderings. Fix, two
+parts: (a) at BOTH watch sites (acknowledgement-first driver.mjs :1501-1526, gate-first
+:1764-1784) the layers are joined FIRST and the joined record — the named child-settlement block
+plus the durable layer and typed snapshot — rides the budget error as `heldTurn`; the outer
+catch (driver.mjs :1824-1834) persists a carried `heldTurn` instead of the failure shape (the
+executor's `error.heldTurn` contract, driver.mjs :3086, already understands carried records).
+Every carried field keeps the pre-existing budget-record semantics (endedBeforeGate false,
+result undefined) — the joined `childSettlement` block is the ONLY addition, so no downstream
+adjudication branch changes. (b) The fence (driver.mjs :1964-2022) now decides from the read's
+SYNCHRONOUS settlement state (a `{ settled, carrier }` record filled by the at-start wrapper,
+`startDurableSnapshotRead` driver.mjs :1889-1915): when the budget has ALREADY fired at join
+time, an already-completed read is evaluated from its own completion instant — the expiry
+records its boundary at the abort source BEFORE aborting, so `completedAtMs < earliestBoundary`
+is completion BEFORE expiry and keeps full credit (the read-completed-before-expiry arm of the
+round-5 contract), while a still-pending read lost the race by definition and gets the named
+after-budget block without ever being awaited (the round-3 discipline). The round-5
+race-implementation was replaced because an already-settled read and an already-resolved race
+loser CANNOT be ordered by Promise.race ties (the loser's single reaction hop always beats the
+read's derived-promise chain — verified empirically before the state-based restructure). RED:
+`budget expiry while the settlement watch pends keeps the completed durable facts (codex
+round 6)` failed with "the budget path preserves the joined record (actual keys
+[\"endedBeforeGate\",\"budgetExpired\",\"processAliveWhileHeld\",\"cleanup\",\"timeline\",\"failure\"])"
+— no `childSettlement` key; GREEN in BOTH orderings (durableObligations 'settled' and the
+verbatim typed snapshot ride the budget-expired record; the watch is the named
+`child-settlement-watch-failed` basis; cleanup still ran). All round-2/3/4/5 fence tests stayed
+GREEN UNCHANGED under the state-based fence.
+
+**Codex round-7 fixes (2026-10-21; two P2 findings over the round-6 bytes — both pre-existing
+drip-feed corners, no fix-introduced findings; each test-first).** Finding → test → RED evidence
+→ fix:
+
+(1) **Captures finalized AFTER exit-time stdout writes** — the preload's 'exit' listener was
+registered by the preload itself (which loads FIRST through `--require`), so Node's registration-
+order emission ran it BEFORE every application exit listener: an application exit handler's
+stdout writes reached the terminal AFTER the capture had been closed and its complete meta
+published — the bytes were omitted from the admitted capture while the exact-linkage verdict
+stayed `matched: true` (repro `result\n` + exit-handler `extra\n` yielded a complete 7-byte
+capture). Fix (closure-observation.mjs :112-270 as amended by round 8, the generated preload source): THREE-stage
+finalization per the review contract — (a) the read wrapper around `process.reallyExit`
+(:257-263): the wrapper publishes the COMPLETE meta (SHA-256 over ALL captured bytes) at
+reallyExit time, which `process.exit` reaches only AFTER every 'exit' listener returned; the
+write hook stays armed until finalization, so exit-listener writes are captured (the `finalized`
+guard freezes the capture only from the wrapper onward); (b) the 'exit'-listener FALLBACK
+(:243-250, REPLACED by round 8): a PROVISIONAL meta marked `captureComplete: false` named through the existing
+`captureError` channel (`finalization-unproven-exit-fallback` — the closed meta key set is
+unchanged) for exotic paths where the wrapper is never reached — admission treats it as the
+NAMED incomplete state (the pre-existing captureError branch), never complete; the fd stays
+open so later exit listeners' writes are still captured; (c) the DRAIN BRIDGE (:231-241 at the time; **REMOVED by the codex round-8 structural endgame
+(a)** — the bridge was FIX-INTRODUCED breakage: it forced `process.exit(0)` on the natural
+drain, destroying Node's business status 13 for an unsettled top-level await; see the round-8
+paragraph): `process.reallyExit`'s JS property is NOT reached on this runtime's natural
+event-loop drain (verified empirically — the drain exits from C++ after the listeners), and the
+gated launcher ends exactly that way (it sets `process.exitCode` and falls off the end,
+skills/rescue/launcher.mjs). Round 8 replaces the bridge with the passive re-order + late-write
+invalidation design recorded below. A foreign meta is still never overwritten: only our own
+successfully written provisional may be replaced (the `wx`/`w` discipline keeps the same-nonce
+collision semantics). RED: `stdout written inside exit listeners is captured before finalization
+(codex round 7)` failed with "the admitted capture is byte-exact over ALL writes incl. exit
+handlers — actual 'result\n', expected 'result\nextra\n'" (and the partial-expectation linkage
+now honestly mismatches with `extra-output`); `the reallyExit wrapper finalizes complete
+captures, and an exit bypass stays named-incomplete (codex round 7)` RED failed "the explicit
+reallyExit path finalizes (actual incomplete: capture-meta-missing)" (the pre-fix preload had no
+wrapper — an explicit reallyExit bypassed finalization entirely); GREEN: the exit-listener
+capture is `result\nextra\n` byte-exact (linkage matched true on the full expectation, false on
+the partial), the explicit-reallyExit meta is complete, and the bypass probe (a stubbed
+reallyExit that swallows process.exit, then terminates through the drain's own internal path)
+leaves ONLY the provisional meta → admission `incomplete`/`finalization-unproven-exit-fallback`
+→ oracle `matched: null`. **Which path finalizes the launcher fast-fail:** the DRAIN BRIDGE —
+the launcher sets exitCode and drains, so beforeExit bridges it into process.exit and the
+wrapped reallyExit finalizes it (the complete 207-byte capture describe stays green end to end,
+28/28).
+
+(2) **Stop intents validated against the writable rescue command** — new admission clause c11b
+`job-record-stop-intent-command-mismatch` (closure-observation.mjs :1273-1285, table row added
+above): production's stopIntent arm is COMMAND-SCOPED — `!('stopIntent' in job) ||
+job.command === 'rescue' && job.readOnly === false && validStopIntent(job.stopIntent)`
+(state.mjs) — so a STRUCTURALLY valid intent on a read-only Rescue or a Review record is
+post-write corruption. Under the structurally-only clause such a cancelling record was admitted
+and `endedObligationSettled` accepted it (its `cancelling` arm requires only a valid intent)
+while the writable-guard and marked-runner duties were inapplicable — `aggregate: 'settled'`
+despite a NONTERMINAL winner. RED: `stop intents are validated against the writable rescue
+command before settlement (codex round 7)` failed with "a read-only record may not carry a stop
+intent — 'found' !== 'invalid'" (the Host-owned trio absent, as production read-only/Review
+records never carry it); GREEN for both the read-only Rescue and the Review shapes
+(invalid/unestablished, no layers block), with the restored-intact WRITABLE record keeping the
+guard (safe unresolved) and its intent applicable/present/valid.
+
+**Codex round-8 fixes — STRUCTURAL ENDGAMES (2026-10-21; two P2 findings over the round-7
+bytes: finding 1 fix-introduced by the round-7 drain bridge, finding 2 falsifying the round-4
+"residue" claim; the per-round rate sat at 2 for three rounds, so the root mandated structural
+endgames for both families — no point-fixes).** Designs, tests, RED evidence:
+
+**Endgame (a) — passive, fail-closed capture finalization; the forced bridge REMOVED.** The
+round-7 drain bridge was fix-introduced breakage: on an entry with an unresolved top-level await
+(Node's business exit status 13) the bridge forced `process.exit(0)` before Node determined the
+status. The preload (closure-observation.mjs :112-270) now NEVER calls process.exit and NEVER
+alters the business exit status. Finalization points: (i) the wrapped `process.reallyExit`
+(:257-263) — explicit process.exit reaches it AFTER every 'exit' listener, publishing the
+complete meta over all captured bytes; (ii) the natural-drain path — `beforeExit` (firing only
+on the drain, before any 'exit' listener) re-orders OUR OWN 'exit' listener to the END of the
+listener list (:251-256, removeListener + once re-add), so it runs after the application
+listeners registered so far and publishes the complete meta over their writes — NO exit forced.
+INVALIDATE-ON-LATE-WRITE (:172-201): the write hook stays armed forever; a stdout write landing
+after a complete meta was published is still appended AND synchronously rewrites the meta as
+`captureComplete: false` with the named `captureError` `write-after-finalization` — every
+ordering gap fails closed by construction (a truncated post-finalize append sets `truncated`
+too; the rewritten meta carries `captureSha256: null`, which admission's captureError branch
+short-circuits on before any byte read). Tests + RED evidence:
+`the preload preserves the business exit status (unsettled top-level await exits 13)` — RED:
+"the preloaded probe preserves the status-13 exit (actual 0) [expected 13]" (the bridge forced
+the status); GREEN: exit 13 with and without the preload, delivery unchanged, capture COMPLETE
+with `exitCode: 13`;
+`a stdout write landing after finalization invalidates the capture (codex round 8)` — RED:
+"a post-finalization write must invalidate the capture (actual complete: null)"; GREEN: the
+explicit-process.exit probe's late listener write still reaches stdout, the bytes are appended
+to the capture file, and admission is `incomplete`/`write-after-finalization` with the oracle
+`matched: null`;
+`stdout written inside exit listeners is captured before finalization` (round 7) — still GREEN
+and now exercising the RE-ORDERED drain listener: the exit-listener bytes are inside the
+complete capture (byte-exact `result\nextra\n`), matched only against the full expectation;
+`the reallyExit wrapper finalizes complete captures ...` (round 7) — GREEN with the recorded
+alignment: the bypass probe (stubbed reallyExit swallowing process.exit) now lands in the
+late-write invalidation (reason `write-after-finalization`) instead of the retired
+`finalization-unproven-*` — the ordering gap fails closed by construction.
+**Which finalization point the launcher fast-fail exercises: (ii) the re-ordered drain-path
+'exit' listener** — the launcher sets `process.exitCode` and drains (no process.exit anywhere in
+skills/rescue/launcher.mjs), so beforeExit re-orders and the listener finalizes the complete
+207-byte envelope; the whole capture describe is green (30/30).
+
+**Endgame (b) — complete validation, no residue.** DELEGATE-VS-PORT DECISION: the surveyed
+export surface of scripts/lib/state.mjs is exactly `JOB_STATUSES`, `JOB_COMMANDS`,
+`EFFORT_LEVELS`, `createStateStore`, `resumableHostOwnedCancellation`, `isJobNotFound`,
+`validProgressProbe` — `validateJobRecord` (:3141) and `readJobRecord` (:3000) are
+module-private and no pure parse/validate export exists, so the checklist PORTS the validator
+completely (clause table rows c17-c21; the port at closure-observation.mjs :858-1360 with the
+production line cited per arm in its doc comment, and the private leaf validators ported
+verbatim). The FOUR arms whose full evaluation requires the module-private binding validator
+(`validateRescueBinding`) — execution-claim 'bound' kind, migration-rollback priorBinding,
+continuation origin — port every record-local arm and FAIL CLOSED exactly where the binding
+validator would be required (registered narrower-than-production substitutes; all four arms
+occur only on QUEUED records, which are nonterminal and can never settle, so the substitute can
+only lose an observation, never fabricate settlement). The port runs after the specialized
+clauses (projectDurableJobRecord :1341-1355) and returns the single named
+`job-record-schema-invalid` — mirroring production's single JOB_RECORD_INVALID. Tests + RED
+evidence: `every production-rejected record mutation fails closed before settlement (codex
+round 8 mutation sweep)` — RED: "mutation \"createdAt deleted\" must invalidate the record
+(actual found/null)" — the deleted-createdAt record was ADMITTED and settled; GREEN: FIFTEEN
+production-rejected mutations (the three codex-named first — createdAt deleted; boundary triple
+incomplete with `inputId` alone; resultArtifact `../../foreign-file` — then startedAt not-ISO,
+updatedAt before createdAt, exitCode wrong type, exitCode on a nonterminal winner, resultArtifact
+on a failed record, progress triple incomplete, phase outside the enum, effort outside the enum,
+model wrong type, transfer command without its thread id, queued claim asymmetry,
+non-canonical rescueOriginWorkspace) EACH yield `invalid`/`job-record-*` named/`unestablished`
+with NO layers block, and the intact production-created record still settles through the same
+admission.
+
+**Codex round-9 fixes — exit-code authority contract (2026-10-21; three P2 findings over the
+round-8 bytes: finding 2 was a gap in the ROOT-specified round-8 finalization contract — the
+root CORRECTED the contract, implemented exactly below; findings 1 and 3 were pre-existing
+corners; each test-first).**
+
+**The exit-code authority contract as registered THIS round — SUPERSEDED by the codex round-10
+correction (kept for history): the round-9 text below conflated the harness-observed outer
+`codex exec` exit with the LAUNCHER's exit — `held.result.code` is the OUTER process's status,
+not the captured launcher's; round 10 corrects the authority to the HANDLE-LINKED launcher exit
+(see the round-10 paragraph). What remains accurate from round 9: meta.exitCode as a
+consistency CHECK, the last-writer-wins meta, and the default-encoding + cross-file invariant
+fixes.**
+(a) the exit code OF RECORD for the oracle is the PARENT-OBSERVED process exit (the
+launch-handle `held.result.code` boundary the driver already holds — the live evidence oracle
+already consumed exactly that `processExit` value, evidence.mjs :4263-4267, verified) — never
+the preload's self-reported meta code; (b) meta.exitCode is a CONSISTENCY CHECK:
+`admitStdoutCapture` accepts `expectedExitCode` (the parent-observed code; closure-observation
+.mjs :495-499, :524-531) and a mismatch is the named `capture-exit-code-mismatch` incomplete
+state (never matched); the default executor passes `held.result.code` (driver.mjs :3307-3316);
+(c) LAST-WRITER-WINS meta: every finalization point (the re-ordered drain 'exit' listener; the
+reallyExit wrapper — the authoritative LAST word on explicit paths, since it observes the final
+business code after all 'exit' listeners ran) REWRITES the meta with the then-current exit code
+and a digest over the capture FILE (`publishMeta`, closure-observation.mjs :236-258;
+`finalized` never blocks a republication; late-write invalidation persists through every
+publication and can never be resurrected to complete — the rewrite flag discipline keeps the
+foreign-meta 'wx' protection).
+
+(1) **Cross-file owner-entry invariants** — ported EVERY cross-file invariant production
+`readOwnedJobs` (state.mjs:2833-2835) enforces between the owner ENTRY and the canonical JOB
+after both validate: (arm 1) `job.ownerSessionId !== ownerSessionId` — already the reader's
+identity clause; (arm 2) `validModern !== validRescueReservationKind(job.rescueReservationKind)`
+— legacy/modern ENTRY-VERSION parity against the job's reservation MARKER (a modern v2 entry
+⇔ the job carries a valid rescueReservationKind); (arm 3) `validModern &&
+binding.rescueReservationKind !== job.rescueReservationKind` — reservation-KIND equality. Arms
+2-3 are new admission checks (closure-observation.mjs :1556-1570) → the named
+`owner-binding-cross-invariant-mismatch` → invalid → unestablished. Invariant table:
+
+| readOwnedJobs arm (state.mjs line) | reader clause |
+| --- | --- |
+| ownerSessionId equality (:2833) | identity clause c10 (pre-existing) |
+| `validModern !== validRescueReservationKind(job.rescueReservationKind)` version/marker parity (:2834) | round-9 cross-invariant check |
+| `validModern && binding.rescueReservationKind !== job.rescueReservationKind` kind equality (:2835) | round-9 cross-invariant check |
+
+RED: `the owner entry cross-checks the job reservation class before settlement (codex round 9)`
+failed "the kind-mismatched pair invalidates the record — 'found' !== 'invalid'" (a v2 entry
+declaring `unbound` beside a `bound` job was ADMITTED and settled); GREEN for both the kind
+mismatch and the legacy-v1-entry/kinded-job parity mismatch, with the intact pair still
+settling.
+
+(2) **Exit-code authority** — tests + RED evidence:
+`the meta exit code tracks the final business exit status (codex round 9)` — RED: "the meta
+carries the FINAL business exit code (actual 0) [expected 7]" (the first-finalized meta was
+never corrected — `finalized` blocked the wrapper); GREEN: on explicit `process.exit(0)` with a
+later exit listener setting `process.exitCode = 7`, the process exits 7 and the WRAPPER
+rewrites the meta to 7 (complete) — the oracle matches only against the real code;
+`a stale meta exit code is the named mismatch against the parent-observed exit (codex round 9)`
+— RED: "a stale meta code is the named mismatch (actual complete: null)"; GREEN: the drain probe
+whose listener registers DURING the exit ordering (via beforeExit) and changes the code AFTER
+the re-ordered finalizer runs leaves the meta stale (exitCode 0) against parent-observed 7 →
+admission `incomplete`/`capture-exit-code-mismatch` → oracle `matched: null` (fail-closed by
+construction); the launcher 207-byte fast-fail passes `expectedExitCode` (parent exit 1) and
+stays complete/matched.
+
+(3) **Default-encoding resolution** — the write hook resolves an OMITTED encoding from the
+stream's configured default: the hook wraps `setDefaultEncoding` (initial 'utf8'; the Writable
+default-encoding state has no public accessor at this Node version, so the wrap IS the
+tracking) and `record` resolves `encoding === undefined` to the tracked default
+(closure-observation.mjs :205-215) — never hard-coded utf8. RED:
+`an omitted encoding resolves from the stream default, never hard-coded utf8 (codex round 9)`
+failed at the digest assertion (the capture recorded utf8 c3a9 bytes while the delivered stream
+carried the latin1 e9 — a complete capture verifying the WRONG bytes); GREEN: the latin1-default
+write captures byte e9 (digest over exactly the delivered bytes: c3a9, e9, c3a9 across the
+explicit/omitted/explicit sequence), an explicit encoding always wins, and the mixed bytes stay
+the named `capture-utf8-invalid` fail-closed string state with byte-level facts verified.
+
+**Codex round-10 fixes — handle-linked exit authority (2026-10-21; three P2 findings over the
+round-9 bytes: finding 1 a conceptual error in the ROOT's round-9 exit-authority contract — the
+round conflated the harness-observed outer `codex exec` exit with the LAUNCHER's exit; findings
+2-3 pre-existing join/robustness gaps; each test-first).**
+
+**Finding 1 — the capture's exit authority is the HANDLE-LINKED launcher exit.** EXACT SOURCE
+OF THE HANDLE-LINKED EXIT: the tool-call RESULT of the original handle — the
+`exec_command`/cell that ran `invoke-prepared rescue` — as retained in the Child's rollout and
+derived by evidence.mjs's original-handle observation (`analyzeCallSequence`'s
+`lastCompletedOnHandle.result.exit_code`, consumed by `inspectCompletion` as `processExit`,
+evidence.mjs :4215-4216, and surfaced as `facts.completion.processExit`). The live evidence
+oracle already consumed exactly that value (evidence.mjs :4263-4267). The CONFLATION killed by
+this round: the round-9 executor fed `held.result.code` — the OUTER `codex exec` process's
+exit — into admission's `expectedExitCode`, so a launcher exiting 1 with a valid error envelope
+while the host finishes 0 rejected an intact capture. Corrected wiring: (i) the exported
+selector `captureExpectedExitCode` (driver.mjs :3448-3463) takes ONLY the handle-linked exit
+(safe nonnegative integer; otherwise `undefined` — exit attribution UNESTABLISHED, no
+cross-check, and the live oracle already stays `missing-evidence` on a null observed exit);
+(ii) the executor runs the evidence pass FIRST (without the capture), selects the authority
+from `facts.completion.processExit`, admits with it, and threads a COMPLETE capture into a
+SECOND evidence pass whose exact-terminal verdict is then consistent (the evidence is a pure
+offline function of the in-memory rollouts — two bounded passes). OFFLINE VS LIVE: in the
+offline harness the spawned probe IS the launcher, so the harness-observed exit IS the
+handle-linked exit; live, the handle-linked exit arrives from the Child rollout's
+original-handle observation as above. Tests + RED evidence:
+`the capture exit authority selects the handle-linked exit, never the outer codex code (codex
+round 10)` — RED: `ReferenceError: captureExpectedExitCode is not defined` (the selector did
+not exist); GREEN for launcher-1/outer-0 → 1, unjoinable → undefined, and every agreement case;
+`the capture exit authority is the handle-linked launcher exit, never the outer codex process
+(codex round 10)` — GREEN: launcher exit 1 with a valid error envelope → capture complete
+against the handle-linked 1, oracle matched, and the CONFLATED authority (0) is the named
+`capture-exit-code-mismatch` incomplete state with the oracle unestablished;
+`an unavailable handle-linked exit keeps exit attribution unestablished (codex round 10)` —
+GREEN: no expectedExitCode cross-check and `evaluateExactTerminalLinkage` with a null observed
+exit stays `matched: null`/`missing-evidence` (never a pass, never a mismatch); the 207-byte
+launcher fast-fail stays green (its handle-linked exit in the offline harness IS the spawned
+launcher's own exit).
+
+**Finding 2 — durable observations joined on watcher-less completions.** The gate-first path
+started the durable read but its no-watcher `else` branch never joined it — a status-wait job
+finishing before its query deadline ran the reader and DROPPED the snapshot and layer. Fix
+(driver.mjs :1808-1832): every path that starts a durable read joins and persists it (the fence
+contract applies unchanged); the joined record carries `childSettlement { observed: false,
+basis: null, layers, durableSnapshot }` only when a reader exists (the no-reader schema is
+byte-preserved). RED: `a gate-first completion without any settlement watcher keeps the durable
+facts (codex round 10)` failed "the no-watcher completion joins the durable observation (actual
+keys [\"endedBeforeGate\",\"budgetExpired\",\"identity\",\"processAliveWhileHeld\",\"result\",\"cleanup\",\"timeline\"])"
+— no `childSettlement` key; GREEN: the completed read grounds the layer (settled) and the typed
+snapshot rides the record.
+
+**Finding 3 — synchronous supplier failures are observer failures.** A supplier throwing
+BEFORE returning its promise escaped `startDurableSnapshotRead` into the held-turn failure path
+(skipping the settlement watch and failing the case from the observer). Fix (driver.mjs
+:1915-1931): the supplier invocation is wrapped (`new Promise((resolve) => resolve(supplier()))`),
+so a synchronous throw resolves the SAME named unestablished carrier as a rejection. RED:
+`a SYNCHRONOUSLY-throwing durable supplier is a named observer failure (codex round 10)` — the
+run REJECTED with `Error: the durable supplier exploded synchronously` (failure shape, no
+durable block); GREEN: the held record persists with the named unestablished snapshot (reason
+surfaced), the settlement watch proceeded, cleanup ran, and `held.failure` is undefined.
+
+**Codex round-11 — PRELOAD STRUCTURAL REWRITE (P1–P5) (2026-10-21; two P2 findings over the
+round-10 bytes — BOTH introduced by round-9 changes: the callback-form encoding gap and the
+file-derived digest, which also violated the §19.3 freeze "captureSha256 computed at capture
+close over exactly the bytes written". The capture preload had been patched across rounds 7-11
+without converging, so the ROOT mandated this STRUCTURAL ENDGAME: closurePreloadSource
+REWRITTEN against the complete specification below, with a matrix suite. This is the final
+deferral under the repeat-failure ladder — a round-12 fix-introduced capture-family finding
+hands the file to a fresh fixer under this same spec.)**
+
+Spec clauses → implementation (closure-observation.mjs):
+- **P1 Gate** (:130-141): active only when the fixture env validates (absolute capture
+  directory, 64-hex nonce, absolute declared entry, maxBytes exactly 65536) AND
+  `realpathSync(argv[1]) === ENTRY` AND `argv.slice(2)` deep-equals
+  `['invoke-prepared','rescue']`; otherwise NOTHING is installed (no listeners, no wrappers, no
+  files).
+- **P2 Interception** (:164-263): the write wrapper computes the DELIVERED bytes for EVERY call
+  form — Buffer/TypedArray as-is; string through the explicit encoding if a string, ELSE the
+  tracked default encoding (`defaultEncoding`, initial 'utf8', updated by wrapping
+  `setDefaultEncoding` — covering the round-9 finding-1 gap AND its callback form
+  (:208-215)); feeds those bytes to the AUTHORITATIVE running SHA-256 hasher and appends them to
+  the wx 0600 capture file under the 64 KiB cap (exceeding sets `truncated`); forwards the
+  ORIGINAL arguments unchanged (return value/callback/errors untouched); a capture-side fs error
+  names `captureError` and stops capturing without altering delivery; `byteCount` = bytes
+  hashed; the file is NEVER read back for the digest.
+- **P3 Finalization** (:198-232, :266-284): last-writer-wins meta at two idempotent points —
+  the 'exit' listener (registered at install; `beforeExit` re-orders it to the END of the
+  listener list) and the `process.reallyExit` wrapper (authoritative last word on explicit
+  exits). No forced exit, no exitCode mutation. Closed meta field set:
+  `{version, nonce, entryRealpath, argv, byteCount, captureSha256 (hash.copy().digest() at that
+  instant), truncated, maxBytes, exitCode, finalizedBy, finalizations,
+  writesAfterFinalization, captureError?, durationMs}` — published 'wx' first, republished 'w';
+  a write after any finalization increments `writesAfterFinalization`, still appends+hashes, and
+  immediately republishes (an INVALIDATED meta carries its named reason through every
+  republication and is never resurrected).
+- **P4 Admission** (validateCaptureMeta :413-443 + admitStdoutCapture :489-580): the closed
+  field set is enforced (`captureComplete` DERIVED, never published); complete only when
+  captureError null ∧ !truncated ∧ `writesAfterFinalization === 0` ∧ file size === byteCount ∧
+  sha256(fileBytes) === captureSha256 (the FILE verified against the hasher-authoritative
+  digest — tamper → the named `capture-digest-mismatch`, renaming the retired
+  `capture-sha256-mismatch`) ∧ meta.exitCode === handle-linked exit (else
+  `capture-exit-code-mismatch`); the meta nonce is bound to the queried nonce
+  (`capture-meta-nonce-mismatch`); everything else keeps its named status.
+- **P5 Matrix**: the table-driven suite below.
+
+Matrix results (form × default encoding — delivered bytes == captured bytes == hashed digest;
+bytes per row: utf8 default c3a9-prefixed; latin1 default e9-prefixed; explicit utf8 always
+c3a9): buffer/string/string+cb under latin1 → e9 rows (named capture-utf8-invalid with
+verifiedDigest); string+enc/string+enc+cb (explicit utf8 wins) → c3a9 rows complete under BOTH
+defaults; ALL ten utf8-default rows complete+matched. Finalization paths: natural drain
+(finalizedBy 'exit-listeners'), process.exit (finalizedBy 'really-exit' — the authoritative
+last word), exit-listener write before the re-ordered listener → complete incl. extra,
+exit-listener exitCode change on the explicit path → wrapper rewrites (round-9 test), write
+after finalization → counted + named incomplete (round-8/11 tests). Tamper cases: same-length
+rewrite before finalization → `capture-digest-mismatch` (RED against the round-10 preload:
+admitted `complete`); file replaced (different length) → `byte-count-mismatch`; meta missing →
+`capture-meta-missing` (pre-existing). Status-13 unsettled TLA preserved (round-8 test). Gate
+inertness: wrong argv/wrong entry/foreign node/malformed env (pre-existing tests). Launcher
+207-byte fast-fail complete+matched against the handle-linked exit (pre-existing test).
+
+REDs observed against the pre-rewrite preload: the `string+cb` row under a latin1 default
+(captured utf8 c3a9 while delivering e9 — the finding-1 callback-form gap); the same-length
+tamper row (admitted complete — the finding-2 file-derived digest); the meta bookkeeping row
+(version/nonce/finalizedBy/finalizations/writesAfterFinalization absent); the late-write count
+row (writesAfterFinalization absent). All other matrix rows were already GREEN and stayed
+green through the rewrite.
+
+Retired/folded tests: the round-9 default-encoding test (`an omitted encoding resolves from
+the stream default, never hard-coded utf8`) is FOLDED into the matrix (its explicit-utf8 and
+latin1-default cases are the `string+enc` and `string`/`string+cb` latin1 rows; the matrix adds
+the callback forms the folded test lacked) — its retirement is the ONLY test removal; the
+renamed digest reason required aligning the hand-built-meta assertions in the missing/tampered
+test (`capture-sha256-mismatch` → `capture-digest-mismatch`, new field set) and the round-7
+wrapper meta assertion (`finalizedBy: 'really-exit'` + no captureError replaces the removed
+`captureComplete` field). §19.3-freeze alignment: the freeze's "captureSha256 computed at
+capture close over exactly the bytes written" is RESTORED — the digest is again computed from
+the intercepted-byte hasher at each finalization, and admission re-verifies the FILE against it
+(the round-9 file-derived digest had made the evidence and its integrity check the same
+mutable artifact).
+
+**Codex round-12 fixes — preload boundary clarifications (2026-10-21; three P2 findings over
+the round-11 bytes — a boundary-condition family of the round-11 rewrite: the P1-P5 design
+HELD, these are spec CLARIFICATIONS, not design flaws; each test-first with new matrix rows).**
+
+P2-spec amendments implemented: **(i) ACCEPTED-WRITES-ONLY** — the write wrapper forwards the
+ORIGINAL call FIRST (driver of the capture runs after); a synchronous rejection propagates
+UNCHANGED and records NOTHING (the caller's bytes were never accepted by stdout), while bytes
+are recorded only after the write returned (the established round-4 contract stands: async
+failures — EPIPE via the callback — do NOT invalidate the capture, the bytes were
+accepted/queued) (closure-observation.mjs :268-276). **(ii) EMPTY-ENCODING-AS-DEFAULT** —
+`resolveEncoding` (:184-189) uses the encoding argument only when it is a NON-EMPTY string
+(Node treats `''` as unspecified); an empty/absent encoding resolves through the tracked stream
+default. **(iii) DISCARDED-BYTES-TRUNCATION** — `truncated` is declared ONLY when at least one
+byte was DISCARDED (`discarded > 0`, :253); a capture totaling exactly 65,536 bytes keeps every
+byte and stays complete.
+
+New matrix rows + RED evidence (all RED against the round-11 preload, GREEN after):
+`synchronously-rejected write is never captured and the exception propagates` — RED: "the caller
+survived the sync rejection (actual 1)" — the pre-fix wrapper recorded `42` and the swallowed
+write left the probe failing; GREEN: the caller survives, only `real
+` is delivered AND
+captured, admission complete; `a sync-throw-only probe captures nothing and the original
+exception propagates` — RED: the stderr regex assertion (the probe died on the captured-then-
+thrown garbage); GREEN: the original `ERR_INVALID_ARG_TYPE` propagates (non-zero exit) and the
+capture stays EMPTY (byteCount 0) — admission `complete` with an empty stdout under the
+ESTABLISHED empty-capture-valid contract (documented named state: nothing delivered, nothing
+captured — complete/empty, never a mismatch); `an EMPTY encoding resolves from the stream
+default` — RED: the latin1-default row captured c3a9 while e9 was delivered; GREEN: latin1 → e9
+and utf8 → c3a9, hasher digest over the delivered bytes in both; `truncation is declared only
+when bytes were DISCARDED` — RED: the exactly-65536 probe exited 1 (the test's own probe-body
+helper double-closed its call — fixed in the test) and the pre-fix preload flagged the intact
+capture truncated; GREEN: single write of exactly 65536 → complete + exact linkage matched
+against the full 64 KiB expectation + all 65536 bytes delivered; multi-write totaling exactly
+65536 → complete; 65537 → `truncated` named at byteCount 65536; a straddling write → prefix
+captured (65536), truncated. New matrix row count: +4 tests (18 matrix tests total).
+
+**Changed-bytes digests (SHA-256, the FINAL amended Task-2 tree, after the codex round-12
+boundary clarifications):**
+`closure-observation.mjs` =
+`566d8d0c25d9e4a6817e34557dd740fb2b191fa9ec1af29f806c387c1a40985e`;
+`fixture.mjs` = `1b7b030d95dc0e4fb03d5ccb4596af51cda1441c3aa1c19c8bfad6a496c3e4a3` (byte-unchanged
+by every review round);
+`driver.mjs` = `dd431dc64a6691af522e63a6e3835271b0958a27a5a7e00468cebdeedb1faa25` (byte-unchanged
+by the round-11 rewrite and round-12 fixes);
+`tests/shell-wait-probe.test.mjs` =
+`060d97b9779e71cd1997dad7edf04e1672c06502bb39351e996ab977b1fd8d1c`. The codex round-11 digests
+(kept as history): `closure-observation.mjs` =
+`c04bf44593f78ad919ee939f0b9b2ce90d96be24e1ff82a175c72220a683209b`;
+`tests/shell-wait-probe.test.mjs` =
+`ca09bca2bc8e67343b5e30c9090acf1efd76554145f0f474c89756e3486dcb61`. The codex round-10 digests
+(kept as history): `closure-observation.mjs` =
+`fa6765b4749cdfc7a89049fa6f7a799baf26b7f0be07612d0177b19ba82e863b`;
+`tests/shell-wait-probe.test.mjs` =
+`a22c086a52a13301a257a502905e076cc5a87c8c67fcef48b56eb3668fc3a6cd`. The codex round-9 digests
+(kept as history): `closure-observation.mjs` =
+`fa6765b4749cdfc7a89049fa6f7a799baf26b7f0be07612d0177b19ba82e863b`;
+`driver.mjs` = `302edd883e1255d8803b47daf562a105008cfa9ff8d43afe0a3265e0245d4af1`;
+`tests/shell-wait-probe.test.mjs` =
+`2167523c3efdac41d3c4dda355899f4593e81e9c8e764b1a6256b107c7339e2b`. The codex round-8 digests
+(kept as history): `closure-observation.mjs` =
+`129e332a922131fe33f7d150f4e3e2456d97803d17697ea40c44560f51e52628`;
+`driver.mjs` = `21606082b47725dd99238115c8f2874ad611dba74cc720da36251668a4c69bc7`;
+`tests/shell-wait-probe.test.mjs` =
+`efd50526e437c308ac7558b671effa9ce8dad93a323337ebe0fb0465e426f746`. The codex round-7 digests
+(kept as history): `closure-observation.mjs` =
+`90cdf5d2038670a51092a3badc5f5532a9d7e6b6aebba645faeb00f75a8245d9`;
+`tests/shell-wait-probe.test.mjs` =
+`8594a5f0cb36ee8021e7b871d752f9e35136eb4b71f76637da194564a607a633`. The codex round-6 digests
+(kept as history): `closure-observation.mjs` =
+`b8d8a5947900125f435d3086c54d6433daa21a4f4fe8e187e30676410f36367d`;
+`tests/shell-wait-probe.test.mjs` =
+`5f8e4f75560144f90868d4513a9850410a7c58269ccd71e0e02391839d764155`. The codex round-5 digests
+(kept as history): `closure-observation.mjs` =
+`123b12770a67ac01d4fad7b0db50af0c6c745cbe1d96bb81739001709029969b`; `driver.mjs` =
+`196c4d8a5aea3c689902bec34e9f8b000b8363d53867d7c1f70de895139fcee4`;
+`tests/shell-wait-probe.test.mjs` =
+`c7ad753c41535ee2aa449ca4b2d666987f768cb74687fedbdb490130871f1884`. The codex round-4 digests
+(kept as history): `closure-observation.mjs` =
+`a9e9a6b335ef590d26914e0556ed37e65f3d6e111592e1731b0f57fc9a917fe9`; `driver.mjs` =
+`6aa79535460fbcc2173bb5d7022456f551bb2bcd45a51c828a56ae0c43f5bab8`;
+`tests/shell-wait-probe.test.mjs` =
+`cfd33b9b5b5ddb66525ce3ff75db52c1f715e4ab08735f32a735639ca848091b`. The codex round-2 digests
+(kept as history): `closure-observation.mjs` =
+`8fdf4be62ed0f52afcc8ba77290f441515cab87109ebbef90e2973842057cc48`; `driver.mjs` =
+`cff1793e052e93c06e66296f4b35f72cda320da473dad0ebdee7ad135f0b4748`;
+`tests/shell-wait-probe.test.mjs` =
+`948039d150b9d890a7355d8b08e70876b84ff842f026072e4e10793612e93bb7`;
+`evidence.mjs`, `release-qualification.mjs`, `shape-diagnostic.mjs`, `wait-comparison.mjs`,
+`tests/test-selection.test.mjs` are BYTE-IDENTICAL to the §19.1 digests. §19.7's Task-1 freeze rows for the stdout capture and the
+durable reader are recorded HERE as IMPLEMENTED + OFFLINE-TESTED (§19.7 itself is preserved
+byte-unchanged as the Task-1 freeze — its rows are not retro-edited): the capture transport, digest
+contract, expectation derivation, oracle join, and the passive durable reader are exercised
+end-to-end OFFLINE; LIVE attribution (the
+installed host actually spawning the captured launcher) remains unproven until O1/I under the
+registered preflight duties — no live case was consumed and no label was spent.

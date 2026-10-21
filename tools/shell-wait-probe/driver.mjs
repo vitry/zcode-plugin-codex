@@ -29,6 +29,7 @@ import { runProcess } from '../../scripts/lib/process.mjs';
 import { codexLaunch } from '../../scripts/lib/tool-launch.mjs';
 import { parseCodexRolloutJsonl } from '../../tests/helpers/codex-rescue-qualification.mjs';
 import { EXECUTING_EVIDENCE_SOURCE, interruptDeliveryAttributionGuard, extractInterruptInteraction, extractSurvivalControlFacts, inspectShellWaitEvidence, parseCallStatements, parseToolOutput, precedingStatementsCompleted, statementOutputAt, TERMINAL_INTERRUPT_PREVIOUS_STATUSES } from './evidence.mjs';
+import { EXECUTING_CLOSURE_OBSERVATION_SOURCE, admitStdoutCapture, readDurableObligationSnapshot } from './closure-observation.mjs';
 import { EXECUTING_RELEASE_QUALIFICATION_SOURCE, evaluateSurvivalControl, exactRescueRenderedExpectation } from './release-qualification.mjs';
 import { EXECUTING_SHAPE_DIAGNOSTIC_SOURCE } from './shape-diagnostic.mjs';
 
@@ -43,7 +44,12 @@ const MAX_CASE_EXCERPTS = 64;
 // verdict helper's module-init bytes: with an exact terminal expectation the
 // evidence adjudication EXECUTES that helper, so changing it alone must
 // change the digest (and flip sourcesChangedDuringRun), never preserve them.
-const OBSERVER_DIGEST_TAG = 'zcode-shell-wait-observer-v3';
+// v4 (2026-10-21 evidence-closure Task 2) adds the closure-observation
+// helper's module-init bytes: the capture admission and read-side linkage
+// EXECUTE during live observation (the default executor admits the §19.3
+// stdout capture before the evidence adjudication), so every helper
+// executing during observation enters the observer digest (plan §3).
+const OBSERVER_DIGEST_TAG = 'zcode-shell-wait-observer-v4';
 
 // P2 round-29: module-INIT snapshot of the EXECUTING observer source — the
 // driver module body runs only after evidence.mjs has fully loaded, so this
@@ -64,9 +70,11 @@ const EXECUTING_OBSERVER_PROVENANCE = Object.freeze({
     .update('\0')
     .update(EXECUTING_RELEASE_QUALIFICATION_SOURCE)
     .update('\0')
+    .update(EXECUTING_CLOSURE_OBSERVATION_SOURCE)
+    .update('\0')
     .update(EXECUTING_DRIVER_SOURCE)
     .digest('hex'),
-  digestInput: `${OBSERVER_DIGEST_TAG} || evidence.mjs || shape-diagnostic.mjs || release-qualification.mjs || driver.mjs (executing module-init snapshot, NUL-separated)`,
+  digestInput: `${OBSERVER_DIGEST_TAG} || evidence.mjs || shape-diagnostic.mjs || release-qualification.mjs || closure-observation.mjs || driver.mjs (executing module-init snapshot, NUL-separated)`,
   model: null,
   reachableToolFamily: null,
 });
@@ -88,10 +96,11 @@ export { EXECUTING_OBSERVER_PROVENANCE };
  * @returns {Promise<ShellWaitObserverProvenance>}
  */
 export async function observerProvenance() {
-  const [evidenceSource, shapeSource, releaseQualificationSource, driverSource] = await Promise.all([
+  const [evidenceSource, shapeSource, releaseQualificationSource, closureObservationSource, driverSource] = await Promise.all([
     readFile(fileURLToPath(new URL('./evidence.mjs', import.meta.url))),
     readFile(fileURLToPath(new URL('./shape-diagnostic.mjs', import.meta.url))),
     readFile(fileURLToPath(new URL('./release-qualification.mjs', import.meta.url))),
+    readFile(fileURLToPath(new URL('./closure-observation.mjs', import.meta.url))),
     readFile(fileURLToPath(new URL('./driver.mjs', import.meta.url))),
   ]);
   const digest = createHash('sha256')
@@ -102,12 +111,14 @@ export async function observerProvenance() {
     .update('\0')
     .update(releaseQualificationSource)
     .update('\0')
+    .update(closureObservationSource)
+    .update('\0')
     .update(driverSource)
     .digest('hex');
   return {
     revision: 'working-tree-uncommitted',
     digest,
-    digestInput: `${OBSERVER_DIGEST_TAG} || evidence.mjs || shape-diagnostic.mjs || release-qualification.mjs || driver.mjs (working-tree bytes, NUL-separated)`,
+    digestInput: `${OBSERVER_DIGEST_TAG} || evidence.mjs || shape-diagnostic.mjs || release-qualification.mjs || closure-observation.mjs || driver.mjs (working-tree bytes, NUL-separated)`,
     model: null,
     reachableToolFamily: null,
   };
@@ -984,6 +995,12 @@ function buildCaseRecord(caseInput, fixture, liveFacts, /** @type {'executed' | 
       ...(liveFacts.hostResult?.exactTerminalMatch !== undefined
         ? { exactTerminalMatch: liveFacts.hostResult.exactTerminalMatch }
         : {}),
+      // 2026-10-21 evidence-closure Task 2: the bounded stdout-capture
+      // admission provenance (statuses/digests only — never paths, never
+      // bytes), persisted only when the fixture carried the capture seam.
+      ...(/** @type {any} */ (liveFacts.hostResult)?.stdoutCapture !== undefined
+        ? { stdoutCapture: /** @type {any} */ (liveFacts.hostResult).stdoutCapture }
+        : {}),
     },
     // R4: the interrupt block carries either measured interaction facts or an
     // explicit investigated reason. Unknown optional facts stay null — never
@@ -1058,6 +1075,13 @@ function buildCaseRecord(caseInput, fixture, liveFacts, /** @type {'executed' | 
       ...(/** @type {any} */ (liveFacts.child)?.settlementLayers !== undefined
         ? { settlementLayers: /** @type {any} */ (liveFacts.child).settlementLayers }
         : {}),
+      // 2026-10-21 evidence-closure Task 2: the typed passive durable
+      // snapshot (per-layer facts and named reasons) persists beside the
+      // settlement layers ONLY when the live facts carried it — held records
+      // without a supplier keep the persisted schema unchanged.
+      ...(/** @type {any} */ (liveFacts.child)?.durableSnapshot !== undefined
+        ? { durableSnapshot: redactDurableSnapshotForRecord(/** @type {any} */ (liveFacts.child).durableSnapshot, fixture) }
+        : {}),
     },
     // R3 status-wait live flow: the observed launch acknowledgement and the
     // Status query bound together (same session, exact ID match, explicit
@@ -1114,6 +1138,33 @@ async function writeCaseRecord(caseInput, fixture, record) {
   }
   const recordPath = join(caseInput.output, `${caseInput.case}.record.json`);
   await writeFile(recordPath, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 });
+}
+
+/**
+ * The persisted shape of the typed durable snapshot (codex round 1): a
+ * bounded deep clone whose string values are redacted through
+ * {@link redactPrivatePaths} — the reader's raw projection carries absolute
+ * private paths (job.projection.workspace, reason texts embedding fs error
+ * paths) which never persist. Depth and fan-out are bounded; non-serializable
+ * values are dropped fail-closed.
+ * @param {unknown} value @param {ShellWaitFixtureHandle} fixture
+ * @param {number} [depth]
+ * @returns {unknown}
+ */
+function redactDurableSnapshotForRecord(value, fixture, depth = 0) {
+  if (typeof value === 'string') return redactPrivatePaths(value, fixture);
+  if (typeof value === 'number' || typeof value === 'boolean' || value === null) return value;
+  if (depth >= 8) return null;
+  if (Array.isArray(value)) return value.slice(0, 64).map((entry) => redactDurableSnapshotForRecord(entry, fixture, depth + 1));
+  if (typeof value === 'object') {
+    /** @type {Record<string, unknown>} */
+    const redacted = {};
+    for (const [key, entry] of Object.entries(value).slice(0, 64)) {
+      redacted[key] = redactDurableSnapshotForRecord(entry, fixture, depth + 1);
+    }
+    return redacted;
+  }
+  return null;
 }
 
 /** @param {ShellWaitFixtureHandle} fixture */
@@ -1430,12 +1481,48 @@ export async function runHeldHostTurn(input) {
         while (now() < holdDeadline && !budgetExpired) await abortableSleep(Math.min(100, Math.max(1, holdDeadline - now())));
         if (budgetExpired) throw new Error('the held observation reached the experiment budget before gate release');
         await safeReleaseGate();
+        // 2026-10-21 evidence-closure Task 2: the passive durable snapshot
+        // read STARTS before the watch (the observation is sampled as early
+        // as possible) and its layer is finished below, always before the
+        // settlement cleanup.
+        const durableRead = startDurableSnapshotRead(input);
         /** @type {{ observed: boolean, basis: string | null } | null} */
         let childSettlement = null;
+        // Codex round 5 (finding 2): a REJECTED watch is its own named fact —
+        // it never discards the independently obtained durable facts.
+        let childSettlementWatchFailed = false;
         try {
           childSettlement = await input.waitForChildSettlement(budgetController.signal);
-        } catch { childSettlement = null; }
-        if (budgetExpired) throw new Error('the held observation reached the experiment budget before the Child-side settlement');
+        } catch {
+          childSettlementWatchFailed = true;
+          childSettlement = null;
+        }
+        if (budgetExpired) {
+          // Codex round 6 (finding 2): budget expiry while the watch pends
+          // never discards the independently completed durable facts — the
+          // layers are joined FIRST (the fence decides credit from the read's
+          // OWN completion instant: a read completed before the
+          // expiry-initiated boundary keeps credit, otherwise the named
+          // after-budget block) and the joined record rides the budget error
+          // into the catch, which persists it instead of the bare failure
+          // shape. Every field below keeps the pre-existing budget-record
+          // semantics — the joined childSettlement block is the only
+          // addition.
+          const { settlementLayers, durableSnapshot } = await buildDurableSettlementLayer(childSettlement, durableRead, budgetExpired, budgetController.signal, cleanup);
+          const budgetError = new Error('the held observation reached the experiment budget before the Child-side settlement');
+          /** @type {any} */ (budgetError).heldTurn = {
+            endedBeforeGate: false,
+            budgetExpired,
+            identity,
+            processAliveWhileHeld: null,
+            result: undefined,
+            cleanup,
+            timeline,
+            failure: budgetError,
+            childSettlement: joinChildSettlementRecord(childSettlementWatchFailed, childSettlement, settlementLayers, durableSnapshot),
+          };
+          throw budgetError;
+        }
         cleanup.label = childSettlement?.observed === true ? 'child-settlement-observed' : 'child-settlement-unobserved';
         timeline.childSettlementDetectedAtElapsedMs = childSettlement?.observed === true ? Math.round(now() - startMs) : null;
         timeline.endedAtElapsedMs = Math.round(now() - startMs);
@@ -1455,17 +1542,12 @@ export async function runHeldHostTurn(input) {
         // grounds the local-reaping layer in BOTH orderings, exactly like
         // the gate-first branch — acknowledgement timing never discards
         // successful settlement evidence; an unobserved watch stays null.
-        /** @type {{ remoteTerminal: boolean | null, localProcessReaping: 'natural-exit-observed' | 'cleanup-terminated' | null, durableObligations: 'settled' | 'unresolved' | null }} */
-        const settlementLayers = {
-          remoteTerminal: null,
-          localProcessReaping: childSettlement?.observed === true ? 'natural-exit-observed' : null,
-          durableObligations: null,
-        };
+        const { settlementLayers, durableSnapshot } = await buildDurableSettlementLayer(childSettlement, durableRead, budgetExpired, budgetController.signal, cleanup);
         answer = {
           endedBeforeGate: true,
           rootAcknowledged: true,
           budgetExpired,
-          childSettlement: childSettlement === null ? null : { ...childSettlement, layers: settlementLayers },
+          childSettlement: joinChildSettlementRecord(childSettlementWatchFailed, childSettlement, settlementLayers, durableSnapshot),
           identity: undefined,
           processAliveWhileHeld: null,
           result: boundary.value,
@@ -1501,6 +1583,12 @@ export async function runHeldHostTurn(input) {
         if (statusDeadlineVerified) {
           cleanup.label = 'status-query-deadline';
           timeline.endedAtElapsedMs = Math.round(now() - startMs);
+          // Codex round 1: the durable snapshot is SAMPLED HERE — at the
+          // verified deadline, BEFORE the Status cleanup — when a reader is
+          // supplied; its aggregate grounds the durable settlement layer
+          // exactly like the other orderings.
+          const durableRead = startDurableSnapshotRead(input);
+          const { settlementLayers, durableSnapshot } = await buildDurableSettlementLayer(null, durableRead, budgetExpired, budgetController.signal, cleanup);
           answer = {
             endedBeforeGate: false,
             statusDeadlineReached: true,
@@ -1510,6 +1598,9 @@ export async function runHeldHostTurn(input) {
             result: boundary.value,
             cleanup,
             timeline,
+            ...(typeof input.readDurableSnapshot === 'function'
+              ? { childSettlement: { observed: false, basis: null, layers: settlementLayers, ...(durableSnapshot === undefined ? {} : { durableSnapshot }) } }
+              : {}),
           };
           await runTerminationCleanup();
         } else {
@@ -1599,6 +1690,11 @@ export async function runHeldHostTurn(input) {
         && extractDeadlineEvidenceFromHostOutput(statusDeadlineOutcome.value)) {
         cleanup.label = 'status-query-deadline';
         timeline.endedAtElapsedMs = Math.round(now() - startMs);
+        // Codex round 1: the durable snapshot is SAMPLED HERE — at the
+        // verified deadline, BEFORE the Status cleanup — when a reader is
+        // supplied (the same before-cleanup ordering as every other path).
+        const durableRead = startDurableSnapshotRead(input);
+        const { settlementLayers, durableSnapshot } = await buildDurableSettlementLayer(null, durableRead, budgetExpired, budgetController.signal, cleanup);
         answer = {
           endedBeforeGate: false,
           statusDeadlineReached: true,
@@ -1608,6 +1704,9 @@ export async function runHeldHostTurn(input) {
           result: statusDeadlineOutcome.value,
           cleanup,
           timeline,
+          ...(typeof input.readDurableSnapshot === 'function'
+            ? { childSettlement: { observed: false, basis: null, layers: settlementLayers, ...(durableSnapshot === undefined ? {} : { durableSnapshot }) } }
+            : {}),
         };
         await runTerminationCleanup();
       } else {
@@ -1635,6 +1734,10 @@ export async function runHeldHostTurn(input) {
         : typeof input.waitForChildSettlementAfterJoin === 'function'
           ? input.waitForChildSettlementAfterJoin
           : null;
+      // 2026-10-21 evidence-closure Task 2: the passive durable snapshot read
+      // starts before the after-join watch and its layer is finished below,
+      // always before the settlement cleanup.
+      const durableRead = startDurableSnapshotRead(input);
       if (afterJoinSettlementWatch !== null) {
         // P2-2 round-5 fix: background settlement for EITHER ordering. The
         // gate won the race — the fake peer reached its gate before Root
@@ -1647,10 +1750,36 @@ export async function runHeldHostTurn(input) {
         if (timeline.rootAcknowledgementAtElapsedMs === null) timeline.rootAcknowledgementAtElapsedMs = Math.round(now() - startMs);
         /** @type {{ observed: boolean, basis: string | null } | null} */
         let childSettlement = null;
+        // Codex round 5 (finding 2): a REJECTED watch is its own named fact —
+        // it never discards the independently obtained durable facts (the
+        // same contract as the acknowledgement-first ordering).
+        let childSettlementWatchFailed = false;
         try {
           childSettlement = await afterJoinSettlementWatch(budgetController.signal);
-        } catch { childSettlement = null; }
-        if (budgetExpired) throw new Error('the held observation reached the experiment budget before the Child-side settlement');
+        } catch {
+          childSettlementWatchFailed = true;
+          childSettlement = null;
+        }
+        if (budgetExpired) {
+          // Codex round 6 (finding 2): the same retention contract as the
+          // acknowledgement-first ordering — join the layers first (the read
+          // completed before the expiry-initiated boundary keeps credit), then
+          // throw the budget error carrying the joined record.
+          const { settlementLayers, durableSnapshot } = await buildDurableSettlementLayer(childSettlement, durableRead, budgetExpired, budgetController.signal, cleanup);
+          const budgetError = new Error('the held observation reached the experiment budget before the Child-side settlement');
+          /** @type {any} */ (budgetError).heldTurn = {
+            endedBeforeGate: false,
+            budgetExpired,
+            identity,
+            processAliveWhileHeld: null,
+            result: undefined,
+            cleanup,
+            timeline,
+            failure: budgetError,
+            childSettlement: joinChildSettlementRecord(childSettlementWatchFailed, childSettlement, settlementLayers, durableSnapshot),
+          };
+          throw budgetError;
+        }
         cleanup.label = childSettlement?.observed === true ? 'child-settlement-observed' : 'child-settlement-unobserved';
         timeline.childSettlementDetectedAtElapsedMs = childSettlement?.observed === true ? Math.round(now() - startMs) : null;
         timeline.endedAtElapsedMs = Math.round(now() - startMs);
@@ -1662,17 +1791,12 @@ export async function runHeldHostTurn(input) {
         // independent facts (round 8: the watch is the LOCAL exit-code watch
         // and never establishes the remote layer — the mapper joins it from
         // REMOTE outcome evidence).
-        /** @type {{ remoteTerminal: boolean | null, localProcessReaping: 'natural-exit-observed' | 'cleanup-terminated' | null, durableObligations: 'settled' | 'unresolved' | null }} */
-        const settlementLayers = {
-          remoteTerminal: null,
-          localProcessReaping: childSettlement?.observed === true ? 'natural-exit-observed' : null,
-          durableObligations: null,
-        };
+        const { settlementLayers, durableSnapshot } = await buildDurableSettlementLayer(childSettlement, durableRead, budgetExpired, budgetController.signal, cleanup);
         answer = {
           endedBeforeGate: false,
           rootAcknowledged: true,
           budgetExpired,
-          childSettlement: childSettlement === null ? null : { ...childSettlement, layers: settlementLayers },
+          childSettlement: joinChildSettlementRecord(childSettlementWatchFailed, childSettlement, settlementLayers, durableSnapshot),
           identity,
           processAliveWhileHeld,
           result: outcome.value,
@@ -1681,6 +1805,18 @@ export async function runHeldHostTurn(input) {
         };
       } else {
         timeline.endedAtElapsedMs = Math.round(now() - startMs);
+        // Codex round 10 (finding 2): EVERY path that starts a durable read
+        // joins and persists it, regardless of watcher presence — the
+        // gate-first no-watcher completion (status-wait finishing before its
+        // deadline) previously dropped the independently obtained durable
+        // facts. The fence contract applies unchanged.
+        let noWatcherLayers = null;
+        let noWatcherSnapshot;
+        if (durableRead !== undefined) {
+          const joined = await buildDurableSettlementLayer(null, durableRead, budgetExpired, budgetController.signal, cleanup);
+          noWatcherLayers = joined.settlementLayers;
+          noWatcherSnapshot = joined.durableSnapshot;
+        }
         answer = {
           endedBeforeGate: false,
           budgetExpired,
@@ -1689,6 +1825,9 @@ export async function runHeldHostTurn(input) {
           result: outcome.value,
           cleanup,
           timeline,
+          ...(durableRead !== undefined
+            ? { childSettlement: { observed: false, basis: null, layers: /** @type {any} */ (noWatcherLayers), ...(noWatcherSnapshot === undefined ? {} : { durableSnapshot: noWatcherSnapshot }) } }
+            : {}),
         };
       }
       }
@@ -1696,16 +1835,24 @@ export async function runHeldHostTurn(input) {
   } catch (error) {
     cleanup.label = budgetExpired ? 'budget-cleanup' : cleanup.label === 'early-exit' ? 'early-exit' : 'failure';
     timeline.endedAtElapsedMs = Math.round(now() - startMs);
-    answer = {
-      endedBeforeGate: false,
-      budgetExpired,
-      identity,
-      processAliveWhileHeld: null,
-      result: undefined,
-      cleanup,
-      timeline,
-      failure: error,
-    };
+    // Codex round 6 (finding 2): a budget-expiry throw that already carries a
+    // fully joined held record (the durable facts were joined BEFORE the
+    // throw) keeps that record — the bare failure shape must not overwrite
+    // it. Only the budget path above attaches `heldTurn`; every other error
+    // keeps the exact pre-existing failure shape.
+    const carriedHeldTurn = /** @type {any} */ (error)?.heldTurn;
+    answer = budgetExpired && carriedHeldTurn !== null && typeof carriedHeldTurn === 'object'
+      ? carriedHeldTurn
+      : {
+          endedBeforeGate: false,
+          budgetExpired,
+          identity,
+          processAliveWhileHeld: null,
+          result: undefined,
+          cleanup,
+          timeline,
+          failure: error,
+        };
     if (!budgetExpired) {
       // Failures other than budget expiry propagate after cleanup, like the
       // installed E2E discipline.
@@ -1739,6 +1886,245 @@ export async function runHeldHostTurn(input) {
 }
 
 /**
+ * Start the passive durable snapshot read at settlement time (BEFORE the
+ * Child-settlement watch, so the observation is sampled as early as possible
+ * and always completes before any cleanup boundary). A reader failure is
+ * converted into a NAMED unestablished snapshot — never a business failure.
+ *
+ * Codex round 5 (finding 4): the read promise is wrapped AT START — the
+ * completion instant (`completedAtMs`, Date.now, the same wall clock as the
+ * held cleanup boundary) is stamped when the read ITSELF resolves, in a
+ * carrier independent of any consumer await. A read that resolves long
+ * before its consumer joins keeps its true completion instant, so the
+ * settlement fence can distinguish "completed before the boundary" from
+ * "joined after the boundary".
+ * @param {{ readDurableSnapshot?: () => Promise<Record<string, unknown>> }} input
+ * @returns {{ promise: Promise<{ snapshot: Record<string, unknown>, completedAtMs: number }>, state: { settled: boolean, carrier: { snapshot: Record<string, unknown>, completedAtMs: number } | null } } | undefined}
+ */
+function startDurableSnapshotRead(input) {
+  if (typeof input.readDurableSnapshot !== 'function') return undefined;
+  // Codex round 6 (finding 2): the completion state is queryable
+  // SYNCHRONOUSLY once the read settles. When the budget has already fired
+  // at join time, the fence must decide from the completion instant without
+  // racing — an already-settled read and an already-resolved race loser
+  // cannot be ordered by Promise.race (the loser's single reaction hop
+  // always beats the read's derived-promise chain), so the race tie-break is
+  // not a deterministic primitive here.
+  /** @type {{ settled: boolean, carrier: { snapshot: Record<string, unknown>, completedAtMs: number } | null }} */
+  const state = { settled: false, carrier: null };
+  // Codex round 10 (finding 3): a supplier that throws BEFORE returning its
+  // promise receives the SAME named unestablished-snapshot treatment as a
+  // rejected promise — the exception never escapes into the held-turn
+  // failure path, never skips the settlement watch, never fails the case.
+  const supplier = /** @type {() => Promise<Record<string, unknown>>} */ (input.readDurableSnapshot);
+  /** @type {Promise<{ snapshot: Record<string, unknown>, completedAtMs: number }>} */
+  const promise = new Promise((resolve) => { resolve(supplier()); }).then(
+    (snapshot) => { state.settled = true; state.carrier = { snapshot, completedAtMs: Date.now() }; return state.carrier; },
+    (error) => {
+      state.settled = true;
+      state.carrier = {
+        snapshot: {
+          aggregate: 'unestablished',
+          reasons: [error instanceof Error ? error.message : String(error)],
+        },
+        completedAtMs: Date.now(),
+      };
+      return state.carrier;
+    },
+  );
+  return { promise, state };
+}
+
+/**
+ * Finish the three-way settlement layers once the Child-settlement watch has
+ * returned. The durable layer (2026-10-21 evidence-closure Task 2) comes
+ * ONLY from the passive durable reader's typed aggregate — 'settled'
+ * requires every applicable duty positively established and the reader's own
+ * before/after partition fingerprint equal; 'unresolved' marks positively
+ * observed retained duties; anything else (including a reader failure, a
+ * torn snapshot, or no supplier at all) stays null — never zero, never
+ * inferred from terminal stdout, process exit, or cleanup. Without a
+ * supplier the pre-Task-2 schema is preserved byte-for-byte (no durable
+ * block).
+ * @param {{ observed: boolean, basis: string | null } | null} childSettlement
+ * @param {{ promise: Promise<{ snapshot: Record<string, unknown>, completedAtMs: number }>, state: { settled: boolean, carrier: { snapshot: Record<string, unknown>, completedAtMs: number } | null } } | undefined} durableRead
+ * @param {boolean} budgetExpired @param {AbortSignal | null} budgetSignal
+ * @param {Record<string, any> | null} cleanup the held cleanup record whose
+ *   `cleanupBoundaryAtMs` is the EARLIEST termination-initiation instant
+ * @returns {Promise<{ settlementLayers: { remoteTerminal: boolean | null, localProcessReaping: 'natural-exit-observed' | 'cleanup-terminated' | null, durableObligations: 'settled' | 'unresolved' | null }, durableSnapshot?: Record<string, unknown> }>}
+ */
+async function buildDurableSettlementLayer(childSettlement, durableRead, budgetExpired, budgetSignal, cleanup) {
+  /** @type {{ remoteTerminal: boolean | null, localProcessReaping: 'natural-exit-observed' | 'cleanup-terminated' | null, durableObligations: 'settled' | 'unresolved' | null }} */
+  const settlementLayers = {
+    remoteTerminal: null,
+    localProcessReaping: childSettlement?.observed === true ? 'natural-exit-observed' : null,
+    durableObligations: null,
+  };
+  if (durableRead === undefined) return { settlementLayers };
+  // Codex round 5 (ONE complete fence): settlement credit requires the read
+  // completed (its at-start carrier stamp) BEFORE the earliest cleanup
+  // boundary and before budget expiry. The comparison uses the read's OWN
+  // completion instant — never the join instant, which is necessarily after
+  // any boundary recorded while the consumer was still awaiting (finding 4):
+  // a read completed pre-boundary but joined post-boundary keeps FULL credit.
+  // The earliest boundary is the min-maintained `cleanupBoundaryAtMs` on the
+  // held cleanup record, re-read at the final join.
+  /** @type {Record<string, any> | null} */
+  let sampled = null;
+  /** @type {number | null} */
+  let completionAtMs = null;
+  /** @type {null | 'durable-observation-after-budget-expiry' | 'durable-observation-after-cleanup-boundary'} */
+  let fenceReason = null;
+  // Codex round 6 (finding 2): when the budget has ALREADY fired at join
+  // time, the read's SYNCHRONOUS settlement state decides — an
+  // already-completed read is evaluated from its own completion instant (the
+  // expiry records its boundary at the abort source BEFORE aborting, so
+  // `completedAtMs < earliestBoundary` is completion before expiry and keeps
+  // credit, the read-completed-before-expiry arm of the contract), while a
+  // still-pending read lost the budget race by definition and gets the named
+  // after-budget block without ever being awaited (the round-3 discipline).
+  const budgetFired = budgetExpired === true || (budgetSignal !== null && budgetSignal.aborted);
+  if (!budgetFired) {
+    const budgetAborted = budgetSignal !== null
+      ? new Promise((resolve) => { budgetSignal.addEventListener('abort', () => resolve(false), { once: true }); })
+      : null;
+    const raced = budgetAborted !== null
+      ? await Promise.race([durableRead.promise.then(() => true, () => true), budgetAborted])
+      : await durableRead.promise.then(() => true, () => true);
+    if (raced === false) {
+      // The budget expired while the read was pending: the named block is
+      // returned IMMEDIATELY — the losing read is NEVER awaited (round 3).
+      fenceReason = 'durable-observation-after-budget-expiry';
+    }
+  } else if (!durableRead.state.settled) {
+    fenceReason = 'durable-observation-after-budget-expiry';
+  }
+  if (fenceReason === null) {
+    // The read completed (it won the budget race, or it had already settled
+    // when the budget fired): credit is decided from its OWN completion
+    // instant against the earliest cleanup boundary, re-read at the final
+    // join.
+    sampled = durableRead.state.carrier?.snapshot ?? null;
+    completionAtMs = durableRead.state.carrier?.completedAtMs ?? null;
+    const boundaryValue = /** @type {any} */ (cleanup)?.cleanupBoundaryAtMs;
+    const earliestBoundaryMs = typeof boundaryValue === 'number' && Number.isFinite(boundaryValue) ? boundaryValue : null;
+    if (earliestBoundaryMs !== null && (completionAtMs === null || completionAtMs >= earliestBoundaryMs)) {
+      // The read completed at/after the earliest cleanup boundary (or its
+      // completion instant is unprovable): a cleanup-generated observation.
+      // The budget reason wins when both fences fire (the earliest boundary
+      // is the expiry instant itself when the budget initiated cleanup).
+      fenceReason = budgetFired
+        ? 'durable-observation-after-budget-expiry'
+        : 'durable-observation-after-cleanup-boundary';
+    }
+  }
+  if (fenceReason !== null) {
+    /** @type {Record<string, any>} */
+    const durableSnapshot = {
+      aggregate: 'unestablished',
+      reasons: [fenceReason],
+      sampledAggregate: null,
+    };
+    // Codex round 3: the losing read is NEVER awaited — cleanup must never
+    // block behind a stalled reader. A no-op rejection handler keeps the
+    // losing promise from becoming an unhandled rejection; a late RESOLUTION
+    // may update only the non-authoritative `sampledAggregate` field (and the
+    // late completion instant) on the already-returned block, never the
+    // recorded observation status.
+    durableRead.promise.then(
+      (late) => {
+        if (late !== null && typeof late === 'object') {
+          durableSnapshot.sampledAggregate = late.snapshot !== null && typeof late.snapshot === 'object' && late.snapshot.aggregate !== undefined ? late.snapshot.aggregate : null;
+          if (typeof late.completedAtMs === 'number' && durableSnapshot.completedAtMs === undefined) durableSnapshot.completedAtMs = late.completedAtMs;
+        }
+      },
+      () => { durableSnapshot.sampledAggregate = 'read-failed'; },
+    );
+    return { settlementLayers, durableSnapshot };
+  }
+  const durableSnapshot = sampled;
+  // The read's own completion instant rides the credited typed snapshot (the
+  // §19.6 sample-time discipline); a frozen supplier object keeps the carrier
+  // instant authoritative — the fence never depends on this attachment.
+  if (durableSnapshot !== null && typeof durableSnapshot === 'object' && completionAtMs !== null) {
+    try {
+      /** @type {any} */ (durableSnapshot).completedAtMs = completionAtMs;
+    } catch {
+      // Assignment refused (frozen object): the carrier instant above remains
+      // the fence input; the persisted snapshot simply omits the field.
+    }
+  }
+  const aggregate = durableSnapshot !== null && typeof durableSnapshot === 'object' ? durableSnapshot.aggregate : null;
+  settlementLayers.durableObligations = aggregate === 'settled' ? 'settled' : aggregate === 'unresolved' ? 'unresolved' : null;
+  return { settlementLayers, durableSnapshot: durableSnapshot ?? undefined };
+}
+
+/**
+ * Join the settlement layers and the typed durable snapshot into the
+ * persisted watch outcome (2026-10-21 evidence-closure Task 2; codex round 5
+ * finding 2 named the failed watch; codex round 6 finding 2 extended its use
+ * to the budget-expiry path so the independently completed durable facts are
+ * never dropped there either).
+ * @param {boolean} watchFailed @param {{ observed: boolean, basis: string | null } | null} childSettlement
+ * @param {{ remoteTerminal: boolean | null, localProcessReaping: 'natural-exit-observed' | 'cleanup-terminated' | null, durableObligations: 'settled' | 'unresolved' | null }} settlementLayers
+ * @param {Record<string, unknown> | undefined} durableSnapshot
+ * @returns {{ observed: boolean, basis: string | null, layers?: { remoteTerminal: boolean | null, localProcessReaping: 'natural-exit-observed' | 'cleanup-terminated' | null, durableObligations: 'settled' | 'unresolved' | null }, durableSnapshot?: Record<string, unknown> } | null}
+ */
+function joinChildSettlementRecord(watchFailed, childSettlement, settlementLayers, durableSnapshot) {
+  if (watchFailed && childSettlement === null) {
+    return {
+      observed: false,
+      basis: 'child-settlement-watch-failed',
+      layers: settlementLayers,
+      ...(durableSnapshot === undefined ? {} : { durableSnapshot }),
+    };
+  }
+  return childSettlement === null
+    ? null
+    : { ...childSettlement, layers: settlementLayers, ...(durableSnapshot === undefined ? {} : { durableSnapshot }) };
+}
+
+/**
+ * The default executor's durable supplier: ONLY the status-wait fixture has
+ * a pre-known exact bound job identity (the production-reserved owned job
+ * with its recorded owner session). Every other case's job is created inside
+ * the live host session and is not addressable pre-run — that not-applicable
+ * branch is this named source contract (null supplier), never a silent null
+ * layer. The supplier is fully passive: readDurableObligationSnapshot never
+ * creates, chmods, locks, or updates anything (§19.5).
+ * @param {ShellWaitFixtureHandle | null} fixture
+ * @param {{ jobId: string, ownerSessionId: string } | null} [observedIdentity]
+ * @returns {(() => Promise<Record<string, unknown>>) | null}
+ */
+export function statusWaitDurableSnapshotSupplier(fixture, observedIdentity = null) {
+  const dataRoot = /** @type {any} */ (fixture)?.env?.ZCODE_DATA_ROOT;
+  const workspace = /** @type {any} */ (fixture)?.workspace;
+  if (typeof dataRoot !== 'string' || typeof workspace !== 'string') return null;
+  // The OBSERVED identity (the launch acknowledgement's reserved job id and
+  // owning session) is the live binding — established from the observed
+  // rollout, never guessed. The fixture-owned reserved job remains the
+  // instrument-level fallback. Neither source present: null supplier (the
+  // executor records the NAMED reason), never a fabricated identity.
+  const observedJobId = observedIdentity !== null && typeof /** @type {any} */ (observedIdentity).jobId === 'string'
+    ? /** @type {any} */ (observedIdentity).jobId : null;
+  const observedOwnerSessionId = observedIdentity !== null && typeof /** @type {any} */ (observedIdentity).ownerSessionId === 'string'
+    ? /** @type {any} */ (observedIdentity).ownerSessionId : null;
+  const statusJob = /** @type {any} */ (fixture)?.statusJob;
+  const jobId = observedJobId ?? (statusJob && typeof statusJob.jobId === 'string' ? statusJob.jobId : null);
+  const ownerSessionId = observedOwnerSessionId ?? /** @type {any} */ (fixture)?.owningSessionId;
+  if (typeof jobId !== 'string' || typeof ownerSessionId !== 'string') return null;
+  return () => readDurableObligationSnapshot({ dataRoot, workspace, ownerSessionId, jobId });
+}
+
+/**
+ * The held-turn input. `readDurableSnapshot` (2026-10-21 evidence-closure
+ * Task 2) runs the passive durable obligation reader at settlement-layer
+ * construction time — started BEFORE the Child-settlement watch and always
+ * finished before any cleanup — and its typed aggregate grounds the
+ * `durableObligations` layer. A reader failure is a NAMED observer failure
+ * on the held record, never a replaced business result; without a supplier
+ * the layers keep the pre-Task-2 schema (durableObligations null, no durable
+ * block).
  * @typedef {{
  *   launch: (budgetContext?: { signal: AbortSignal, remainingMs: () => number, recordCleanupBoundary?: () => void }) => Promise<{ result: Promise<{ code: number | null, stdout: string, stderr: string }>, terminate?: () => Promise<void> }>,
  *   gatePath: string,
@@ -1752,6 +2138,7 @@ export async function runHeldHostTurn(input) {
  *   waitForPollStart?: (signal: AbortSignal) => Promise<void>,
  *   waitForChildSettlement?: (signal: AbortSignal) => Promise<{ observed: boolean, basis: string | null }>,
  *   waitForChildSettlementAfterJoin?: (signal: AbortSignal) => Promise<{ observed: boolean, basis: string | null }>,
+ *   readDurableSnapshot?: () => Promise<Record<string, unknown>>,
  *   statusDeadlineFlow?: boolean,
  *   captureProcessIdentity?: () => Promise<unknown>,
  *   readProcessIdentity?: (identity: unknown) => Promise<unknown>,
@@ -1775,7 +2162,7 @@ export async function runHeldHostTurn(input) {
  *   endedBeforeGate: boolean,
  *   rootAcknowledged?: boolean,
  *   statusDeadlineReached?: boolean,
- *   childSettlement?: { observed: boolean, basis: string | null, layers?: { remoteTerminal: boolean | null, localProcessReaping: 'natural-exit-observed' | 'cleanup-terminated' | null, durableObligations: 'settled' | 'unresolved' | null } } | null,
+ *   childSettlement?: { observed: boolean, basis: string | null, layers?: { remoteTerminal: boolean | null, localProcessReaping: 'natural-exit-observed' | 'cleanup-terminated' | null, durableObligations: 'settled' | 'unresolved' | null }, durableSnapshot?: Record<string, unknown> } | null,
  *   budgetExpired: boolean,
  *   identity: unknown,
  *   processAliveWhileHeld: boolean | null,
@@ -2247,7 +2634,12 @@ export function composeHostLaunchArguments(promptArguments, workspace, model = n
  * rendered-result markers; Rescue cases keep the pre-R2 Rescue contract with
  * the byte-exact public sentinel. Exported as the testable seam between the
  * case specs and `inspectShellWaitEvidence`.
- * @param {{ case: ShellWaitCaseLabel, command: string, rollouts: unknown, zcodeCalls: unknown, workerDurationMs: number, pollMs: number, workerStillAliveAfterObservation: boolean | null, queryTurn?: { sessionId: string, setupEventCount: number } | null, exactExpectedTerminal?: { output: string, exitCode: number } | null }} request
+ * `observedTerminalStdout` (2026-10-21 evidence-closure Task 2) is the
+ * VALIDATED stdout-only capture admitted through the frozen §19.3 read side —
+ * the one stream-attributed source the exact-linkage oracle accepts. It is
+ * validated here exactly like the evidence boundary (bounded string or null)
+ * and threaded only when supplied, so legacy requests stay byte-identical.
+ * @param {{ case: ShellWaitCaseLabel, command: string, rollouts: unknown, zcodeCalls: unknown, workerDurationMs: number, pollMs: number, workerStillAliveAfterObservation: boolean | null, queryTurn?: { sessionId: string, setupEventCount: number } | null, exactExpectedTerminal?: { output: string, exitCode: number } | null, observedTerminalStdout?: string | null }} request
  * @returns {import('./evidence.mjs').ShellWaitEvidenceInput}
  */
 export function shellWaitEvidenceRequest(request) {
@@ -2280,10 +2672,15 @@ export function shellWaitEvidenceRequest(request) {
       || !Number.isSafeInteger(exactExpectedTerminal.exitCode) || exactExpectedTerminal.exitCode < 0)) {
     throw invalidCaseInput('the exactExpectedTerminal expectation must carry a nonempty output string and a nonnegative integer exit code.');
   }
+  if (request.observedTerminalStdout !== undefined && request.observedTerminalStdout !== null
+    && (typeof request.observedTerminalStdout !== 'string' || request.observedTerminalStdout.length > 65536)) {
+    throw invalidCaseInput('the observed terminal stdout must be a bounded string (the validated stdout capture) or null.');
+  }
   return {
     rollouts: request.rollouts,
     zcodeCalls: request.zcodeCalls,
     command: request.command,
+    ...(request.observedTerminalStdout !== undefined ? { observedTerminalStdout: request.observedTerminalStdout } : {}),
     ...(spec.family === 'root'
       ? {
         mode: /** @type {const} */ ('root'),
@@ -2751,7 +3148,11 @@ async function executeDefaultLiveCaseBody({ input, fixture }) {
   // launch closure from the OBSERVED post-turn-1 rollout state; null (the
   // fail-closed whole-rollout analysis) for every other case or when the
   // launch session's rollout cannot be identified.
+  /** @type {any} */
   let statusQueryTurn = null;
+  // Codex round 1: the OBSERVED durable identity for the live status-wait
+  // path (set inside the launch closure once the acknowledgement validates).
+  const observedDurableIdentity = { jobId: /** @type {string | null} */ (null), ownerSessionId: /** @type {string | null} */ (null) };
 
   const held = await runHeldHostTurn({
     gatePath,
@@ -2841,6 +3242,11 @@ async function executeDefaultLiveCaseBody({ input, fixture }) {
         throw new Error('the live session produced no unambiguous reserved-job acknowledgement; the Status query has no in-session target (the case fails closed instead of guessing)');
       }
       statusQueryTurn = findStatusSetupTurnBoundary(launchRollouts, acknowledgement.launchSessionId);
+      // Codex round 1: the OBSERVED durable identity — the validated launch
+      // acknowledgement's reserved job id and owning (launch) session —
+      // grounds the passive durable reader on the live path.
+      observedDurableIdentity.jobId = acknowledgement.jobId;
+      observedDurableIdentity.ownerSessionId = acknowledgement.launchSessionId;
       // P2-3 round-15 fix: never resume after expiry — a budget that expired
       // during the awaited setup turn or rollout loading refuses the query
       // turn (fail closed) instead of launching it with borrowed time.
@@ -2874,6 +3280,25 @@ async function executeDefaultLiveCaseBody({ input, fixture }) {
       : runsChildSettlementWatch(input.case)
         ? { waitForChildSettlementAfterJoin: (signal) => waitForChildSettlementObservation(fixture.codexHome, expectedCommand, signal) }
         : {}),
+    // 2026-10-21 evidence-closure Task 2: the passive durable snapshot runs at
+    // settlement-layer construction (before cleanup) for the ONE case with a
+    // pre-known exact bound job identity (status-wait's production-reserved
+    // owned job). Other cases keep the named null-supplier contract above.
+    ...(input.case === 'status-wait' ? {
+      // Codex round 1: the LIVE status-wait identity is the OBSERVED launch
+      // acknowledgement (job id + owning session), captured inside the launch
+      // closure below; the fixture-owned reservation stays the fallback. A
+      // missing identity at settlement time is a NAMED unestablished
+      // observation on the held record, never a silent absent layer.
+      readDurableSnapshot: () => {
+        const observed = observedDurableIdentity.jobId !== null && observedDurableIdentity.ownerSessionId !== null
+          ? { jobId: observedDurableIdentity.jobId, ownerSessionId: observedDurableIdentity.ownerSessionId } : null;
+        const durableSupplier = statusWaitDurableSnapshotSupplier(fixture, observed);
+        return durableSupplier === null
+          ? Promise.resolve({ aggregate: 'unestablished', reasons: ['durable-identity-unobserved'] })
+          : durableSupplier();
+      },
+    } : {}),
     // P2-1 round-7 fix: the Status deadline flow is OBSERVATION-ONLY — the
     // background launch reserves a queued job and the Status query measures
     // its own deadline, so the fake-peer completion gate is never part of the
@@ -2889,11 +3314,28 @@ async function executeDefaultLiveCaseBody({ input, fixture }) {
     rollouts = [];
     rolloutsError = error;
   }
+  // 2026-10-21 evidence-closure Task 2: the attributable stdout capture is
+  // admitted through the frozen §19.3 read side BEFORE the evidence
+  // adjudication (an observation that must finish before cleanup). A complete
+  // admission is threaded as the validated stdout-only capture source; every
+  // other admission state is a NAMED observer failure persisted beside the
+  // result — never a replaced business result and never transcript-derived.
+  const captureHandle = /** @type {any} */ (fixture).stdoutCapture ?? null;
+  /** @type {any} */
+  let captureAdmission = null;
+  let captureAdmissionError = null;
   const zcodeCalls = await readFakeZCodeCalls(fixture.env.FAKE_ZCODE_RECORD ?? '').catch(() => null);
+  // Codex round 10 (corrected exit-authority contract): the handle-linked
+  // launcher exit is a completion fact OF the evidence — so the evidence
+  // pass runs FIRST (without the capture), the admission cross-checks the
+  // meta against the selector's handle-linked exit, and a COMPLETE capture
+  // is threaded into a SECOND evidence pass whose exact-terminal verdict is
+  // then consistent.
   const redactions = [temporaryRoot, fixture.workspace, fixture.codexHome, fixture.installedRoot, fixture.env.HOME]
     .filter((value) => typeof value === 'string' && value.length > 0)
     .map((value) => /** @type {string} */ (value));
-  const evidence = inspectShellWaitEvidence({
+  /** @param {boolean} withCapture */
+  const buildEvidenceRequest = (withCapture) => ({
     ...shellWaitEvidenceRequest({
       case: input.case,
       command: expectedCommand,
@@ -2903,6 +3345,7 @@ async function executeDefaultLiveCaseBody({ input, fixture }) {
       pollMs: input.pollMs,
       workerStillAliveAfterObservation: held.endedBeforeGate === false && held.processAliveWhileHeld === true,
       queryTurn: statusQueryTurn,
+      ...(withCapture && captureAdmission !== null && captureAdmission.status === 'complete' ? { observedTerminalStdout: captureAdmission.stdout } : {}),
     }),
     // The bounded-diagnostic research gate (follow-up plan Task 4): threaded
     // ONLY when the validated case input enables it, so the default evidence
@@ -2916,8 +3359,95 @@ async function executeDefaultLiveCaseBody({ input, fixture }) {
     ...(input.waitPolicy !== null ? { waitPolicyComparisonFacts: true } : {}),
     redactions,
   });
+  let evidence = inspectShellWaitEvidence(buildEvidenceRequest(false));
+  const handleLinkedExitCode = /** @type {any} */ (evidence.facts)?.completion?.processExit ?? null;
+  const captureExitAuthority = captureExpectedExitCode({ heldResultCode: typeof held.result?.code === 'number' ? held.result.code : null, handleLinkedExitCode });
+  if (captureHandle !== null) {
+    try {
+      captureAdmission = await admitStdoutCapture({
+        captureDirectory: captureHandle.captureDirectory,
+        nonce: captureHandle.nonce,
+        expectedEntryRealpath: captureHandle.entryRealpath,
+        // Codex round 10: the exit-code authority is the HANDLE-LINKED
+        // launcher exit (the evidence's original-handle observation) — never
+        // the outer `codex exec` code. An unjoinable exit passes NO
+        // cross-check (exit attribution unestablished; the live oracle stays
+        // missing-evidence on a null exit).
+        ...(captureExitAuthority !== undefined ? { expectedExitCode: captureExitAuthority } : {}),
+      });
+    } catch (error) {
+      captureAdmission = null;
+      captureAdmissionError = error;
+    }
+  }
+  if (captureAdmission !== null && captureAdmission.status === 'complete') {
+    evidence = inspectShellWaitEvidence(buildEvidenceRequest(true));
+  }
   const rolloutsFailureReason = rolloutsError === null ? null : redactPrivatePaths(rolloutsError, fixture);
-  return mapShellWaitLiveFacts(input, held, evidence, codexVersion, rolloutsFailureReason, fixture, rollouts, redactions, expectedCommand);
+  const liveFacts = mapShellWaitLiveFacts(input, held, evidence, codexVersion, rolloutsFailureReason, fixture, rollouts, redactions, expectedCommand);
+  if (captureHandle !== null) {
+    // Bounded capture provenance beside the result (see
+    // stdoutCaptureProvenance): an admission failure's reason is
+    // private-path-redacted, never persisted verbatim.
+    const stdoutCapture = stdoutCaptureProvenance(captureAdmission, captureAdmissionError, fixture);
+    liveFacts.hostResult = { ...(/** @type {any} */ (liveFacts).hostResult ?? {}), stdoutCapture };
+  }
+  return liveFacts;
+}
+
+/**
+ * The bounded stdout-capture provenance block persisted beside the result
+ * (2026-10-21 evidence-closure Task 2; review fix): statuses and digests only
+ * — never the capture paths and never the captured bytes. A failed
+ * admission's reason is routed through {@link redactPrivatePaths} (the same
+ * treatment as the rollouts failure): a raw fs error message may embed the
+ * private capture path, which never persists.
+ * @param {{ status: string, reason: string | null, byteCount: number | null, captureSha256: string | null, exitCode: number | null, closureObservationVersion: number | null } | null} admission
+ * @param {unknown} admissionError
+ * @param {ShellWaitFixtureHandle} fixture
+ * @returns {{ status: string, reason: string | null, byteCount: number | null, captureSha256: string | null, exitCode: number | null, closureObservationVersion: number | null }}
+ */
+export function stdoutCaptureProvenance(admission, admissionError, fixture) {
+  if (admissionError !== null && admissionError !== undefined) {
+    return {
+      status: 'admission-failed',
+      reason: redactPrivatePaths(/** @type {Error} */ (admissionError), fixture),
+      byteCount: null,
+      captureSha256: null,
+      exitCode: null,
+      closureObservationVersion: null,
+    };
+  }
+  if (admission === null || admission === undefined) {
+    return { status: 'admission-failed', reason: 'admission-unavailable', byteCount: null, captureSha256: null, exitCode: null, closureObservationVersion: null };
+  }
+  return {
+    status: admission.status,
+    reason: admission.reason,
+    byteCount: admission.byteCount,
+    captureSha256: admission.captureSha256,
+    exitCode: admission.exitCode,
+    closureObservationVersion: admission.closureObservationVersion,
+  };
+}
+
+/**
+ * Codex round 10 (corrected exit-authority contract): the capture's exit
+ * authority is the HOST-OBSERVED exit of the EXACT launcher invocation — the
+ * original-handle tool result retained in the Child's rollout (the same
+ * handle-linked `processExit` the evidence oracle consumes). The outer
+ * `codex exec` process code (`heldResultCode`) is a DIFFERENT fact: a
+ * launcher may exit 1 with a valid error envelope while the host finishes 0,
+ * and conflating the two rejected intact captures as
+ * `capture-exit-code-mismatch`. An unjoinable handle exit keeps exit
+ * attribution unestablished (no expectedExitCode cross-check at all — the
+ * live evidence oracle already stays `missing-evidence` on a null exit).
+ * @param {{ heldResultCode: number | null, handleLinkedExitCode: number | null }} input
+ * @returns {number | undefined}
+ */
+export function captureExpectedExitCode(input) {
+  const handleLinkedExitCode = /** @type {any} */ (input)?.handleLinkedExitCode;
+  return Number.isSafeInteger(handleLinkedExitCode) && handleLinkedExitCode >= 0 ? handleLinkedExitCode : undefined;
 }
 
 /**
@@ -3149,6 +3679,12 @@ export function mapShellWaitLiveFacts(input, held, evidence, codexVersion, rollo
             : null,
         },
       }
+      : {}),
+    // 2026-10-21 evidence-closure Task 2: the typed passive durable snapshot
+    // mirrors ONLY when the held record carried it (supplier wired) — held
+    // records without it keep the mapping schema byte-identical.
+    ...(held?.childSettlement && typeof held.childSettlement === 'object' && held.childSettlement.durableSnapshot !== undefined
+      ? { durableSnapshot: held.childSettlement.durableSnapshot }
       : {}),
   };
   // P2-1 round-6 fix: the settled-background exemption enforces the
@@ -3937,7 +4473,7 @@ const defaultLiveExecutor = /** @type {any} */ (executeDefaultLiveCase);
  * @typedef {{
  *   codexVersion?: string | null,
  *   route?: { requested?: string, actual?: string | null },
- *   hostResult?: { exitCode?: number | null, companionProcessExit?: number | null, sentinelMatched?: boolean | null, terminalStdoutChecked?: boolean | null, resultCheck?: string | null, resultCheckLabel?: string | null, exactTerminalMatch?: { matched: boolean | null, reason: string | null } },
+ *   hostResult?: { exitCode?: number | null, companionProcessExit?: number | null, sentinelMatched?: boolean | null, terminalStdoutChecked?: boolean | null, resultCheck?: string | null, resultCheckLabel?: string | null, exactTerminalMatch?: { matched: boolean | null, reason: string | null }, stdoutCapture?: { status: string, reason: string | null, byteCount: number | null, captureSha256: string | null, exitCode: number | null, closureObservationVersion: number | null } },
  *   linkage?: { checked?: boolean | null, mode?: 'rescue' | 'root' | null, rootThreadId?: string | null, childThreadId?: string | null, parentThreadId?: string | null, companionLaunchCount?: number | null, companionSendCount?: number | null, originalHandleChecked?: boolean | null },
  *   observations?: { outerReturns?: number | null, modelCalls?: number | null, rootJoins?: number | null, decisiveWallMs?: number | null, pollWallTimesMs?: (number | null)[] | null, pollStartedAtElapsedMs?: number | null, holdDeadlineElapsedMs?: number | null, remainingLifetimeMs?: number | null, remainingLifetimeBasis?: 'hold-deadline-at-poll-start' | 'unavailable' | null, pendingInnerAtEnd?: boolean | null },
  *   interrupt?: { requested?: boolean, attempted?: boolean | null, family?: 'v2' | 'v1' | null, delivered?: boolean | null, rejection?: string | null, previousStatus?: string | null, callCount?: number | null, orderingBound?: boolean, target?: { kind: 'agent-id' | 'task-name' | 'unknown' | null, value: string | null, suppressed: boolean, chars: number | null } | null, exactTargetMatch?: boolean | null, settled?: boolean | null, settledBasis?: string | null, pendingIntervalMs?: number | null, deliveryToSettlementMs?: number | null, timingBasis?: 'rollout-event-timestamps' | 'unavailable' | null, missingPrerequisite?: string | null, cleanupBoundaryAtMs?: number, cancelledAtMs?: number },
@@ -3955,6 +4491,8 @@ const defaultLiveExecutor = /** @type {any} */ (executeDefaultLiveCase);
  *     settlement?: { observed: boolean, basis: string | null } | null,
  *     rootAcknowledgementAtElapsedMs?: number | null,
  *     settlementDetectedAtElapsedMs?: number | null,
+ *     settlementLayers?: { remoteTerminal: boolean | null, localProcessReaping: 'natural-exit-observed' | 'cleanup-terminated' | null, durableObligations: 'settled' | 'unresolved' | null },
+ *     durableSnapshot?: Record<string, unknown>,
  *   },
  *   statusQuery?: Record<string, unknown> | null,
  *   collection?: { rolloutCount?: number | null, childToolCallCount?: number | null, truncated?: boolean },
