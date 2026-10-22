@@ -11986,15 +11986,20 @@ fixed in the SAME dedicated overall-review fix commit by AMEND).**
 ### 22.1 The final bytes and their provenance
 
 Commit lineage from the merged base `0b522b70b0ed72d7d1566de581dc306c70b38fac` (PR #70):
-`e0413d9` (Task 1 → §19.1–§19.7) → `250222d` (Task 2 → §19.8) → `7532207` (Task 3 → §19.9) →
-`2a7c2b1` (Task 4 → §20) → `297fdd3` (Task 5 → §21) → this Task-6 commit → the overall-review
-fix commit (the §22-header record: TWO P2 instrument-hardening fixes, a dedicated commit — the
-SHA-pinned ledger is never rebased). The Task-6 commit
+`d80e966` (the 2026-10-21 plan) → `e0413d9` (Task 1 → §19.1–§19.7) → `250222d` (Task 2 → §19.8)
+→ `7532207` (Task 3 → §19.9) → `2a7c2b1` (Task 4 → §20) → `297fdd3` (Task 5 → §21) → `30477b3`
+(the Task-6 commit → §22) → `9ab0ecd` (the overall-review fix commit — the §22-header record:
+SIX P2 instrument-hardening findings across four review rounds, one dedicated amended commit;
+the SHA-pinned ledger is never rebased) → this closeout commit (docs-only; the adjudication of
+why a closeout commit rather than an amend of `30477b3` is §22.5's closing paragraph). The
+Task-6 commit
 changes ONLY two docs files (`docs/qualification/rescue-shell-long-wait.md` — this section — and
 the plan's checkbox ticks); the fix commit changes ONLY the three research-instrument files
 (`driver.mjs`, `closure-observation.mjs`, `tests/shell-wait-probe.test.mjs` — the digests below);
-zero production bytes change in either (the prohibited-diff proof in §22.2 is the negative side
-of the same proof).
+the closeout commit changes ONLY the same two docs files; zero production bytes change in any of
+them (the prohibited-diff proof in §22.2 is the negative side of the same proof, and
+`git diff 9ab0ecd..HEAD --stat -- tools/ tests/` is EMPTY at the closeout commit — the
+implementation bytes verified by §22.2's refreshed battery ARE the final implementation bytes).
 Implementation-file SHA-256 at the verified tree: `driver.mjs`
 `5e2c8ed1aa0ef562e0b8c8171a200419a8e8f7d99877738bc8fe099ad9ca91b0`, `release-qualification.mjs`
 `5963d65b68395fa6cd77eae8aff8bf7bbe0ba403558bf28b610162e2fdcaf698`,
@@ -12022,6 +12027,15 @@ re-pin value for ANY future registered run (§20.3/§20.7 dated annotations) —
 > **`57359bff248ab6723ae3cdff7e325ff3c0d7419495730be76a552965c6881431`** (`8db29d9c…` →
 > `30d19736…` → `8b95cea1…` → `4ba3d833…` → `05c0c059…` → `57359bff…`, each supersession
 > annotated where it was recorded).
+>
+> **Dated annotation (2026-10-22, the closeout commit):** the closeout commit touches ONLY the two
+> docs files, so the FINAL implementation digests are exactly the round-4 values above —
+> `driver.mjs` `9cbb8c0e…`, `closure-observation.mjs` `46b7f5e2…`,
+> `tests/shell-wait-probe.test.mjs` `1193cb7d…`, `release-qualification.mjs` `5963d65b…` and the
+> four untouched modules at their §20.3 values — re-verified byte-identical at the closeout tree
+> (`git diff 9ab0ecd..HEAD --stat -- tools/ tests/` EMPTY; the §22.2 refreshed battery and its
+> verification-copy byte-proof are computed over exactly these bytes). The future-repin observer
+> digest stands at **`57359bff…`** (no launch occurred in the closeout; nothing supersedes it).
 
 ### 22.2 Final-source gate battery (the plan's Task-6 command list; every result verbatim)
 
@@ -12032,10 +12046,39 @@ re-pin value for ANY future registered run (§20.3/§20.7 dated annotations) —
 > round 3 research **868/868**, round 4 research **869/869**; the focused suites **417/417**,
 > **126/126**, **213/213** unchanged — re-run for the record although the driver is NOT in their
 > import graph; lint/typecheck clean; line-endings 542; `git diff --check` clean; prohibited
-> diff EMPTY — every result in §22's overall-review-fix record). Gate 11 (`npm test`, the
-> verification-copy procedure) is NOT re-run for the fix commit per the task procedure: this
-> gate-11 record stays pinned to the `297fdd3` verified bytes, and the battery refresh on the
-> truly-final bytes (including gate 11) belongs to the CLOSING amend.
+> diff EMPTY — every result in §22's overall-review-fix record). Gate 11 was NOT re-run within
+> the fix commit's rounds per the task procedure; the refresh below is that closing-amend duty
+> discharged.
+
+**REFRESHED BATTERY OF RECORD (2026-10-22, the closeout commit — all 11 gates on the FINAL
+implementation bytes `9ab0ecd4f401836cec83a43b3034e3e2dec24151`; every result verbatim, exit
+captured from `$?` into a file, no pipe truncation):**
+
+| # | Gate command (plan Task-6 list) | Source | Verbatim result |
+| --- | --- | --- | --- |
+| 1 | `npm run test:shell-research` | worktree at `9ab0ecd` | **ℹ tests 869 / ℹ suites 68 / ℹ pass 869 / ℹ fail 0 / ℹ cancelled 0 / ℹ skipped 0 / ℹ todo 0** (duration_ms 56302.18325), exit **0**, zero `✖` lines — the 863-record + the 6 overall-review round tests (2+2+1+1) |
+| 2 | `node --test tests/test-selection.test.mjs` | worktree at `9ab0ecd` | **tests 6 / pass 6 / fail 0 / skipped 0** (duration_ms 34.644625), exit **0** |
+| 3 | `node --test tests/rescue-preparation.test.mjs tests/rescue-binding.test.mjs tests/rescue-route-planner.test.mjs` | worktree at `9ab0ecd` | **tests 417 / pass 417 / fail 0 / skipped 0** (duration_ms 25437.030375), exit **0** (the driver is NOT in these suites' import graph — re-run for the record) |
+| 4 | `node --test tests/rescue-lifecycle.test.mjs tests/rescue-child-reconciliation.test.mjs tests/rescue-progress-relay.test.mjs` | worktree at `9ab0ecd` | **tests 126 / pass 126 / fail 0 / skipped 0** (duration_ms 40049.076542), exit **0** |
+| 5 | `node --test tests/job-control.test.mjs tests/mcp-result.test.mjs` | worktree at `9ab0ecd` | **tests 213 / pass 213 / fail 0 / skipped 0** (duration_ms 52330.829167), exit **0** |
+| 6 | `npm run lint` | worktree at `9ab0ecd` | eslint clean, no output, exit **0** |
+| 7 | `npm run typecheck` | worktree at `9ab0ecd` | `tsc --noEmit` clean, no output, exit **0** |
+| 8 | `node scripts/check-line-endings.mjs` | worktree at `9ab0ecd` | *"LF line endings verified in 542 tracked files."*, exit **0** |
+| 9 | `git diff --check` | worktree at `9ab0ecd` | no output, exit **0** |
+| 10 | prohibited diff `git diff 0b522b70b0ed72d7d1566de581dc306c70b38fac --stat -- skills/ agents/ scripts/ hooks/ .codex-plugin/ marketplace/ docs/superpowers/specs/ package.json npm-shrinkwrap.json` | worktree at `9ab0ecd` | **EMPTY** (0 bytes), exit **0** |
+| 11 | `npm test` | verification copy `/tmp/swverify.eafySu` (construction below) | **routine suite: ℹ tests 3397 / pass 3394 / fail 0 / cancelled 0 / skipped 3 / todo 0** (duration_ms 657262.657792); **marketplace suite: ℹ tests 2 / pass 2 / fail 0 / skipped 0** (duration_ms 18106.2185); combined **3399 tests / 3396 pass / 0 fail / 3 skipped / 0 cancelled**, `NPM_TEST_EXIT=0` (captured verbatim from `$?`), **zero `✖` lines in the entire 3546-line log**. The 3 skips are the SAME three standing documented opt-in gates as the historical record below (`codex-skills-unqualified` ×2, `real-zcode-unqualified` — the `﹣` SKIP lines recorded verbatim in the log), not new omissions |
+
+**Gate-11 copy construction (the same procedure as the historical record below, on the final
+bytes):** `mktemp -d /tmp/swverify.XXXXXX` → `/tmp/swverify.eafySu`; `git clone --no-local
+--no-hardlinks` of the worktree at `9ab0ecd` (`rev-parse HEAD` = `9ab0ecd…`, `status --short`
+empty, the three untracked scratch files structurally excluded); a normal copied `node_modules`
+directory (`cp -R`, real directory, not a symlink); byte-proof by the §22.2 manifest recipe:
+SHA-256 manifests of all **542** tracked files computed on both sides — **identical**, manifest
+digest **`4862946268b4f54a0678cc48324ba2b0655e514671e2a2757884919f66863b8c`** (the recipe's
+value for the final tree; the historical `8cb3ea2e…` is the same construction's value for the
+`297fdd3` tree — different bytes after the fix commit, as expected); the copy path carries no
+guarded identity word. The copy was deleted after the run; nothing from it entered the
+repository. First attempt, one run, no failures, no retries — no waiver needed.
 
 All gates ran on 2026-10-22 with unambiguous exit capture (no pipe truncation), twice where the
 first capture method was defective (see the capture note below). "Source" = where the command ran.
@@ -12087,6 +12130,11 @@ retry).
   of all **542** tracked files computed on both sides and compared — **identical**, manifest digest
   again `8cb3ea2ee374155b66350e4d1ea94dc0ef80af222c5885d83e2e3668d27070be`; the copy path carries no
   guarded identity word; ALL selected implementation files were present (the whole tracked tree).
+  The manifest's construction recipe, for reproducibility of that digest: in each side's root run
+  `git ls-files -z | xargs -0 shasum -a 256`, normalize every line to its `digest path` fields
+  (`awk '{print $1, $2}'`, which also strips the copy side's absolute-path prefix), `sort` the
+  lines, and take the SHA-256 of the sorted manifest FILE — the same recipe produces the same
+  digest on both sides when and only when every tracked byte matches.
   `npm test` ran there with output redirected to a file and the exit captured from `$?`: the gate-11
   result above. Both verification copies and both manifest files were disposable `/tmp` state and
   were deleted after the runs; nothing from them entered the repository.
@@ -12104,7 +12152,9 @@ M = 300004 ms measured from the managed named Child's own nonterminal poll on CL
 L and fresh R one natural original-handle observation each at 388400 ms with remaining-at-poll-start
 388336/388313 ms ≥ M+30000 (§17.3–§17.4); the canonical 60000 control at 7 observations vs candidate
 L/R at 1 each — reduced re-entry (§17.6, Gate C PASS); outer-default C0/C1 v2 with no decisive
-pragma (§17.8); PR #70's full-suite byte gate at `b4f3db9` (§18.3a) — a historical exact-byte gate,
+pragma (§15.7 — the versioned re-adjudication of the retained C0/C1 records, `adjudicationVersion`
+2; §17.8 is that campaign's not-proven register, never the C0/C1 record's home); PR #70's full-suite
+byte gate at `b4f3db9` (§18.3a) — a historical exact-byte gate,
 superseded as the gate of record for THIS branch by §22.2 above. Task 5 re-corroborated the
 discriminator on the current pin twice (O1/O2: decisive original-handle observations 386600/386500 ms;
 poll-start remaining lifetime 386555/386392 ms ≥ the 330004 threshold, margins +56551/+56388; oracle
@@ -12243,25 +12293,63 @@ blocked** by the unqualified affected consumers (every other code-mode consumer 
 Review). Requirements were never lowered anywhere: where a layer closed, it closed by new measured
 evidence under the frozen oracles; where it did not, it is named above.
 
-### 22.5 Independent review record — PREPARED, to be completed by the closing amend
+### 22.5 Independent review record — the actual reviews (recorded by the closeout commit)
 
-Per the plan's Task-6 checkbox, the final branch requires independent review of (a) Spec fidelity
-and (b) implementation/evidence/privacy, with actual reviewers, revisions, findings and narrow
-correction rechecks recorded HERE before the checkbox closes. The reviews run through the
-pipeline's review gates AFTER this commit; **both checkboxes (review and recommendation
-confirmation) intentionally remain OPEN in this commit.** The reviews that WILL be recorded in this
-subsection by the closing amend:
+Per the plan's Task-6 checkbox, the final branch required independent review of (a) Spec fidelity
+and (b) implementation/evidence/privacy. BOTH review families ran to completion; this subsection
+records the actual reviewers, revisions, findings and narrow correction rechecks. **No provider
+outage occurred**; no review was substituted or skipped, and no review loop ran past its
+convergence.
 
-- **[PLACEHOLDER — pipeline self-review of the final branch]**: reviewer identity, scope,
-  findings (P1/P2/P3), fixes and narrow rechecks. — *PENDING, to be filled by the closing amend.*
-- **[PLACEHOLDER — branch-level codex review]**: reviewer identity, scope
-  (spec fidelity + implementation/evidence/privacy on the final bytes), findings, fixes and narrow
-  rechecks. — *PENDING, to be filled by the closing amend.*
-- Prior in-campaign review history (§19.9's self-review round 1 + codex rounds 1–12 across Tasks
-  2–3, and §21's post-launch corrections) is CONTEXT, not a substitute: those reviewed the Task-2/3
-  implementations and the Task-5 corrections, not this final branch state.
-- Provider-outage rule: an unavailable reviewer is recorded as PENDING here — never a silently
-  substituted gate, and never permission for indefinite review loops (plan checkbox 3's rule).
+**(1) Pipeline self-reviews — one independent reviewer per task commit, every task commit
+covered (the detailed round-by-round records live in the cited report paragraphs; the counts here
+are the round summaries):**
+
+| Task commit | Self-review rounds | Findings per round | Fix verification record |
+| --- | --- | --- | --- |
+| T1 `e0413d9` | 3 | 6 + 4 + 0 | §19's Task-1 self-review round paragraphs; round 3 CLEAN |
+| T2 `250222d` | 4 | 7 + 2 + 2 + 0 | §19.8's self-review round paragraphs (the capture/durable-reader boundary matrix rounds); final round CLEAN |
+| T3 `7532207` | 3 | 5 + 2 + 0 | §19.9's self-review round paragraphs (round 1's five P3 including the owning-root classification; the §19.9 dated correction); final round CLEAN |
+| T4 `2a7c2b1` | 2 | 3 + 0 | §20's Task-4 self-review round paragraphs (the observer-digest/registration wording rounds); round 2 CLEAN |
+| T5 `297fdd3` | 2 | 5 + 2 | §21's self-review round paragraphs — round 1's five P3 on the launch/adjudication records; round 2's two P3, after which the codex rounds continued separately (§19.9's chain and §21's corrections); both rounds' fixes verified regression-first |
+| T6 `30477b3` | 1 (so far — closed by this closeout) | 4 | the closeout self-review's four findings, ALL fixed in this closeout commit: (i) §22.6's Task-6 row said "2/5" where 3/5 were ticked — corrected with the trail; (ii) §22.3's C0/C1 pointer was §17.8 (that campaign's not-proven register), corrected to §15.7 (the versioned re-adjudication where the C0/C1 v2 record lives); (iii) §22.1's lineage omitted `d80e966` (the plan commit) — added, and the lineage extended through this closeout; (iv) §22.2's manifest digest recorded its value without its construction recipe — the recipe is now recorded (the reproducible sorted-manifest construction) |
+
+**(2) Branch-level codex overall review — base `0b522b7`, five rounds, converging to ZERO
+findings.** Every round's findings were fixed TDD regression-first (RED recorded verbatim in the
+§22-header round records), zero model turns, production read-only, prohibited diff EMPTY
+throughout; rounds 2–4 were fixed by amending the same dedicated fix commit while it pinned
+nothing beyond §22's own lineage line, and the final amended fix commit is `9ab0ecd` (the
+original round-1 fix commit was `0e1b5a6`):
+
+| Round | Review job | Findings | Disposition |
+| --- | --- | --- | --- |
+| 1 | `review-mvjiz3bs-m9ukni` | 2 P2: the offline join could retain cleanup-time credit on a same-millisecond durable read; an admitted capture's unverified meta exit could `matched: true` | fixed regression-first (the pre-boundary fence + `exitAttribution: 'verified' | 'unknown'` with `exit-attribution-unknown` fail-closed) → fix commit `0e1b5a6`; §22-header round-1 record |
+| 2 | `review-mvjkbhvy-d9rsr8` | 2 P2: `captureError` accepted out-of-vocabulary text that persisted verbatim; the bounded tap declaration never persisted in the case record | fixed regression-first (the closed `CAPTURE_ERROR_VOCABULARY` classification + the additive `stdoutCaptureDeclaration`) → amended into the fix commit; §22-header round-2 record |
+| 3 | `review-mvjl3bej-7vggs8` | 1 P2: the round-1 fence over-rejected — normal-completion teardown manufactured a spurious cleanup boundary (20/20 natural observations rejected in the reviewer's reproduction) | fixed regression-first (the explicit termination-initiation gate; teardown aborts record NO boundary; the fence-matrix rerun added the natural-completion row) → amended; §22-header round-3 record |
+| 4 | `review-mvjlxmdm-zsivkf` | 1 P2: the result-first watcher-less branch never sampled the durable reader (`reads: 0` reproduction) | fixed regression-first (the branch starts and joins the reader before early-exit cleanup under the same fence contract; the early-exit classification unchanged) → amended; §22-header round-4 record |
+| 5 | `review-mvjmew3m-8nu9p3` | **ZERO FINDINGS** | the branch-level overall review is CLOSED CLEAN at the `9ab0ecd` tree; this closeout commit changes only docs, so the review's verdict covers the final implementation bytes unchanged |
+
+**Per-task codex review gates (each task commit's independent codex chain, with its
+final-zero/closing round):** T1 — zero findings at round 1 (§19's Task-1 codex paragraph); T2 —
+13 rounds to convergence (the twelve §19.8 recorded rounds plus the closing round; every round's
+P1/P2 fixed test-first); T3 — 8 rounds (§19.9's codex rounds 1–7 plus the closing round; the
+round-4 falsification and supersession recorded); T4 — zero findings at round 1 (§20's codex
+paragraph); T5 — 4 rounds (§21's post-launch codex corrections: the round-3 instrument
+correction chain with its §21.5 gate re-run, plus the closing round). Together with the five
+branch-level rounds above, every research commit on this branch has passed through at least one
+independent codex gate, and the LAST review of the final implementation bytes (`9ab0ecd`,
+re-verified unchanged at the closeout) returned zero findings.
+
+**Closeout-commit adjudication (why a docs-only CLOSEOUT commit rather than an amend of
+`30477b3`):** the plan sanctions "docs-only closing records may follow tested code, with
+implementation equality proven", and `30477b3`'s own §22 text (the fix-commit adjudication
+paragraph) pins the fix commit's place in the lineage — `30477b3` is now an ancestor that
+`9ab0ecd` builds on and whose recorded digests and lineage the review chain verified; amending it
+would rewrite a verified, SHA-pinned record (the ledger's no-rebase rule, §22's fix-commit
+adjudication). This closeout therefore lands as a NEW commit touching ONLY the two docs files
+(`git diff 9ab0ecd..HEAD --stat -- tools/ tests/` is EMPTY — the implementation bytes the round-5
+clean review approved are the bytes this branch ships), with the equality proof recorded in
+§22.1 and the refreshed gate battery in §22.2.
 
 ### 22.6 Plan-completeness audit (Task 6's own exhaustive reconciliation, executed before committing)
 
@@ -12276,26 +12364,39 @@ class scan hits are `mktemp -d …XXXXXX` template literals — command syntax, 
 | Task 3 | 5/5 `[x]` | DONE annotations cite §19.9 (the 22-admission-test record; the round-1…round-7 codex chain; the round-4 wrapped-interrupt limitation) and §20.9/§21.5 (the pre-launch gate battery); checkbox 5's tick is explicitly retrospective-to-the-§20.9 pre-launch evidence, stated as such in the plan |
 | Task 4 | 5/5 `[x]` | DONE annotations cite §20.1–§20.8; the §20.10 dated ledger-status block agrees with §21.3 (O1/O2/I spent-and-consumed, F unspent, 3 of 4) |
 | Task 5 | 4/5–exit block | all four checkboxes carry DONE annotations citing §21.1–§21.4; the §21 Exit line (MET) matches §21.2–§21.4's content; §21.5's digests re-verified byte-identical against the final tree (§22.1) |
-| Task 6 | 2/5 `[x]` at this commit | checkboxes 1–3 ticked by THIS commit (this section = checkbox 1; §22.4 = checkbox 2; §22.2 = checkbox 3); checkboxes 4 (independent review) and 5 (scoped recommendation confirmation) remain OPEN with their pending reasons recorded HERE and in §22.5/§22.7 — no stale tick |
+| Task 6 | **5/5 `[x]`** after the closeout commit | at `30477b3` it was **3/5** (checkboxes 1–3: this section = checkbox 1; §22.4 = checkbox 2; §22.2 = checkbox 3) with checkboxes 4–5 deliberately OPEN — the count "2/5" recorded in this row at `30477b3` was WRONG (a miscount against the row's own "checkboxes 1–3 ticked" text; the closeout self-review's finding 1, corrected here with the trail kept), and the closeout commits tick 4 and 5 with their evidence refs (§22.5/§22.7) — no stale tick remains |
 
 Cross-reference resolution: §21.4's "the final adopt/do-not-adopt verdict is §22" resolves at
 §22.7; §21.5's "§21.4's inputs feed Task 6's §22" resolves at §22.3/§22.7; §20.10 ↔ §21.3 agree;
 §19.4/§19.6 registrations are cited where their standing is stated (§22.3); every §22 citation
-target (§16.2, §16.4, §17.2, §17.6, §17.14.x, §18.3a, §18.4, §18.5, §19.1–§19.9, §20.1–§20.10,
-§21.1–§21.5) exists in this report. Counts/digests: 863 research tests = §20.9's 862 + the 1 v2 pin
-(§21.5) = §22.2's 863; the three §21.5 implementation digests match the final bytes exactly
-(§22.1); the observer-digest history (`8db29d9c…` launched / `30d19736…` future re-pin) is
-consistent across §20.3, §20.7, §21.1 and §21.5. Zero model turns and zero live cases in Task 6 —
-consistent with the ledger's closed state (no label was available to spend: §21.3).
+target (§15.7, §16.2, §16.4, §17.2, §17.6, §17.14.x, §18.3a, §18.4, §18.5, §19.1–§19.9,
+§20.1–§20.10, §21.1–§21.5) exists in this report. Counts/digests (refreshed at the closeout —
+this audit was re-run against the `9ab0ecd` + closeout tree): the research-suite count chain
+**862** (§20.9) → **863** (the v2 pin, §21.5) → **865/867/868/869** (the overall-review rounds
+1–4, §22's fix record) = §22.2's refreshed **869**; the final implementation digests are the
+§22.1 round-4 values (`9cbb8c0e…`/`46b7f5e2…`/`1193cb7d…`), byte-verified at the closeout tree;
+the observer-digest chain (`8db29d9c…` launched → `30d19736…` → `8b95cea1…` → `4ba3d833…` →
+`05c0c059…` → `57359bff…` future re-pin) is consistent across §20.3, §20.7, §21.1, §21.5, §22.1
+and the fix record. Zero model turns and zero live cases in Task 6 and the closeout — consistent
+with the ledger's closed state (no label was available to spend: §21.3).
 
-### 22.7 Scoped recommendation — **DRAFT-PENDING-REVIEW**
+### 22.7 Scoped recommendation — **CONFIRMED** (closeout, 2026-10-22)
 
-> **Status: DRAFT-PENDING-REVIEW.** This draft is recorded in this commit per the plan's Task-6
-> structure; the closing amend confirms or revises it AFTER the §22.5 reviews land. **No wording
-> here authorizes any automatic config/Skill/Role/cache change, any production edit, any new
-> campaign, or any blanket version/platform claim. Research completion is NOT production adoption:
-> everything below is an evidence statement plus a scoped DECISION FRAMEWORK for the separately
-> authorized production decision — the original production goals remain binding.**
+> **Status: CONFIRMED.** The DRAFT recorded at `30477b3` is CONFIRMED UNCHANGED in substance by
+> the closeout: nothing in the §22.5 review rounds changed the evidence basis — every review
+> finding was an instrument-hardening defect (the offline join's fence, exit attribution, capture
+> vocabulary, tap-declaration persistence, teardown boundary, result-first durable sampling), not
+> a production-contract or evidence fact. **The fixes correct the INSTRUMENT for future use; the
+> recorded O1/O2/I results stand exactly as recorded at their launch-time instrument** (the
+> §21.2.3 manual fence overlay stands as history and is now CODE-ENFORCED by the round-1 fix —
+> §21.2.3's dated annotation; the I case's qualification status was UNESTABLISHED before the fix
+> and remains UNESTABLISHED after it, unchanged), and the Gate B v2 closure is untouched (the v2
+> expectation derivation bytes were not among the fix commit's changes — `release-qualification.mjs`
+> is byte-identical to its §20.3 value, §22.1). **No wording here authorizes any automatic
+> config/Skill/Role/cache change, any production edit, any new campaign, or any blanket
+> version/platform claim. Research completion is NOT production adoption: everything below is an
+> evidence statement plus a scoped DECISION FRAMEWORK for the separately authorized production
+> decision — the original production goals remain binding.**
 
 **(a) ADOPT (unqualified, evidence-complete):** *nothing is adopted by this research.* No surface
 reaches an unconditional adopt verdict on this branch: the managed-Rescue candidate's mandatory
@@ -12336,7 +12437,7 @@ own future authorization):**
 
 **(d) Per-command deployment eligibility (which commands the evidence actually covers):**
 
-| Command | Evidence coverage | Eligible surface under this draft |
+| Command | Evidence coverage | Eligible surface under this (confirmed) recommendation |
 | --- | --- | --- |
 | `rescue-long` | Gate B both halves (v2, measured) + Gate A/C facts + retained M | the (b) surface only — per-Role waiting paragraph, foreground |
 | `rescue-repeat` | same, twice-measured (byte-identical contract-conforming captures) | the (b) surface only |
@@ -12361,9 +12462,11 @@ its mechanism and its exact output are the two parts this branch DID establish.
 ### 22.8 Raw-data note for Task 6
 
 Task 6 consumed no live case and produced no new raw observation data. Its only artifacts are this
-section, the plan's checkbox ticks, and disposable `/tmp` verification state (two verification
-copies `/tmp/swverify.EmH3MG` and `/tmp/swverify.BW3cgb`, both deleted after the runs; two manifest
-files, deleted; gate logs under `/tmp`, disposable). The failed attempt-1 result and the passing
-attempt-2 result are both recorded verbatim above (§22.2) — the failed run stays failed in the
-record; nothing was waived. No private rollout, preparation, auth or job body entered the
+section, the plan's checkbox ticks, and disposable `/tmp` verification state (three verification
+copies — `/tmp/swverify.EmH3MG` and `/tmp/swverify.BW3cgb` at the Task-6 commit's tree, and
+`/tmp/swverify.eafySu` at the final `9ab0ecd` tree — all deleted after their runs; manifest files
+and gate logs under `/tmp`, disposable). The failed attempt-1 result and the passing attempt-2
+result are both recorded verbatim above (§22.2) — the failed run stays failed in the record;
+nothing was waived. The closeout commit itself adds only docs bytes; its refresh battery produced
+no repository artifacts. No private rollout, preparation, auth or job body entered the
 repository at any point in Tasks 1–6.
