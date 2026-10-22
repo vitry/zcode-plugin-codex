@@ -2397,8 +2397,22 @@ export function nativeInterruptionGateDInput(record) {
  * this wiring the requirement had no producer — only hand-built test
  * fixtures set `stdoutCaptureRequired`, so a required-but-unprepared seam
  * passed the preflight silently).
+ *
+ * 2026-10-21 evidence-closure Task 4 ledger freeze (report §20.1/§20.8):
+ * the O1 (`rescue-long`) and O2 (`rescue-repeat`) case designs REQUIRE the
+ * attributable stdout/exit observer — O1's purpose is attributable full
+ * stdout/exit with exact job linkage, and O2's is fresh matching
+ * corroboration of O1's exact output — so membership arms the fixture's
+ * capture seam at preparation (the {@link runShellWaitCase} threading) for
+ * exactly the I/O1/O2 case designs. Enforcement layers, recorded not
+ * re-decided: the named preflight rejection arm is exercised for the
+ * interrupt case ({@link evaluateLiveLaunchPreflight}'s registered
+ * interrupt-case observer checks); the O1/O2 requirement is enforced by this
+ * arming plus the fail-closed capture admission (a capture-less run can
+ * never produce a passing exact-output verdict — the named admission failure
+ * rides the record).
  */
-export const STDOUT_CAPTURE_REQUIRED_CASES = Object.freeze(new Set(['rescue-interrupt']));
+export const STDOUT_CAPTURE_REQUIRED_CASES = Object.freeze(new Set(['rescue-interrupt', 'rescue-long', 'rescue-repeat']));
 
 /**
  * The registered wrapped-interrupt reliance (codex round 4 — the

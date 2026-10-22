@@ -10919,8 +10919,15 @@ process.exit(result.status ?? 1);
         dispose: async () => {},
       };
       const capturedOptions = [];
-      const persistCase = (caseLabel) => ({ case: caseLabel, codexBinary: process.execPath, sourceSha: 'a'.repeat(40), workerDurationMs: 420_000, capMs: 3_600_000, pollMs: 3_600_000, budgetMs: 1_200_000, output: root });
-      for (const caseLabel of ['rescue-interrupt', 'rescue-long']) {
+      const persistCase = (caseLabel) => ({
+        case: caseLabel, codexBinary: process.execPath, sourceSha: 'a'.repeat(40),
+        workerDurationMs: 420_000,
+        ...(caseLabel === 'rescue-baseline'
+          ? { capMs: null, pollMs: 60_000, budgetMs: 1_200_000 }
+          : { capMs: 3_600_000, pollMs: 3_600_000, budgetMs: 1_200_000 }),
+        output: root,
+      });
+      for (const caseLabel of ['rescue-interrupt', 'rescue-long', 'rescue-repeat', 'rescue-baseline']) {
         await runShellWaitCase(persistCase(caseLabel), {
           createFixture: async (options) => {
             capturedOptions.push({ case: caseLabel, options });
@@ -10932,7 +10939,11 @@ process.exit(result.status ?? 1);
       const interruptOptions = capturedOptions.find((entry) => entry.case === 'rescue-interrupt').options;
       assert.equal(interruptOptions.stdoutCapture, true, 'the registered requirement arms the seam at preparation');
       const longOptions = capturedOptions.find((entry) => entry.case === 'rescue-long').options;
-      assert.notEqual(longOptions.stdoutCapture, true, 'an unregistered case stays unarmed');
+      assert.equal(longOptions.stdoutCapture, true, 'the Task 4 ledger freeze registers the O1 long case\'s capture requirement');
+      const repeatOptions = capturedOptions.find((entry) => entry.case === 'rescue-repeat').options;
+      assert.equal(repeatOptions.stdoutCapture, true, 'the Task 4 ledger freeze registers the O2 fresh-repeat case\'s capture requirement');
+      const baselineOptions = capturedOptions.find((entry) => entry.case === 'rescue-baseline').options;
+      assert.notEqual(baselineOptions.stdoutCapture, true, 'a case with no registered capture requirement stays unarmed');
     });
 
     test('a REAL prepared rescue-interrupt fixture carries the armed seam and passes the preflight (codex round 2)', async (t) => {
@@ -11121,12 +11132,57 @@ process.exit(result.status ?? 1);
       // A case with no registered Task-3 observers (and no registered
       // capture requirement) is not blocked by them.
       const other = await evaluateLiveLaunchPreflight({
-        case: 'rescue-long', survivalControlSelector: null,
+        case: 'rescue-baseline', survivalControlSelector: null,
         fixture: { workspace, env: {} },
       });
       assert.equal(other.ok, true);
-      assert.equal(STDOUT_CAPTURE_REQUIRED_CASES.has('rescue-long'), false,
+      // The 2026-10-21 evidence-closure Task 4 ledger freeze: O1 (rescue-long)
+      // and O2 (rescue-repeat) require the attributable stdout capture, so the
+      // closed map registers both; a genuinely unlisted case carries no
+      // registered requirement.
+      assert.equal(STDOUT_CAPTURE_REQUIRED_CASES.has('rescue-long'), true,
+        'the Task 4 ledger freeze registers the O1 long case\'s capture requirement');
+      assert.equal(STDOUT_CAPTURE_REQUIRED_CASES.has('rescue-repeat'), true,
+        'the Task 4 ledger freeze registers the O2 fresh-repeat case\'s capture requirement');
+      assert.equal(STDOUT_CAPTURE_REQUIRED_CASES.has('rescue-baseline'), false,
         'the capture requirement set is CLOSED: unlisted cases carry no registered requirement');
+    });
+
+    test('the Task 4 ledger freeze pins the closed observer maps and the preflight scope (2026-10-21)', async (t) => {
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-ledger-freeze-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const workspace = join(root, 'workspace');
+      await mkdir(workspace, { recursive: true });
+      const dataRoot = join(root, 'data-root');
+      await mkdir(dataRoot, { recursive: true });
+      // §20.8's frozen per-case observer requirement: O1 (rescue-long) and O2
+      // (rescue-repeat) exercise the SAME §19.3 capture seam the interrupt
+      // case already registers (their designs require attributable stdout/exit
+      // and fresh exact-output corroboration). The set is CLOSED and frozen;
+      // its membership IS the registered requirement.
+      assert.deepEqual([...STDOUT_CAPTURE_REQUIRED_CASES].sort(),
+        ['rescue-interrupt', 'rescue-long', 'rescue-repeat'],
+        'the closed capture map covers exactly the registered I/O1/O2 case designs');
+      assert.equal(Object.isFrozen(STDOUT_CAPTURE_REQUIRED_CASES), true, 'the closed map is frozen');
+      // The registered I design stays DIRECT-mode only: the wrapped-reliance
+      // map stays EMPTY and frozen (§19.9 codex round 4). A wrapped-reliant
+      // design would have to be registered here and would then be
+      // preflight-rejected before any host launch — it is never run.
+      assert.equal(WRAPPED_INTERRUPT_REQUIRED_CASES.size, 0, 'no registered case relies on the wrapped interrupt path');
+      assert.equal(Object.isFrozen(WRAPPED_INTERRUPT_REQUIRED_CASES), true, 'the wrapped-reliance map is frozen');
+      // The implemented preflight scope, recorded not re-decided: the named
+      // capture-rejection arm is exercised for the interrupt case (checks 1-3
+      // above); the O1/O2 requirement is enforced through ARMING at fixture
+      // preparation (the producer threading) plus the fail-closed capture
+      // admission — so a capture-less rescue-long fixture still passes the
+      // preflight's early return, and a capture-less O1 run can never produce
+      // a passing exact-output verdict (the named admission failure rides the
+      // record instead).
+      const unArmedLong = await evaluateLiveLaunchPreflight({
+        case: 'rescue-long', survivalControlSelector: null, fixture: { workspace, env: {} },
+      });
+      assert.equal(unArmedLong.ok, true,
+        'the preflight stays scoped to the registered interrupt-case observers (the O1/O2 seam is enforced by arming plus the fail-closed admission, §20.8)');
     });
 
     /** A synthetic PERSISTED record in the exact buildCaseRecord schema, fully
