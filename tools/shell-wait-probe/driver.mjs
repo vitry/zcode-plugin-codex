@@ -28,7 +28,7 @@ import { renderRescueLauncherCommand } from '../../scripts/lib/rescue-launcher-c
 import { runProcess } from '../../scripts/lib/process.mjs';
 import { codexLaunch } from '../../scripts/lib/tool-launch.mjs';
 import { parseCodexRolloutJsonl } from '../../tests/helpers/codex-rescue-qualification.mjs';
-import { EXECUTING_EVIDENCE_SOURCE, interruptDeliveryAttributionGuard, extractInterruptInteraction, extractSurvivalControlFacts, inspectShellWaitEvidence, parseCallStatements, parseToolOutput, precedingStatementsCompleted, statementOutputAt, TERMINAL_INTERRUPT_PREVIOUS_STATUSES } from './evidence.mjs';
+import { EXECUTING_EVIDENCE_SOURCE, interruptDeliveryAttributionGuard, admitInterruptHostDelivery, extractInterruptInteraction, INTERRUPT_TARGET_HEX_SHAPE, extractSurvivalControlFacts, inspectShellWaitEvidence, observeSpawnAcknowledgementIdentity, parseCallStatements, parseToolOutput, precedingStatementsCompleted, statementOutputAt, TERMINAL_INTERRUPT_PREVIOUS_STATUSES } from './evidence.mjs';
 import { EXECUTING_CLOSURE_OBSERVATION_SOURCE, admitStdoutCapture, readDurableObligationSnapshot } from './closure-observation.mjs';
 import { EXECUTING_RELEASE_QUALIFICATION_SOURCE, evaluateSurvivalControl, exactRescueRenderedExpectation } from './release-qualification.mjs';
 import { EXECUTING_SHAPE_DIAGNOSTIC_SOURCE } from './shape-diagnostic.mjs';
@@ -49,7 +49,13 @@ const MAX_CASE_EXCERPTS = 64;
 // EXECUTE during live observation (the default executor admits the §19.3
 // stdout capture before the evidence adjudication), so every helper
 // executing during observation enters the observer digest (plan §3).
-const OBSERVER_DIGEST_TAG = 'zcode-shell-wait-observer-v4';
+// v5 (2026-10-21 evidence-closure Task 3) documents the construction change
+// mandated by the same plan §3 duty: the §19.4 host-delivery admission, the
+// spawn-acknowledgement identity selector, the interrupt-case durable
+// settlement reader (the closure-observation owner-index resolution mode)
+// and the live-launch preflight now EXECUTE during observation too — copying
+// the v4 digest onto these bytes would misattribute the new observers.
+const OBSERVER_DIGEST_TAG = 'zcode-shell-wait-observer-v5';
 
 // P2 round-29: module-INIT snapshot of the EXECUTING observer source — the
 // driver module body runs only after evidence.mjs has fully loaded, so this
@@ -578,6 +584,13 @@ export async function runShellWaitCase(input, dependencies = {}) {
     // command byte stay driver/fixture-owned. The fixture writes its OWN
     // bounded control script and records its closed facts.
     ...(caseInput.survivalControlSelector !== null ? { survivalControl: true } : {}),
+    // Codex round 2: the registered stdout-capture requirement
+    // (STDOUT_CAPTURE_REQUIRED_CASES — the §19.3(e) O1/I duty) ARMS the seam
+    // at fixture preparation, so a required case can actually reach the host
+    // instead of being refused by its own preflight. Task 4's ledger freeze
+    // extends the closed set at the STDOUT_CAPTURE_REQUIRED_CASES definition;
+    // this threading site needs no further edit.
+    ...(STDOUT_CAPTURE_REQUIRED_CASES.has(caseInput.case) ? { stdoutCapture: true } : {}),
     // R3: the live status-wait case NEVER uses the fixture's owning-session
     // reservation — production selects explicit Status targets OWNER-SCOPED,
     // so the job must be created inside the live host session itself (the
@@ -1017,6 +1030,7 @@ function buildCaseRecord(caseInput, fixture, liveFacts, /** @type {'executed' | 
       orderingBound: liveFacts.interrupt?.orderingBound ?? null,
       target: liveFacts.interrupt?.target ?? null,
       exactTargetMatch: liveFacts.interrupt?.exactTargetMatch ?? null,
+      ...(liveFacts.interrupt?.exactTargetMatchBasis != null ? { exactTargetMatchBasis: liveFacts.interrupt.exactTargetMatchBasis } : {}),
       settled: liveFacts.interrupt?.settled ?? null,
       settledBasis: liveFacts.interrupt?.settledBasis ?? null,
       pendingIntervalMs: liveFacts.interrupt?.pendingIntervalMs ?? null,
@@ -1027,8 +1041,31 @@ function buildCaseRecord(caseInput, fixture, liveFacts, /** @type {'executed' | 
       // timestamp behind the settlement attribution persist ONLY when the
       // live facts carried them — legacy records stay byte-identical — so
       // the boundary-vs-marker comparison is re-verifiable offline.
+      // 2026-10-21 evidence-closure Task 3 (schema-additive, attempted
+      // interrupt runs only): the closed pending-window / ordering /
+      // cleanup-attribution facts and the §19.4 host-delivery admission
+      // block (bounded closed facts, never call text or aliases) so the
+      // offline Gate D join re-verifies every layer after fixture disposal.
+      ...(liveFacts.interrupt?.attempted === true && liveFacts.interrupt?.pendingWindowObserved !== undefined
+        ? { pendingWindowObserved: liveFacts.interrupt.pendingWindowObserved === true }
+        : {}),
+      // Codex round 2: the unreadable-continuation fact the Gate D join
+      // consumes persists beside the record (schema-additive, attempted
+      // runs only) — the offline join keeps the rejection after fixture
+      // disposal instead of reporting a hand-supplied false.
+      ...(liveFacts.interrupt?.attempted === true && liveFacts.interrupt?.unreadableContinuationObserved !== undefined
+        ? { unreadableContinuationObserved: liveFacts.interrupt.unreadableContinuationObserved === true }
+        : {}),
+      ...(liveFacts.interrupt?.attempted === true && liveFacts.interrupt?.settlementCleanupGenerated !== undefined
+        ? { settlementCleanupGenerated: liveFacts.interrupt.settlementCleanupGenerated === true }
+        : {}),
+      ...(liveFacts.interrupt?.attempted === true && liveFacts.interrupt?.hostDelivery !== undefined
+        ? { hostDelivery: liveFacts.interrupt.hostDelivery }
+        : {}),
       ...(typeof liveFacts.interrupt?.cleanupBoundaryAtMs === 'number' ? { cleanupBoundaryAtMs: liveFacts.interrupt.cleanupBoundaryAtMs } : {}),
       ...(typeof liveFacts.interrupt?.cancelledAtMs === 'number' ? { cancelledAtMs: liveFacts.interrupt.cancelledAtMs } : {}),
+      ...(typeof liveFacts.interrupt?.completedBeforeCallMs === 'number' ? { completedBeforeCallMs: liveFacts.interrupt.completedBeforeCallMs } : {}),
+      ...(typeof liveFacts.interrupt?.completedAfterCallMs === 'number' ? { completedAfterCallMs: liveFacts.interrupt.completedAfterCallMs } : {}),
     },
     // The §16.4 I1 survival-control provenance: the record carries the closed
     // selector ONLY when it was requested, the projected §16.4 whitelist
@@ -2117,6 +2154,341 @@ export function statusWaitDurableSnapshotSupplier(fixture, observedIdentity = nu
 }
 
 /**
+ * The rescue-interrupt case's durable settlement reader (2026-10-21
+ * evidence-closure Task 3; ownership corrected by codex round 1): the §16.2
+ * trace froze that a native Child interruption settles the turn and its
+ * active cells but does NOT terminate the worker/Companion process and does
+ * NOT cancel the plugin's durable job — so the completion-shaped
+ * child-settlement watch can never settle this path, and the durable
+ * obligation snapshot is THE settlement reader for the Companion outcome and
+ * the durable winner/duties.
+ *
+ * OWNERSHIP (the production contract, verified by reading
+ * scripts/zcode-companion.mjs: the caller resolves through the executor's
+ * PARENT session (:862 `sessionId: executor?.parentSessionId ?? …`) and the
+ * reservation is `ownerSessionId: caller.sessionId` (:1464, reserved :1530))
+ * — the durable job belongs to the ROOT, never to the Child running the
+ * launcher. The reader therefore binds ownership to the OBSERVED PARENT
+ * identity and VERIFIES the job's executor binding against the OBSERVED
+ * CHILD identity (`expectedExecutorAgentId` — a binding whose `childAgentId`
+ * disagrees is the named `binding-executor-mismatch` unknown state, never
+ * settled). The exact job resolves through the owner-index join
+ * (`resolveJobFromOwnerIndex`): the job is created inside the live session
+ * and is never addressable pre-run, and a partition with multiple valid
+ * owned jobs stays named-unestablished (never latest-job guessing, §19.5).
+ * No observable identity — either one missing, or an inexact join — means NO
+ * supplier: the executor records the NAMED reason, never a silent null
+ * layer.
+ * @param {ShellWaitFixtureHandle} fixture
+ * @param {{ exact?: boolean, childThreadId?: unknown, parentThreadId?: unknown } | null} observedIdentity
+ *   the {@link observeSpawnAcknowledgementIdentity} projection for the run's
+ *   own rollouts (the exact spawn-acknowledgement join: BOTH the Root parent
+ *   and the Child)
+ * @returns {(() => Promise<Record<string, unknown>>) | null}
+ */
+export function interruptDurableSnapshotSupplier(fixture, observedIdentity = null) {
+  const dataRoot = /** @type {any} */ (fixture)?.env?.ZCODE_DATA_ROOT;
+  const workspace = /** @type {any} */ (fixture)?.workspace;
+  if (typeof dataRoot !== 'string' || typeof workspace !== 'string') return null;
+  const childThreadId = observedIdentity !== null && typeof /** @type {any} */ (observedIdentity).childThreadId === 'string'
+    && /** @type {any} */ (observedIdentity).childThreadId.length > 0
+    ? /** @type {any} */ (observedIdentity).childThreadId : null;
+  const parentThreadId = observedIdentity !== null && typeof /** @type {any} */ (observedIdentity).parentThreadId === 'string'
+    && /** @type {any} */ (observedIdentity).parentThreadId.length > 0
+    ? /** @type {any} */ (observedIdentity).parentThreadId : null;
+  // Only the EXACT spawn-acknowledgement join carrying BOTH identities may
+  // bind the reader: the owner is the observed PARENT (Root) session and the
+  // executor claim is verified against the observed Child. An inexact or
+  // half-observed identity never grounds the reader — the supplier stays
+  // null with the named executor reason.
+  if (observedIdentity === null || observedIdentity.exact !== true || childThreadId === null || parentThreadId === null) return null;
+  return () => readDurableObligationSnapshot({
+    dataRoot,
+    workspace,
+    ownerSessionId: parentThreadId,
+    expectedExecutorAgentId: childThreadId,
+    resolveJobFromOwnerIndex: true,
+  });
+}
+
+/**
+ * The offline Gate D join (2026-10-21 evidence-closure Task 3): ONE place
+ * maps a persisted case record into the frozen native-interruption oracle's
+ * input (release-qualification.mjs evaluateNativeInterruptionSettlement), wiring EVERY layer through the exact observed identity. The
+ * mappings follow the §19.2 offline re-adjudication conventions (record
+ * facts only, null stays unestablished) extended with the Task 3 facts:
+ * the §19.4 host-activity admission (a record without the block — a legacy
+ * shape — fails closed `host-activity-unadmitted`), the closed
+ * pending-window / pre-call-completion / cleanup-generated facts, and the
+ * settlement readers' outputs (the child settlement layers + the typed
+ * durable snapshot) joined to the Companion/durable/terminal layers. The
+ * join authorizes nothing by itself: the frozen oracle remains the sole
+ * adjudicator.
+ * @param {Record<string, any>} record the persisted case record
+ * @returns {{ delivery: { delivered: boolean | null, exactTargetMatch: boolean | null, aliasResolved: boolean | null,
+ *   terminalBeforeInterruptBasis: string, terminalBeforeInterrupt: boolean | null, deliverySent: boolean | null, previousStatusOnly: boolean, unreadableContinuation: boolean, pendingWindowConfirmed: boolean | null, hostActivityAdmitted: boolean | null }, turnSettled: boolean | null, deliveryToSettlementMs: number | null, companionOutcome: 'ceased' | 'terminal-result' | 'survived-unsettled' | null, durableObligations: 'settled' | 'unresolved' | null, cleanupKill: boolean, survivalControl: Record<string, unknown> | null, terminalWinner: 'succeeded' | 'failed' | 'cancelled' | null, naturalCompletionObserved: boolean, statusObservationTimeoutOnly: boolean }}
+ */
+export function nativeInterruptionGateDInput(record) {
+  if (!record || typeof record !== 'object') throw invalidCaseInput('the Gate D join needs the persisted case record.');
+  const interrupt = /** @type {any} */ (record).interrupt ?? {};
+  const observations = /** @type {any} */ (record).observations ?? {};
+  const child = /** @type {any} */ (record).child ?? {};
+  const settlementLayers = child.settlementLayers ?? null;
+  const durableSnapshot = child.durableSnapshot ?? null;
+  // The exact identity join: the delivery facts are only as good as the
+  // observed linkage. A record that lost its Child id keeps the target
+  // attribution unestablished (the admission block still rides — it was
+  // established during the run) — the frozen oracle refuses the layer.
+  const exactTargetEstablished = interrupt.exactTargetMatch === true
+    && (typeof (/** @type {any} */ (record).linkage)?.childThreadId === 'string');
+  const durableAggregate = durableSnapshot && typeof durableSnapshot === 'object' ? durableSnapshot.aggregate ?? null : null;
+  const rawJobStatus = durableSnapshot?.job?.presence === 'found'
+    && durableSnapshot?.job?.projection && typeof durableSnapshot.job.projection === 'object'
+    ? durableSnapshot.job.projection.status ?? null
+    : null;
+  // Only a production-TERMINAL status is an observed winner (the §19.5
+  // TERMINAL set); anything else stays null, never a positive fact.
+  const jobStatus = rawJobStatus === 'succeeded' || rawJobStatus === 'failed' || rawJobStatus === 'cancelled' ? rawJobStatus : null;
+  // Codex round 2: the job's winner/executor evidence is consumable ONLY
+  // from a POSITIVELY observed durable snapshot — an unestablished or torn
+  // snapshot (e.g. the executor linkage unverified) is never consumed as
+  // Companion/terminal evidence by the Gate D join.
+  // Codex round 3: the durable obligations layer's own aggregate is never
+  // enough for the CHILD-ATTRIBUTED outcomes — the reader's EXPORTED
+  // executor-linkage fact must be POSITIVELY 'verified' (an `unresolved`
+  // aggregate — terminal + marked claim — can coexist with a mismatched or
+  // unverified executor; the named cause then rides the record and the
+  // obligations layer keeps reporting its own per-fact state).
+  const durableEstablished = (durableAggregate === 'settled' || durableAggregate === 'unresolved')
+    && (durableSnapshot && typeof durableSnapshot === 'object'
+      ? /** @type {any} */ (durableSnapshot).executorLinkage === 'verified'
+      : false);
+  // The Companion outcome layer (codex round 1 — the cancelled-poll path):
+  // the completion-shaped watch is frozen out of the interrupt case, so the
+  // CompanIONS's REMOTE outcome is observed through the durable job's
+  // PRODUCTION-published terminal winner (§16.2: the worker publishes
+  // succeeded/failed through the natural-terminal branch) — joined as this
+  // layer's own named derivation, never null-by-omission when positively
+  // observed. The LOCAL reaping layer stays null on this path (registered
+  // §19.9 limitation: no post-abort poll exists to decode a Companion exit).
+  /** @type {'ceased' | 'terminal-result' | 'survived-unsettled' | null} */
+  let companionOutcome = null;
+  if (settlementLayers?.remoteTerminal === true) companionOutcome = 'terminal-result';
+  else if (jobStatus !== null && durableEstablished) companionOutcome = 'terminal-result';
+  else if (settlementLayers?.localProcessReaping === 'natural-exit-observed') companionOutcome = 'ceased';
+  // Codex round 3: the survived-unsettled classification is equally
+  // CHILD-attributed (the durable work observed alive-unsettled) — it is
+  // published only on a POSITIVELY verified executor linkage.
+  else if (durableAggregate === 'unresolved' && durableEstablished) companionOutcome = 'survived-unsettled';
+  const completedBeforeCall = typeof interrupt.completedBeforeCallMs === 'number';
+  const settledBasis = typeof interrupt.settledBasis === 'string' ? interrupt.settledBasis : null;
+  // Codex round 5: the ADMITTED delivery inside a CONFIRMED window is the
+  // authoritative host-delivery evidence — the admitted §19.4 item proves
+  // the dispatch was received (host-resolved identity) and the confirmed
+  // window proves the observation was pending at that dispatch. Missing or
+  // unavailable settlement NEVER downgrades a proven delivery to a
+  // previous-status-only snapshot. Settlement unavailability then rejects
+  // ONLY the settlement layer (the named turn-settlement reason), never the
+  // delivery layer's earned facts.
+  const provenDelivery = interrupt.hostDelivery?.admitted === true
+    && interrupt.pendingWindowObserved === true;
+  // Codex round 6 — the ROOT-SPECIFIED three-valued terminalBeforeInterrupt
+  // (never a boolean guess):
+  //   true   ONLY on positive terminal evidence — the persisted terminal
+  //          previous-status fact (the pinned AgentStatus labels, incl. a
+  //          prior 'interrupted') or a demonstrably pre-call completion;
+  //   false  ONLY on positive open-window evidence — an ADMITTED host item
+  //          inside a confirmed pending window — with NO contradicting
+  //          terminal evidence;
+  //   null   on contradiction (both positive evidences coexist — NAMED, the
+  //          basis records the why) or on NO evidence (named
+  //          nothing-to-conclude): missing identity evidence is never a
+  //          completion diagnosis, and the settlement basis is settlement
+  //          evidence, not terminal-state evidence (an item-absent record
+  //          with a cancellation settlement keeps the value unknown).
+  const terminalPreviousStatusEvidence = typeof interrupt.previousStatus === 'string'
+    && TERMINAL_INTERRUPT_PREVIOUS_STATUSES.has(interrupt.previousStatus);
+  const preCallCompletionEvidence = completedBeforeCall || settledBasis === 'post-completion-delivery-not-attributed';
+  const terminalStateEvidence = terminalPreviousStatusEvidence || preCallCompletionEvidence;
+  /** @type {boolean | null} */
+  let terminalBeforeInterrupt = null;
+  /** @type {string} */
+  let terminalBeforeInterruptBasis;
+  if (provenDelivery === true && terminalStateEvidence) {
+    terminalBeforeInterrupt = null;
+    terminalBeforeInterruptBasis = 'contradiction-terminal-status-vs-open-window';
+  } else if (terminalPreviousStatusEvidence) {
+    terminalBeforeInterrupt = true;
+    terminalBeforeInterruptBasis = 'terminal-previous-status-evidence';
+  } else if (preCallCompletionEvidence) {
+    terminalBeforeInterrupt = true;
+    terminalBeforeInterruptBasis = 'pre-call-completion-evidence';
+  } else if (provenDelivery === true) {
+    terminalBeforeInterrupt = false;
+    terminalBeforeInterruptBasis = 'admitted-open-pending-window';
+  } else {
+    terminalBeforeInterrupt = null;
+    terminalBeforeInterruptBasis = 'no-terminal-state-evidence';
+  }
+  return {
+    delivery: {
+      delivered: typeof interrupt.delivered === 'boolean' ? interrupt.delivered : null,
+      exactTargetMatch: exactTargetEstablished === true ? true : interrupt.exactTargetMatch === false ? false : null,
+      aliasResolved: exactTargetEstablished === true ? true : null,
+      terminalBeforeInterrupt,
+      // Codex round 6: the NAMED basis for the three-valued fact (the
+      // contradiction/no-evidence causes ride the record; the frozen oracle
+      // rejects the delivery layer on null via its existing strict conjunct).
+      terminalBeforeInterruptBasis,
+      // A delivery with an observed outcome demonstrably dispatched; an
+      // unobserved outcome keeps the dispatch unestablished (§19.2).
+      deliverySent: interrupt.attempted === true ? (interrupt.delivered === null ? null : true) : interrupt.attempted === false ? false : null,
+      // The §19.2 convention, REVISED by codex round 5: a PREVIOUS status is
+      // the ONLY delivery evidence when no admitted host item corroborates a
+      // confirmed pending window — a proven delivery (admitted item +
+      // confirmed window) is never downgraded to a snapshot-only fact by an
+      // unobserved settlement.
+      previousStatusOnly: interrupt.previousStatus != null && interrupt.settled == null && provenDelivery !== true,
+      unreadableContinuation: interrupt.unreadableContinuationObserved === true,
+      // The Task 3 closed fact decides when PRESENT — true AND false alike
+      // (codex round 5: an explicit false is a real negative observation —
+      // the poll may have resolved before the interrupt; a historical poll
+      // start never establishes pending-at-delivery). The legacy §19.2
+      // fallback (the attributable poll start + bound ordering) applies ONLY
+      // when the explicit field is ABSENT (legacy records).
+      pendingWindowConfirmed: 'pendingWindowObserved' in interrupt
+        ? interrupt.pendingWindowObserved === true
+        : (observations.pollStartedAtElapsedMs != null && interrupt.orderingBound === true),
+      // The §19.4 admission: a record without the block fails closed.
+      hostActivityAdmitted: interrupt.hostDelivery && typeof interrupt.hostDelivery === 'object'
+        ? interrupt.hostDelivery.admitted === true
+        : null,
+    },
+    turnSettled: typeof interrupt.settled === 'boolean' ? interrupt.settled : null,
+    deliveryToSettlementMs: typeof interrupt.deliveryToSettlementMs === 'number' ? interrupt.deliveryToSettlementMs : null,
+    companionOutcome,
+    // Layer separation (codex round 3): the obligations layer reports its own
+  // aggregate per-fact even when the Child-attributed outcomes are refused
+  // for an unverified executor.
+  durableObligations: durableAggregate === 'settled' ? 'settled' : durableAggregate === 'unresolved' ? 'unresolved' : null,
+    // The cleanup boundary is a mapper-level fact (the settled resolution's
+    // own timestamp at/after the earliest recorded boundary): the join never
+    // re-derives it from coarse kill flags.
+    cleanupKill: interrupt.settlementCleanupGenerated === true,
+    survivalControl: /** @type {any} */ (record).survivalControl ?? null,
+    terminalWinner: durableEstablished ? jobStatus : null,
+    // The natural-completion guard: a natural completion basis whose winner
+    // was recorded `cancelled` is the misclassification the oracle blocks.
+    naturalCompletionObserved: settledBasis === 'terminal-observation-after-delivery',
+    // The interrupt case has no Status-deadline flow: the guard stays false.
+    statusObservationTimeoutOnly: false,
+  };
+}
+
+/**
+ * The registered per-case stdout-capture requirement (2026-10-21
+ * evidence-closure Task 3, the self-review round-1 producer wiring): the
+ * §19.3(e) O1/I capture-preflight duty — the FIRST registered O1/I case must
+ * verify the seam in-fixture — covers the interrupt case, so its live launch
+ * REQUIRES the fixture-prepared stdout-capture seam. The set is CLOSED and
+ * this export is its PRODUCER: Task 4's ledger freeze extends it to the
+ * exact O1/O2 command case(s); a case not listed carries NO registered
+ * capture requirement and is never blocked by the check (surveyed: before
+ * this wiring the requirement had no producer — only hand-built test
+ * fixtures set `stdoutCaptureRequired`, so a required-but-unprepared seam
+ * passed the preflight silently).
+ */
+export const STDOUT_CAPTURE_REQUIRED_CASES = Object.freeze(new Set(['rescue-interrupt']));
+
+/**
+ * The registered wrapped-interrupt reliance (codex round 4 — the
+ * supported-path limitation's preflight arm): a rescue-interrupt design that
+ * RELIES on the code-mode-wrapped delivery path is rejected BEFORE any host
+ * launch, because the wrapped path is NOT exact-target attributable on this
+ * pin (the delegate-allocated nested exec id never persists — see the
+ * evidence.mjs registration). The set is CLOSED and EMPTY: the registered I
+ * design is the DIRECT (top-level interrupt_agent) invocation, the only
+ * qualified interruption path. Task 4's ledger freeze extends the set at
+ * this definition if a future design ever relies on the wrapped path; the
+ * injectable dependency keeps the mechanism pipeline-testable.
+ */
+export const WRAPPED_INTERRUPT_REQUIRED_CASES = Object.freeze(new Set());
+
+/**
+ * The live-launch preflight (2026-10-21 evidence-closure Task 3, the Exit
+ * clause): BEFORE any host launch, verify that every observer the
+ * registered case design REQUIRES is actually armed on the fixture. A known
+ * absent observer rejects the launch with its named reason — the case fails
+ * closed at zero model turns instead of burning a registered live case on
+ * an observation that could never be made. Checks (rescue-interrupt, the
+ * Task 3 registered case):
+ *   - the declared survival control's fixture-owned script file exists;
+ *   - the durable settlement reader's partition basis (the fixture data
+ *     roots) exists — the durable/Companion layers must be observable;
+ *   - the registered stdout-capture requirement
+ *     ({@link STDOUT_CAPTURE_REQUIRED_CASES}) is met by the fixture's
+ *     ACTUAL prepared seam (the fixture-generated handle present and its
+ *     preload file on disk).
+ * Cases without registered Task-3 observers are not blocked by them.
+ * @param {{ case: string, survivalControlSelector: string | null, fixture: any }} input
+ * @param {{ lstat?: typeof import('node:fs/promises').lstat, wrappedInterruptRequiredCases?: readonly string[] }} [dependencies]
+ * @returns {Promise<{ ok: boolean, reason: string | null }>}
+ */
+export async function evaluateLiveLaunchPreflight(input, dependencies = {}) {
+  const lstat = dependencies.lstat ?? (await import('node:fs/promises')).lstat;
+  const wrappedRequired = dependencies.wrappedInterruptRequiredCases ?? WRAPPED_INTERRUPT_REQUIRED_CASES;
+  // (0) The wrapped-path reliance gate (codex round 4): a case whose
+  // registered design relies on the code-mode-wrapped interrupt is refused
+  // pre-launch — that path cannot establish the exact-target layer on this
+  // pin (the registered limitation).
+  if (input.case !== null && input.case !== undefined
+    && Array.isArray(/** @type {readonly string[]} */ (wrappedRequired))
+    && /** @type {readonly string[]} */ (wrappedRequired).includes(input.case)) {
+    return { ok: false, reason: 'the registered design relies on the code-mode-wrapped interrupt path, which is not exact-target attributable on this pin (the wrapped-interrupt limitation)' };
+  }
+  const fixture = /** @type {any} */ (input)?.fixture;
+  if (!input || typeof input !== 'object' || !fixture || typeof fixture !== 'object') {
+    throw invalidCaseInput('the live-launch preflight needs the validated case input and the fixture handle.');
+  }
+  if (input.case !== 'rescue-interrupt') return { ok: true, reason: null };
+  // (1) The declared survival control must exist on disk (the fixture-owned
+  // script bytes the directive references).
+  if (input.survivalControlSelector !== null && input.survivalControlSelector !== undefined) {
+    const controlPath = fixture.survivalControlPath;
+    if (typeof controlPath !== 'string' || controlPath.length === 0) {
+      return { ok: false, reason: 'the declared survival-control selector has no fixture-owned control script (the control observer is known absent)' };
+    }
+    const stats = await lstat(controlPath).catch(() => null);
+    if (stats === null || !stats.isFile()) {
+      return { ok: false, reason: 'the declared survival-control script file is absent (the control observer is known absent)' };
+    }
+  }
+  // (2) The durable settlement reader's partition basis must exist: the
+  // reader observes the fixture-owned partition under the fixture data root.
+  const dataRoot = fixture.env?.ZCODE_DATA_ROOT;
+  const workspace = fixture.workspace;
+  if (typeof dataRoot !== 'string' || dataRoot.length === 0 || typeof workspace !== 'string' || workspace.length === 0
+    || await lstat(dataRoot).then((stats) => !stats.isDirectory(), () => true)) {
+    return { ok: false, reason: 'the durable settlement reader has no observable partition basis (the fixture data roots are absent)' };
+  }
+  // (3) The registered stdout-capture requirement comes from the CLOSED
+  // driver-level case map (the producer), and the fixture's ACTUAL prepared
+  // seam must satisfy it: the fixture-generated handle present with its
+  // preload file on disk.
+  if (STDOUT_CAPTURE_REQUIRED_CASES.has(input.case)) {
+    const capture = fixture.stdoutCapture;
+    if (!capture || typeof capture !== 'object' || typeof capture.preloadPath !== 'string') {
+      return { ok: false, reason: 'the registered stdout capture seam is not armed (the exact-output observer is known absent: the fixture was not prepared with the capture seam this case requires)' };
+    }
+    const preloadStats = await lstat(capture.preloadPath).catch(() => null);
+    if (preloadStats === null || !preloadStats.isFile()) {
+      return { ok: false, reason: 'the registered stdout capture preload is absent (the exact-output observer is known absent)' };
+    }
+  }
+  return { ok: true, reason: null };
+}
+
+/**
  * The held-turn input. `readDurableSnapshot` (2026-10-21 evidence-closure
  * Task 2) runs the passive durable obligation reader at settlement-layer
  * construction time — started BEFORE the Child-settlement watch and always
@@ -3123,6 +3495,14 @@ async function executeDefaultLiveCaseBody({ input, fixture }) {
     FAKE_ZCODE_PROCESS_NONCE: processNonce,
     ...(spec.noise === true ? { FAKE_ZCODE_STDERR_BYTES: '4096', FAKE_ZCODE_SESSION_PROGRESS: 'terminal' } : {}),
   };
+  // 2026-10-21 evidence-closure Task 3 (the Exit clause): the live-launch
+  // preflight runs BEFORE any host launch — a registered required observer
+  // that is known absent rejects the case at zero model turns with its named
+  // reason, never a burned live label on an unobservable run.
+  const preflight = await evaluateLiveLaunchPreflight({ case: input.case, survivalControlSelector: input.survivalControlSelector, fixture });
+  if (preflight.ok !== true) {
+    throw invalidCaseInput(`shell-wait live-launch preflight rejected the case before launch: ${preflight.reason}`);
+  }
   const versionRun = await runProcess(codexLaunch(['--version'], { env: runEnv }), { cwd: fixture.workspace, env: runEnv, timeoutMs: 30_000, maxOutputBytes: 64 * 1024 });
   const codexVersion = /\b(\d+\.\d+\.\d+)\b/u.exec(`${versionRun.stdout}${versionRun.stderr}`)?.[1] ?? null;
   const expectedCommand = spec.family === /** @type {'rescue'} */ ('rescue')
@@ -3294,6 +3674,29 @@ async function executeDefaultLiveCaseBody({ input, fixture }) {
         const observed = observedDurableIdentity.jobId !== null && observedDurableIdentity.ownerSessionId !== null
           ? { jobId: observedDurableIdentity.jobId, ownerSessionId: observedDurableIdentity.ownerSessionId } : null;
         const durableSupplier = statusWaitDurableSnapshotSupplier(fixture, observed);
+        return durableSupplier === null
+          ? Promise.resolve({ aggregate: 'unestablished', reasons: ['durable-identity-unobserved'] })
+          : durableSupplier();
+      },
+    } : {}),
+    ...(input.case === 'rescue-interrupt' ? {
+      // 2026-10-21 evidence-closure Task 3: the interrupt case's settlement
+      // reader (§16.2 froze that the interruption never terminates the
+      // worker/Companion nor cancels the durable job, so the completion-shaped
+      // watch can never settle this path — the durable obligation snapshot is
+      // THE companion/durable observable). The identity is the OBSERVED
+      // exact spawn acknowledgement, resolved from the live rollouts at
+      // settlement time; the exact job resolves through the owner-index join
+      // (never latest-job guessing). An unresolvable identity is the NAMED
+      // unestablished observation, never a silent absent layer.
+      readDurableSnapshot: async () => {
+        let observedIdentity = null;
+        try {
+          observedIdentity = observeSpawnAcknowledgementIdentity(await loadShellWaitRollouts(fixture.codexHome));
+        } catch (error) {
+          return { aggregate: 'unestablished', reasons: [`durable-identity-unobserved: ${String(error instanceof Error ? error.message : error)}`] };
+        }
+        const durableSupplier = interruptDurableSnapshotSupplier(fixture, observedIdentity);
         return durableSupplier === null
           ? Promise.resolve({ aggregate: 'unestablished', reasons: ['durable-identity-unobserved'] })
           : durableSupplier();
@@ -3814,14 +4217,56 @@ export function mapShellWaitLiveFacts(input, held, evidence, codexVersion, rollo
   // the binding is derived from the supported evidence's exact child thread
   // id plus the exact launcher command; without both, ordering fails closed.
   const interruptChildThreadId = evidence?.status === 'supported' ? /** @type {any} */ (evidence.facts)?.linkage?.childThreadId ?? null : null;
+  const interruptRootThreadId = evidence?.status === 'supported' ? /** @type {any} */ (evidence.facts)?.linkage?.parentThreadId ?? null : null;
   const interruptBindingOptions = interruptChildThreadId !== null && typeof companionCommand === 'string' && companionCommand.length > 0
     ? { childThreadId: interruptChildThreadId, command: companionCommand }
     : null;
   const interruptInteraction = extractInterruptInteraction(rollouts ?? [], redactions ?? [], interruptBindingOptions);
   const evidenceChildThreadId = interruptChildThreadId;
-  const interruptExactTargetMatch = interruptInteraction.target.value !== null && evidenceChildThreadId !== null
-    ? interruptInteraction.target.value === evidenceChildThreadId
+  // The §19.4 host-activity admission (2026-10-21 evidence-closure Task 3):
+  // the host-emitted SubAgentActivity(kind=interrupted) item joined to the
+  // ONE interrupt call through the registered admission set (every conjunct;
+  // counterexamples fail closed with their named reasons). Non-interrupt
+  // cases never run the admission (no registered delivery to admit).
+  const hostDeliveryAdmission = input.case === 'rescue-interrupt' && interruptInteraction.attempted
+    ? admitInterruptHostDelivery(rollouts ?? [], interruptInteraction, { childThreadId: interruptChildThreadId, rootThreadId: interruptRootThreadId })
     : null;
+  // The exact-target attribution: the id comparison first (the caller
+  // supplied an id-shaped target); otherwise the HOST-resolved identity —
+  // the host resolved any alias itself and emitted the exact resolved agent
+  // id (§19.4 conjunct 3), so an ADMITTED item establishes the exact target
+  // even when the caller-supplied alias text stays suppressed. Caller text
+  // is never relabeled authoritative: the suppressed target projection is
+  // byte-unchanged.
+  // Codex round 7: production accepts the uuid crate's parse forms for
+  // ThreadId targets (protocol/src/thread_id.rs `ThreadId::from_string` =
+  // `Uuid::parse_str`: CASE-INSENSITIVE; hyphenated, simple/unhyphenated,
+  // URN and braced forms parse; `Display` emits the canonical
+  // lowercase-hyphenated form). The comparison therefore normalizes both
+  // sides to the canonical hex form before failing lexical equality; the
+  // normalization basis is recorded on the facts, and a genuinely different
+  // uuid stays rejected.
+  /** @param {string} value */
+  const canonicalUuidHex = (value) => value.replace(/[-{}]/g, '').replace(/^urn:uuid:/iu, '').toLowerCase();
+  const targetValue = interruptInteraction.target.value;
+  const lexicalOrNormalized = targetValue !== null && evidenceChildThreadId !== null
+    ? (targetValue === evidenceChildThreadId
+      ? true
+      : (INTERRUPT_TARGET_HEX_SHAPE.test(canonicalUuidHex(targetValue))
+        && INTERRUPT_TARGET_HEX_SHAPE.test(canonicalUuidHex(evidenceChildThreadId))
+        && canonicalUuidHex(targetValue) === canonicalUuidHex(evidenceChildThreadId)))
+    : null;
+  const interruptExactTargetMatch = lexicalOrNormalized !== null
+    ? lexicalOrNormalized
+    : hostDeliveryAdmission?.admitted === true
+      ? true
+      : null;
+  /** @type {'lexical' | 'uuid-normalized' | 'host-admitted-identity' | null} */
+  const interruptExactTargetMatchBasis = interruptExactTargetMatch !== true
+    ? null
+    : lexicalOrNormalized !== null
+      ? (targetValue === evidenceChildThreadId ? 'lexical' : 'uuid-normalized')
+      : 'host-admitted-identity';
   // Codex round-6 review fix; generalized by the round-9 review fix: the
   // survival delivery bound consumes the SAME cleanup-aware settlement
   // attribution the mapper's settlement branches apply — for EVERY response
@@ -3961,6 +4406,14 @@ export function mapShellWaitLiveFacts(input, held, evidence, codexVersion, rollo
     // surviving pending observation is not a claim that THIS Child's turn was
     // interrupted.
     else if (interruptExactTargetMatch !== true) interruptSettledBasis = 'delivery-target-unmatched-no-settlement-claim';
+    // Codex round 7 (the §19.4 conjunct-1 contract): the interrupt CALL must
+    // live in the OWNING ROOT's rollout — a sibling session's call never
+    // settles the Root item, however well the target identity matches.
+    else if (hostDeliveryAdmission !== null
+      && (hostDeliveryAdmission.reasons.includes('host-activity-foreign-call-rollout')
+        || hostDeliveryAdmission.reasons.includes('host-activity-call-rollout-unestablished'))) {
+      interruptSettledBasis = 'foreign-call-rollout-no-settlement-claim';
+    }
     // P2 round-27 fix: an unreadable continuation response leaves the
     // settlement outcome UNKNOWN — it could represent completion or
     // termination, so neither settlement nor a surviving-turn claim is
@@ -4125,12 +4578,30 @@ export function mapShellWaitLiveFacts(input, held, evidence, codexVersion, rollo
     orderingBound: interruptInteraction.orderingBound,
     target: interruptInteraction.target,
     exactTargetMatch: interruptExactTargetMatch,
+    // Codex round 7: HOW the exact target was established — the caller
+    // text is never relabeled; the basis records the comparison form
+    // (lexical / uuid-normalized / host-admitted-identity) or null.
+    exactTargetMatchBasis: interruptExactTargetMatchBasis,
     settled: interruptSettled,
     settledBasis: interruptSettledBasis,
     pendingIntervalMs: interruptPendingIntervalMs,
     deliveryToSettlementMs: interruptDeliveryToSettlementMs,
     timingBasis: interruptTimingBasis,
     missingPrerequisite: interruptMissingPrerequisite,
+    // 2026-10-21 evidence-closure Task 3 (schema-additive, attempted runs
+    // only — legacy records stay byte-identical): the closed pending-window
+    // and ordering facts the offline Gate D join consumes, the
+    // cleanup-generated settlement attribution (the survival reader's single
+    // source of truth, persisted verbatim), and the §19.4 host-delivery
+    // admission block (bounded closed facts — booleans, counts, the emission
+    // timestamp, named reasons; never the call text, never the alias).
+    ...(interruptInteraction.attempted ? {
+      pendingWindowObserved: interruptInteraction.pendingBeforeCall.observed === true,
+      settlementCleanupGenerated: settledDeliveryCleanupGenerated === true,
+      ...(hostDeliveryAdmission !== null ? { hostDelivery: hostDeliveryAdmission } : {}),
+    } : {}),
+    ...(interruptInteraction.completedBeforeCall.atMs !== null ? { completedBeforeCallMs: interruptInteraction.completedBeforeCall.atMs } : {}),
+    ...(interruptInteraction.completedAfterCall.atMs !== null ? { completedAfterCallMs: interruptInteraction.completedAfterCall.atMs } : {}),
     ...(interruptCleanupBoundaryAtMs !== null ? { cleanupBoundaryAtMs: interruptCleanupBoundaryAtMs } : {}),
     ...(interruptCancelledAtMs !== null ? { cancelledAtMs: interruptCancelledAtMs } : {}),
   };
@@ -4186,6 +4657,12 @@ export function mapShellWaitLiveFacts(input, held, evidence, codexVersion, rollo
     // requires this even when ordinary terminal completion succeeds — the
     // model ignoring the interrupt instruction must keep the trial
     // inconclusive with its recorded reason.
+    // 2026-10-21 evidence-closure Task 3 SCOPE NOTE: the §19.4 host-activity
+    // admission deliberately does NOT re-decide this frozen §16.3 case
+    // contract (nor the settlement chain below) — it is the Gate D
+    // DELIVERY-IDENTITY layer, enforced by the versioned oracle through the
+    // offline join ('host-activity-unadmitted'), with the admission's closed
+    // facts persisted beside the record for that adjudication.
     const interruptDeliveryContractMet = interruptFacts.delivered === true
       && interruptFacts.exactTargetMatch === true
       && interruptFacts.callCount === 1
@@ -4476,7 +4953,7 @@ const defaultLiveExecutor = /** @type {any} */ (executeDefaultLiveCase);
  *   hostResult?: { exitCode?: number | null, companionProcessExit?: number | null, sentinelMatched?: boolean | null, terminalStdoutChecked?: boolean | null, resultCheck?: string | null, resultCheckLabel?: string | null, exactTerminalMatch?: { matched: boolean | null, reason: string | null }, stdoutCapture?: { status: string, reason: string | null, byteCount: number | null, captureSha256: string | null, exitCode: number | null, closureObservationVersion: number | null } },
  *   linkage?: { checked?: boolean | null, mode?: 'rescue' | 'root' | null, rootThreadId?: string | null, childThreadId?: string | null, parentThreadId?: string | null, companionLaunchCount?: number | null, companionSendCount?: number | null, originalHandleChecked?: boolean | null },
  *   observations?: { outerReturns?: number | null, modelCalls?: number | null, rootJoins?: number | null, decisiveWallMs?: number | null, pollWallTimesMs?: (number | null)[] | null, pollStartedAtElapsedMs?: number | null, holdDeadlineElapsedMs?: number | null, remainingLifetimeMs?: number | null, remainingLifetimeBasis?: 'hold-deadline-at-poll-start' | 'unavailable' | null, pendingInnerAtEnd?: boolean | null },
- *   interrupt?: { requested?: boolean, attempted?: boolean | null, family?: 'v2' | 'v1' | null, delivered?: boolean | null, rejection?: string | null, previousStatus?: string | null, callCount?: number | null, orderingBound?: boolean, target?: { kind: 'agent-id' | 'task-name' | 'unknown' | null, value: string | null, suppressed: boolean, chars: number | null } | null, exactTargetMatch?: boolean | null, settled?: boolean | null, settledBasis?: string | null, pendingIntervalMs?: number | null, deliveryToSettlementMs?: number | null, timingBasis?: 'rollout-event-timestamps' | 'unavailable' | null, missingPrerequisite?: string | null, cleanupBoundaryAtMs?: number, cancelledAtMs?: number },
+ *   interrupt?: { requested?: boolean, attempted?: boolean | null, family?: 'v2' | 'v1' | null, delivered?: boolean | null, rejection?: string | null, previousStatus?: string | null, callCount?: number | null, orderingBound?: boolean, target?: { kind: 'agent-id' | 'task-name' | 'unknown' | null, value: string | null, suppressed: boolean, chars: number | null } | null, exactTargetMatch?: boolean | null, exactTargetMatchBasis?: string | null, settled?: boolean | null, settledBasis?: string | null, pendingIntervalMs?: number | null, deliveryToSettlementMs?: number | null, timingBasis?: 'rollout-event-timestamps' | 'unavailable' | null, missingPrerequisite?: string | null, pendingWindowObserved?: boolean, settlementCleanupGenerated?: boolean, unreadableContinuationObserved?: boolean, hostDelivery?: Record<string, unknown>, cleanupBoundaryAtMs?: number, cancelledAtMs?: number, completedBeforeCallMs?: number, completedAfterCallMs?: number },
  *   held?: {
  *     endedBeforeGate?: boolean | null,
  *     statusDeadlineReached?: boolean,

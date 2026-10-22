@@ -750,6 +750,18 @@ export function evaluateChildSettlementLayers(input) {
 export const RESPONSIVENESS_BOUND_MS = 60_000;
 
 /**
+ * The native-interruption oracle's OWN revision (2026-10-21 evidence-closure
+ * Task 3): v1 was the §16.5/§16.6 freeze (executed under the shared
+ * RELEASE_QUALIFICATION_VERSION 1 stamp); v2 adds the §19.4-registered
+ * host-activity admission conjunct (report §19.4, registered BEFORE any live
+ * trial) to the delivery layer. The shared RELEASE_QUALIFICATION_VERSION
+ * stamp is NOT bumped: the exact-terminal and settlement-layer family
+ * oracles are byte-unchanged, and v1 verdicts stand as recorded (report
+ * §19.2 re-adjudication continuity).
+ */
+export const NATIVE_INTERRUPTION_ORACLE_VERSION = 2;
+
+/**
  * The §16.3/§16.6 Gate-D native-delivery/settlement aggregation over
  * already-adjudicated layer facts. Every mandated rejection fails closed:
  * wrong target, unresolved alias, terminal-before-interrupt, delivery
@@ -771,6 +783,7 @@ export const RESPONSIVENESS_BOUND_MS = 60_000;
  *     previousStatusOnly: boolean,
  *     unreadableContinuation: boolean,
  *     pendingWindowConfirmed: boolean | null,
+ *     hostActivityAdmitted?: boolean | null,
  *   },
  *   turnSettled: boolean | null,
  *   deliveryToSettlementMs?: number | null,
@@ -788,6 +801,7 @@ export const RESPONSIVENESS_BOUND_MS = 60_000;
  *   layers: { delivery: boolean, turnSettlement: boolean, companion: boolean, durableObligations: boolean, noCollateral: boolean },
  *   terminalWinner: 'succeeded' | 'failed' | 'cancelled' | null,
  *   releaseQualificationVersion: number,
+ *   nativeInterruptionOracleVersion: number,
  * }}
  */
 export function evaluateNativeInterruptionSettlement(input) {
@@ -817,6 +831,12 @@ export function evaluateNativeInterruptionSettlement(input) {
   if (delivery.unreadableContinuation === true) reasons.push('unreadable-continuation');
   if (delivery.pendingWindowConfirmed !== true) reasons.push('pending-window-unconfirmed');
   if (delivery.exactTargetMatch !== true) reasons.push('delivery-target-unmatched');
+  // The §19.4 host-activity admission (native-interruption oracle v2): the
+  // host-emitted SubAgentActivity(kind=interrupted) item must be ADMITTED
+  // through the registered admission set (report §19.4, every conjunct). A
+  // missing/null fact (legacy records without the admission block) fails
+  // closed like any other unestablished conjunct — never a pass.
+  if (delivery.hostActivityAdmitted !== true) reasons.push('host-activity-unadmitted');
   const turnSettled = input.turnSettled === true;
   if (!turnSettled) reasons.push('turn-settlement-unobserved');
   // Codex round-8 review fix; refined by the round-11 review fix: the
@@ -872,20 +892,24 @@ export function evaluateNativeInterruptionSettlement(input) {
   if (input.terminalWinner !== 'succeeded' && input.terminalWinner !== 'failed' && input.terminalWinner !== 'cancelled') {
     reasons.push('terminal-winner-unobserved');
   }
-  return withOracleVersion({
-    qualified: reasons.length === 0,
-    reasons,
-    layers: {
-      delivery: reasons.every((reason) => ![
-        'delivery-not-established', 'delivery-unsent', 'delivery-dispatch-unestablished', 'alias-unresolved',
-        'terminal-before-interrupt', 'terminal-state-unestablished', 'previous-status-snapshot-only',
-        'unreadable-continuation', 'pending-window-unconfirmed', 'delivery-target-unmatched',
-      ].includes(reason)),
-      turnSettlement: turnSettled && settlementResponsive,
-      companion: companionSettled,
-      durableObligations: durableSettled,
-      noCollateral,
-    },
-    terminalWinner: input.terminalWinner ?? null,
-  });
+  return {
+    ...withOracleVersion({
+      qualified: reasons.length === 0,
+      reasons,
+      layers: {
+        delivery: reasons.every((reason) => ![
+          'delivery-not-established', 'delivery-unsent', 'delivery-dispatch-unestablished', 'alias-unresolved',
+          'terminal-before-interrupt', 'terminal-state-unestablished', 'previous-status-snapshot-only',
+          'unreadable-continuation', 'pending-window-unconfirmed', 'delivery-target-unmatched',
+          'host-activity-unadmitted',
+        ].includes(reason)),
+        turnSettlement: turnSettled && settlementResponsive,
+        companion: companionSettled,
+        durableObligations: durableSettled,
+        noCollateral,
+      },
+      terminalWinner: input.terminalWinner ?? null,
+    }),
+    nativeInterruptionOracleVersion: NATIVE_INTERRUPTION_ORACLE_VERSION,
+  };
 }

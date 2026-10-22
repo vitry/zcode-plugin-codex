@@ -697,7 +697,7 @@ if (process.env[selfTestGuard] === '1') {
       const closureSource = await readFile(fileURLToPath(new URL('../tools/shell-wait-probe/closure-observation.mjs', import.meta.url)));
       const driverSource = await readFile(fileURLToPath(new URL('../tools/shell-wait-probe/driver.mjs', import.meta.url)));
       const expectedDigest = createHash('sha256')
-        .update('zcode-shell-wait-observer-v4\0')
+        .update('zcode-shell-wait-observer-v5\0')
         .update(evidenceSource)
         .update('\0')
         .update(shapeSource)
@@ -5822,7 +5822,7 @@ if (process.env[selfTestGuard] === '1') {
     // bytes AND record-time bytes join BOTH constructions under v3 — changing
     // the helper alone must change the digest (and flip
     // sourcesChangedDuringRun), never preserve it.
-    // 2026-10-21 evidence-closure Task 2 (v4): the closure-observation helper
+    // 2026-10-21 evidence-closure Tasks 2-3 (v4/v5): the closure-observation helper
     // (capture admission + exact-linkage join) also executes during live
     // observation, so its module-init bytes join BOTH constructions — plan §3
     // observer-digest duty for every executing helper.
@@ -5835,8 +5835,8 @@ if (process.env[selfTestGuard] === '1') {
     const driverPath = fileURLToPath(new URL('../tools/shell-wait-probe/driver.mjs', import.meta.url));
     const oraclePath = fileURLToPath(new URL('../tools/shell-wait-probe/release-qualification.mjs', import.meta.url));
 
-    const digestV4 = (evidenceBytes, shapeBytes, oracleBytes, closureBytes, driverBytes) => createHash('sha256')
-      .update('zcode-shell-wait-observer-v4\0')
+    const digestV5 = (evidenceBytes, shapeBytes, oracleBytes, closureBytes, driverBytes) => createHash('sha256')
+      .update('zcode-shell-wait-observer-v5\0')
       .update(evidenceBytes)
       .update('\0')
       .update(shapeBytes)
@@ -5848,9 +5848,9 @@ if (process.env[selfTestGuard] === '1') {
       .update(driverBytes)
       .digest('hex');
 
-    test('the executing digest binds the shape-diagnostic, release-qualification AND closure-observation helper bytes under the versioned v4 construction', () => {
+    test('the executing digest binds the shape-diagnostic, release-qualification AND closure-observation helper bytes under the versioned v5 construction', () => {
       const driverBytes = readFileSync(driverPath);
-      const expected = digestV4(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, EXECUTING_RELEASE_QUALIFICATION_SOURCE, EXECUTING_CLOSURE_OBSERVATION_SOURCE, driverBytes);
+      const expected = digestV5(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, EXECUTING_RELEASE_QUALIFICATION_SOURCE, EXECUTING_CLOSURE_OBSERVATION_SOURCE, driverBytes);
       assert.equal(EXECUTING_OBSERVER_PROVENANCE.digest, expected,
         'the digest must hash the executing evidence + shape-diagnostic + release-qualification + closure-observation + driver module-init bytes');
       assert.match(String(EXECUTING_OBSERVER_PROVENANCE.digestInput), /shape-diagnostic\.mjs/u,
@@ -5859,14 +5859,14 @@ if (process.env[selfTestGuard] === '1') {
         'the digest input description must name the release-qualification verdict helper');
       assert.match(String(EXECUTING_OBSERVER_PROVENANCE.digestInput), /closure-observation\.mjs/u,
         'the digest input description must name the closure-observation capture helper');
-      assert.match(String(EXECUTING_OBSERVER_PROVENANCE.digestInput), /v4|version/u,
+      assert.match(String(EXECUTING_OBSERVER_PROVENANCE.digestInput), /v5|version/u,
         'the construction version must be recorded explicitly');
     });
 
     test('the helper binding is load-bearing: omitting or changing any helper\'s bytes changes the digest', () => {
       const driverBytes = readFileSync(driverPath);
       const shapeOnlyConstruction = createHash('sha256')
-        .update('zcode-shell-wait-observer-v4\0')
+        .update('zcode-shell-wait-observer-v5\0')
         .update(EXECUTING_EVIDENCE_SOURCE)
         .update('\0')
         .update(EXECUTING_SHAPE_DIAGNOSTIC_SOURCE)
@@ -5877,19 +5877,19 @@ if (process.env[selfTestGuard] === '1') {
         'a construction without the release-qualification and closure bytes must not reproduce the executing digest');
       const mutatedOracle = Buffer.concat([EXECUTING_RELEASE_QUALIFICATION_SOURCE, Buffer.from('\n')]);
       assert.notEqual(
-        digestV4(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, mutatedOracle, EXECUTING_CLOSURE_OBSERVATION_SOURCE, driverBytes),
+        digestV5(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, mutatedOracle, EXECUTING_CLOSURE_OBSERVATION_SOURCE, driverBytes),
         EXECUTING_OBSERVER_PROVENANCE.digest,
         'a release-qualification-only byte change must change the digest',
       );
       const mutatedClosure = Buffer.concat([EXECUTING_CLOSURE_OBSERVATION_SOURCE, Buffer.from('\n')]);
       assert.notEqual(
-        digestV4(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, EXECUTING_RELEASE_QUALIFICATION_SOURCE, mutatedClosure, driverBytes),
+        digestV5(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, EXECUTING_RELEASE_QUALIFICATION_SOURCE, mutatedClosure, driverBytes),
         EXECUTING_OBSERVER_PROVENANCE.digest,
         'a closure-observation-only byte change must change the digest',
       );
       assert.notEqual(
-        digestV4(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, readFileSync(oraclePath), EXECUTING_CLOSURE_OBSERVATION_SOURCE, driverBytes),
-        digestV4(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, mutatedOracle, EXECUTING_CLOSURE_OBSERVATION_SOURCE, driverBytes),
+        digestV5(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, readFileSync(oraclePath), EXECUTING_CLOSURE_OBSERVATION_SOURCE, driverBytes),
+        digestV5(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, mutatedOracle, EXECUTING_CLOSURE_OBSERVATION_SOURCE, driverBytes),
       );
     });
 
@@ -9540,6 +9540,1642 @@ process.exit(result.status ?? 1);
       assert.equal(unrelatedAfter.status, 'queued', 'the unrelated harmless job must survive untouched');
       assert.equal(unrelatedAfter.stopIntent ?? undefined, undefined, 'the unrelated job must carry no stop intent either');
     });
+  });
+
+  describe('native delivery admission: the registered host activity item (2026-10-21 evidence-closure task 3, report §19.4)', async () => {
+    // The §19.4 registration: the host-generated
+    // `event_msg`/`item_completed`/`SubAgentActivity(kind=interrupted)` item
+    // (interrupt_agent.rs:62-74 → emit_sub_agent_activity → ItemCompleted,
+    // persisted in Paginated rollouts) is the missing finite shape the
+    // current reader never admits. The admission set (every conjunct
+    // required, registered BEFORE any live trial):
+    //   (1) exactly ONE interrupt_agent call (the existing callCount
+    //       contract); (2) exactly ONE matching interrupted-kind item whose
+    //       id equals that call's id (direct call-id join — never alias
+    //       text); (3) the item's agent_thread_id equals the pending Child's
+    //       exact spawn-acknowledgement id; (4) the item occurs in the
+    //       OWNING ROOT's rollout (its thread_id is the Root's), ordered
+    //       strictly inside the confirmed pending window and before natural
+    //       completion; (5) the item is timed (completed_at_ms finite and
+    //       positive; untimed stays unestablished, never zero); (6)
+    //       previous_status remains a pre-dispatch snapshot only, never
+    //       settlement.
+    const { extractInterruptInteraction, admitInterruptHostDelivery } = await import('../tools/shell-wait-probe/evidence.mjs');
+
+    const CHILD_THREAD = 'a445b927-1e4d-4f11-9a34-2b6ac19b7d51';
+    const ROOT_THREAD = 'root-thread-1';
+    const SIBLING_THREAD = 'ffffffff-ffff-4fff-8fff-fffffffffff0';
+    // A 23-character alias target (the §19.2 suppressed-bytes shape): not an
+    // id, not the fixture task name, so the sanitizer withholds its value.
+    const ALIAS_TARGET = 'zcode-rescue-agent-tas';
+
+    /** The registered durable wire shape (rollout_payload.rs:33 EventMsg,
+     * protocol.rs ItemCompletedEvent, items.rs SubAgentActivityItem,
+     * protocol.rs:4502-4509 snake_case kind). Timestamps are epoch ms. */
+    const activityItem = ({ id, kind = 'interrupted', agentThreadId = CHILD_THREAD, threadId = ROOT_THREAD, completedAtMs, path = '/root/zcode_rescue_task_1' }) => ({
+      type: 'event_msg',
+      payload: {
+        type: 'item_completed',
+        thread_id: threadId,
+        turn_id: 'root-turn-1',
+        item: { type: 'SubAgentActivity', model: null, reasoning_effort: null, id, kind, agent_thread_id: agentThreadId, agent_path: path },
+        completed_at_ms: completedAtMs,
+      },
+    });
+    const stamped = (timestamp, event) => ({ timestamp, ...event });
+    const fnCall = (name, callId, args, timestamp = null) => ({
+      ...(timestamp ? stamped(timestamp, {}) : {}),
+      type: 'response_item', payload: { type: 'function_call', name, call_id: callId, arguments: JSON.stringify(args) },
+    });
+    const fnOutput = (callId, output, timestamp = null) => ({
+      ...(timestamp ? stamped(timestamp, {}) : {}),
+      type: 'response_item', payload: { type: 'function_call_output', call_id: callId, output },
+    });
+    const interruptCall = (callId, target, timestamp = null) => fnCall('interrupt_agent', callId, { target }, timestamp);
+    const interruptSuccess = (callId, previousStatus, timestamp = null) => fnOutput(callId, JSON.stringify({ previous_status: previousStatus }), timestamp);
+    const interruptError = (callId, message, timestamp = null) => fnOutput(callId, JSON.stringify({ error: message }), timestamp);
+    const completedOutputBody = (result) => [
+      { type: 'input_text', text: 'Script completed\n' },
+      { type: 'input_text', text: JSON.stringify(result) },
+    ];
+    const pendingOutputBody = (cellId) => [{ type: 'input_text', text: `Script running with cell ID ${cellId}\n` }];
+    const markerOutput = [
+      { type: 'input_text', text: 'Script terminated\nWall time 0.1 seconds\nOutput:\n' },
+      { type: 'input_text', text: 'killed\n' },
+    ];
+    const POLL_START_MS = Date.parse('2026-10-06T00:00:02.000Z');
+    const EMISSION_MS = Date.parse('2026-10-06T00:00:07.200Z');
+
+    /** The full pending → delivery → host item → native-settlement shape with
+     * every §19.4 conjunct satisfiable; each test mutates one dimension. */
+    function admissionRollouts({
+      callId = 'int-1', target = CHILD_THREAD, hostItem = true, hostItemKind = 'interrupted',
+      hostItemId = callId, hostAgentThreadId = CHILD_THREAD, hostThreadId = ROOT_THREAD,
+      hostRollout = 'root', completedAtMs = EMISSION_MS, withPendingPoll = true,
+      childTerminal = false, delivered = 'success', secondCall = false,
+    } = {}) {
+      const childEvents = [
+        { type: 'session_meta', payload: { id: CHILD_THREAD } },
+        fnCall('exec_command', 'launch-1', { cmd: 'node launcher' }, '2026-10-06T00:00:00.000Z'),
+        fnOutput('launch-1', completedOutputBody({ output: '', exit_code: 0, session_id: 5 }), '2026-10-06T00:00:01.000Z'),
+        ...(withPendingPoll ? [
+          fnCall('write_stdin', 'poll-1', { session_id: 5, chars: '', yield_time_ms: 60_000 }, '2026-10-06T00:00:02.000Z'),
+          fnOutput('poll-1', pendingOutputBody('cell-1'), '2026-10-06T00:00:02.500Z'),
+        ] : []),
+        ...(childTerminal ? [
+          fnCall('wait', 'outer-1', { cell_id: 'cell-1' }, '2026-10-06T00:00:03.000Z'),
+          fnOutput('outer-1', completedOutputBody({ output: 'done', exit_code: 0 }), '2026-10-06T00:00:04.000Z'),
+        ] : []),
+      ];
+      const rootEvents = [
+        { type: 'session_meta', payload: { id: ROOT_THREAD } },
+        ...(secondCall ? [interruptCall('int-0', target, '2026-10-06T00:00:06.000Z'), interruptSuccess('int-0', 'running', '2026-10-06T00:00:06.100Z')] : []),
+        interruptCall(callId, target, '2026-10-06T00:00:07.000Z'),
+        ...(delivered === 'success'
+          ? [interruptSuccess(callId, 'running', '2026-10-06T00:00:07.100Z')]
+          : delivered === 'rejected'
+            ? [interruptError(callId, 'unknown agent: no such thread', '2026-10-06T00:00:07.100Z')]
+            : []),
+        // The host item lives in the DECLARED rollout: 'root' (the real
+        // emission site) or — for the foreign-shape counterexamples — a
+        // same-shaped copy that the owning Root's rollout lacks.
+        ...(hostItem && hostRollout === 'root' ? [activityItem({ id: hostItemId, kind: hostItemKind, agentThreadId: hostAgentThreadId, threadId: hostThreadId, completedAtMs })] : []),
+      ];
+      const childHostCopy = hostRollout === 'child' ? [activityItem({ id: hostItemId, kind: 'interrupted', agentThreadId: hostAgentThreadId, threadId: CHILD_THREAD, completedAtMs })] : [];
+      const thirdRollout = hostRollout === 'foreign' ? [
+        { type: 'session_meta', payload: { id: SIBLING_THREAD } },
+        activityItem({ id: hostItemId, kind: 'interrupted', agentThreadId: hostAgentThreadId, threadId: SIBLING_THREAD, completedAtMs }),
+      ] : [];
+      return [
+        rootEvents,
+        [...childEvents, ...childHostCopy],
+        ...(thirdRollout.length > 0 ? [thirdRollout] : []),
+      ];
+    }
+    const binding = { childThreadId: CHILD_THREAD, rootThreadId: ROOT_THREAD };
+    const admit = (rollouts, options = binding) => {
+      const interaction = extractInterruptInteraction(rollouts, [], { childThreadId: options.childThreadId, command: 'node launcher' });
+      return { interaction, admission: admitInterruptHostDelivery(rollouts, interaction, options) };
+    };
+
+    test('the exact spawn/call/Child/Root identity match admits the host item end to end', () => {
+      // Conjuncts 1-5 all hold: one call, one interrupted-kind item whose id
+      // equals the call id, agent_thread_id equal to the exact
+      // spawn-acknowledgement Child id, the item inside the OWNING ROOT's
+      // rollout with the Root's thread_id, emitted strictly inside the
+      // confirmed pending window (after the attributable poll start, before
+      // the native settlement), timed with a finite positive emission stamp.
+      const { interaction, admission } = admit(admissionRollouts());
+      assert.equal(interaction.attempted, true);
+      assert.equal(interaction.callCount, 1);
+      assert.equal(interaction.callId, 'int-1', 'the interaction exposes the delivery call id the host item joins');
+      assert.equal(interaction.pendingBeforeCall.observed, true);
+      assert.deepEqual(admission, {
+        checked: true,
+        attemptedCall: true,
+        callId: 'int-1',
+        itemPresent: true,
+        interruptedItemCount: 1,
+        joinedItemCount: 1,
+        foreignItemCount: 0,
+        idJoin: true,
+        idJoinBasis: 'outer-call-id',
+        agentThreadIdMatch: true,
+        rootRolloutOwned: true,
+        insidePendingWindow: true,
+        timed: true,
+        completedAtMs: EMISSION_MS,
+        admitted: true,
+        reasons: [],
+      });
+    });
+
+    test('alias target text stays hidden while the host identity matches (never relabeled authoritative)', () => {
+      // The caller supplied an alias (23 chars, withheld by the sanitizer);
+      // the HOST resolved it and emitted the exact resolved agent id. The
+      // admission joins on the host identity — the alias text itself is
+      // never persisted, never compared, never relabeled authoritative.
+      const { interaction, admission } = admit(admissionRollouts({ target: ALIAS_TARGET }));
+      assert.deepEqual(interaction.target, { kind: 'unknown', value: null, suppressed: true, chars: ALIAS_TARGET.length },
+        'the caller-supplied alias stays suppressed structural chars only');
+      assert.equal(admission.admitted, true, 'the admission binds through the host-emitted identity, not the alias text');
+      assert.equal(admission.agentThreadIdMatch, true);
+      assert.equal(admission.reasons.length, 0);
+    });
+
+    test('an absent activity item leaves the delivery identity unestablished (Legacy-mode/older-binary counterexample)', () => {
+      const { admission } = admit(admissionRollouts({ hostItem: false }));
+      assert.equal(admission.admitted, false);
+      assert.equal(admission.itemPresent, false);
+      assert.deepEqual(admission.reasons, ['host-activity-item-absent']);
+    });
+
+    test('a started/completed activity item with the call id is never the interrupted admission shape', () => {
+      // multi_agents_v2.rs:44-52 emits Started/Completed items through the
+      // SAME family: only kind == "interrupted" is the registered delivery
+      // shape (protocol.rs:4502-4509).
+      for (const kind of ['started', 'completed', 'interacted', 'something-else']) {
+        const { admission } = admit(admissionRollouts({ hostItemKind: kind }));
+        assert.equal(admission.admitted, false, `kind ${kind} must fail the admission`);
+        assert.deepEqual(admission.reasons, ['host-activity-kind-not-interrupted']);
+        assert.equal(admission.itemPresent, false, `kind ${kind} is not an interrupted-kind item`);
+      }
+    });
+
+    test('an agent_thread_id matching a sibling, unrelated, or the Root itself fails the identity conjunct', () => {
+      for (const hostAgentThreadId of [SIBLING_THREAD, ROOT_THREAD]) {
+        const { admission } = admit(admissionRollouts({ hostAgentThreadId }));
+        assert.equal(admission.admitted, false);
+        assert.equal(admission.agentThreadIdMatch, false);
+        assert.ok(admission.reasons.includes('host-activity-agent-thread-mismatch'), hostAgentThreadId);
+      }
+    });
+
+    test('duplicate activity items for one call id fail closed (no fallback interaction)', () => {
+      const rollouts = admissionRollouts();
+      rollouts[0].push(activityItem({ id: 'int-1', kind: 'interrupted', agentThreadId: CHILD_THREAD, threadId: ROOT_THREAD, completedAtMs: EMISSION_MS + 5 }));
+      const { admission } = admit(rollouts);
+      assert.equal(admission.admitted, false);
+      assert.equal(admission.joinedItemCount, 2);
+      assert.ok(admission.reasons.includes('host-activity-duplicate-item'));
+    });
+
+    test('an interrupted item whose id does not join the call keeps the id join missing', () => {
+      const { admission } = admit(admissionRollouts({ hostItemId: 'other-call-1' }));
+      assert.equal(admission.admitted, false);
+      assert.equal(admission.itemPresent, true, 'an interrupted item exists, but it does not join THIS call');
+      assert.equal(admission.joinedItemCount, 0);
+      assert.deepEqual(admission.reasons, ['host-activity-id-join-missing']);
+    });
+
+    test('an item outside the owning Root rollout (child copy or foreign session) is a foreign shape, never the join', () => {
+      // The host emits the item into the ROOT's rollout; a copy inside the
+      // Child's rollout (or any third session) is not conjunct 4's item —
+      // even when every other dimension matches exactly.
+      for (const hostRollout of ['child', 'foreign']) {
+        const { admission } = admit(admissionRollouts({ hostRollout }));
+        assert.equal(admission.admitted, false, hostRollout);
+        assert.equal(admission.rootRolloutOwned, false, hostRollout);
+        assert.ok(admission.reasons.includes('host-activity-foreign-rollout'), hostRollout);
+        assert.equal(admission.joinedItemCount, 0, hostRollout);
+      }
+    });
+
+    test('a rejected dispatch (error output) never admits a host delivery identity', () => {
+      // interrupt_agent.rs:49-55 rejects BEFORE the emit (:62-74): a rollout
+      // pairing a rejection output with a present host item is contradictory
+      // evidence and fails closed.
+      const { interaction, admission } = admit(admissionRollouts({ delivered: 'rejected' }));
+      assert.equal(interaction.delivered, false);
+      assert.equal(admission.admitted, false);
+      assert.ok(admission.reasons.includes('host-activity-delivery-rejected'));
+    });
+
+    test('an unobserved delivery outcome keeps the admission unestablished', () => {
+      // No parseable tool output: the delivery outcome is unknown — the host
+      // item alone proves dispatch identity, never the delivery.
+      const { interaction, admission } = admit(admissionRollouts({ delivered: 'unobserved' }));
+      assert.equal(interaction.delivered, null);
+      assert.equal(admission.admitted, false);
+      assert.ok(admission.reasons.includes('host-activity-delivery-unobserved'));
+    });
+
+    test('a terminal-before-delivery child leaves no pending window to admit into', () => {
+      // The Child completed before the call (same-rollout event order): the
+      // confirmed pending window does not exist, so the emission cannot be
+      // ordered inside it.
+      const { interaction, admission } = admit(admissionRollouts({ childTerminal: true }));
+      assert.equal(interaction.pendingBeforeCall.observed, false);
+      assert.equal(admission.admitted, false);
+      assert.ok(admission.reasons.includes('host-activity-without-pending-observation'));
+    });
+
+    test('an emission without any pending observation proves dispatch identity only', () => {
+      // No poll at all: the host item may exist, but "activity item without
+      // pending observation" is a registered counterexample — emission alone
+      // proves nothing about the pending window.
+      const { admission } = admit(admissionRollouts({ withPendingPoll: false }));
+      assert.equal(admission.admitted, false);
+      assert.ok(admission.reasons.includes('host-activity-without-pending-observation'));
+    });
+
+    test('an emission ordered outside the pending window or after settlement fails the ordering conjunct', () => {
+      const before = admit(admissionRollouts({ completedAtMs: POLL_START_MS - 1 }));
+      assert.equal(before.admission.admitted, false);
+      assert.equal(before.admission.insidePendingWindow, false);
+      // Codex round 5: that shape is ALSO before the call (07.0) — the more
+      // specific contradictory-timing reason fires (still fail-closed).
+      assert.ok(before.admission.reasons.includes('host-activity-pre-call-timing'), JSON.stringify(before.admission.reasons));
+      // Settlement order: the same rollouts with an accepted same-cell
+      // continuation issued BEFORE the delivery whose native marker resolves
+      // the pending window BEFORE the emission — the item landed after the
+      // window's resolution (poll 02.0 → call 07.0 → marker 09.0 → emission
+      // 09.5).
+      const rollouts = admissionRollouts({ completedAtMs: Date.parse('2026-10-06T00:00:09.500Z') });
+      rollouts[1].push(
+        fnCall('wait', 'outer-2', { cell_id: 'cell-1' }, '2026-10-06T00:00:06.000Z'),
+        fnOutput('outer-2', markerOutput, '2026-10-06T00:00:09.000Z'),
+      );
+      const after = admit(rollouts);
+      assert.equal(after.interaction.pendingBeforeCall.observed, true);
+      assert.equal(after.interaction.settledAfterCall.atMs, Date.parse('2026-10-06T00:00:09.000Z'));
+      assert.equal(after.admission.admitted, false);
+      assert.equal(after.admission.insidePendingWindow, false);
+      assert.ok(after.admission.reasons.includes('host-activity-after-settlement'));
+    });
+
+    test('a nonterminal poll resolution closes the pending window exactly like a terminal one (codex round 1)', () => {
+      // The registered window is [attributable poll start, RESOLUTION) —
+      // whatever the resolution's terminality. A live-handle completed
+      // response (no exit code) that resolves the interrupted poll AFTER the
+      // delivery closes the window: an emission at/after it is named
+      // outside, never admitted through the resolution's nonterminality.
+      // Ordering: poll 02.0 → interrupt 07.0 → nonterminal resolution 09.0 →
+      // emission 09.5.
+      const rollouts = admissionRollouts({ completedAtMs: Date.parse('2026-10-06T00:00:09.500Z') });
+      rollouts[1].push(
+        fnCall('wait', 'outer-live', { cell_id: 'cell-1' }, '2026-10-06T00:00:08.000Z'),
+        fnOutput('outer-live', completedOutputBody({ output: 'still running', session_id: 9 }), '2026-10-06T00:00:09.000Z'),
+      );
+      const { interaction, admission } = admit(rollouts);
+      assert.equal(interaction.pendingBeforeCall.observed, true, 'the post-delivery resolution CONFIRMS the window');
+      assert.equal(interaction.settledAfterCall.atMs, null, 'a nonterminal resolution is not a settlement');
+      assert.equal(interaction.completedAfterCall.atMs, null, 'a nonterminal resolution is not an exit-code completion');
+      assert.notEqual(interaction.resolvedNonterminalAfterCall.atMs, null,
+        'the nonterminal resolution is recorded as the window-closing fact');
+      assert.equal(admission.admitted, false);
+      assert.equal(admission.insidePendingWindow, false);
+      assert.ok(admission.reasons.includes('host-activity-after-resolution'), JSON.stringify(admission.reasons));
+      // Controls unchanged: an emission STRICTLY inside the window admits,
+      // and a TERMINAL resolution keeps the named after-settlement bound.
+      const inside = admit(admissionRollouts());
+      assert.equal(inside.admission.admitted, true);
+      const terminalRollouts = admissionRollouts({ completedAtMs: Date.parse('2026-10-06T00:00:12.500Z') });
+      terminalRollouts[1].push(
+        fnCall('wait', 'outer-native', { cell_id: 'cell-1' }, '2026-10-06T00:00:09.000Z'),
+        fnOutput('outer-native', markerOutput, Date.parse('2026-10-06T00:00:12.000Z')),
+      );
+      const afterTerminal = admit(terminalRollouts);
+      assert.equal(afterTerminal.admission.admitted, false);
+      assert.ok(afterTerminal.admission.reasons.includes('host-activity-after-settlement'), JSON.stringify(afterTerminal.admission.reasons));
+    });
+
+    test('an untimed event keeps timing unestablished and is never treated as timed — zero stays untimed', () => {
+      // The pinned ItemCompletedEvent deserializes a MISSING completed_at_ms
+      // as 0 (protocol.rs default_item_completed_at_ms — old rollouts): both
+      // the absent and the 0 shapes are UNTIMED (never zero).
+      for (const raw of ['absent', 0]) {
+        const rollouts = admissionRollouts();
+        const itemEvent = /** @type {any} */ (rollouts[0].find((event) => /** @type {any} */ (event)?.payload?.item?.type === 'SubAgentActivity'));
+        if (raw === 'absent') delete itemEvent.payload.completed_at_ms;
+        else itemEvent.payload.completed_at_ms = raw;
+        const { admission } = admit(rollouts);
+        assert.equal(admission.admitted, false, String(raw));
+        assert.equal(admission.timed, false, String(raw));
+        assert.equal(admission.completedAtMs, null, `untimed stays null, never zero (${String(raw)})`);
+        assert.ok(admission.reasons.includes('host-activity-untimed'), String(raw));
+      }
+      // A negative stamp is not a finite positive timing either.
+      const negativeRollouts = admissionRollouts();
+      /** @type {any} */ (negativeRollouts[0].find((event) => /** @type {any} */ (event)?.payload?.item?.type === 'SubAgentActivity')).payload.completed_at_ms = -5;
+      const negative = admit(negativeRollouts);
+      assert.equal(negative.admission.timed, false);
+      assert.ok(negative.admission.reasons.includes('host-activity-untimed'));
+    });
+
+    test('an explicit cell termination closes the admission window without native credit (codex round 4)', () => {
+      // The codex ordering: interrupt 07.0, explicit `wait({terminate:true})`
+      // resolution 09.0, activity emission 10.0 — the emission lands AFTER an
+      // attributable resolution of the interrupted observation and must be
+      // named outside (the explicit stop NEVER grants native settlement —
+      // the round-10 alternate-ender guard stays).
+      const rollouts = admissionRollouts({ completedAtMs: Date.parse('2026-10-06T00:00:10.000Z') });
+      rollouts[1].push(
+        fnCall('wait', 'term-1', { session_id: 5, cell_id: 'cell-1', terminate: true }, '2026-10-06T00:00:08.000Z'),
+        fnOutput('term-1', [
+          { type: 'input_text', text: 'Script terminated\nWall time 0.1 seconds\nOutput:\n' },
+          { type: 'input_text', text: 'terminated\n' },
+        ], '2026-10-06T00:00:09.000Z'),
+      );
+      const { interaction, admission } = admit(rollouts);
+      assert.equal(interaction.pendingBeforeCall.observed, true);
+      assert.equal(interaction.settledAfterCall.atMs, null, 'an explicit stop is never a settlement');
+      assert.equal(interaction.resolvedExplicitStopAfterCall.atMs, Date.parse('2026-10-06T00:00:09.000Z'),
+        'the attributable explicit-stop resolution is recorded as the window-closing fact');
+      assert.equal(admission.admitted, false);
+      assert.equal(admission.insidePendingWindow, false);
+      assert.ok(admission.reasons.includes('host-activity-after-explicit-stop'), JSON.stringify(admission.reasons));
+      // An emission STRICTLY before the explicit stop stays inside the window.
+      const beforeRollouts = admissionRollouts();
+      beforeRollouts[1].push(
+        fnCall('wait', 'term-2', { session_id: 5, cell_id: 'cell-1', terminate: true }, '2026-10-06T00:00:08.000Z'),
+        fnOutput('term-2', [
+          { type: 'input_text', text: 'Script terminated\nWall time 0.1 seconds\nOutput:\n' },
+          { type: 'input_text', text: 'terminated\n' },
+        ], '2026-10-06T00:00:09.000Z'),
+      );
+      const before = admit(beforeRollouts);
+      assert.equal(before.admission.admitted, true, 'an emission before the explicit stop stays inside');
+      assert.equal(before.interaction.explicitTerminateAfterCall.atMs, Date.parse('2026-10-06T00:00:09.000Z'),
+        'the explicit ender stays separately classified (never native credit)');
+    });
+
+    test('an emission timestamped BEFORE its interrupt call is contradictory and named-unestablished (codex round 5)', () => {
+      // The codex ordering: poll 02.0, call 07.0, emission 03.0 — the
+      // emission is INSIDE [poll start, resolution) but BEFORE its own
+      // dispatch (completed_at_ms bounds the dispatch from above per §19.4/
+      // §19.6, so an emission strictly earlier than the call is contradictory
+      // evidence). Named `host-activity-pre-call-timing`, never admitted.
+      const contradictory = admit(admissionRollouts({ completedAtMs: Date.parse('2026-10-06T00:00:03.000Z') }));
+      assert.equal(contradictory.admission.admitted, false);
+      assert.equal(contradictory.admission.insidePendingWindow, false);
+      assert.ok(contradictory.admission.reasons.includes('host-activity-pre-call-timing'), JSON.stringify(contradictory.admission.reasons));
+      // Controls: inside [call, resolution) admits; an emission after an
+      // attributable resolution keeps its existing named bound.
+      const inside = admit(admissionRollouts());
+      assert.equal(inside.admission.admitted, true);
+      const afterRollouts = admissionRollouts({ completedAtMs: Date.parse('2026-10-06T00:00:09.500Z') });
+      afterRollouts[1].push(
+        fnCall('wait', 'term-3', { session_id: 5, cell_id: 'cell-1', terminate: true }, '2026-10-06T00:00:08.000Z'),
+        fnOutput('term-3', [
+          { type: 'input_text', text: 'Script terminated\nWall time 0.1 seconds\nOutput:\n' },
+          { type: 'input_text', text: 'terminated\n' },
+        ], '2026-10-06T00:00:09.000Z'),
+      );
+      const after = admit(afterRollouts);
+      assert.equal(after.admission.admitted, false);
+      assert.ok(after.admission.reasons.includes('host-activity-after-explicit-stop'), JSON.stringify(after.admission.reasons));
+    });
+
+    test('previous_status remains a pre-dispatch snapshot only: it never grounds the admission window or settlement', () => {
+      // The ONLY post-call evidence is previous_status (interrupt_agent.rs:61
+      // snapshots BEFORE dispatch, returned as the tool result :76): the
+      // admission may hold (identity) while the settlement layer stays
+      // unattributed — the snapshot is never a window bound, never a
+      // resolution.
+      const rollouts = admissionRollouts();
+      const { interaction, admission } = admit(rollouts);
+      assert.equal(interaction.previousStatus, 'running');
+      assert.equal(admission.admitted, true, 'the identity admission is independent of the snapshot');
+      assert.equal(interaction.settledAfterCall.atMs, null, 'the snapshot never resolves the window');
+      assert.equal(interaction.cancelledAfterCall.atMs, null);
+      assert.equal(interaction.completedAfterCall.atMs, null);
+      assert.equal(interaction.pendingBeforeCall.observed, true);
+    });
+
+    test('multiple delivery attempts fail the exactly-one conjunct', () => {
+      const { interaction, admission } = admit(admissionRollouts({ secondCall: true }));
+      assert.equal(interaction.callCount, 2);
+      assert.equal(admission.admitted, false);
+      assert.ok(admission.reasons.includes('host-activity-call-count-not-one'));
+    });
+
+    test('a root final message or cleanup fact is never admitted as the activity item', () => {
+      // A final agent_message and a gate-release control output are not
+      // SubAgentActivity item_completed payloads: the bounded shape gate
+      // ignores them structurally (and their text never enters the facts).
+      const rollouts = admissionRollouts({ hostItem: false });
+      rollouts[0].push(
+        { type: 'event_msg', payload: { type: 'agent_message', message: `interrupt done for ${CHILD_THREAD}` } },
+        { type: 'event_msg', payload: { type: 'task_complete', last_agent_message: 'gate released' } },
+      );
+      const { admission } = admit(rollouts);
+      assert.equal(admission.admitted, false);
+      assert.deepEqual(admission.reasons, ['host-activity-item-absent'], 'only the registered SubAgentActivity shape is admissible');
+    });
+
+    test('a code-mode-wrapped interrupt is NAMED unjoinable on this pin (codex round 4 — the registered supported-path limitation)', () => {
+      // The round-4 bounded persistence investigation FALSIFIED the round-3
+      // interval correlation: the pinned host does NOT persist nested
+      // function_call records for code-mode cells (submit_nested_tool ->
+      // handle_tool_call_with_source buffers executed-call METADATA only —
+      // executed_tool_calls.rs:498-569 — and the only serialized form,
+      // ExecutedToolCall at protocol/src/models/executed_tool_calls.rs:408,
+      // carries NO call_id). This test uses the REAL persisted bytes: the
+      // code-mode cell + its output, NO nested function_call record, and the
+      // activity item carrying the host-emitted exec-<uuid>. The admission
+      // names the wrapped-interrupt limitation and fails closed — never a
+      // guessed join; direct-mode (a top-level interrupt_agent invocation)
+      // remains the only qualified interruption path for I.
+      const NESTED_CALL_ID = 'exec-3f9a1c2d-0000-4000-8000-000000000001';
+      const sharedCellBody = [
+        'const r = await tools.exec_command({"cmd":"node launcher","yield_time_ms":1000}); text(JSON.stringify(r));',
+        `text(await tools.interrupt_agent(${JSON.stringify({ target: CHILD_THREAD })}));`,
+        'text(await tools.write_stdin({"session_id":5,"chars":"","yield_time_ms":1000}));',
+      ].join('\n');
+      const rollouts = admissionRollouts();
+      rollouts[0] = [
+        { type: 'session_meta', payload: { id: ROOT_THREAD } },
+        stamped('2026-10-06T00:00:06.500Z', { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'cell-int-1', input: sharedCellBody } }),
+        fnOutput('cell-int-1', [
+          { type: 'input_text', text: JSON.stringify({ ok: 1 }) },
+          { type: 'input_text', text: JSON.stringify({ previous_status: 'running' }) },
+          { type: 'input_text', text: JSON.stringify({ ok: 2 }) },
+        ], '2026-10-06T00:00:08.000Z'),
+        activityItem({ id: NESTED_CALL_ID, kind: 'interrupted', agentThreadId: CHILD_THREAD, threadId: ROOT_THREAD, completedAtMs: EMISSION_MS }),
+      ];
+      const interaction = extractInterruptInteraction(rollouts, [], { childThreadId: CHILD_THREAD, command: 'node launcher' });
+      assert.equal(interaction.attempted, true, 'the raw directive stays extracted from the shared cell');
+      assert.equal(interaction.wrappedInterrupt, true, 'the code-mode-wrapped shape is recorded');
+      const admission = admitInterruptHostDelivery(rollouts, interaction, binding);
+      assert.equal(admission.admitted, false, 'the wrapped interrupt never admits on this pin');
+      assert.ok(admission.reasons.includes('host-activity-wrapped-interrupt-unjoinable'), JSON.stringify(admission.reasons));
+      assert.equal(admission.idJoin, false);
+      assert.equal(admission.idJoinBasis, null);
+      assert.equal(admission.agentThreadIdMatch, null, 'the identity conjuncts stay unestablished without a joinable id');
+      // Direct-mode unchanged: a top-level interrupt_agent invocation with
+      // the model-visible id remains the qualified path.
+      const direct = admit(admissionRollouts());
+      assert.equal(direct.admission.admitted, true);
+      assert.equal(direct.admission.idJoinBasis, 'outer-call-id');
+    });
+
+    test('explicit terminate mixed with native cancellation never disturbs the admission or the settlement classes', () => {
+      // The interrupted observation's NATIVE cancellation and a LATER NEW
+      // observation's EXPLICIT terminate coexist (sequential observations —
+      // never overlapping inner polls): the admission is a delivery-identity
+      // fact and admits; the settlement classification keeps crediting only
+      // the native cancellation resolution of the interrupted observation and
+      // classifies the explicit ender separately (round-10 semantics, now
+      // under the admission).
+      const rollouts = admissionRollouts();
+      rollouts[1].push(
+        fnCall('wait', 'outer-native', { cell_id: 'cell-1' }, '2026-10-06T00:00:08.000Z'),
+        fnOutput('outer-native', markerOutput, '2026-10-06T00:00:09.000Z'),
+        fnCall('write_stdin', 'poll-2', { session_id: 5, chars: '', yield_time_ms: 60_000 }, '2026-10-06T00:00:10.000Z'),
+        fnOutput('poll-2', pendingOutputBody('cell-2'), '2026-10-06T00:00:10.500Z'),
+        fnCall('wait', 'term-1', { session_id: 5, cell_id: 'cell-2', terminate: true }, '2026-10-06T00:00:11.000Z'),
+        fnOutput('term-1', [
+          { type: 'input_text', text: 'Script terminated\nWall time 0.1 seconds\nOutput:\n' },
+          { type: 'input_text', text: 'terminated\n' },
+        ], '2026-10-06T00:00:11.500Z'),
+      );
+      const { interaction, admission } = admit(rollouts);
+      assert.equal(admission.admitted, true, 'the delivery admission is independent of the cell-resolution classes');
+      assert.equal(interaction.pendingBeforeCall.observed, true);
+      assert.equal(interaction.cancelledAfterCall.atMs, Date.parse('2026-10-06T00:00:09.000Z'),
+        'the native cancellation of the interrupted observation stays credited');
+      assert.equal(interaction.explicitTerminateAfterCall.atMs, Date.parse('2026-10-06T00:00:11.500Z'),
+        'the explicit terminate of the later observation stays separately classified');
+      assert.ok(interaction.cancelledAfterCall.atMs !== interaction.explicitTerminateAfterCall.atMs);
+    });
+
+    test('resolved-cell reuse and cross-session identical call ids never leak into the admission join', () => {
+      // A foreign session whose rollout carries the SAME call id text and an
+      // identical host item: the join is scoped to the owning ROOT's rollout
+      // and the exact call id — the foreign copy is the named foreign shape,
+      // and the (resolved and reused) child cell ids stay irrelevant to it.
+      const rollouts = admissionRollouts();
+      rollouts.push([
+        { type: 'session_meta', payload: { id: SIBLING_THREAD } },
+        { type: 'response_item', payload: { type: 'function_call', name: 'interrupt_agent', call_id: 'int-1', arguments: JSON.stringify({ target: SIBLING_THREAD }) } },
+        fnOutput('int-1', JSON.stringify({ previous_status: 'running' })),
+        activityItem({ id: 'int-1', kind: 'interrupted', agentThreadId: SIBLING_THREAD, threadId: SIBLING_THREAD, completedAtMs: EMISSION_MS }),
+      ]);
+      const { admission } = admit(rollouts);
+      assert.equal(admission.admitted, false);
+      assert.equal(admission.joinedItemCount, 1, 'the owning ROOT item still joins uniquely');
+      assert.equal(admission.foreignItemCount, 1, 'the cross-session identical id is counted as foreign');
+      assert.ok(admission.reasons.includes('host-activity-foreign-rollout'));
+    });
+
+    test('a non-attempted delivery admits nothing (null, never a fabricated negative)', () => {
+      const rollouts = admissionRollouts({ withPendingPoll: true });
+      const stripped = rollouts.map((events, index) => index === 0
+        ? events.filter((event) => event?.payload?.type !== 'function_call' || event.payload?.name !== 'interrupt_agent')
+        : events);
+      const interaction = extractInterruptInteraction(stripped, [], { childThreadId: CHILD_THREAD, command: 'node launcher' });
+      assert.equal(interaction.attempted, false);
+      const admission = admitInterruptHostDelivery(stripped, interaction, binding);
+      assert.equal(admission.checked, true);
+      assert.equal(admission.admitted, null, 'nothing to admit stays null');
+      assert.deepEqual(admission.reasons, ['host-activity-no-attempted-call']);
+    });
+
+    test('an unresolvable owning-Root identity names the owning-root conjunct unestablished (never foreign)', () => {
+      // The self-review round-1 finding: with NO rootThreadId binding the
+      // genuine Root-rollout item is neither joinable nor classifiable — the
+      // registered conjunct-4a name (`host-activity-owning-root-unestablished`)
+      // must fire for the REAL case, and the Root's own item must never be
+      // misnamed foreign.
+      const { admission } = admit(admissionRollouts(), { childThreadId: CHILD_THREAD, rootThreadId: null });
+      assert.equal(admission.admitted, false);
+      assert.deepEqual(admission.reasons, ['host-activity-owning-root-unestablished'],
+        'the null-Root case classifies under the registered conjunct-4a name alone');
+      assert.equal(admission.rootRolloutOwned, null, 'unestablishable, never false-by-misclassification');
+      assert.equal(admission.foreignItemCount, 0, 'the Root-own item is never counted foreign');
+      assert.equal(admission.joinedItemCount, 0);
+    });
+
+    test('an observed window with an unestablishable attributable start stays named-unestablished (never approximated)', () => {
+      // The window rule (self-review round 1 discriminating test): an
+      // observed pending window whose attributable start is unestablishable
+      // (atMs null — e.g. the unstamped same-rollout ordering the extractor
+      // produces) with a TIMED host item can never order the emission inside
+      // the window — the registered §19.6 never-approximated rule, named
+      // `host-activity-window-unestablished`, admission false, ordering null.
+      const interaction = {
+        attempted: true, callCount: 1, delivered: true, rejection: null, callId: 'int-1',
+        callRolloutSessionId: ROOT_THREAD,
+        wrappedInterrupt: false,
+        nestedInterruptCallIds: [],
+        pendingBeforeCall: { observed: true, at: null, atMs: null },
+        settledAfterCall: { at: null, atMs: null },
+        completedAfterCall: { at: null, atMs: null },
+      };
+      const rollouts = [[
+        { type: 'session_meta', payload: { id: ROOT_THREAD } },
+        activityItem({ id: 'int-1', completedAtMs: EMISSION_MS }),
+      ]];
+      const admission = admitInterruptHostDelivery(rollouts, interaction, binding);
+      assert.equal(admission.idJoin, true);
+      assert.equal(admission.timed, true, 'the item itself is timed');
+      assert.equal(admission.insidePendingWindow, null, 'the ordering stays unestablished, never approximated');
+      assert.equal(admission.admitted, false);
+      assert.deepEqual(admission.reasons, ['host-activity-window-unestablished']);
+    });
+
+    test('the interrupt call itself must live in the owning Root rollout (codex round 7)', () => {
+      // The codex shape: the call/output pair in a SIBLING session's rollout
+      // while the host item sits in the OWNING ROOT's rollout. The id join
+      // checks the ITEM's session only — moving the call out of the Root
+      // let another session supply delivery and timing evidence. The
+      // extraction now preserves the call pair's OWN rollout session id and
+      // the admission requires it to match the owning Root.
+      const SIBLING_SESSION = 'sibling-thread-1';
+      const callInSibling = admissionRollouts();
+      callInSibling[0] = [
+        { type: 'session_meta', payload: { id: ROOT_THREAD } },
+        activityItem({ id: 'int-1', completedAtMs: EMISSION_MS }),
+      ];
+      callInSibling.push([
+        { type: 'session_meta', payload: { id: SIBLING_SESSION } },
+        interruptCall('int-1', CHILD_THREAD, '2026-10-06T00:00:07.000Z'),
+        interruptSuccess('int-1', 'running', '2026-10-06T00:00:07.100Z'),
+      ]);
+      const siblingInteraction = extractInterruptInteraction(callInSibling, [], { childThreadId: CHILD_THREAD, command: 'node launcher' });
+      assert.equal(siblingInteraction.callRolloutSessionId, SIBLING_SESSION,
+        'the extraction preserves the call pair\'s own rollout session identity');
+      const siblingAdmission = admitInterruptHostDelivery(callInSibling, siblingInteraction, binding);
+      assert.equal(siblingAdmission.admitted, false, 'a sibling-session call never joins the Root item');
+      assert.ok(siblingAdmission.reasons.includes('host-activity-foreign-call-rollout'), JSON.stringify(siblingAdmission.reasons));
+      // Control: call+item both in the Root rollout admit (the round-1
+      // positive shape).
+      const control = admit(admissionRollouts());
+      assert.equal(control.admission.admitted, true);
+      // An unresolvable CALL rollout session is fail-closed named too.
+      const unresolvable = admissionRollouts();
+      unresolvable[0] = unresolvable[0].filter((event) => event?.type !== 'session_meta');
+      const unresolvableInteraction = extractInterruptInteraction(unresolvable, [], { childThreadId: CHILD_THREAD, command: 'node launcher' });
+      const unresolvableAdmission = admitInterruptHostDelivery(unresolvable, unresolvableInteraction, binding);
+      assert.equal(unresolvableAdmission.admitted, false);
+      assert.ok(unresolvableAdmission.reasons.includes('host-activity-call-rollout-unestablished'), JSON.stringify(unresolvableAdmission.reasons));
+    });
+
+    test('the admission validates its inputs before scanning (contract errors, not silent facts)', () => {
+      assert.throws(() => admitInterruptHostDelivery([], null, binding), /interruptInteraction/i);
+      assert.throws(() => admitInterruptHostDelivery([], { attempted: true }, binding), /interruptInteraction/i);
+      // A minimal SHAPE-VALID interaction stub (the extractor's contract
+      // surface) so the OPTIONS validation is what each assert exercises.
+      const stub = {
+        attempted: false, callCount: 0, delivered: null, callId: null,
+        pendingBeforeCall: { observed: false, at: null, atMs: null },
+        settledAfterCall: { at: null, atMs: null },
+        completedAfterCall: { at: null, atMs: null },
+      };
+      assert.throws(() => admitInterruptHostDelivery([], stub, { childThreadId: 42 }), /childThreadId/i);
+      assert.throws(() => admitInterruptHostDelivery([], stub, { rootThreadId: 'x'.repeat(300) }), /rootThreadId/i);
+    });
+  });
+
+  describe('native delivery wiring: Gate D layers, settlement readers and the live preflight (2026-10-21 evidence-closure task 3)', async () => {
+    const { mapShellWaitLiveFacts, nativeInterruptionGateDInput, interruptDurableSnapshotSupplier, evaluateLiveLaunchPreflight, STDOUT_CAPTURE_REQUIRED_CASES, WRAPPED_INTERRUPT_REQUIRED_CASES } = await import('../tools/shell-wait-probe/driver.mjs');
+    const { observeSpawnAcknowledgementIdentity } = await import('../tools/shell-wait-probe/evidence.mjs');
+    const { evaluateNativeInterruptionSettlement, NATIVE_INTERRUPTION_ORACLE_VERSION, RELEASE_QUALIFICATION_VERSION } = await import('../tools/shell-wait-probe/release-qualification.mjs');
+    const { readDurableObligationSnapshot } = await import('../tools/shell-wait-probe/closure-observation.mjs');
+    const { createStateStore } = await import('../scripts/lib/state.mjs');
+    const { realpath: realPath } = await import('node:fs/promises');
+
+    const CHILD_THREAD = 'a445b927-1e4d-4f11-9a34-2b6ac19b7d51';
+    const ROOT_THREAD = 'root-thread-1';
+    const ALIAS_TARGET = 'zcode-rescue-agent-tas';
+    const EMISSION_MS = Date.parse('2026-10-06T00:00:07.200Z');
+    const SETTLEMENT_MS = Date.parse('2026-10-06T00:00:12.000Z');
+
+    const stamped = (timestamp, event) => ({ timestamp, ...event });
+    const fnCall = (name, callId, args, timestamp = null) => ({
+      ...(timestamp ? stamped(timestamp, {}) : {}),
+      type: 'response_item', payload: { type: 'function_call', name, call_id: callId, arguments: JSON.stringify(args) },
+    });
+    const fnOutput = (callId, output, timestamp = null) => ({
+      ...(timestamp ? stamped(timestamp, {}) : {}),
+      type: 'response_item', payload: { type: 'function_call_output', call_id: callId, output },
+    });
+    const interruptCall = (callId, target, timestamp = null) => fnCall('interrupt_agent', callId, { target }, timestamp);
+    const interruptSuccess = (callId, previousStatus, timestamp = null) => fnOutput(callId, JSON.stringify({ previous_status: previousStatus }), timestamp);
+    const activityItem = ({ id, kind = 'interrupted', agentThreadId = CHILD_THREAD, threadId = ROOT_THREAD, completedAtMs = EMISSION_MS }) => ({
+      type: 'event_msg',
+      payload: {
+        type: 'item_completed',
+        thread_id: threadId,
+        turn_id: 'root-turn-1',
+        item: { type: 'SubAgentActivity', model: null, reasoning_effort: null, id, kind, agent_thread_id: agentThreadId, agent_path: '/root/zcode_rescue_task_1' },
+        completed_at_ms: completedAtMs,
+      },
+    });
+    const completedOutputBody = (result) => [
+      { type: 'input_text', text: 'Script completed\n' },
+      { type: 'input_text', text: JSON.stringify(result) },
+    ];
+    const pendingOutputBody = (cellId) => [{ type: 'input_text', text: `Script running with cell ID ${cellId}\n` }];
+    const markerOutput = [
+      { type: 'input_text', text: 'Script terminated\nWall time 0.1 seconds\nOutput:\n' },
+      { type: 'input_text', text: 'killed\n' },
+    ];
+
+    /** The full §19.4-admitting interrupt rollout shape (root session
+     * 'root-thread-1' so the mapper's linkage parent binding joins). */
+    function wiringRollouts({ hostItem = true, target = CHILD_THREAD, childTerminal = false, withNativeSettlement = true } = {}) {
+      const childEvents = [
+        { type: 'session_meta', payload: { id: CHILD_THREAD } },
+        fnCall('exec_command', 'launch-1', { cmd: 'node launcher' }, '2026-10-06T00:00:00.000Z'),
+        fnOutput('launch-1', completedOutputBody({ output: '', exit_code: 0, session_id: 5 }), '2026-10-06T00:00:01.000Z'),
+        fnCall('write_stdin', 'poll-1', { session_id: 5, chars: '', yield_time_ms: 60_000 }, '2026-10-06T00:00:02.000Z'),
+        fnOutput('poll-1', pendingOutputBody('cell-1'), '2026-10-06T00:00:02.500Z'),
+        ...(childTerminal ? [
+          fnCall('wait', 'outer-1', { cell_id: 'cell-1' }, '2026-10-06T00:00:03.000Z'),
+          fnOutput('outer-1', completedOutputBody({ output: 'done', exit_code: 0 }), '2026-10-06T00:00:04.000Z'),
+        ] : []),
+        ...(withNativeSettlement && !childTerminal ? [
+          fnCall('wait', 'outer-native', { cell_id: 'cell-1' }, '2026-10-06T00:00:09.000Z'),
+          fnOutput('outer-native', markerOutput, SETTLEMENT_MS),
+        ] : []),
+      ];
+      const rootEvents = [
+        { type: 'session_meta', payload: { id: ROOT_THREAD } },
+        interruptCall('int-1', target, '2026-10-06T00:00:07.000Z'),
+        interruptSuccess('int-1', 'running', '2026-10-06T00:00:07.100Z'),
+        ...(hostItem ? [activityItem({ id: 'int-1' })] : []),
+      ];
+      return [rootEvents, childEvents];
+    }
+    const wiringEvidence = ({ qualified = false, pendingInnerAtEnd = false, companionOverrides = {} } = {}) => ({
+      status: 'supported',
+      facts: {
+        completion: { qualified, processExit: qualified ? 0 : null, publicResultMatched: qualified ? true : null, decisiveEnd: qualified ? 'process-exit' : null, structuralViolationCount: 0 },
+        linkage: { checked: true, exact: true, agentType: 'zcode-rescue', childThreadId: CHILD_THREAD, parentThreadId: ROOT_THREAD },
+        collection: { rolloutCount: 2, childToolCallCount: 4, truncated: false, excerpts: [] },
+        companion: { launchCount: 1, sendCount: 1, sendCountKnown: true, duplicateLaunch: false, preLaunchDiagnostics: { excerpts: [], truncated: false }, ...companionOverrides },
+        handle: { originalHandleChecked: true },
+        observations: { outerReturns: 1, modelCalls: 2, rootJoins: 1, decisiveWallMs: 5, pendingInnerAtEnd },
+      },
+    });
+    const wiringFixture = {
+      workspace: '/private/tmp/t3-ws', codexHome: '/private/tmp/t3-home',
+      installedRoot: '/private/tmp/t3-installed', env: { HOME: '/private/tmp/t3-home' },
+      record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
+    };
+    const mapFacts = (rollouts, evidence = wiringEvidence()) => mapShellWaitLiveFacts(
+      { case: 'rescue-interrupt', pollMs: 3_600_000, waitPolicy: null, interruptBaselineSelector: null, survivalControlSelector: null },
+      { endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: true, result: { code: null, stdout: '', stderr: '' }, cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: false, codexTerminated: false, nativeInterruptionClaimed: false, errors: [] }, timeline: null },
+      evidence,
+      null, null, wiringFixture, rollouts, [], 'node launcher',
+    );
+
+    test('the Gate D delivery layer requires the registered host-activity admission (§19.4, every conjunct)', () => {
+      // The frozen strict-conjunct input: all layers positive EXCEPT the new
+      // admission conjunct — the qualification must fail with ONLY the named
+      // reason until the host item is admitted.
+      const base = {
+        delivery: {
+          delivered: true, exactTargetMatch: true, aliasResolved: true, terminalBeforeInterrupt: false,
+          deliverySent: true, previousStatusOnly: false, unreadableContinuation: false, pendingWindowConfirmed: true,
+        },
+        turnSettled: true, deliveryToSettlementMs: 5000, companionOutcome: 'terminal-result',
+        durableObligations: 'settled', cleanupKill: false, survivalControl: { noCollateralQualified: true },
+        terminalWinner: 'succeeded', naturalCompletionObserved: false, statusObservationTimeoutOnly: false,
+      };
+      const withoutAdmission = evaluateNativeInterruptionSettlement(base);
+      assert.equal(withoutAdmission.qualified, false, 'the admission conjunct is REQUIRED (defaults are never a pass)');
+      assert.ok(withoutAdmission.reasons.includes('host-activity-unadmitted'));
+      assert.equal(withoutAdmission.layers.delivery, false, 'the delivery layer stays failed while the host identity is unadmitted');
+      const admitted = evaluateNativeInterruptionSettlement({
+        ...base,
+        delivery: { ...base.delivery, hostActivityAdmitted: true },
+      });
+      assert.deepEqual(admitted.reasons.filter((reason) => reason !== 'host-activity-unadmitted'), []);
+      assert.equal(admitted.qualified, true, 'every registered conjunct positively established qualifies');
+      assert.equal(admitted.layers.delivery, true);
+      const explicitlyRefused = evaluateNativeInterruptionSettlement({
+        ...base,
+        delivery: { ...base.delivery, hostActivityAdmitted: false },
+      });
+      assert.ok(explicitlyRefused.reasons.includes('host-activity-unadmitted'));
+    });
+
+    test('the interruption oracle carries its own version beside the unchanged family stamp', () => {
+      assert.equal(NATIVE_INTERRUPTION_ORACLE_VERSION, 2, 'v2 = the §19.4 admission conjunct (2026-10-21 evidence-closure task 3)');
+      assert.equal(RELEASE_QUALIFICATION_VERSION, 1, 'the shared exact-terminal/layer family stamp stays unchanged');
+      const verdict = evaluateNativeInterruptionSettlement({
+        delivery: {
+          delivered: true, exactTargetMatch: true, aliasResolved: true, terminalBeforeInterrupt: false,
+          deliverySent: true, previousStatusOnly: false, unreadableContinuation: false, pendingWindowConfirmed: true,
+          hostActivityAdmitted: true,
+        },
+        turnSettled: true, deliveryToSettlementMs: 5000, companionOutcome: 'terminal-result',
+        durableObligations: 'settled', cleanupKill: false, survivalControl: { noCollateralQualified: true },
+        terminalWinner: 'succeeded', naturalCompletionObserved: false, statusObservationTimeoutOnly: false,
+      });
+      assert.equal(verdict.nativeInterruptionOracleVersion, NATIVE_INTERRUPTION_ORACLE_VERSION);
+    });
+
+    test('the REAL serializer persists the unreadable-continuation fact the Gate D join consumes (codex round 2)', async (t) => {
+      // A mapped run WITH an unreadable continuation (a linked wait whose
+      // response arrives but fails its statement decode — the round-27
+      // shape, while the interrupted observation is still pending): the
+      // mapper flags it; the record must carry it so the offline join keeps
+      // the rejection after fixture disposal.
+      const { runShellWaitCase } = await import('../tools/shell-wait-probe/driver.mjs');
+      const { evaluateNativeInterruptionSettlement } = await import('../tools/shell-wait-probe/release-qualification.mjs');
+      const rollouts = wiringRollouts({ withNativeSettlement: false });
+      rollouts[1].push(
+        fnCall('wait', 'outer-unreadable', { cell_id: 'cell-1' }, '2026-10-06T00:00:09.000Z'),
+        fnOutput('outer-unreadable', 'unrelated failure text', '2026-10-06T00:00:10.000Z'),
+      );
+      const facts = mapFacts(rollouts);
+      assert.equal(facts.interrupt.unreadableContinuationObserved, true, 'the mapped facts flag the unreadable continuation');
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-unreadable-persist-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const persistFixture = {
+        workspace: '/private/tmp/t3-unreadable-ws', codexHome: '/private/tmp/t3-unreadable-home',
+        installedRoot: '/private/tmp/t3-unreadable-installed', env: { HOME: '/private/tmp/t3-unreadable-home' },
+        record: { variant: 'candidate', appliedArtifacts: [] },
+        dispose: async () => {},
+      };
+      const persisted = await runShellWaitCase(
+        { case: 'rescue-interrupt', codexBinary: process.execPath, sourceSha: 'a'.repeat(40), workerDurationMs: 420_000, capMs: 3_600_000, pollMs: 3_600_000, budgetMs: 1_200_000, output: root },
+        { createFixture: async () => persistFixture, executeLiveCase: async () => facts },
+      );
+      assert.equal(persisted.interrupt.unreadableContinuationObserved, true,
+        'the REAL serializer persists the flag (codex round 2: the negative test previously supplied it by hand)');
+      // Reload the RETAINED record from disk (post-disposal offline join).
+      const { readdir: listDir, readFile: readBytes } = await import('node:fs/promises');
+      const recordName = (await listDir(root)).find((name) => name.endsWith('.record.json'));
+      const reloaded = JSON.parse(await readBytes(join(root, recordName), 'utf8'));
+      const input = nativeInterruptionGateDInput(reloaded);
+      assert.equal(input.delivery.unreadableContinuation, true);
+      const verdict = evaluateNativeInterruptionSettlement(input);
+      assert.ok(verdict.reasons.includes('unreadable-continuation'), JSON.stringify(verdict.reasons));
+    });
+
+    test('the retained record mirrors the host-delivery admission and the closed ordering facts', async (t) => {
+      // The Gate D join runs on the PERSISTED record after fixture disposal:
+      // the schema-additive Task 3 block must survive buildCaseRecord —
+      // statuses/closed facts only, never the call text or the alias.
+      const { runShellWaitCase } = await import('../tools/shell-wait-probe/driver.mjs');
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-hostdelivery-persist-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const facts = mapFacts(wiringRollouts());
+      const persistFixture = {
+        workspace: '/private/tmp/t3-persist-ws', codexHome: '/private/tmp/t3-persist-home',
+        installedRoot: '/private/tmp/t3-persist-installed', env: { HOME: '/private/tmp/t3-persist-home' },
+        record: { variant: 'candidate', appliedArtifacts: [] },
+        dispose: async () => {},
+      };
+      const persisted = await runShellWaitCase(
+        { case: 'rescue-interrupt', codexBinary: process.execPath, sourceSha: 'a'.repeat(40), workerDurationMs: 420_000, capMs: 3_600_000, pollMs: 3_600_000, budgetMs: 1_200_000, output: root },
+        { createFixture: async () => persistFixture, executeLiveCase: async () => facts },
+      );
+      assert.equal(persisted.interrupt.hostDelivery.admitted, true, 'the admission verdict rides the record');
+      assert.equal(persisted.interrupt.hostDelivery.agentThreadIdMatch, true);
+      assert.equal(persisted.interrupt.pendingWindowObserved, true);
+      assert.equal(persisted.interrupt.settlementCleanupGenerated, false);
+      assert.equal('completedBeforeCallMs' in persisted.interrupt, false, 'a null completed-before fact does not ride');
+      // The record carries NO target text beyond the sanitized projection:
+      // the admission block is closed facts (booleans/counts/timestamp/reasons).
+      const serialized = JSON.stringify(persisted.interrupt.hostDelivery);
+      assert.ok(!serialized.includes(ALIAS_TARGET), 'no alias text persists');
+    });
+
+    test('the mapper computes and persists the host-delivery admission and the closed ordering facts', () => {
+      const facts = mapFacts(wiringRollouts());
+      assert.deepEqual(facts.interrupt.hostDelivery, {
+        checked: true,
+        attemptedCall: true,
+        callId: 'int-1',
+        itemPresent: true,
+        interruptedItemCount: 1,
+        joinedItemCount: 1,
+        foreignItemCount: 0,
+        idJoin: true,
+        idJoinBasis: 'outer-call-id',
+        agentThreadIdMatch: true,
+        rootRolloutOwned: true,
+        insidePendingWindow: true,
+        timed: true,
+        completedAtMs: EMISSION_MS,
+        admitted: true,
+        reasons: [],
+      });
+      assert.equal(facts.interrupt.exactTargetMatch, true);
+      assert.equal(facts.interrupt.pendingWindowObserved, true, 'the confirmed pending window persists as its own closed fact');
+      assert.equal('completedBeforeCallMs' in facts.interrupt, false, 'a null completed-before fact does not ride (schema-additive)');
+      assert.equal(facts.interrupt.settlementCleanupGenerated, false, 'the pre-cleanup native settlement is NOT cleanup-generated');
+      assert.equal(facts.inconclusive, null, 'the admitted delivery satisfies the interrupt contract');
+    });
+
+    test('an absent host item persists its unadmitted admission block with the named counterexample', () => {
+      // The §19.4 counterexample (Legacy-mode rollout, older binary, or
+      // truncated rollout): the delivery identity layer is unestablished.
+      // The mapper's frozen §16.3 case contract and settlement chain are
+      // deliberately NOT re-decided — the admission rides the record as the
+      // closed block the offline Gate D join enforces
+      // ('host-activity-unadmitted', proven in the join tests below).
+      const facts = mapFacts(wiringRollouts({ hostItem: false }));
+      assert.equal(facts.interrupt.hostDelivery.admitted, false);
+      assert.deepEqual(facts.interrupt.hostDelivery.reasons, ['host-activity-item-absent']);
+      assert.equal(facts.interrupt.hostDelivery.itemPresent, false);
+      assert.equal(facts.interrupt.hostDelivery.joinedItemCount, 0);
+    });
+
+    test('the alias target resolves through the host identity without relabeling caller text', () => {
+      const facts = mapFacts(wiringRollouts({ target: ALIAS_TARGET }));
+      assert.deepEqual(facts.interrupt.target, { kind: 'unknown', value: null, suppressed: true, chars: ALIAS_TARGET.length },
+        'the caller-supplied alias stays suppressed');
+      assert.equal(facts.interrupt.exactTargetMatch, true, 'the delivery is exact through the host-resolved identity');
+      assert.equal(facts.interrupt.hostDelivery.admitted, true);
+      assert.equal(facts.inconclusive, null);
+    });
+
+    test('the post-completion delivery is still refused under an unadmissible item', () => {
+      // The Child completed BEFORE the call: the pending window never
+      // existed, so the item cannot be ordered inside it and the delivery
+      // contract fails on the post-completion classification first.
+      const facts = mapFacts(wiringRollouts({ childTerminal: true, withNativeSettlement: false }));
+      assert.equal(facts.interrupt.hostDelivery.admitted, false);
+      assert.ok(facts.interrupt.hostDelivery.reasons.includes('host-activity-without-pending-observation'));
+      assert.equal(facts.interrupt.completedBeforeCallMs, Date.parse('2026-10-06T00:00:04.000Z'),
+        'the pre-call completion persists as its own closed fact');
+      assert.match(String(facts.inconclusive?.reason ?? ''), /completion/u);
+    });
+
+    test('the Gate D join feeds every layer from the persisted record through the exact identity', () => {
+      const record = gateDRecord();
+      const input = nativeInterruptionGateDInput(record);
+      assert.deepEqual(input.delivery, {
+        delivered: true,
+        exactTargetMatch: true,
+        aliasResolved: true,
+        terminalBeforeInterrupt: false,
+        deliverySent: true,
+        previousStatusOnly: false,
+        unreadableContinuation: false,
+        pendingWindowConfirmed: true,
+        hostActivityAdmitted: true,
+        terminalBeforeInterruptBasis: 'admitted-open-pending-window',
+      });
+      assert.equal(input.turnSettled, true);
+      assert.equal(input.deliveryToSettlementMs, 5000);
+      assert.equal(input.companionOutcome, 'terminal-result',
+        'the Companion remote outcome derives from the durable job production-published terminal winner — never null-by-omission');
+      assert.equal(input.durableObligations, 'settled');
+      assert.equal(input.cleanupKill, false);
+      assert.equal(input.terminalWinner, 'succeeded');
+      assert.deepEqual(input.survivalControl, { noCollateralQualified: true, reason: null, postDelivery: 'alive', releaseQualificationVersion: 1 },
+        'the adjudicated control verdict passes through verbatim');
+      const verdict = evaluateNativeInterruptionSettlement(input);
+      assert.equal(verdict.qualified, true, 'a fully-established record qualifies through the join');
+      // The exact identity is load-bearing: a record whose linkage lost the
+      // Child id cannot claim the delivery layer.
+      const anonymous = nativeInterruptionGateDInput(gateDRecord({ linkage: { childThreadId: null, parentThreadId: ROOT_THREAD } }));
+      assert.equal(anonymous.delivery.exactTargetMatch, null);
+      assert.equal(anonymous.delivery.hostActivityAdmitted, true, 'the admission fact still rides (it was established during the run)');
+      const anonymousVerdict = evaluateNativeInterruptionSettlement(anonymous);
+      assert.equal(anonymousVerdict.qualified, false);
+      assert.ok(anonymousVerdict.reasons.includes('delivery-target-unmatched'));
+    });
+
+    test('the plan pipeline negatives stay named through the join (adjudication inputs, never silently dropped)', () => {
+      const evaluate = (mutate) => evaluateNativeInterruptionSettlement(nativeInterruptionGateDInput(gateDRecord(mutate)));
+      // Unreadable continuation.
+      const unreadable = evaluate((record) => {
+        record.interrupt.unreadableContinuationObserved = true;
+      });
+      assert.ok(unreadable.reasons.includes('unreadable-continuation'));
+      // Explicit cell termination (an alternate ender, never native credit).
+      const explicit = evaluate((record) => {
+        record.interrupt.settled = null;
+        record.interrupt.settledBasis = 'explicit-cell-termination-not-attributed';
+      });
+      assert.ok(explicit.reasons.includes('turn-settlement-unobserved'));
+      assert.equal(explicit.layers.turnSettlement, false);
+      // Cleanup-generated cancellation at/after the earliest cleanup boundary.
+      const cleanupGenerated = evaluate((record) => {
+        record.interrupt.settled = null;
+        record.interrupt.settledBasis = 'budget-cleanup-termination-not-attributed';
+        record.interrupt.settlementCleanupGenerated = true;
+      });
+      assert.ok(cleanupGenerated.reasons.includes('cleanup-termination-is-not-native-settlement'));
+      // A genuine PRE-cleanup native settlement keeps its credit (the fence
+      // contract: later harness cleanup never retroactively taints it).
+      const preCleanup = evaluate((record) => {
+        record.interrupt.settlementCleanupGenerated = false;
+      });
+      assert.ok(!preCleanup.reasons.includes('cleanup-termination-is-not-native-settlement'));
+      // Negative / unknown / over-bound latency.
+      const negative = evaluate((record) => { record.interrupt.deliveryToSettlementMs = -1; });
+      assert.ok(negative.reasons.includes('settlement-latency-contradictory'));
+      const unknown = evaluate((record) => {
+        record.interrupt.deliveryToSettlementMs = null;
+        record.interrupt.timingBasis = 'unavailable';
+      });
+      assert.ok(unknown.reasons.includes('settlement-latency-unestablished'));
+      const overBound = evaluate((record) => { record.interrupt.deliveryToSettlementMs = 61_000; });
+      assert.ok(overBound.reasons.includes('settlement-latency-over-bound'));
+      // Still-live Companion (the durable work observed alive-unsettled):
+      // the join classifies the Companion outcome from the joined layers.
+      const stillLiveInput = nativeInterruptionGateDInput(gateDRecord((record) => {
+        record.child.settlementLayers.remoteTerminal = null;
+        record.child.durableSnapshot.aggregate = 'unresolved';
+        record.child.durableSnapshot.job.projection.status = 'running';
+      }));
+      assert.equal(stillLiveInput.companionOutcome, 'survived-unsettled');
+      const stillLive = evaluateNativeInterruptionSettlement(stillLiveInput);
+      assert.ok(stillLive.reasons.includes('companion-still-live-unsettled'));
+      // Terminal status with OUTSTANDING duties (the marked-claim rule):
+      // the winner passes through while the durable layer refuses settlement.
+      const outstanding = evaluate((record) => {
+        record.child.settlementLayers.remoteTerminal = null;
+        record.child.settlementLayers.localProcessReaping = 'natural-exit-observed';
+        record.child.durableSnapshot.aggregate = 'unresolved';
+        record.child.durableSnapshot.job.projection.status = 'succeeded';
+      });
+      assert.equal(outstanding.terminalWinner, 'succeeded');
+      assert.ok(outstanding.reasons.includes('durable-obligations-unresolved'),
+        'a terminal status alone never discharges the durable duties');
+      // An already-completed / unknown-at-delivery survival control and a
+      // missing control both stay named through the pass-through.
+      const lostControl = evaluate((record) => {
+        record.survivalControlSelector = 'progress-terminal';
+        record.survivalControl = { noCollateralQualified: false, reason: 'delivery-bound-unestablished' };
+      });
+      assert.ok(lostControl.reasons.includes('collateral-control-not-qualified'));
+      // Codex round 3: Child-attributed outcomes (Companion terminal-result,
+      // terminal winner) are consumed ONLY from a POSITIVELY verified
+      // executor linkage — an `unresolved` aggregate (terminal + marked
+      // claim) with an unverified/mismatched executor never publishes them;
+      // the durable obligations layer keeps its own per-fact report.
+      for (const linkage of ['binding-executor-mismatch', 'binding-executor-linkage-unverified']) {
+        const unverifiedInput = nativeInterruptionGateDInput(gateDRecord((record) => {
+          record.child.durableSnapshot.aggregate = 'unresolved';
+          record.child.durableSnapshot.executorLinkage = linkage;
+          record.child.durableSnapshot.job.projection.status = 'succeeded';
+        }));
+        assert.equal(unverifiedInput.companionOutcome, null, `${linkage}: the Companion outcome stays unestablished`);
+        assert.equal(unverifiedInput.terminalWinner, null, `${linkage}: the terminal winner is not consumed`);
+        const unverified = evaluateNativeInterruptionSettlement(unverifiedInput);
+        assert.ok(unverified.reasons.includes('companion-outcome-unobserved'), `${linkage}: ${JSON.stringify(unverified.reasons)}`);
+        assert.ok(unverified.reasons.includes('terminal-winner-unobserved'), `${linkage}: ${JSON.stringify(unverified.reasons)}`);
+      }
+      // Codex round 5: an EXPLICIT pendingWindowObserved:false is a real
+      // negative observation — the poll may have started and RESOLVED before
+      // the interrupt (historical poll start never establishes
+      // pending-at-delivery), so the legacy poll-start fallback must apply
+      // ONLY when the explicit field is ABSENT.
+      for (const [label, expected] of [
+        ['explicit false', false],
+        ['explicit true', true],
+      ]) {
+        const shaped = nativeInterruptionGateDInput(gateDRecord((record) => {
+          record.observations.pollStartedAtElapsedMs = 1000;
+          record.interrupt.orderingBound = true;
+          record.interrupt.pendingWindowObserved = expected;
+        }));
+        assert.equal(shaped.delivery.pendingWindowConfirmed, expected,
+          `${label} is never overridden by the legacy poll-start fallback`);
+      }
+      // Codex round 6 — the THREE-VALUED terminalBeforeInterrupt matrix.
+      // The root-specified semantics: true ONLY on positive terminal evidence
+      // (persisted terminal previous status, or a demonstrably pre-call
+      // completion); false ONLY on an ADMITTED host item inside a confirmed
+      // pending window with no contradicting terminal evidence; contradiction
+      // (both) → UNKNOWN with the named basis; neither → UNKNOWN, named
+      // nothing-to-conclude. Missing identity evidence never becomes a
+      // completion diagnosis.
+      // (a) Item-absent: the pre-call-completion inference is DEAD — the
+      // native-cancellation mapping stays, the value is null.
+      const itemAbsentRecord = gateDRecord((record) => {
+        delete record.interrupt.hostDelivery;
+      });
+      const itemAbsent = nativeInterruptionGateDInput(itemAbsentRecord);
+      assert.equal(itemAbsent.delivery.terminalBeforeInterrupt, null,
+        'a missing host item is NOT a completion diagnosis');
+      assert.equal(itemAbsent.delivery.terminalBeforeInterruptBasis, 'no-terminal-state-evidence');
+      assert.equal(itemAbsentRecord.interrupt.settledBasis, 'native-cancellation-settlement-after-delivery', 'the settlement mapping stays intact');
+      // (b) Admitted in-window + no terminal evidence → false; delivery qualifies.
+      const admitted = nativeInterruptionGateDInput(gateDRecord());
+      assert.equal(admitted.delivery.terminalBeforeInterrupt, false);
+      assert.equal(admitted.delivery.terminalBeforeInterruptBasis, 'admitted-open-pending-window');
+      // (c) Terminal previous status + admitted in-window → CONTRADICTION,
+      // named; the oracle rejects the delivery layer.
+      const contradiction = nativeInterruptionGateDInput(gateDRecord((record) => {
+        record.interrupt.previousStatus = 'interrupted';
+      }));
+      assert.equal(contradiction.delivery.terminalBeforeInterrupt, null, 'contradictory evidence is UNKNOWN, never a boolean guess');
+      assert.equal(contradiction.delivery.terminalBeforeInterruptBasis, 'contradiction-terminal-status-vs-open-window');
+      const contradictionVerdict = evaluateNativeInterruptionSettlement(contradiction);
+      assert.equal(contradictionVerdict.layers.delivery, false, 'an already-terminal target never reports delivery true');
+      assert.ok(contradictionVerdict.reasons.includes('terminal-state-unestablished'), JSON.stringify(contradictionVerdict.reasons));
+      // (d) Terminal previous status WITHOUT the item → true via the
+      // persisted evidence.
+      const terminalNoItem = nativeInterruptionGateDInput(gateDRecord((record) => {
+        record.interrupt.previousStatus = 'interrupted';
+        delete record.interrupt.hostDelivery;
+      }));
+      assert.equal(terminalNoItem.delivery.terminalBeforeInterrupt, true);
+      assert.equal(terminalNoItem.delivery.terminalBeforeInterruptBasis, 'terminal-previous-status-evidence');
+      const terminalNoItemVerdict = evaluateNativeInterruptionSettlement(terminalNoItem);
+      assert.ok(terminalNoItemVerdict.reasons.includes('terminal-before-interrupt'), JSON.stringify(terminalNoItemVerdict.reasons));
+      // (e) Pre-call completion evidence → true (WITHOUT an admitted item —
+      // an admitted in-window item + completion evidence is the (c)
+      // contradiction case).
+      const preCall = nativeInterruptionGateDInput(gateDRecord((record) => {
+        record.interrupt.completedBeforeCallMs = Date.parse('2026-10-06T00:00:04.000Z');
+        delete record.interrupt.hostDelivery;
+      }));
+      assert.equal(preCall.delivery.terminalBeforeInterrupt, true);
+      assert.equal(preCall.delivery.terminalBeforeInterruptBasis, 'pre-call-completion-evidence');
+      // A legacy snapshot without the linkage fact is unverified too.
+      const noFactInput = nativeInterruptionGateDInput(gateDRecord((record) => {
+        delete record.child.durableSnapshot.executorLinkage;
+      }));
+      assert.equal(noFactInput.companionOutcome, null);
+      assert.equal(noFactInput.terminalWinner, null);
+      // The durable obligations layer keeps its own per-fact report even
+      // when the Child-attributed outcomes are refused (layer separation).
+      const layeredInput = nativeInterruptionGateDInput(gateDRecord((record) => {
+        record.child.durableSnapshot.aggregate = 'unresolved';
+        record.child.durableSnapshot.executorLinkage = 'binding-executor-mismatch';
+        record.child.durableSnapshot.job.projection.status = 'succeeded';
+      }));
+      assert.equal(layeredInput.durableObligations, 'unresolved');
+      // Codex round 5: missing settlement never downgrades a PROVEN
+      // delivery — an admitted delivery inside a confirmed window with the
+      // observation still unsettled ('settlement-unavailable') keeps its
+      // earned delivery facts (previousStatusOnly false; the pre-dispatch
+      // snapshot was corroborated by the admitted host item and the
+      // confirmed window), and settlement unavailability rejects ONLY the
+      // settlement layer.
+      const provenInput = nativeInterruptionGateDInput(gateDRecord((record) => {
+        record.interrupt.settled = null;
+        record.interrupt.settledBasis = 'settlement-unavailable';
+      }));
+      assert.equal(provenInput.delivery.previousStatusOnly, false,
+        'an admitted delivery inside a confirmed window is never a snapshot-only fact');
+      assert.equal(provenInput.delivery.terminalBeforeInterrupt, false,
+        'a live confirmed window with an open observation is positively NOT post-completion');
+      assert.equal(provenInput.turnSettled, null);
+      const provenVerdict = evaluateNativeInterruptionSettlement(provenInput);
+      assert.ok(!provenVerdict.reasons.includes('previous-status-snapshot-only'),
+        JSON.stringify(provenVerdict.reasons));
+      assert.ok(!provenVerdict.reasons.includes('terminal-state-unestablished'),
+        'the delivery layer is not blocked by the unobserved settlement');
+      assert.ok(provenVerdict.reasons.includes('turn-settlement-unobserved'),
+        'settlement unavailability rejects ONLY the settlement layer');
+      assert.equal(provenVerdict.layers.delivery, true, 'the delivery layer keeps its earned facts');
+      // A record whose interrupt block lacks the admission block entirely
+      // (a legacy shape) fails the delivery layer closed.
+      const legacyInput = nativeInterruptionGateDInput(gateDRecord((record) => { delete record.interrupt.hostDelivery; }));
+      assert.equal(legacyInput.delivery.hostActivityAdmitted, null);
+      const legacy = evaluateNativeInterruptionSettlement(legacyInput);
+      assert.ok(legacy.reasons.includes('host-activity-unadmitted'));
+    });
+
+    test('previous_status stays a pre-dispatch snapshot through the join (never settlement)', () => {
+      // Codex round 5: the snapshot-only convention applies when NO admitted
+      // host item corroborates a confirmed pending window (here: the window
+      // explicitly unobserved) — a proven delivery is never downgraded (the
+      // proven-delivery test above pins that side).
+      const record = gateDRecord((draft) => {
+        draft.interrupt.pendingWindowObserved = false;
+      });
+      record.interrupt.settled = null;
+      const input = nativeInterruptionGateDInput(record);
+      assert.equal(input.delivery.previousStatusOnly, true, 'the snapshot-only derivation follows the §19.2 convention');
+      assert.equal(input.turnSettled, null);
+      const verdict = evaluateNativeInterruptionSettlement(input);
+      assert.ok(verdict.reasons.includes('previous-status-snapshot-only'));
+      assert.ok(verdict.reasons.includes('turn-settlement-unobserved'));
+    });
+
+    test('the durable ownership is the OBSERVED PARENT (Root) session, with the executor verified against the observed Child (codex round 1)', async (t) => {
+      // The PRODUCTION ownership shape (scripts/zcode-companion.mjs:862 the
+      // caller is the executor's PARENT session; :1464 the reservation is
+      // `ownerSessionId: caller.sessionId`; :1530 reserve): the durable job
+      // belongs to the ROOT, and the CHILD runs the launcher. The previous
+      // test masked the defect by reserving under the Child's own id — the
+      // supplier queried the Child's owner index and could never find a real
+      // Root-owned job. This test reserves exactly as production does.
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-interrupt-durable-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const workspace = join(root, 'workspace');
+      await mkdir(workspace, { recursive: true });
+      const workspaceReal = await realPath(workspace);
+      const dataRoot = join(root, 'data-root');
+      const store = createStateStore({ dataRoot });
+      const { job } = await store.reserveFreshRescueJob({ workspace: workspaceReal,
+        reservation: { workspace: workspaceReal, ownerSessionId: ROOT_THREAD, ownerTurnId: 'root-turn-i', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } },
+        executor: { parentSessionId: ROOT_THREAD, parentTurnId: 'root-turn-i', agentId: CHILD_THREAD, agentType: 'zcode-rescue', agentPath: '/root/zcode_rescue_task', workspace: workspaceReal, parentPermissionMode: 'workspace-write' },
+        lifecycle: { ownerLifecycleEpoch: 'c'.repeat(64), executionOwner: 'host-child', hostPlacement: 'foreground' } });
+      await store.claimJobWorkerForExecution(workspaceReal, job.id, { childPid: 999_999_999, workerLeaseId: job.id });
+      await store.transitionJob(workspaceReal, job.id, ['queued'], 'running',
+        { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-int', childPid: 999_999_999, workerLeaseId: job.id });
+      await store.finishJob(workspaceReal, job.id, ['running'], 'succeeded', { exitCode: 0, resultArtifact: 'results/int.md' });
+      const fixture = { workspace: workspaceReal, env: { ZCODE_DATA_ROOT: dataRoot } };
+      const fixture2 = (dataRootArgument, workspaceArgument) => ({ workspace: workspaceArgument, env: { ZCODE_DATA_ROOT: dataRootArgument } });
+      const identity = observeSpawnAcknowledgementIdentity([[{ type: 'session_meta', payload: { id: CHILD_THREAD } }]]);
+      assert.equal(identity.exact, false, 'a bare meta without the spawn join is not an exact identity');
+      // The spawn acknowledgement carries BOTH identities (Root parent +
+      // Child); the supplier owns by the PARENT and verifies the executor
+      // against the Child.
+      const observed = { exact: true, childThreadId: CHILD_THREAD, parentThreadId: ROOT_THREAD };
+      const supplier = interruptDurableSnapshotSupplier(fixture, observed);
+      assert.ok(supplier, 'both observed identities arm the interrupt-case durable supplier');
+      const snapshot = await supplier();
+      assert.equal(snapshot.partition.status, 'resolved', 'the ROOT-owned partition resolves via the parent identity');
+      assert.equal(snapshot.job.presence, 'found', 'the Root-owned exact job is FOUND via the parent identity — never latest-job guessing');
+      assert.equal(snapshot.job.projection.id, job.id);
+      assert.equal(snapshot.job.projection.ownerSessionId, ROOT_THREAD, 'the job is Root-owned, exactly as production reserves it');
+      assert.equal(snapshot.aggregate, 'settled', 'the fully-discharged production job settles through the exported predicates');
+      // A job whose EXECUTOR binding disagrees with the observed Child is a
+      // named mismatch — never settled.
+      const mismatched = await interruptDurableSnapshotSupplier(fixture, { exact: true, childThreadId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', parentThreadId: ROOT_THREAD })();
+      assert.equal(mismatched.aggregate, 'unestablished', 'an executor-vs-Child mismatch never settles');
+      assert.ok(mismatched.reasons.includes('binding-executor-mismatch'), JSON.stringify(mismatched.reasons));
+      // The old wrong shape — ownership keyed by the Child identity — is no
+      // longer used: without the observed PARENT id there is no supplier.
+      assert.equal(interruptDurableSnapshotSupplier(fixture, { exact: true, childThreadId: CHILD_THREAD, parentThreadId: null }), null,
+        'the Child-identity lookup shape is gone: ownership requires the observed parent');
+      // Codex round 2: with an EXPECTED executor, settlement credit requires
+      // a POSITIVELY MATCHING executor binding — a terminal job whose
+      // binding pair is ABSENT has no executor linkage and stays named
+      // unestablished (never settled, never consumed as Gate D evidence).
+      const root2 = await mkdtemp(join(tmpdir(), 'shell-wait-executor-unlinked-'));
+      t.after(() => rm(root2, { recursive: true, force: true }));
+      const workspace2 = join(root2, 'workspace');
+      await mkdir(workspace2, { recursive: true });
+      const workspaceReal2 = await realPath(workspace2);
+      const dataRoot2 = join(root2, 'data-root');
+      const store2 = createStateStore({ dataRoot: dataRoot2 });
+      const unlinked = await store2.reserveFreshRescueJob({ workspace: workspaceReal2,
+        reservation: { workspace: workspaceReal2, ownerSessionId: ROOT_THREAD, ownerTurnId: 'root-turn-u', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } },
+        executor: { parentSessionId: ROOT_THREAD, parentTurnId: 'root-turn-u', agentId: CHILD_THREAD, agentType: 'zcode-rescue', agentPath: '/root/zcode_rescue_task', workspace: workspaceReal2, parentPermissionMode: 'workspace-write' },
+        lifecycle: { ownerLifecycleEpoch: 'f'.repeat(64), executionOwner: 'host-child', hostPlacement: 'foreground' } });
+      await store2.claimJobWorkerForExecution(workspaceReal2, unlinked.job.id, { childPid: 999_999_999, workerLeaseId: unlinked.job.id });
+      await store2.transitionJob(workspaceReal2, unlinked.job.id, ['queued'], 'running',
+        { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-u', childPid: 999_999_999, workerLeaseId: unlinked.job.id });
+      await store2.finishJob(workspaceReal2, unlinked.job.id, ['running'], 'succeeded', { exitCode: 0, resultArtifact: 'results/u.md' });
+      const { readdir: listDir } = await import('node:fs/promises');
+      const partitionKey2 = createHash('sha256').update(workspaceReal2, 'utf8').digest('hex');
+      const partitionDir2 = join(dataRoot2, 'workspaces', partitionKey2);
+      for (const entry of await listDir(partitionDir2)) {
+        if (entry.startsWith('rescue-binding-')) await rm(join(partitionDir2, entry));
+      }
+      const unlinkedSnapshot = await interruptDurableSnapshotSupplier(fixture2(dataRoot2, workspaceReal2), observed)();
+      assert.equal(unlinkedSnapshot.aggregate, 'unestablished',
+        'a terminal job without its executor binding pair is never settled');
+      assert.ok(unlinkedSnapshot.reasons.includes('binding-executor-linkage-unverified'), JSON.stringify(unlinkedSnapshot.reasons));
+      assert.notEqual(unlinkedSnapshot.job.presence, 'missing');
+      // Codex round 3: the reader EXPORTS the linkage-verification fact so
+      // the Gate D join can refuse Child-attributed outcomes without
+      // re-deriving it from the aggregate (an `unresolved` aggregate — e.g.
+      // a terminal job retaining a marked claim — may coexist with an
+      // unverified or mismatched executor).
+      assert.equal(unlinkedSnapshot.executorLinkage, 'binding-executor-linkage-unverified');
+      const verifiedSnapshot = await interruptDurableSnapshotSupplier(fixture, observed)();
+      assert.equal(verifiedSnapshot.executorLinkage, 'verified',
+        'the positively matching binding reports the verified linkage');
+    });
+
+    test('an ambiguous owner index and a missing one stay named unestablished/missing, never guessed', async (t) => {
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-interrupt-amb-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const workspace = join(root, 'workspace');
+      await mkdir(workspace, { recursive: true });
+      const workspaceReal = await realPath(workspace);
+      const dataRoot = join(root, 'data-root');
+      const store = createStateStore({ dataRoot });
+      const { createJobController } = await import('../scripts/lib/job-control.mjs');
+      // The production ownership shape (codex round 1): ROOT-owned jobs, the
+      // Child as executor.
+      const reservation = { workspace: workspaceReal, ownerSessionId: ROOT_THREAD, ownerTurnId: 'root-turn-a', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } };
+      const mkExecutor = (agentId) => ({ parentSessionId: ROOT_THREAD, parentTurnId: 'root-turn-a', agentId, agentType: 'zcode-rescue', agentPath: '/root/zcode_rescue_task', workspace: workspaceReal, parentPermissionMode: 'workspace-write' });
+      // The production multi-candidate partition shape (the Task 2
+      // precedent): the first job is cancelled through its own production
+      // stop path, then a second executor (a NEW operation generation) under
+      // the SAME owner adds the second binding record and owner-index entry.
+      const first = await store.reserveFreshRescueJob({ workspace: workspaceReal, reservation, executor: mkExecutor('child-a'), lifecycle: { ownerLifecycleEpoch: 'd'.repeat(64), executionOwner: 'host-child', hostPlacement: 'foreground' } });
+      const controller = createJobController({ store });
+      await controller.cancel(workspaceReal, first.job.id, ROOT_THREAD);
+      await store.reserveFreshRescueJob({ workspace: workspaceReal, reservation, executor: mkExecutor('child-b'), lifecycle: { ownerLifecycleEpoch: 'd'.repeat(64), executionOwner: 'host-child', hostPlacement: 'foreground' } });
+      const ambiguous = await readDurableObligationSnapshot({
+        dataRoot, workspace: workspaceReal, ownerSessionId: ROOT_THREAD, resolveJobFromOwnerIndex: true,
+      });
+      assert.equal(ambiguous.aggregate, 'unestablished', 'multiple possible jobs remain unknown (§19.5)');
+      assert.ok(ambiguous.reasons.includes('owned-job-ambiguous'));
+      const fixture = { workspace: workspaceReal, env: { ZCODE_DATA_ROOT: dataRoot } };
+      const supplier = interruptDurableSnapshotSupplier(fixture, { exact: true, childThreadId: CHILD_THREAD, parentThreadId: ROOT_THREAD });
+      const ambiguousSnapshot = await supplier();
+      assert.equal(ambiguousSnapshot.aggregate, 'unestablished');
+      assert.ok(ambiguousSnapshot.reasons.includes('owned-job-ambiguous'));
+      const missing = await readDurableObligationSnapshot({
+        dataRoot, workspace: workspaceReal, ownerSessionId: 'ffffffff-ffff-4fff-8fff-fffffffffff0', resolveJobFromOwnerIndex: true,
+      });
+      assert.equal(missing.aggregate, 'unestablished');
+      assert.ok(missing.reasons.includes('owner-binding-missing'), 'a missing owner index is MISSING, never successful cleanup');
+    });
+
+    test('unreadable owner entries are named unestablished — never a confirmed absence or an invisible sibling (self-review round 1)', async (t) => {
+      // The §19.5 partition model: an unreadable/invalid entry is a POSSIBLE
+      // job (unknown), never skippable evidence of absence. The owner-index
+      // resolution must (a) never report `owner-binding-missing` over
+      // unreadable entries and (b) never resolve past an unreadable sibling.
+      const { createHash } = await import('node:crypto');
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-owner-unreadable-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const workspace = join(root, 'workspace');
+      await mkdir(workspace, { recursive: true });
+      const workspaceReal = await realPath(workspace);
+      const dataRoot = join(root, 'data-root');
+      const store = createStateStore({ dataRoot });
+      const { job } = await store.reserveFreshRescueJob({ workspace: workspaceReal,
+        reservation: { workspace: workspaceReal, ownerSessionId: CHILD_THREAD, ownerTurnId: 'turn-u', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } },
+        executor: { parentSessionId: CHILD_THREAD, parentTurnId: 'turn-u', agentId: 'unreadable-child', agentType: 'zcode-rescue', agentPath: '/root/zcode_rescue_task', workspace: workspaceReal, parentPermissionMode: 'workspace-write' },
+        lifecycle: { ownerLifecycleEpoch: 'e'.repeat(64), executionOwner: 'host-child', hostPlacement: 'foreground' } });
+      const partitionKey = createHash('sha256').update(workspaceReal, 'utf8').digest('hex');
+      const ownerRoot = join(dataRoot, 'workspaces', partitionKey, 'job-owners');
+      const ownerDirs = await readdir(ownerRoot);
+      const ownerDir = join(ownerRoot, ownerDirs[0]);
+      const resolveOwnerScoped = () => readDurableObligationSnapshot({
+        dataRoot, workspace: workspaceReal, ownerSessionId: CHILD_THREAD, resolveJobFromOwnerIndex: true,
+      });
+      // (a) ALL enumerated entries unreadable: the named unestablished
+      // condition — never the confirmed-absence claim.
+      await writeFile(join(ownerDir, `${job.id}.json`), 'not json at all', 'utf8');
+      const allCorrupt = await resolveOwnerScoped();
+      assert.equal(allCorrupt.aggregate, 'unestablished');
+      assert.ok(allCorrupt.reasons.includes('owner-binding-entry-unreadable'),
+        'an all-corrupt partition is the named unreadable state, never owner-binding-missing');
+      assert.notEqual(allCorrupt.job.presence, 'missing', 'unreadable entries never claim confirmed absence');
+      // (b) A corrupt sibling beside the exact job: a possible second job —
+      // the exact job can never resolve past it.
+      await writeFile(join(ownerDir, `${job.id}.json`), JSON.stringify({ jobId: job.id, ownerSessionId: CHILD_THREAD, version: 1 }), 'utf8');
+      await writeFile(join(ownerDir, `${'f'.repeat(64)}.json`), 'garbage sibling', 'utf8');
+      const withSibling = await resolveOwnerScoped();
+      assert.equal(withSibling.aggregate, 'unestablished', 'an unreadable sibling forces unestablished (a possible job)');
+      assert.ok(withSibling.reasons.includes('owned-job-ambiguous') || withSibling.reasons.includes('owner-binding-entry-unreadable'),
+        JSON.stringify(withSibling.reasons));
+      assert.notEqual(withSibling.job.presence, 'found', 'the exact job never resolves past an unreadable sibling');
+    });
+
+    test('the spawn acknowledgement identity selector reuses the exact spawn id', () => {
+      const agentPath = '/root/zcode_rescue_task_1';
+      const rollouts = [[
+        { type: 'session_meta', payload: { id: ROOT_THREAD } },
+        fnCall('spawn_agent', 'spawn-1', { agent_type: 'zcode-rescue' }),
+        { type: 'event_msg', payload: { type: 'item_completed', item: { type: 'SubAgentActivity', kind: 'started', agent_thread_id: CHILD_THREAD, agent_path: agentPath } } },
+      ], [
+        { type: 'session_meta', payload: { id: CHILD_THREAD, parent_thread_id: ROOT_THREAD, source: { subagent: { thread_spawn: { agent_path: agentPath } } } } },
+      ]];
+      const identity = observeSpawnAcknowledgementIdentity(rollouts);
+      assert.equal(identity.exact, true);
+      assert.equal(identity.childThreadId, CHILD_THREAD, 'the EXACT spawn-acknowledgement id is the only permitted interrupt target');
+      assert.equal(identity.parentThreadId, ROOT_THREAD);
+      assert.equal(identity.reason, null);
+      // An ambiguous spawn (two calls) stays inexact with its reason — never
+      // a guessed target.
+      const ambiguousParent = [...rollouts[0],
+        { type: 'response_item', payload: { type: 'function_call', name: 'spawn_agent', call_id: 'spawn-2', arguments: JSON.stringify({ agent_type: 'zcode-rescue' }) } }];
+      const ambiguous = observeSpawnAcknowledgementIdentity([ambiguousParent, rollouts[1]]);
+      assert.equal(ambiguous.exact, false);
+      assert.equal(ambiguous.childThreadId, null);
+      assert.match(String(ambiguous.reason ?? ''), /spawn_agent/u);
+    });
+
+    test('runShellWaitCase arms the registered stdout-capture seam for required cases (codex round 2)', async (t) => {
+      // The preflight REQUIRES the seam for rescue-interrupt
+      // (STDOUT_CAPTURE_REQUIRED_CASES), but nothing armed it: the fixture
+      // default is false and no CLI option exists — every default interrupt
+      // invocation would have been refused pre-launch. The registered
+      // requirement threads into fixture PREPARATION (Task 4's ledger freeze
+      // extends the closed set at the same site).
+      const { runShellWaitCase } = await import('../tools/shell-wait-probe/driver.mjs');
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-capture-arming-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const fakeFixture = {
+        workspace: '/private/tmp/t3-arm-ws', codexHome: '/private/tmp/t3-arm-home',
+        installedRoot: '/private/tmp/t3-arm-installed', env: { HOME: '/private/tmp/t3-arm-home' },
+        record: { variant: 'candidate', appliedArtifacts: [] },
+        dispose: async () => {},
+      };
+      const capturedOptions = [];
+      const persistCase = (caseLabel) => ({ case: caseLabel, codexBinary: process.execPath, sourceSha: 'a'.repeat(40), workerDurationMs: 420_000, capMs: 3_600_000, pollMs: 3_600_000, budgetMs: 1_200_000, output: root });
+      for (const caseLabel of ['rescue-interrupt', 'rescue-long']) {
+        await runShellWaitCase(persistCase(caseLabel), {
+          createFixture: async (options) => {
+            capturedOptions.push({ case: caseLabel, options });
+            return fakeFixture;
+          },
+          executeLiveCase: async () => mapFacts(wiringRollouts()),
+        });
+      }
+      const interruptOptions = capturedOptions.find((entry) => entry.case === 'rescue-interrupt').options;
+      assert.equal(interruptOptions.stdoutCapture, true, 'the registered requirement arms the seam at preparation');
+      const longOptions = capturedOptions.find((entry) => entry.case === 'rescue-long').options;
+      assert.notEqual(longOptions.stdoutCapture, true, 'an unregistered case stays unarmed');
+    });
+
+    test('a REAL prepared rescue-interrupt fixture carries the armed seam and passes the preflight (codex round 2)', async (t) => {
+      const { createShellWaitFixture } = await import('../tools/shell-wait-probe/fixture.mjs');
+      const repositorySha = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-capture-real-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const output = join(root, 'output');
+      await mkdir(output, { mode: 0o700 });
+      // The fast seam-injected installer (the fixture describe's pattern),
+      // materializing the launcher file the capture gate realpaths — inside
+      // the fixture's OWN isolated home.
+      let materializedInstalledRoot = null;
+      const fixture = await createShellWaitFixture({
+        sourceRoot: repositoryRoot, sourceSha: repositorySha, codexBinary: process.execPath,
+        output, variant: 'candidate', capMs: null, stdoutCapture: true,
+      }, {
+        buildSnapshot: async ({ output: snapshotOutput, sourceSha }) => {
+          await mkdir(join(snapshotOutput, '.agents', 'plugins'), { recursive: true });
+          await writeFile(join(snapshotOutput, '.agents', 'plugins', 'provenance.json'), JSON.stringify({ sourceSha }), 'utf8');
+        },
+        installPlugin: async ({ codexHome, cleanSource }) => {
+          const installed = join(codexHome, 'plugins', 'cache', 'vitry', 'zcode', '0.1.0');
+          await mkdir(join(installed, 'agents'), { recursive: true });
+          for (const skill of ['rescue', 'review', 'adversarial-review', 'status']) {
+            await mkdir(join(installed, 'skills', skill), { recursive: true });
+            await cp(join(cleanSource, 'skills', skill, 'SKILL.md'), join(installed, 'skills', skill, 'SKILL.md'));
+          }
+          await cp(join(cleanSource, 'agents', 'zcode-rescue.toml.template'), join(installed, 'agents', 'zcode-rescue.toml.template'));
+          await writeFile(join(installed, 'skills', 'rescue', 'launcher.mjs'), 'process.exit(0);\n', 'utf8');
+          await writeFile(join(codexHome, 'config.toml'), '[plugins."zcode@vitry"]\nenabled = true\n', 'utf8');
+          materializedInstalledRoot = installed;
+          return { pluginVersion: '0.1.0' };
+        },
+        runSetup: async () => ({ sessionEstablished: true, launcherDescriptorPublished: true, setupAttempts: 1, roleStatus: 'ready', capVerified: true }),
+      });
+      t.after(() => fixture.dispose());
+      const handle = /** @type {any} */ (fixture).stdoutCapture;
+      assert.ok(handle, 'the prepared fixture carries the armed capture handle');
+      const preloadStats = await stat(handle.preloadPath);
+      assert.ok(preloadStats.isFile(), 'the generated preload exists on disk');
+      assert.equal(handle.entryRealpath, await realPath(join(materializedInstalledRoot, 'skills', 'rescue', 'launcher.mjs')),
+        'the capture gate declares the REAL materialized launcher realpath');
+      const preflight = await evaluateLiveLaunchPreflight({
+        case: 'rescue-interrupt', survivalControlSelector: null, fixture,
+      });
+      assert.deepEqual(preflight, { ok: true, reason: null }, 'the REALLY prepared fixture passes the registered requirement');
+    });
+
+    test('noncanonical UUID target representations settle through identity normalization (codex round 7)', () => {
+      // Production accepts the uuid crate's parse forms for ThreadId
+      // targets (protocol/src/thread_id.rs ThreadId::from_string =
+      // Uuid::parse_str: case-insensitive; hyphenated, simple/urn/braced;
+      // Display emits the canonical lowercase-hyphenated form). An
+      // uppercase or unhyphenated target resolves to the SAME Child — the
+      // host item's admitted agent_thread_id IS the authority — so the
+      // exact-target comparison must normalize supported representations
+      // (never equating a genuinely different uuid; caller text is never
+      // relabeled: the record carries the normalization basis).
+      const UPPER = CHILD_THREAD.toUpperCase();
+      const upperFacts = mapFacts(wiringRollouts({ target: UPPER }));
+      assert.equal(upperFacts.interrupt.exactTargetMatch, true, 'uppercase representation matches after normalization');
+      assert.equal(upperFacts.interrupt.exactTargetMatchBasis, 'uuid-normalized', 'the normalization basis is recorded');
+      assert.equal(upperFacts.interrupt.settled, true, 'a successfully resolved interrupt stays settled');
+      assert.equal(upperFacts.interrupt.settledBasis, 'native-cancellation-settlement-after-delivery');
+      const UNHYPHENATED = CHILD_THREAD.replaceAll('-', '');
+      const unhyphenatedFacts = mapFacts(wiringRollouts({ target: UNHYPHENATED }));
+      assert.equal(unhyphenatedFacts.interrupt.exactTargetMatch, true, 'unhyphenated representation matches after normalization');
+      assert.equal(unhyphenatedFacts.interrupt.exactTargetMatchBasis, 'uuid-normalized');
+      assert.equal(unhyphenatedFacts.interrupt.settled, true);
+      // A genuinely DIFFERENT uuid stays rejected.
+      const foreignFacts = mapFacts(wiringRollouts({ target: 'ffffffff-ffff-4fff-8fff-fffffffffff0' }));
+      assert.equal(foreignFacts.interrupt.exactTargetMatch, false, 'a different uuid never normalizes into the Child');
+      assert.equal(foreignFacts.interrupt.settled, null);
+      // Lowercase canonical control: LEXICAL equality, unchanged basis.
+      const canonical = mapFacts(wiringRollouts());
+      assert.equal(canonical.interrupt.exactTargetMatch, true);
+      assert.equal(canonical.interrupt.exactTargetMatchBasis, 'lexical');
+    });
+
+    test('a sibling-session interrupt call never settles the owning Root item (codex round 7)', () => {
+      // The mapper-level shape: the call/output pair moved into a sibling
+      // session's rollout while the Root rollout carries the host item. The
+      // §19.4 conjunct-1 contract is the OWNING ROOT's rollout — another
+      // session must never supply delivery and timing evidence.
+      const SIBLING_SESSION = 'sibling-thread-1';
+      const rollouts = wiringRollouts();
+      rollouts[0] = [
+        { type: 'session_meta', payload: { id: ROOT_THREAD } },
+        activityItem({ id: 'int-1' }),
+      ];
+      rollouts.push([
+        { type: 'session_meta', payload: { id: SIBLING_SESSION } },
+        interruptCall('int-1', CHILD_THREAD, '2026-10-06T00:00:07.000Z'),
+        interruptSuccess('int-1', 'running', '2026-10-06T00:00:07.100Z'),
+      ]);
+      const facts = mapFacts(rollouts);
+      assert.equal(facts.interrupt.hostDelivery.admitted, false, 'the sibling-call shape is never admitted');
+      assert.ok(facts.interrupt.hostDelivery.reasons.includes('host-activity-foreign-call-rollout'), JSON.stringify(facts.interrupt.hostDelivery.reasons));
+      assert.equal(facts.interrupt.settled, null, 'another session never settles the Root item');
+      assert.equal(facts.interrupt.settledBasis, 'foreign-call-rollout-no-settlement-claim');
+      assert.equal(facts.interrupt.exactTargetMatch, true, 'the target identity matches — the ROLLOUT ownership is the failing conjunct');
+    });
+
+    test('the live preflight rejects a launch whose required observers are known absent', async (t) => {
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-preflight-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const workspace = join(root, 'workspace');
+      await mkdir(workspace, { recursive: true });
+      const dataRoot = join(root, 'data-root');
+      // (1) A declared survival control whose fixture-owned script file is
+      // absent: the observer cannot observe what does not exist.
+      const missingControl = await evaluateLiveLaunchPreflight({
+        case: 'rescue-interrupt', survivalControlSelector: 'progress-terminal',
+        fixture: { workspace, env: { ZCODE_DATA_ROOT: dataRoot }, survivalControlPath: join(root, 'gone', 'survival-control.mjs') },
+      });
+      assert.equal(missingControl.ok, false);
+      assert.match(String(missingControl.reason ?? ''), /survival-control/i);
+      // (2) The durable settlement reader's partition basis (the fixture
+      // data roots) is absent: the durable layer could never be observed.
+      const missingDurable = await evaluateLiveLaunchPreflight({
+        case: 'rescue-interrupt', survivalControlSelector: null,
+        fixture: { workspace, env: {} },
+      });
+      assert.equal(missingDurable.ok, false);
+      assert.match(String(missingDurable.reason ?? ''), /durable/i);
+      // (3) Self-review round 1: the registered capture requirement is a
+      // DRIVER-level case fact (STDOUT_CAPTURE_REQUIRED_CASES — the §19.3(e)
+      // O1/I duty), so a rescue-interrupt fixture prepared WITHOUT the
+      // stdout-capture seam is a known-absent observer — rejected named,
+      // with a real producer, not a test-only fixture flag.
+      assert.ok(STDOUT_CAPTURE_REQUIRED_CASES.has('rescue-interrupt'),
+        'the registered §19.3(e) O1/I capture-preflight duty covers the interrupt case');
+      await mkdir(dataRoot, { recursive: true });
+      const missingCapture = await evaluateLiveLaunchPreflight({
+        case: 'rescue-interrupt', survivalControlSelector: null,
+        fixture: { workspace, env: { ZCODE_DATA_ROOT: dataRoot } },
+      });
+      assert.equal(missingCapture.ok, false);
+      assert.match(String(missingCapture.reason ?? ''), /stdout capture/i);
+      // (3b) A handle that does not name an EXISTING preload file is just as
+      // known-absent.
+      const missingPreload = await evaluateLiveLaunchPreflight({
+        case: 'rescue-interrupt', survivalControlSelector: null,
+        fixture: { workspace, env: { ZCODE_DATA_ROOT: dataRoot }, stdoutCapture: { preloadPath: join(root, 'gone.cjs') } },
+      });
+      assert.equal(missingPreload.ok, false);
+      assert.match(String(missingPreload.reason ?? ''), /stdout capture/i);
+      // (4) Codex round 4: a registered design that RELIES on the wrapped
+      // (code-mode) interrupt path is rejected pre-launch — the wrapped path
+      // is NOT exact-target attributable on this pin (the named limitation).
+      const preloadPath = join(root, 'armed-preload.cjs');
+      await writeFile(preloadPath, '// armed preload\n', 'utf8');
+      const wrappedDesign = await evaluateLiveLaunchPreflight({
+        case: 'rescue-interrupt', survivalControlSelector: null,
+        fixture: { workspace, env: { ZCODE_DATA_ROOT: dataRoot }, stdoutCapture: { preloadPath } },
+      }, { wrappedInterruptRequiredCases: ['rescue-interrupt'] });
+      assert.equal(wrappedDesign.ok, false);
+      assert.match(String(wrappedDesign.reason ?? ''), /wrapped/i);
+      // The REGISTERED design (the closed default map) does NOT rely on the
+      // wrapped path: direct-mode interrupt_agent is the only qualified path
+      // for I, so the default preflight stays neutral here.
+      assert.equal(WRAPPED_INTERRUPT_REQUIRED_CASES.size, 0, 'the registered I design is direct-mode only (the closed default map is empty)');
+      assert.equal(Object.isFrozen(WRAPPED_INTERRUPT_REQUIRED_CASES), true, 'the closed map is frozen');
+      const directDesign = await evaluateLiveLaunchPreflight({
+        case: 'rescue-interrupt', survivalControlSelector: null,
+        fixture: { workspace, env: { ZCODE_DATA_ROOT: dataRoot }, stdoutCapture: { preloadPath } },
+      });
+      assert.equal(directDesign.ok, true);
+    });
+
+    test('the live preflight passes an armed fixture and stays neutral for unregistered cases', async (t) => {
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-preflight-ok-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const workspace = join(root, 'workspace');
+      await mkdir(workspace, { recursive: true });
+      const dataRoot = join(root, 'data-root');
+      await mkdir(dataRoot, { recursive: true });
+      const controlPath = join(root, 'survival-control.mjs');
+      await writeFile(controlPath, '#!/usr/bin/env node\n', { mode: 0o700 });
+      const armed = await evaluateLiveLaunchPreflight({
+        case: 'rescue-interrupt', survivalControlSelector: 'progress-terminal',
+        fixture: { workspace, env: { ZCODE_DATA_ROOT: dataRoot }, survivalControlPath: controlPath, stdoutCapture: { preloadPath: controlPath } },
+      });
+      assert.deepEqual(armed, { ok: true, reason: null });
+      // A case with no registered Task-3 observers (and no registered
+      // capture requirement) is not blocked by them.
+      const other = await evaluateLiveLaunchPreflight({
+        case: 'rescue-long', survivalControlSelector: null,
+        fixture: { workspace, env: {} },
+      });
+      assert.equal(other.ok, true);
+      assert.equal(STDOUT_CAPTURE_REQUIRED_CASES.has('rescue-long'), false,
+        'the capture requirement set is CLOSED: unlisted cases carry no registered requirement');
+    });
+
+    /** A synthetic PERSISTED record in the exact buildCaseRecord schema, fully
+     * established on every Gate D layer (each test mutates one dimension;
+     * top-level overrides merge shallowly). */
+    function gateDRecord(overrides = {}) {
+      const record = {
+        status: 'executed',
+        case: 'rescue-interrupt',
+        linkage: { childLinkageChecked: true, mode: 'rescue', rootThreadId: null, childThreadId: CHILD_THREAD, parentThreadId: ROOT_THREAD, companionLaunchCount: 1, companionSendCount: 1, originalHandleChecked: true },
+        observations: { pollStartedAtElapsedMs: 1000, pendingInnerAtEnd: false },
+        interrupt: {
+          requested: true, attempted: true, family: 'v2', delivered: true, rejection: null,
+          previousStatus: 'running', previousStatusTerminal: false, unreadableContinuationObserved: false,
+          callCount: 1, orderingBound: true,
+          target: { kind: 'agent-id', value: CHILD_THREAD, suppressed: false, chars: CHILD_THREAD.length },
+          exactTargetMatch: true, settled: true, settledBasis: 'native-cancellation-settlement-after-delivery',
+          pendingIntervalMs: 5000, deliveryToSettlementMs: 5000, timingBasis: 'rollout-event-timestamps',
+          missingPrerequisite: null,
+          pendingWindowObserved: true, completedBeforeCallMs: null, completedAfterCallMs: null,
+          settlementCleanupGenerated: false,
+          hostDelivery: {
+            checked: true, attemptedCall: true, callId: 'int-1', itemPresent: true,
+            interruptedItemCount: 1, joinedItemCount: 1, foreignItemCount: 0,
+            idJoin: true, agentThreadIdMatch: true, rootRolloutOwned: true,
+            insidePendingWindow: true, timed: true, completedAtMs: EMISSION_MS, admitted: true, reasons: [],
+          },
+          cleanupBoundaryAtMs: SETTLEMENT_MS + 60_000, cancelledAtMs: SETTLEMENT_MS,
+        },
+        child: {
+          settlement: { observed: false, basis: null },
+          // The REAL cancelled-poll shape (codex round 1): no completion-shaped
+          // watch ran, so the local layers stay null — the Companion's remote
+          // outcome is observed through the durable job's production-published
+          // terminal winner, never hand-set here.
+          settlementLayers: { remoteTerminal: null, localProcessReaping: null, durableObligations: 'settled' },
+          durableSnapshot: { aggregate: 'settled', reasons: [], executorLinkage: 'verified', layers: { winner: { terminalStatus: 'succeeded' } }, job: { presence: 'found', projection: { status: 'succeeded' } } },
+        },
+        held: { processTermination: { verifiedTerminated: false, codexTerminated: false }, cleanupLabel: 'observation' },
+        // The declared and QUALIFIED control verdict (the I1 shape): the
+        // survival layer is a REQUIRED Gate D conjunct, so a fully-qualifying
+        // record carries an adjudicated control.
+        survivalControlSelector: 'progress-terminal',
+        survivalControl: { noCollateralQualified: true, reason: null, postDelivery: 'alive', releaseQualificationVersion: 1 },
+      };
+      if (typeof overrides === 'function') overrides(record);
+      else if (overrides !== null && typeof overrides === 'object') Object.assign(record, overrides);
+      return record;
+    }
   });
 
   describe('review adjudication fixes: interrupt ordering binding, exemption narrowing, Root identification and root-control calls', async () => {
@@ -19784,6 +21420,10 @@ process.exit(result.status ?? 1);
         previousStatusOnly: false,
         unreadableContinuation: false,
         pendingWindowConfirmed: true,
+        // 2026-10-21 evidence-closure Task 3: the §19.4-registered host
+        // activity admission is part of the fully-established delivery —
+        // the registered admission set (report §19.4) rides the base input.
+        hostActivityAdmitted: true,
       },
       turnSettled: true,
       deliveryToSettlementMs: 5_000,

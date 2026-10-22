@@ -65,7 +65,7 @@ import { endedObligationSettled, isMarkedRunnerClaim, TERMINAL } from '../../scr
 import { EFFORT_LEVELS, JOB_COMMANDS, JOB_STATUSES, validProgressProbe } from '../../scripts/lib/state.mjs';
 import { MAX_PROGRESS_MESSAGE_BYTES, MAX_PROGRESS_PREVIEW_ENTRIES, PROGRESS_PHASES } from '../../scripts/lib/progress.mjs';
 import { validDetachedRescueRunnerJob, validateRescueExecutionInput } from '../../scripts/lib/rescue-execution-input.mjs';
-import { STOP_CAUSES, readRescueBindingAuthorityFile, readRescueBindingPartitionFile, rescueBindingPartitionKey, validHostLifecycleRecord, validStopIntent } from '../../scripts/lib/rescue-binding.mjs';
+import { STOP_CAUSES, readRescueBindingAuthorityFile, readRescueBindingPartitionFile, rescueBindingAuthorityView, rescueBindingPartitionKey, validHostLifecycleRecord, validStopIntent } from '../../scripts/lib/rescue-binding.mjs';
 import { evaluateExactTerminalLinkage } from './release-qualification.mjs';
 
 /** The closed version carried by every admission verdict of this module. */
@@ -1401,10 +1401,31 @@ function projectDurableJobRecord(record, expected) {
  *   dataRoot: string,
  *   workspace: string,
  *   ownerSessionId: string,
- *   jobId: string,
+ *   jobId?: string,
+ *   resolveJobFromOwnerIndex?: boolean,
+ *   expectedExecutorAgentId?: string,
  *   expectedOwnerLifecycleEpoch?: string,
  *   viewingPermissionMode?: string,
  * }} input
+ *   `expectedExecutorAgentId` (2026-10-21 evidence-closure Task 3, codex
+ *   round 1): when present, the job's anchoring binding record must carry
+ *   the EXACT executor Child identity (production binds the executor through
+ *   the binding record's `childAgentId` — scripts/lib/state.mjs
+ *   validateRescueBinding — while the job's OWNER is the executor's PARENT
+ *   session, scripts/zcode-companion.mjs:862/:1464). A single anchor whose
+ *   `childAgentId` disagrees is the named `binding-executor-mismatch`
+ *   unknown state — never settled.
+ *   `resolveJobFromOwnerIndex: true` (2026-10-21 evidence-closure Task 3)
+ *   omits the pre-known jobId: the EXACT job resolves through the owner
+ *   index join — the queried owner's bounded entry enumeration, every entry
+ *   validated through the SAME tuple validator, EXACTLY ONE valid entry ⇒
+ *   that entry's job id. Zero valid entries keeps the named
+ *   `owner-binding-missing` MISSING state (never successful cleanup); more
+ *   than one is the named `owned-job-ambiguous` unestablished state —
+ *   multiple possible jobs remain unknown, never latest-job guessing (§19.5).
+ *   The passivity contract (before/after fingerprints, hard bounds, no lock)
+ *   is byte-identical: the resolution reads only what the exact-job mode
+ *   already reads.
  * @param {{ mutateBetween?: () => Promise<void> }} [dependencies] test-only
  *   injection point simulating a concurrent writer between the reader's own
  *   before/after fingerprints (the documented consistency limit).
@@ -1413,6 +1434,10 @@ function projectDurableJobRecord(record, expected) {
 export async function readDurableObligationSnapshot(input, dependencies = {}) {
   if (typeof input !== 'object' || input === null) throw invalidSnapshotInput('the snapshot input must be an object.');
   const { dataRoot, workspace, ownerSessionId, jobId } = input;
+  if (input.resolveJobFromOwnerIndex !== undefined && typeof input.resolveJobFromOwnerIndex !== 'boolean') {
+    throw invalidSnapshotInput('resolveJobFromOwnerIndex must be a boolean when present.');
+  }
+  const resolveJobFromOwnerIndex = input.resolveJobFromOwnerIndex === true;
   if (typeof dataRoot !== 'string' || dataRoot.length === 0 || !isAbsolute(dataRoot)) throw invalidSnapshotInput('the data root must be an absolute path.');
   if (typeof workspace !== 'string' || workspace.length === 0 || !isAbsolute(workspace)) throw invalidSnapshotInput('the workspace must be an absolute path.');
   if (typeof ownerSessionId !== 'string' || ownerSessionId.length === 0 || ownerSessionId.length > 256
@@ -1422,7 +1447,20 @@ export async function readDurableObligationSnapshot(input, dependencies = {}) {
     })) {
     throw invalidSnapshotInput('the owner session must be a bounded control-free identifier.');
   }
-  if (typeof jobId !== 'string' || !HEX_64.test(jobId)) throw invalidSnapshotInput('the job id must be a 64-hex digest.');
+  if (!resolveJobFromOwnerIndex && (typeof jobId !== 'string' || !HEX_64.test(jobId))) {
+    throw invalidSnapshotInput('the job id must be a 64-hex digest (or pass resolveJobFromOwnerIndex).');
+  }
+  if (resolveJobFromOwnerIndex && jobId !== undefined) {
+    throw invalidSnapshotInput('resolveJobFromOwnerIndex resolves the exact job itself: pass no jobId.');
+  }
+  const expectedExecutorAgentId = input.expectedExecutorAgentId ?? null;
+  if (expectedExecutorAgentId !== null && (typeof expectedExecutorAgentId !== 'string' || expectedExecutorAgentId.length === 0
+    || expectedExecutorAgentId.length > 256 || [...expectedExecutorAgentId].some((character) => {
+      const code = /** @type {number} */ (character.codePointAt(0) ?? 0);
+      return code <= 31 || code === 127;
+    }))) {
+    throw invalidSnapshotInput('the expected executor agent id must be a bounded control-free identifier.');
+  }
   const expectedEpoch = input.expectedOwnerLifecycleEpoch;
   if (expectedEpoch !== undefined && (typeof expectedEpoch !== 'string' || !HEX_64.test(expectedEpoch))) {
     throw invalidSnapshotInput('the expected owner lifecycle epoch must be a 64-hex digest.');
@@ -1445,6 +1483,11 @@ export async function readDurableObligationSnapshot(input, dependencies = {}) {
     ownerBinding: { present: null, reason: null },
     job: { presence: 'missing', reason: null, projection: null },
     layers: null,
+    // Codex round 3: the exported executor-linkage verification (the Gate D
+    // join consumes Child-attributed outcomes ONLY on 'verified' — the
+    // aggregate alone cannot distinguish a settled job from an
+    // executor-unverified one).
+    executorLinkage: null,
     passive: { snapshotEqual: null, reason: null, lockState: null },
     aggregate: 'unestablished',
     reasons: [],
@@ -1510,7 +1553,65 @@ export async function readDurableObligationSnapshot(input, dependencies = {}) {
   }
   snapshot.enumeration = { entryCount: ownerEntries.length, withinBounds: true, reason: null };
   const ownerEntryNames = ownerEntries.map((entry) => entry.name).sort();
-  if (!ownerEntryNames.includes(`${jobId}.json`)) {
+  // The owner-index exact-job resolution (Task 3; self-review round 1
+  // correction): every enumerated entry is validated through the SAME tuple
+  // validator the exact-job mode uses; only a unique valid entry names the
+  // exact bound job. Per the §19.5 partition model an UNREADABLE or invalid
+  // entry is a POSSIBLE job (unknown) — it is never skippable evidence of
+  // absence: it forces the named `owner-binding-entry-unreadable` condition
+  // when nothing else resolves, and it counts toward ambiguity beside any
+  // valid entry (a possible second job), so the exact job can never resolve
+  // past it.
+  /** @type {string | null} */
+  let effectiveJobId = jobId ?? null;
+  if (resolveJobFromOwnerIndex) {
+    /** @type {string[]} */
+    const validJobIds = [];
+    let unreadableEntries = 0;
+    for (const entryName of ownerEntryNames) {
+      const entryJobId = entryName.endsWith('.json') ? entryName.slice(0, -'.json'.length) : null;
+      if (entryJobId === null || !HEX_64.test(entryJobId)) {
+        unreadableEntries += 1;
+        continue;
+      }
+      let candidate;
+      try {
+        candidate = await readBoundedJsonFile(directory, join(ownerDirectory, entryName), OWNER_BINDING_ENTRY_MAX_BYTES);
+      } catch {
+        unreadableEntries += 1;
+        continue;
+      }
+      if (validOwnerBindingEntry(candidate, entryJobId, ownerSessionId)) validJobIds.push(entryJobId);
+      else unreadableEntries += 1;
+    }
+    if (validJobIds.length === 0) {
+      if (unreadableEntries > 0) {
+        // Never a confirmed absence over unreadable entries.
+        snapshot.ownerBinding = { present: null, reason: 'owner-binding-entry-unreadable' };
+        snapshot.job = { presence: 'invalid', reason: 'owner-binding-entry-unreadable', projection: null };
+        /** @type {string[]} */ (snapshot.reasons).push('owner-binding-entry-unreadable');
+        await finishPassive(snapshot, directory, before, dependencies);
+        return snapshot;
+      }
+      snapshot.ownerBinding = { present: false, reason: 'owner-binding-missing' };
+      snapshot.job = { presence: 'missing', reason: 'owner-binding-missing', projection: null };
+      /** @type {string[]} */ (snapshot.reasons).push('owner-binding-missing');
+      await finishPassive(snapshot, directory, before, dependencies);
+      return snapshot;
+    }
+    if (validJobIds.length > 1 || unreadableEntries > 0) {
+      snapshot.ownerBinding = { present: null, reason: 'owned-job-ambiguous' };
+      snapshot.job = { presence: 'invalid', reason: 'owned-job-ambiguous', projection: null };
+      /** @type {string[]} */ (snapshot.reasons).push('owned-job-ambiguous');
+      if (unreadableEntries > 0) {
+        /** @type {string[]} */ (snapshot.reasons).push('owner-binding-entry-unreadable');
+      }
+      await finishPassive(snapshot, directory, before, dependencies);
+      return snapshot;
+    }
+    effectiveJobId = validJobIds[0];
+  }
+  if (!ownerEntryNames.includes(`${effectiveJobId}.json`)) {
     snapshot.ownerBinding = { present: false, reason: 'owner-entry-missing' };
     // Binding-first publication: no owner entry for THIS job is a confirmed
     // absence for this owner — recorded missing, never successful cleanup.
@@ -1526,7 +1627,17 @@ export async function readDurableObligationSnapshot(input, dependencies = {}) {
   // ownerSessionId equal to the queried owner) BEFORE the job counts as
   // owned. Corrupt JSON, a conflicting tuple, or a symlinked entry is the
   // named invalid state and can never ground a settled aggregate.
-  const ownerEntryPath = join(ownerDirectory, `${jobId}.json`);
+  // Unreachable fail-closed guard (flow narrowing): the exact-job mode
+  // validated jobId as 64-hex at input; the resolution mode returned above
+  // unless exactly one valid entry named the job. Never widen the types.
+  if (effectiveJobId === null) {
+    snapshot.ownerBinding = { present: null, reason: 'owner-binding-invalid' };
+    snapshot.job = { presence: 'invalid', reason: 'owner-binding-invalid', projection: null };
+    /** @type {string[]} */ (snapshot.reasons).push('owner-binding-invalid');
+    await finishPassive(snapshot, directory, before, dependencies);
+    return snapshot;
+  }
+  const ownerEntryPath = join(ownerDirectory, `${effectiveJobId}.json`);
   let bindingEntry;
   try {
     bindingEntry = await readBoundedJsonFile(directory, ownerEntryPath, OWNER_BINDING_ENTRY_MAX_BYTES);
@@ -1537,7 +1648,7 @@ export async function readDurableObligationSnapshot(input, dependencies = {}) {
     await finishPassive(snapshot, directory, before, dependencies);
     return snapshot;
   }
-  if (!validOwnerBindingEntry(bindingEntry, jobId, ownerSessionId)) {
+  if (!validOwnerBindingEntry(bindingEntry, effectiveJobId, ownerSessionId)) {
     snapshot.ownerBinding = { present: null, reason: 'owner-binding-invalid' };
     snapshot.job = { presence: 'invalid', reason: 'owner-binding-invalid', projection: null };
     /** @type {string[]} */ (snapshot.reasons).push('owner-binding-invalid');
@@ -1547,7 +1658,7 @@ export async function readDurableObligationSnapshot(input, dependencies = {}) {
   snapshot.ownerBinding = { present: true, reason: null };
 
   // The exact bound job through the production bounded read contract.
-  const jobPath = join(directory, 'jobs', `${jobId}.json`);
+  const jobPath = join(directory, 'jobs', `${effectiveJobId}.json`);
   let jobStats;
   try {
     jobStats = await lstat(jobPath);
@@ -1583,7 +1694,7 @@ export async function readDurableObligationSnapshot(input, dependencies = {}) {
     await finishPassive(snapshot, directory, before, dependencies);
     return snapshot;
   }
-  const projection = projectDurableJobRecord(record, { jobId, workspacePath: partition.workspacePath, ownerSessionId, jobsDirectory: join(directory, 'jobs') });
+  const projection = projectDurableJobRecord(record, { jobId: effectiveJobId, workspacePath: partition.workspacePath, ownerSessionId, jobsDirectory: join(directory, 'jobs') });
   if (!projection.ok) {
     snapshot.job = { presence: 'invalid', reason: projection.reason, projection: null };
     /** @type {string[]} */ (snapshot.reasons).push(projection.reason);
@@ -1709,19 +1820,35 @@ export async function readDurableObligationSnapshot(input, dependencies = {}) {
   } else {
     try {
       const partitionRecord = await readRescueBindingPartitionFile(directory, bindingPartitionPath, { parentSessionId: ownerSessionId, workspace: partition.workspacePath });
-      const anchors = partitionRecord.records.filter((bindingRecord) => bindingRecord.currentJobId === jobId);
+      // Codex round 1 (found by the executor-mismatch RED): the anchor
+      // filter must use the RESOLVED job id — in owner-index resolution mode
+      // the raw jobId parameter is undefined, so the anchors were never found.
+      const anchors = partitionRecord.records.filter((bindingRecord) => bindingRecord.currentJobId === effectiveJobId);
       // Codex round 4 (anchor-cardinality clause): production
       // rescueBindingPointsAtJob requires EXACTLY ONE matching record and it
       // active — partition validation enforces key/executor uniqueness, NOT
       // currentJobId uniqueness, so multiple anchors on one job are a real
       // shape that can never manufacture a positive resumability fact.
       const activeAnchors = anchors.filter((bindingRecord) => bindingRecord.state === 'active');
+      // Codex round 1 (executor verification): the single anchoring record
+      // carries the job's executor Child identity — an anchor whose
+      // `childAgentId` disagrees with the observed Child is the named
+      // unknown state, never settled (the owner is the executor's PARENT;
+      // the executor claim is verified against the CHILD).
+      // The executor identity is version-nested in the binding record —
+      // surfaced by the EXPORTED production view (rescue-binding.mjs
+      // rescueBindingAuthorityView: v1 executorAgentId / v2+ childAuthority.
+      // childAgentId), never hand-read.
+      const executorMismatch = expectedExecutorAgentId !== null && anchors.length === 1
+        && rescueBindingAuthorityView(anchors[0]).childAgentId !== expectedExecutorAgentId;
       if (anchors.length > 1) {
         binding = { state: 'unknown', reason: 'binding-anchor-ambiguous', anchorsJob: null };
+      } else if (executorMismatch) {
+        binding = { state: 'unknown', reason: 'binding-executor-mismatch', anchorsJob: null };
       } else if (activeAnchors.length === 1) {
-        binding = { state: 'current', reason: null, anchorsJob: jobId };
+        binding = { state: 'current', reason: null, anchorsJob: effectiveJobId };
       } else if (anchors.length === 1) {
-        binding = { state: 'not-current', reason: 'binding-not-active', anchorsJob: jobId };
+        binding = { state: 'not-current', reason: 'binding-not-active', anchorsJob: effectiveJobId };
       } else {
         binding = { state: 'not-current', reason: 'binding-does-not-anchor-job', anchorsJob: null };
       }
@@ -1738,6 +1865,26 @@ export async function readDurableObligationSnapshot(input, dependencies = {}) {
       binding = { state: 'unknown', reason: 'binding-authority-unreadable', anchorsJob: null };
     }
   }
+
+  // Codex round 2: in owner-index resolution mode WITH an expected
+  // executor, settlement credit requires a POSITIVELY MATCHING executor
+  // binding (state 'current' with the executor verified). A missing pair, a
+  // non-matching or non-anchoring record leaves the job unconnected to the
+  // observed Child — the named unestablished state, never settled (the
+  // layer's own reason surfaces beside it). Placed AFTER the entire
+  // classification chain so every not-current path (absent pair, no anchor,
+  // inactive anchor) is covered.
+  if (resolveJobFromOwnerIndex && expectedExecutorAgentId !== null
+    && binding.state === 'not-current') {
+    binding = { state: 'unknown', reason: 'binding-executor-linkage-unverified', anchorsJob: null };
+  }
+  // Codex round 3: the exported linkage-verification fact. 'verified' means
+  // the single anchoring binding record's executor EXACTLY equals the
+  // expected executor (or no executor was expected — the legacy exact-job
+  // mode, where the fact is the named not-applicable).
+  snapshot.executorLinkage = resolveJobFromOwnerIndex && expectedExecutorAgentId !== null
+    ? (binding.state === 'current' && binding.reason === null ? 'verified' : binding.reason ?? 'binding-executor-linkage-unverified')
+    : 'executor-verification-not-applicable';
 
   const epochApplicable = expectedEpoch !== undefined;
   const epochMatches = epochApplicable ? job.ownerLifecycleEpoch === expectedEpoch : null;
@@ -1789,7 +1936,15 @@ export async function readDurableObligationSnapshot(input, dependencies = {}) {
   if (snapshot.job.presence === 'found' && markedClaim) reasons.push('runner-cleanup-duty-outstanding');
   if (snapshot.job.presence === 'found' && writableGuardApplicable) reasons.push('writable-guard-retained');
   if (snapshot.job.presence === 'found' && epochApplicable && epochMatches !== true) reasons.push('lifecycle-epoch-mismatch');
-  if (binding.state === 'unknown') reasons.push('binding-currency-unknown');
+  if (binding.state === 'unknown') {
+    reasons.push('binding-currency-unknown');
+    // The layer's own named cause (e.g. the codex-round-1
+    // `binding-executor-mismatch`) surfaces beside the generic unknown so a
+    // record never aggregates unestablished WITHOUT its why.
+    if (binding.reason !== null && binding.reason !== 'binding-partition-unreadable') {
+      reasons.push(binding.reason);
+    }
+  }
   await finishPassive(snapshot, directory, before, dependencies);
   if (snapshot.passive.snapshotEqual === false) reasons.push('snapshot-unequal');
   if (snapshot.passive.reason === 'partition-nonregular-entry') reasons.push('partition-nonregular-entry');
@@ -1799,7 +1954,12 @@ export async function readDurableObligationSnapshot(input, dependencies = {}) {
   // not-current) for a settled aggregate — an unknown binding (torn pair,
   // unreadable partition) leaves the exact resumability conjunct
   // unestablished, and `resumable` is never asserted from it.
-  const bindingResolved = /** @type {Record<string, any>} */ (snapshot.layers)?.bindingCurrency?.state !== 'unknown';
+  const bindingState = /** @type {Record<string, any>} */ (snapshot.layers)?.bindingCurrency?.state;
+  // Codex round 2: in owner-index resolution mode WITH an expected executor,
+  // a positively resolved binding means POSITIVELY CURRENT (the executor
+  // linkage verified) — a not-current binding never grounds settlement.
+  const bindingResolved = bindingState !== 'unknown'
+    && !(resolveJobFromOwnerIndex && expectedExecutorAgentId !== null && bindingState !== 'current');
   if (reasons.length === 0 && snapshot.job.presence === 'found' && endedSettled && !markedClaim
     && !writableGuardApplicable && (!epochApplicable || epochMatches === true) && intactSnapshot
     && bindingResolved && snapshot.passive.reason !== 'partition-nonregular-entry'

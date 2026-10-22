@@ -1110,6 +1110,8 @@ function boundedText(value) {
 // body or output text ever enters the extracted facts.
 
 const INTERRUPT_TARGET_ID_PATTERN = /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{16,64})$/iu;
+// Codex round 7: the NORMALIZED (hex-only) id shape — the uuid crate's parse forms reduce to this before comparison.
+export const INTERRUPT_TARGET_HEX_SHAPE = /^[0-9a-f]{32}$/iu;
 const INTERRUPT_FIXTURE_TASK_NAME = 'shell-wait-probe-fixture-task';
 const INTERRUPT_STATUS_PATTERN = /^[a-z_]{1,32}$/u;
 // The Root-control interrupt surfaces are recognized ONLY in the anchored
@@ -1709,11 +1711,16 @@ function deriveChildObservationBinding(rollouts, options) {
  *   target: { kind: 'agent-id' | 'task-name' | 'unknown' | null, value: string | null, suppressed: boolean, chars: number | null },
  *   pendingBeforeCall: { observed: boolean, at: string | null, atMs: number | null },
  *   callAt: string | null, callAtMs: number | null,
+ *   callId: string | null,
+ *   wrappedInterrupt: boolean,
+ *   callRolloutSessionId: string | null,
  *   callNotBeforeMs: number | null, callNotAfterMs: number | null,
  *   unparseableBoundResponses: number,
  *   completedBeforeCall: { at: string | null, atMs: number | null },
  *   completedAfterCall: { at: string | null, atMs: number | null },
  *   settledAfterCall: { at: string | null, atMs: number | null },
+ *   resolvedNonterminalAfterCall: { at: string | null, atMs: number | null },
+ *   resolvedExplicitStopAfterCall: { at: string | null, atMs: number | null },
  *   cancelledAfterCall: { at: string | null, atMs: number | null },
  *   explicitTerminateAfterCall: { at: string | null, atMs: number | null },
  *   sameRolloutCompletedBeforeCall: boolean | null,
@@ -1740,6 +1747,31 @@ export function extractInterruptInteraction(rollouts, redactions = [], bindingOp
   const boundObservations = [];
   /** @type {{ rolloutIndex: number, index: number, atMs: number | null }[]} */
   const completedOutputs = [];
+  // Codex round 4 (SUPERSEDES the round-3 interval scan — FALSIFIED by the
+  // bounded persistence investigation): the pinned host does NOT persist
+  // nested function_call records for code-mode cells — `submit_nested_tool`
+  // dispatches through `handle_tool_call_with_source`, whose recorder
+  // buffers executed-call METADATA only (executed_tool_calls.rs:498-569),
+  // and the only serialized form (`ExecutedToolCall`,
+  // protocol/src/models/executed_tool_calls.rs:408) carries NO call_id.
+  // There is NO persisted, cell-linkable, bounded form of the nested
+  // interrupt call id, so a code-mode-wrapped interrupt is NOT
+  // exact-target attributable on this pin: the admission names
+  // `host-activity-wrapped-interrupt-unjoinable` and fails closed; the
+  // DIRECT (top-level interrupt_agent) invocation is the only qualified
+  // interruption path for I. The wrapped shape is recorded for that reason.
+  /** @type {boolean} */
+  let wrappedInterrupt = false;
+  // Codex round 1: the NONTERMINAL bound-observation resolutions (live
+  // handles) — window-closing facts, never settlements.
+  /** @type {{ rolloutIndex: number, index: number, atMs: number | null }[]} */
+  const nonterminalResolutions = [];
+  // Codex round 4: the EXPLICIT `wait({terminate:true})` resolutions — the
+  // alternate ender's own stop closes the interrupted observation's pending
+  // window exactly like any resolution, WITHOUT native-settlement credit
+  // (the round-10 alternate-ender classification stays).
+  /** @type {{ rolloutIndex: number, index: number, atMs: number | null }[]} */
+  const explicitTerminations = [];
   // Codex review round 10: call ids (per-statement key) whose wait carries
   // `terminate: true` — an EXPLICIT cell stop. Its response carries the same
   // `Script terminated` framing a native cancellation produces, but it is
@@ -1817,6 +1849,19 @@ export function extractInterruptInteraction(rollouts, redactions = [], bindingOp
   /** @type {ReturnType<typeof sanitizeInterruptTarget>} */
   let lastCallTarget = { kind: null, value: null, suppressed: false, chars: null };
   const rolloutList = Array.isArray(rollouts) ? rollouts : [];
+  // Codex round 7: each rollout's OWN session id (the first session_meta
+  // payload id) — the interrupt call pair's rollout identity, which the
+  // admission requires to match the OWNING ROOT (a sibling rollout must
+  // never supply delivery/timing evidence).
+  /** @type {(string | null)[]} */
+  const rolloutSessionIds = rolloutList.slice(0, 512).map((events) => {
+    if (!Array.isArray(events)) return null;
+    for (const event of events) {
+      const id = /** @type {any} */ (event)?.payload?.id;
+      if (event?.type === 'session_meta' && typeof id === 'string' && id.length > 0) return id;
+    }
+    return null;
+  });
   for (let rolloutIndex = 0; rolloutIndex < rolloutList.length && rolloutIndex < 512; rolloutIndex += 1) {
     const events = rolloutList[rolloutIndex];
     if (!Array.isArray(events)) continue;
@@ -1875,6 +1920,7 @@ export function extractInterruptInteraction(rollouts, redactions = [], bindingOp
             );
             if (explicitEnder) {
               boundObservations.push({ kind: 'explicit-terminate', rolloutIndex, index, atMs, callId: typeof payload.call_id === 'string' ? payload.call_id : null });
+              explicitTerminations.push({ rolloutIndex, index, atMs });
             } else if (statementCancelAttributed) {
               // Codex round-7 review fix: the marker carries its RESOLUTION
               // IDENTITY — the call id of the poll/continuation it resolves —
@@ -1891,6 +1937,13 @@ export function extractInterruptInteraction(rollouts, redactions = [], bindingOp
           } else if (parsed?.state === 'completed') {
             const kind = Number.isSafeInteger(parsed.result?.exit_code) ? 'completed-exit' : 'completed-running';
             boundObservations.push({ kind, rolloutIndex, index, atMs, callId: typeof payload.call_id === 'string' ? payload.call_id : null });
+            if (kind === 'completed-running') {
+              // Codex round 1: a NONTERMINAL completion (a live handle, no
+              // exit code) is a genuine window RESOLUTION — the observation
+              // received a definitive response — recorded beside the exit-code
+              // completions so the pending-window bound can close on it.
+              nonterminalResolutions.push({ rolloutIndex, index, atMs });
+            }
             if (kind === 'completed-exit') {
               completedOutputs.push({ rolloutIndex, index, atMs });
               settlementOutputs.push({ kind: 'completed-exit', rolloutIndex, index, atMs, callId: typeof payload.call_id === 'string' ? payload.call_id : null });
@@ -2116,6 +2169,16 @@ export function extractInterruptInteraction(rollouts, redactions = [], bindingOp
             lastCallPreviousStatus = null;
             lastCallTarget = sanitizeInterruptTarget(statementTarget);
           }
+          // Codex round 4: a custom_tool_call that JUST registered a v2
+          // interrupt statement IS the wrapped (code-mode) shape — recorded
+          // so the admission names the supported-path limitation (the host
+          // emits the delegate-allocated nested exec id, which never
+          // persists; delegate.rs:323 + interrupt_agent.rs:68).
+          if (payload.type === 'custom_tool_call' && lastCall !== null
+            && lastCall.family === 'v2' && lastCall.rolloutIndex === rolloutIndex
+            && lastCall.index === index && lastCall.callId === callId) {
+            wrappedInterrupt = true;
+          }
         }
       }
       if (family === null) continue;
@@ -2141,6 +2204,14 @@ export function extractInterruptInteraction(rollouts, redactions = [], bindingOp
   let cancelledAfterCallMs = null;
   /** @type {number | null} */
   let explicitTerminateAfterCallMs = null;
+  // Codex round 1: the earliest NONTERMINAL poll resolution at/after the
+  // call — the pending window's closing bound, never a settlement fact.
+  /** @type {number | null} */
+  let resolvedNonterminalAfterCallMs = null;
+  // Codex round 4: the earliest EXPLICIT termination resolution at/after the
+  // call — a window-closing bound, never a settlement fact.
+  /** @type {number | null} */
+  let resolvedExplicitStopAfterCallMs = null;
   /** @type {{ observed: boolean, at: string | null, atMs: number | null }} */
   const pendingBeforeCall = { observed: false, at: null, atMs: null };
   // Codex round-7 review fix: the per-poll IDENTITY of the observation(s)
@@ -2388,6 +2459,44 @@ export function extractInterruptInteraction(rollouts, redactions = [], bindingOp
         if (completedBeforeCallMs === null || (completed.atMs !== null && completed.atMs > completedBeforeCallMs)) completedBeforeCallMs = completed.atMs;
       }
     }
+    // Codex round 1: the EARLIEST nonterminal resolution after the call,
+    // under the SAME bounds-aware ordering rules — the pending window's
+    // closing bound includes it (the registered [poll start, resolution)
+    // window resolves on ANY definitive response, whatever its terminality).
+    for (const resolution of nonterminalResolutions) {
+      if (lastCall.atMs === null && (lastCall.notBeforeMs !== null || lastCall.notAfterMs !== null)) {
+        if (resolution.atMs !== null && lastCall.notBeforeMs !== null && resolution.atMs <= lastCall.notBeforeMs) continue;
+        if (resolution.atMs !== null && lastCall.notAfterMs !== null && resolution.atMs >= lastCall.notAfterMs) {
+          if (resolvedNonterminalAfterCallMs === null || (resolution.atMs !== null && resolution.atMs < resolvedNonterminalAfterCallMs)) resolvedNonterminalAfterCallMs = resolution.atMs;
+        }
+        continue;
+      }
+      const sameRolloutAfter = resolution.rolloutIndex === lastCall.rolloutIndex && resolution.index > lastCall.index;
+      const stampedAfter = resolution.atMs !== null && lastCall.atMs !== null && resolution.atMs >= lastCall.atMs;
+      if (sameRolloutAfter || stampedAfter) {
+        if (resolvedNonterminalAfterCallMs === null || (resolution.atMs !== null && resolution.atMs < resolvedNonterminalAfterCallMs)) resolvedNonterminalAfterCallMs = resolution.atMs;
+      }
+    }
+    // Codex round 4: the EARLIEST explicit-termination resolution after the
+    // call, under the SAME bounds-aware ordering rules — the alternate
+    // ender's own stop CLOSES the interrupted observation's pending window
+    // (an emission at/after it is outside) while NEVER granting
+    // native-settlement credit (it is separately classified below and never
+    // enters settledAfterCall/cancelledAfterCall).
+    for (const termination of explicitTerminations) {
+      if (lastCall.atMs === null && (lastCall.notBeforeMs !== null || lastCall.notAfterMs !== null)) {
+        if (termination.atMs !== null && lastCall.notBeforeMs !== null && termination.atMs <= lastCall.notBeforeMs) continue;
+        if (termination.atMs !== null && lastCall.notAfterMs !== null && termination.atMs >= lastCall.notAfterMs) {
+          if (resolvedExplicitStopAfterCallMs === null || (termination.atMs !== null && termination.atMs < resolvedExplicitStopAfterCallMs)) resolvedExplicitStopAfterCallMs = termination.atMs;
+        }
+        continue;
+      }
+      const sameRolloutAfter = termination.rolloutIndex === lastCall.rolloutIndex && termination.index > lastCall.index;
+      const stampedAfter = termination.atMs !== null && lastCall.atMs !== null && termination.atMs >= lastCall.atMs;
+      if (sameRolloutAfter || stampedAfter) {
+        if (resolvedExplicitStopAfterCallMs === null || (termination.atMs !== null && termination.atMs < resolvedExplicitStopAfterCallMs)) resolvedExplicitStopAfterCallMs = termination.atMs;
+      }
+    }
     // The turn-settlement bound (codex review rounds 5-6): the EARLIEST
     // attributable settlement resolution after the call, under the SAME
     // bounds-aware ordering rules — a cancelled turn settles through one of
@@ -2471,6 +2580,20 @@ export function extractInterruptInteraction(rollouts, redactions = [], bindingOp
     pendingBeforeCall,
     callAt: lastCall?.atMs !== null && lastCall?.atMs !== undefined ? new Date(lastCall.atMs).toISOString() : null,
     callAtMs: lastCall?.atMs ?? null,
+    // The LAST interrupt-shaped call's host-assigned call id (2026-10-21
+    // evidence-closure Task 3, report §19.4): the direct join key the host
+    // activity item's `id` field must equal (a shared-cell interrupt carries
+    // its CELL's call id — every statement of the cell shares it). A safe
+    // host-assigned identifier; no caller-supplied text.
+    callId: lastCall?.callId ?? null,
+    // Codex round 4: whether the LAST interrupt-shaped call was wrapped
+    // (a code-mode cell statement — the delegate-allocated nested exec id
+    // it emits is not attributable on this pin; the registered limitation).
+    wrappedInterrupt,
+    // Codex round 7: the LAST interrupt-shaped call pair's OWN rollout
+    // session id (the first session_meta id of the rollout containing it)
+    // — the admission requires it to equal the OWNING ROOT's session.
+    callRolloutSessionId: lastCall !== null ? rolloutSessionIds[lastCall.rolloutIndex] ?? null : null,
     // P2-1 round-16 fix: a shared-cell interrupt's exact execution time is
     // UNKNOWN — the bounds that ARE established (notBefore: the cell
     // submission, notAfter: the completion-evidencing cell response) are
@@ -2479,11 +2602,473 @@ export function extractInterruptInteraction(rollouts, redactions = [], bindingOp
     callNotAfterMs: lastCall?.notAfterMs ?? null,
     unparseableBoundResponses: boundObservations.filter((resolved) => resolved.kind === 'unparseable').length,
     completedBeforeCall,
+    // Codex round 1: the earliest NONTERMINAL poll resolution at/after the
+    // call (a live-handle completed response) — the pending window's
+    // closing bound includes it; never a settlement fact.
+    resolvedNonterminalAfterCall: { at: resolvedNonterminalAfterCallMs !== null ? new Date(resolvedNonterminalAfterCallMs).toISOString() : null, atMs: resolvedNonterminalAfterCallMs },
+    // Codex round 4: the earliest EXPLICIT `wait({terminate:true})`
+    // resolution at/after the call — a window-closing bound that NEVER
+    // grants native-settlement credit.
+    resolvedExplicitStopAfterCall: { at: resolvedExplicitStopAfterCallMs !== null ? new Date(resolvedExplicitStopAfterCallMs).toISOString() : null, atMs: resolvedExplicitStopAfterCallMs },
     completedAfterCall: { at: completedAfterCallMs !== null ? new Date(completedAfterCallMs).toISOString() : null, atMs: completedAfterCallMs },
     settledAfterCall: { at: settledAfterCallMs !== null ? new Date(settledAfterCallMs).toISOString() : null, atMs: settledAfterCallMs },
     cancelledAfterCall: { at: cancelledAfterCallMs !== null ? new Date(cancelledAfterCallMs).toISOString() : null, atMs: cancelledAfterCallMs },
     explicitTerminateAfterCall: { at: explicitTerminateAfterCallMs !== null ? new Date(explicitTerminateAfterCallMs).toISOString() : null, atMs: explicitTerminateAfterCallMs },
     sameRolloutCompletedBeforeCall,
+  };
+}
+
+// --- §19.4 host delivery admission (2026-10-21 evidence-closure Task 3) -----
+
+/**
+ * The EXACT spawn-acknowledgement identity (2026-10-21 evidence-closure
+ * Task 3): the owning-Root spawn linkage the interrupt choreography reuses —
+ * the same {@link inspectLinkage} machinery the evidence observer already
+ * applies — projected as the bounded identity the interrupt case's settlement
+ * readers bind to (the durable snapshot's owner session is the EXACT Child
+ * thread id returned by the spawn acknowledgement; the owning Root's session
+ * id anchors the host-item rollout conjunct). An inexact linkage keeps the
+ * ids null with its named reason — never a guessed target.
+ * @param {unknown} rollouts
+ * @returns {{ checked: true, exact: boolean, reason: string | null, childThreadId: string | null, parentThreadId: string | null }}
+ */
+export function observeSpawnAcknowledgementIdentity(rollouts) {
+  const linkage = inspectLinkage(Array.isArray(rollouts) ? /** @type {any[][]} */ (rollouts) : []);
+  return {
+    checked: true,
+    exact: linkage.exact === true,
+    reason: linkage.reason ?? null,
+    // An inexact linkage keeps BOTH ids null: a partially-resolved spawn
+    // identity (e.g. an ambiguous spawn count with a started item present)
+    // must never ground the interrupt target or the reader owner session.
+    childThreadId: linkage.exact === true ? linkage.childThreadId : null,
+    parentThreadId: linkage.exact === true ? linkage.parentThreadId : null,
+  };
+}
+
+// The ONLY admitted finite shape is the registered host-generated delivery
+// item (report §19.4, registered BEFORE any live trial): one
+// `event_msg`/`item_completed` payload whose `item` is a
+// `SubAgentActivity` of kind `interrupted` (interrupt_agent.rs:62-74 →
+// emit_sub_agent_activity → ItemCompleted; Paginated rollouts retain it,
+// policy.rs:218-268/:281). No other event kind, no other item kind, and no
+// grammar growth: unsupported shapes fail closed with their structural
+// diagnostics preserved, and a hypothetical lost body is never inferred from
+// byte counts or final messages.
+
+const HOST_ACTIVITY_ITEM_BOUND = 64;
+
+/**
+ * Admit the §19.4-registered host delivery identity: join ONE host-emitted
+ * `SubAgentActivity(kind=interrupted)` item to THE ONE interrupt call and to
+ * the exact pending Child, through supported host evidence only.
+ *
+ * Conjuncts (report §19.4; every conjunct required, no fallback interaction):
+ *   (1) exactly ONE interrupt-shaped call (`interaction.callCount === 1`);
+ *   (2) exactly ONE matching interrupted-kind item in the OWNING ROOT's
+ *       rollout whose `id` equals that call's id (direct call-id join —
+ *       never alias text, never caller-supplied strings relabeled
+ *       authoritative);
+ *   (3) the item's `agent_thread_id` equals the exact pending Child id as
+ *       returned by the spawn acknowledgement;
+ *   (4) the item occurs in the OWNING ROOT's rollout (its `thread_id` is the
+ *       Root's AND it lives in that rollout), ordered strictly inside the
+ *       confirmed pending window [attributable poll start, resolution) and
+ *       before natural completion;
+ *   (5) the item is timed (`completed_at_ms` finite and positive; the
+ *       pinned deserialization default 0 and absent stamps are UNTIMED —
+ *       never zero);
+ *   (6) `previous_status` is never consumed here at all: the delivered
+ *       interrupt's previous status remains a PRE-dispatch snapshot only
+ *       (interrupt_agent.rs:61/:76), never a window bound, never settlement.
+ *
+ * The emission timestamp (`completed_at_ms`) is strictly AFTER the dispatch
+ * (interrupt_agent.rs emits after the interrupt returns): it bounds the
+ * dispatch from above and is never read as the dispatch instant, never as a
+ * settlement-latency endpoint by itself (§19.6).
+ *
+ * Counterexamples each fail the admission with their stable named reason:
+ * item absent (Legacy-mode rollout, older binary, truncated rollout); kind
+ * Started/Completed/any other value; agent_thread_id matching a
+ * sibling/unrelated/self agent; duplicate items for one call id; id join
+ * missing; item in a foreign rollout (including a same-shaped copy in the
+ * Child's own rollout); rejected dispatch; unobserved outcome; emission
+ * outside the pending window or after settlement; untimed item; item without
+ * a pending observation; more than one delivery attempt; a Root final
+ * message, gate release or cleanup fact offered as the item (structurally
+ * inadmissible — only the registered shape is scanned).
+ *
+ * @param {unknown} rollouts
+ * @param {ReturnType<typeof extractInterruptInteraction>} interaction the
+ *   extractor result for the SAME rollouts (its call facts, pending window
+ *   and settlement timings are the admission's only ordering basis)
+ * @param {{ childThreadId?: unknown, rootThreadId?: unknown } | null} options
+ *   `childThreadId` is the exact spawn-acknowledgement Child id (the record's
+ *   `linkage.childThreadId` namespace); `rootThreadId` is the OWNING ROOT's
+ *   session id (the spawn linkage's parent thread id). Either absent leaves
+ *   its conjunct unestablished (fail closed, named) — never guessed.
+ * @returns {{
+ *   checked: true,
+ *   attemptedCall: boolean,
+ *   callId: string | null,
+ *   itemPresent: boolean | null,
+ *   interruptedItemCount: number | null,
+ *   joinedItemCount: number | null,
+ *   foreignItemCount: number | null,
+ *   idJoin: boolean | null,
+ *   idJoinBasis: 'outer-call-id' | null,
+ *   agentThreadIdMatch: boolean | null,
+ *   rootRolloutOwned: boolean | null,
+ *   insidePendingWindow: boolean | null,
+ *   timed: boolean | null,
+ *   completedAtMs: number | null,
+ *   admitted: boolean | null,
+ *   reasons: string[],
+ * }}
+ */
+export function admitInterruptHostDelivery(rollouts, interaction, options) {
+  if (!interaction || typeof interaction !== 'object' || typeof interaction.attempted !== 'boolean'
+    || !interaction.pendingBeforeCall || typeof interaction.pendingBeforeCall !== 'object'
+    || typeof interaction.pendingBeforeCall.observed !== 'boolean'
+    || !interaction.settledAfterCall || typeof interaction.settledAfterCall !== 'object') {
+    throw invalidEvidenceInput('the host-delivery admission needs the extractInterruptInteraction result (attempted flag, pending window and settlement timings).');
+  }
+  if (options === null || options === undefined || typeof options !== 'object') {
+    throw invalidEvidenceInput('the host-delivery admission needs binding options (childThreadId/rootThreadId).');
+  }
+  /** @param {unknown} value @param {string} name @returns {string | null} */
+  const boundId = (value, name) => {
+    if (value === null || value === undefined) return null;
+    if (typeof value !== 'string' || value.length === 0 || value.length > 128) {
+      throw invalidEvidenceInput(`the host-delivery admission ${name} must be a bounded nonempty string or null.`);
+    }
+    return value;
+  };
+  const childThreadId = boundId(options.childThreadId, 'childThreadId');
+  const rootThreadId = boundId(options.rootThreadId, 'rootThreadId');
+  /** @type {string[]} */
+  const reasons = [];
+  if (interaction.attempted !== true) {
+    // Nothing to admit: the delivery was never attempted. The structured
+    // facts stay null/empty — never a fabricated negative.
+    return {
+      checked: true,
+      attemptedCall: false,
+      callId: null,
+      itemPresent: null,
+      interruptedItemCount: null,
+      joinedItemCount: null,
+      foreignItemCount: null,
+      idJoin: null,
+      idJoinBasis: null,
+      agentThreadIdMatch: null,
+      rootRolloutOwned: null,
+      insidePendingWindow: null,
+      timed: null,
+      completedAtMs: null,
+      admitted: null,
+      reasons: ['host-activity-no-attempted-call'],
+    };
+  }
+  if (interaction.callCount !== 1) reasons.push('host-activity-call-count-not-one');
+  if (interaction.delivered === false) reasons.push('host-activity-delivery-rejected');
+  else if (interaction.delivered !== true) reasons.push('host-activity-delivery-unobserved');
+  const callId = typeof interaction.callId === 'string' && interaction.callId.length > 0 ? interaction.callId : null;
+  // Bounded scan for the registered shape ONLY (the same rollout/event bounds
+  // as the interaction extractor). Every SubAgentActivity item is classified;
+  // only interrupted-kind items can join.
+  /** @type {{ rolloutIndex: number, rolloutSessionId: string | null, kind: string | null, id: string | null, agentThreadId: string | null, threadId: string | null, completedAtMs: number | null }[]} */
+  const items = [];
+  /** @type {boolean | null} */
+  let boundExceeded = null;
+  const rolloutList = Array.isArray(rollouts) ? rollouts : [];
+  outer:
+  for (let rolloutIndex = 0; rolloutIndex < rolloutList.length && rolloutIndex < 512; rolloutIndex += 1) {
+    const events = rolloutList[rolloutIndex];
+    if (!Array.isArray(events)) continue;
+    // The rollout's OWN session id (the first session_meta payload id) — the
+    // scoping fact for conjunct 4's "occurs in the OWNING ROOT's rollout".
+    /** @type {string | null} */
+    let rolloutSessionId = null;
+    for (const event of events) {
+      if (event?.type === 'session_meta' && typeof /** @type {any} */ (event).payload?.id === 'string') {
+        rolloutSessionId = /** @type {any} */ (event).payload.id;
+        break;
+      }
+    }
+    for (let index = 0; index < events.length && index < 20_000; index += 1) {
+      const event = events[index];
+      const payload = /** @type {any} */ (event)?.payload;
+      if (!payload || typeof payload !== 'object') continue;
+      // The registered wrapper shape: `event_msg` + `item_completed` (the
+      // RolloutItemWire EventMsg variant; ItemStarted is TRANSIENT and never
+      // persisted — policy.rs:212 — so only completed items exist here).
+      if (/** @type {any} */ (event)?.type !== 'event_msg' || payload.type !== 'item_completed') continue;
+      const item = payload.item;
+      if (!item || typeof item !== 'object' || item.type !== 'SubAgentActivity') continue;
+      if (items.length >= HOST_ACTIVITY_ITEM_BOUND) {
+        boundExceeded = true;
+        break outer;
+      }
+      // ItemCompletedEvent.completed_at_ms is a PAYLOAD-level sibling of the
+      // item (protocol.rs:2060-2074) — never a field of SubAgentActivityItem
+      // itself.
+      const rawCompletedAtMs = payload.completed_at_ms;
+      items.push({
+        rolloutIndex,
+        rolloutSessionId,
+        kind: typeof item.kind === 'string' ? item.kind : null,
+        id: typeof item.id === 'string' ? item.id : null,
+        agentThreadId: typeof item.agent_thread_id === 'string' ? item.agent_thread_id : null,
+        threadId: typeof payload.thread_id === 'string' ? payload.thread_id : null,
+        // Finite POSITIVE only (protocol.rs default_item_completed_at_ms
+        // deserializes a MISSING stamp as 0 — the legacy-untimed shape):
+        // untimed items keep timing null, never zero.
+        completedAtMs: typeof rawCompletedAtMs === 'number' && Number.isFinite(rawCompletedAtMs)
+          && Number.isSafeInteger(rawCompletedAtMs) && rawCompletedAtMs > 0 ? rawCompletedAtMs : null,
+      });
+    }
+  }
+  const interruptedItems = items.filter((item) => item.kind === 'interrupted');
+  // itemPresent is the INTERRUPTED-kind presence (the registered delivery
+  // shape); SubAgentActivity items of other kinds are structural diagnostics
+  // that name the kind failure instead of the bare absence.
+  const itemPresent = interruptedItems.length > 0;
+  if (boundExceeded === true) reasons.push('host-activity-item-bound-exceeded');
+  if (items.length === 0) {
+    reasons.push('host-activity-item-absent');
+    return {
+      checked: true,
+      attemptedCall: true,
+      callId,
+      itemPresent: false,
+      interruptedItemCount: 0,
+      joinedItemCount: 0,
+      foreignItemCount: 0,
+      idJoin: false,
+      idJoinBasis: null,
+      agentThreadIdMatch: null,
+      rootRolloutOwned: null,
+      insidePendingWindow: null,
+      timed: null,
+      completedAtMs: null,
+      admitted: false,
+      reasons,
+    };
+  }
+  if (!itemPresent) {
+    reasons.push('host-activity-kind-not-interrupted');
+    return {
+      checked: true,
+      attemptedCall: true,
+      callId,
+      itemPresent: false,
+      interruptedItemCount: 0,
+      joinedItemCount: 0,
+      foreignItemCount: 0,
+      idJoin: false,
+      idJoinBasis: null,
+      agentThreadIdMatch: null,
+      rootRolloutOwned: null,
+      insidePendingWindow: null,
+      timed: null,
+      completedAtMs: null,
+      admitted: false,
+      reasons,
+    };
+  }
+  // Codex round 4 (the registered supported-path limitation): a WRAPPED
+  // (code-mode-cell) interrupt emits the delegate-allocated nested exec id
+  // in its activity item (delegate.rs:323 + interrupt_agent.rs:68), and that
+  // id NEVER persists (executed_tool_calls.rs buffers metadata only;
+  // ExecutedToolCall serializes no call_id) — the exact-target identity
+  // conjunct is UNSATISFIABLE on this pin. Fail closed with the named
+  // reason; the delivery layer stays unestablished (never guessed). The
+  // DIRECT (top-level interrupt_agent) invocation is the only qualified
+  // interruption path for I.
+  if (interaction.wrappedInterrupt === true) {
+    reasons.push('host-activity-wrapped-interrupt-unjoinable');
+    return {
+      checked: true,
+      attemptedCall: true,
+      callId,
+      itemPresent: interruptedItems.length > 0,
+      interruptedItemCount: interruptedItems.length,
+      joinedItemCount: 0,
+      foreignItemCount: 0,
+      idJoin: false,
+      idJoinBasis: null,
+      agentThreadIdMatch: null,
+      rootRolloutOwned: null,
+      insidePendingWindow: null,
+      timed: null,
+      completedAtMs: null,
+      admitted: false,
+      reasons,
+    };
+  }
+  // Same-id items of OTHER kinds in the OWNING ROOT's rollout are the
+  // Started/Completed counterexample family (multi_agents_v2.rs emits them
+  // through the same family): name the kind failure before the bare id-join
+  // failure.
+  const rootSameIdItems = callId !== null && rootThreadId !== null
+    ? items.filter((item) => item.id === callId
+      && item.threadId === rootThreadId
+      && item.rolloutSessionId === rootThreadId)
+    : [];
+  // The id join is scoped to the OWNING ROOT's rollout (conjunct 4): only a
+  // root-rollout interrupted item can be THE joined item; a same-shaped copy
+  // anywhere else is the named foreign shape, never a duplicate of it. With
+  // an UNRESOLVABLE Root identity no item can be classified foreign (the
+  // Root's own emission would be misnamed) — the owning-root conjunct is
+  // unestablishable instead (self-review round 1).
+  const rootUnresolvable = rootThreadId === null;
+  const foreignItems = callId !== null
+    ? interruptedItems.filter((item) => item.id === callId
+      && !rootUnresolvable
+      && (item.threadId !== rootThreadId
+        || item.rolloutSessionId !== rootThreadId))
+    : [];
+  const rootJoinedItems = callId !== null
+    ? interruptedItems.filter((item) => item.id === callId
+      && rootThreadId !== null
+      && item.threadId === rootThreadId
+      && item.rolloutSessionId === rootThreadId)
+    : [];
+  if (rootUnresolvable) {
+    // The registered conjunct-4a name fires for the REAL null-Root case
+    // (self-review round 1: previously dead code — the branch was reachable
+    // only through a joinedItem that itself required a non-null root id).
+    reasons.push('host-activity-owning-root-unestablished');
+  }
+  if (callId === null) reasons.push('host-activity-id-join-missing');
+  else if (rootJoinedItems.length === 0) {
+    // With an unresolvable Root the id join is unestablishable BY THE SAME
+    // cause: the owning-root reason is the named classification, never the
+    // bare join-missing/foreign misnames.
+    if (!rootUnresolvable) {
+      if (rootSameIdItems.length > 0) reasons.push('host-activity-kind-not-interrupted');
+      else reasons.push('host-activity-id-join-missing');
+    }
+  } else if (rootJoinedItems.length > 1) reasons.push('host-activity-duplicate-item');
+  if (foreignItems.length > 0) reasons.push('host-activity-foreign-rollout');
+  const joinedItem = rootJoinedItems.length === 1 ? rootJoinedItems[0] : null;
+  const idJoin = rootJoinedItems.length === 1;
+  const idJoinBasis = joinedItem !== null ? 'outer-call-id' : null;
+  // Conjunct 3: the resolved agent id equals the exact pending Child id from
+  // the spawn acknowledgement. This — never the caller's target text — is the
+  // authoritative identity join (the host resolved any alias itself).
+  /** @type {boolean | null} */
+  let agentThreadIdMatch = null;
+  if (joinedItem !== null) {
+    if (childThreadId === null) {
+      reasons.push('host-activity-child-identity-unestablished');
+      agentThreadIdMatch = null;
+    } else if (joinedItem.agentThreadId === childThreadId) {
+      agentThreadIdMatch = true;
+    } else {
+      agentThreadIdMatch = false;
+      reasons.push('host-activity-agent-thread-mismatch');
+    }
+  }
+  // Codex round 7: the ORIGINATING CALL's own rollout must be the owning
+  // Root's session — the extraction scans every rollout, so a sibling
+  // session's interrupt call (with a Root-side host item sharing the id)
+  // must never supply delivery/timing evidence. Fail closed named.
+  const callRolloutSessionId = typeof interaction.callRolloutSessionId === 'string' ? interaction.callRolloutSessionId : null;
+  // (The null-Root owning-root reason is pushed by the pre-existing conjunct
+  // block below — never duplicated here.)
+  if (rootThreadId !== null && callRolloutSessionId === null) {
+    reasons.push('host-activity-call-rollout-unestablished');
+  } else if (rootThreadId !== null && callRolloutSessionId !== rootThreadId) {
+    reasons.push('host-activity-foreign-call-rollout');
+  }
+  // Conjunct 4a: the item's thread_id is the Root's AND it lives in the
+  // Root's own rollout. Diagnostic: false when same-id interrupted candidates
+  // exist somewhere but none of them is the Root's own item; null when the
+  // owning Root is unresolvable (the diagnostic is unestablishable, never a
+  // misclassification).
+  /** @type {boolean | null} */
+  let rootRolloutOwned = null;
+  if (joinedItem !== null) {
+    rootRolloutOwned = joinedItem.threadId === rootThreadId && joinedItem.rolloutSessionId === rootThreadId;
+    if (!rootRolloutOwned) reasons.push('host-activity-foreign-rollout');
+  } else if (rootThreadId !== null && interruptedItems.some((item) => item.id === callId)) {
+    rootRolloutOwned = false;
+  }
+  // Conjunct 5: the emission timing (finite positive above; null otherwise).
+  const timed = joinedItem !== null ? joinedItem.completedAtMs !== null : null;
+  if (joinedItem !== null && timed !== true) reasons.push('host-activity-untimed');
+  // Conjunct 4b: the emission is ordered strictly inside the confirmed
+  // pending window [attributable poll start, resolution) and before natural
+  // completion. Untimed items keep the ordering unestablished (their own
+  // reason already failed the admission); an observed window with an
+  // unestablishable start stays unestablished, never approximated.
+  /** @type {boolean | null} */
+  let insidePendingWindow = null;
+  if (joinedItem !== null && timed === true) {
+    if (interaction.pendingBeforeCall.observed !== true) {
+      insidePendingWindow = false;
+      reasons.push('host-activity-without-pending-observation');
+    } else if (interaction.pendingBeforeCall.atMs === null) {
+      insidePendingWindow = null;
+      reasons.push('host-activity-window-unestablished');
+    } else {
+      const completedAtMs = /** @type {number} */ (joinedItem.completedAtMs);
+      // Codex round 5: the emission must satisfy BOTH window bounds — its
+      // own dispatch's lower timing bound first. `completed_at_ms` is an
+      // EMISSION stamp that bounds the dispatch from ABOVE (§19.4/§19.6):
+      // an emission strictly BEFORE the call's attributable time is
+      // contradictory (dispatched before the dispatch) — named
+      // unestablished, never admitted.
+      if (interaction.callAtMs !== null && completedAtMs < interaction.callAtMs) {
+        insidePendingWindow = false;
+        reasons.push('host-activity-pre-call-timing');
+      } else if (completedAtMs < /** @type {number} */ (interaction.pendingBeforeCall.atMs)) {
+        insidePendingWindow = false;
+        reasons.push('host-activity-outside-pending-window');
+      } else if ((interaction.settledAfterCall.atMs !== null && completedAtMs >= interaction.settledAfterCall.atMs)
+        || (interaction.completedAfterCall.atMs !== null && completedAtMs >= interaction.completedAfterCall.atMs)) {
+        insidePendingWindow = false;
+        reasons.push('host-activity-after-settlement');
+      } else if (interaction.resolvedNonterminalAfterCall.atMs !== null
+        && completedAtMs >= interaction.resolvedNonterminalAfterCall.atMs) {
+        // Codex round 1: the registered [poll start, resolution) window
+        // closes on ANY resolution — a nonterminal resolution ends it exactly
+        // like a settlement; an emission at/after it is outside, named.
+        insidePendingWindow = false;
+        reasons.push('host-activity-after-resolution');
+      } else if (interaction.resolvedExplicitStopAfterCall.atMs !== null
+        && completedAtMs >= interaction.resolvedExplicitStopAfterCall.atMs) {
+        // Codex round 4: an attributable EXPLICIT cell termination closes the
+        // window too (the observation demonstrably resolved before the
+        // emission) — a window-closing bound ONLY, never native-settlement
+        // credit (the round-10 alternate-ender classification stands).
+        insidePendingWindow = false;
+        reasons.push('host-activity-after-explicit-stop');
+      } else {
+        insidePendingWindow = true;
+      }
+    }
+  }
+  const admitted = reasons.length === 0;
+  return {
+    checked: true,
+    attemptedCall: true,
+    callId,
+    itemPresent,
+    interruptedItemCount: interruptedItems.length,
+    joinedItemCount: rootJoinedItems.length,
+    foreignItemCount: foreignItems.length,
+    idJoin,
+    idJoinBasis,
+    agentThreadIdMatch,
+    rootRolloutOwned,
+    insidePendingWindow,
+    timed,
+    completedAtMs: joinedItem?.completedAtMs ?? null,
+    admitted,
+    reasons,
   };
 }
 
