@@ -10818,6 +10818,18 @@ Root join and diagnostic/model/source settings — recorded, never silently alte
   **`8db29d9c25d4ad7a30ea0366a3b7921ff218faed8d8b8a564eda148478e77e65`** — supersedes the
   codex-round-7 `ea2c3ce6…` (the pre-Task-4 bytes, kept as history). This is the digest any Task-5
   registered run at unchanged research bytes carries; it is NOT stamped onto any §16–§19 record.
+  > **Dated annotation (2026-10-22, the Task-5 instrument correction):** the research bytes moved
+  > AFTER the three Task-5 launches — the §21.5 versioned correction
+  > (`RESCUE_EXPECTATION_DERIVATION_VERSION` 2 in `release-qualification.mjs` + the driver's
+  > derivation call site; driver.mjs = `5e2c8ed1aa0ef562e0b8c8171a200419a8e8f7d99877738bc8fe099ad9ca91b0`,
+  > release-qualification.mjs = `5963d65b68395fa6cd77eae8aff8bf7bbe0ba403558bf28b610162e2fdcaf698`,
+  > tests/shell-wait-probe.test.mjs = `7e0fddff4992b8ce6f669c64019979c4f5c7d76234218680fe8b435d737d44eb`)
+  > recomputed the executing observer digest at v5 to
+  > **`30d197361244d04836ca7f945e6c94ff2e67e812c59cc44fda12b4a97959d2cf`** — the digest any FUTURE
+  > registered run must re-pin against. The `8db29d9c…` value above stands as HISTORY: it is the
+  > digest all three Task-5 launches verifiably carried at case start AND record time
+  > (`sourcesChangedDuringRun: false` on every record — the correction is POST-run, never a mid-run
+  > change), exactly like the prior version-bump supersessions kept above.
 
 ### 20.4 O1/O2 Gate B corroboration preconditions and the cross-pin applicability statement
 
@@ -10990,6 +11002,11 @@ homes (`CODEX_HOME`/`ZCODE_DATA_ROOT`, never real user plugin data). Rules: NO c
 or comparability claim across any changed pin; the model-catalog discovery (§20.3) is digest-only
 context re-run per launch; observer/tap/installed-artifact/instruction bytes are recorded BEFORE
 the launch and compared at adjudication.
+> **Dated annotation (2026-10-22, the Task-5 instrument correction):** the executing observer
+> digest a FUTURE launch must re-pin against moved to
+> **`30d197361244d04836ca7f945e6c94ff2e67e812c59cc44fda12b4a97959d2cf`** (§20.3's dated
+> annotation); the three Task-5 launches verifiably carried `8db29d9c…` at case start and record
+> time (kept as history, §21.1/§21.2).
 
 ### 20.8 Per-case observer requirements vs the closed requirement maps (the ledger-driven freeze)
 
@@ -11034,3 +11051,647 @@ preconditions (§20.4–§20.6, §20.8) are frozen BEFORE any launch. Zero model
 cases, zero labels spent. Task 5's execution authorization stays its own; this section demands no
 new user decision beyond what the plan already grants, and any scope/authority expansion would
 still require user direction.
+
+### 20.10 Dated Task-5 ledger-status block (actual consumption; §21 is the full record)
+
+Task 5 executed 2026-10-22 against the §20 frozen ledger. ACTUAL consumption, agreeing with §21.3:
+**O1 = spent-and-consumed (executed)**, **O2 = spent-and-consumed (executed)**,
+**I = spent-and-consumed (executed; delivery attribution unestablished after the evidence
+collection failed on a named unsupported-call shape)**, **F = unspent (0 of 1; the O1/O2
+instrument-expectation defect was demonstrated AND corrected offline with a versioned
+re-adjudication — no successor needed; the I shape is §20.6's never-cause — §21.3)**. Total
+logical cases: **3 of the 4-case maximum**. O2's conditional
+trigger was satisfied by record (§20.1) and was correctly treated as NOT discharged by O1 AT
+LAUNCH TIME (under the launched v1 instrument, O1's exact-output half returned the comparator
+mismatch — the raw `matched: false` result is preserved at §21.2.1 — so the spend was necessary
+under the §20.4 two-half-gate rule); the post-run versioned instrument correction
+(`RESCUE_EXPECTATION_DERIVATION_VERSION` 2, §21.5) re-adjudicated BOTH retained records
+`matched: true`, closing the Gate B exact-linkage half offline (§21.2.1/§21.2.2). The
+remaining §21 sections carry every re-pin, registration and per-layer fact.
+
+## 21. 2026-10-22 evidence-closure Task 5: the registered closure-ledger cases executed and adjudicated per layer (3 live cases; F unspent)
+
+Task 5 of the 2026-10-21 plan, executed 2026-10-22 in the same worktree on top of the Task-4 commit
+`2a7c2b17f0e5cf8a68c226958421fb465e8df1a5`. THREE registered live cases ran under their §20.2
+commands (O1 `rescue-long`, O2 `rescue-repeat`, I `rescue-interrupt --survival-control-selector
+progress-terminal`); F never launched.
+> **Dated annotation (2026-10-22, the round-3 instrument correction):** the original text below
+> recorded "ZERO repository-code changes" — true for the three LAUNCHED runs (their records carry
+> the pre-correction observer digest `8db29d9c…` with `sourcesChangedDuringRun: false`). The
+> codex round-3 review's P2 subsequently required an INSTRUMENT correction sanctioned by the
+> plan §3 file table (release-qualification.mjs "fix only demonstrated input/oracle defects with
+> versioned adjudication"): `release-qualification.mjs` (the v2
+> `RESCUE_EXPECTATION_DERIVATION_VERSION` + `exactRescueForegroundRenderedExpectation`),
+> `driver.mjs` (the derivation call site) and `tests/shell-wait-probe.test.mjs` changed AFTER the
+> launches, with the full gate battery re-run (§21.5) and the retained records re-adjudicated
+> offline (§21.2.1/§21.2.2). The sentence below stands as the launch-time history.
+>
+> Original text: ZERO repository-code changes: the only changed tracked bytes
+> are this section, the §20.1 dated status block above, and the plan's Task-5 checkbox ticks — the
+> research implementation (every `tools/`/`tests/` byte) is UNCHANGED from the Task-4 tree the records
+> carry (record-time `observer.sourcesChangedDuringRun: false` on all three records, §21.2), so the
+> §20.9 research-suite gate REMAINS the gate of record for the unchanged implementation bytes
+> (§21.5). The untracked scratch (`findings.md`, `progress.md`, `task_plan.md`) was preserved untouched
+> and never staged. Every persisted record stays in its disposable `/tmp/shell-wait-closure-*` case
+> directory with the SHA-256 digests recorded below (the record files are redacted fixture records —
+> no preparation/auth/rollout bodies; §21 cites only the bounded typed facts, digests and safe
+identifiers the records already carry; `redactPrivatePaths` applies to any path-bearing citation).
+
+**Registration accounting (§20.1 rule 1):** every actual model turn, internal Child/control and the
+finite sequences register under their label — O1: one held Root turn (2 measured model calls), 1
+internal Child launch + 1 send, 1 Root join; O2: same shape with **7 measured Root joins** (a
+measured per-run fact, recorded — not a §20.4 precondition); I: one held Root turn carrying the
+§16.4 five-step directive, 1 internal Child launch, the declared survival control (declared
+60-line/2000-ms script, observed facts unestablishable — below), and ONE `interrupt_agent` call
+(`callCount: 1`). Failed starts: none (all three hosts reached the held lifecycle). Unsupported
+shapes: ONE (I, after real turns — consumed, §21.2.3). Total logical cases: **3 of the max 4**;
+**F: 0 of 1**.
+
+### 21.1 Per-case execution records
+
+**Connectivity pre-check (before the first live launch; a PRUDENT EXTRA recorded for the campaign —
+§20 freezes no such check; the proxy-outage prevention duty comes from the execution process, not
+from §20).** The
+shell's `http_proxy`/`https_proxy` = `http://127.0.0.1:7890`; the listener is ALIVE
+(`verge-mihomo` PID 83570, LISTEN). Reachability through the proxy: `https://chatgpt.com/` → HTTP
+403 and `https://api.openai.com/v1/models` → HTTP 401 — both are normal HTTP responses, NOT the
+recorded outage signatures (connection refused / couldn't connect); bare-domain 403/4xx is the
+recorded normal bot-protection shape. No proxy outage; all three launches proceeded.
+
+**The §20.7 re-pin battery — executed immediately before EACH launch (3×), all read-only; every
+check matched the §20.3/§20.7 records ALL THREE times:**
+
+| Battery check (§20.7 command) | O1 (2026-10-22T08:49Z) | O2 (09:08:21Z) | I (09:19:29Z) |
+| --- | --- | --- | --- |
+| `git status --short` | ONLY the 3 untracked scratch files | same | same |
+| `git rev-parse HEAD` | `2a7c2b17f0e5cf8a68c226958421fb465e8df1a5` | same | same |
+| `codex --version` | `codex-cli 0.163.0` | same | same |
+| binary SHA-256 (realpath `command -v codex`) | `8813367285524ac798dd96d1b071aea30d58708c7226fd236cd275cf1cfdee31` | identical | identical |
+| source HEAD | `dffa0deb69268ed4ac31578794c9ea897b336ae3` | identical | identical |
+| source `status --short` | EMPTY (clean) | clean | clean |
+| `--help` digest (816 bytes) | `afa0e66db58a9ef5576ce868266a0c5257b3cc9dad5720e5fd31fb7b4a5ff6f1` | identical | identical |
+| `codex debug models` raw SHA (retained at `/tmp/shell-wait-evidence-closure/task5/`) | `52f8de84b7c3047c3badf4a7f18c1dab1983480e9717b044f8ae6e6f5a2936b4` | identical | identical |
+| digest-only reduction | 10 entries / 7 list-visible / `gpt-6.1-sol` list-visible at priority 0 | identical | identical |
+| executing observer digest RECOMPUTED | `8db29d9c25d4ad7a30ea0366a3b7921ff218faed8d8b8a564eda148478e77e65` = the §20.3 Task-4 value (AT LAUNCH — see the dated annotation below) | identical | identical |
+
+NO pin differs from the §20.3 record on any of the three batteries — the §20.7 STOP rule (a
+differing pin stops that case with the label unspent) never triggered. Catalog context per §20.3:
+10 entries, 7 list-visible, `gpt-6.1-sol` priority 0 (the recorded catalog-side renumbering stands;
+a catalog renumber is never a selection change); NO auth/config value read or recorded.
+> **Dated annotation (2026-10-22, the Task-5 instrument correction):** every observer-digest value
+> in this table is the AT-LAUNCH history — all three launches verifiably carried
+> `8db29d9c…` at case start AND record time (`sourcesChangedDuringRun: false`); the post-run
+> versioned correction (§21.5) moved the executing observer digest to
+> `30d197361244d04836ca7f945e6c94ff2e67e812c59cc44fda12b4a97959d2cf` — the §20.7 re-pin value for
+> any FUTURE run. No recorded fact above is restated.
+
+**O1 (`rescue-long`) — SPENT-AND-CONSUMED: executed.** The executed command equals §20.2's
+executable content exactly (same option set and values, same order); the block below reproduces
+that content, dropping §20.2's trailing `# re-pin §20.7 first, then:` comment line (comments do
+not execute; the re-pin was in fact run first, §21.1's battery table) — the ONE textual deviation,
+presentation-only:
+
+```bash
+shell_codex_binary=$(realpath "$(command -v codex)")
+shell_case_output=$(mktemp -d /tmp/shell-wait-closure-o1.XXXXXX)
+ZCODE_SHELL_WAIT_E2E=1 node tools/shell-wait-probe/driver.mjs \
+  --case rescue-long \
+  --codex "$shell_codex_binary" --source-sha "$(git rev-parse HEAD)" \
+  --output "$shell_case_output" --model gpt-6.1-sol \
+  --worker-duration-ms 420000 --poll-ms 3600000 --budget-ms 1200000 --cap-ms 3600000 \
+  --wait-policy config-default --exec-default-ms 3600000 \
+  --unclassified-structural-diagnostic 1 --unclassified-shape-diagnostic 1
+```
+
+Output dir `/tmp/shell-wait-closure-o1.YWUis4` (fresh disposable mktemp); record
+`rescue-long.record.json` SHA-256 `807fb30fe2eefe009e6de9573d12b848fa2f4d4d7c6b3e91dae0e310bbe12b4d`;
+start 2026-10-22T08:49:39Z, end 08:58:43Z (544 s wall incl. fixture preparation/disposal); driver
+exit 0; `status: executed`; setup `capVerified: true`, `setupAttempts: 2`, `roleStatus: ready`,
+fixture owning session `2a437cfb-9a6f-4d35-9be2-3c8b7ebf2153`; route requested `rescue-foreground`
+→ actual `named`. Registered under the label: 1 held Root turn, 2 model calls, 1 Child launch, 1
+Child send, 1 Root join; cleanup `child-settlement-observed` (§21.2.1); zero cleanup errors.
+
+**O2 (`rescue-repeat` — spent on the explicit statement recorded BEFORE its launch).** §20.1's
+trigger stands (the fresh-repeat requirement includes exact-output linkage; NO existing attributable
+evidence completes it — §17.5 `stdout-stream-attribution-unavailable` + §19.3(a) merged streams).
+O1 did NOT discharge it (AT LAUNCH TIME, under the launched v1 instrument — the historical
+decision recorded before the spend): O1's exact-output half had returned the comparator mismatch
+(raw `matched: false` preserved, §21.2.1), and Gate B is a two-half gate — a passing
+discriminator never substitutes for the linkage half (§20.4). O2 was
+therefore BOTH eligible and necessary; it was spent. (Post-correction note, §21.2.1 item 2: the
+v1 mismatch was the instrument's expectation defect; the versioned offline re-adjudication
+returned `matched: true` for both records and the corroboration completed.) The executed
+command equals §20.2's executable content exactly (same option set and values, same order; only
+§20.2's trailing comment line dropped — the same presentation-only deviation as O1, §21.1), with
+`--case rescue-repeat` and fresh `mktemp -d /tmp/shell-wait-closure-o2.XXXXXX`.
+Output dir `/tmp/shell-wait-closure-o2.GOsEp6`; record
+`rescue-repeat.record.json` SHA-256 `32a1f3b767555d7c0161a2ab72387c61de67d09f294c88d489910649e7735bb0`;
+start 09:08:38Z, end 09:17:06Z (508 s wall); driver exit 0; `status: executed`; `capVerified: true`,
+`setupAttempts: 2`, fixture owning session `006c7c6b-3b4a-451e-927c-c6f276d4013e`; route `named`.
+Registered under the label: 1 held Root turn, 2 model calls, 1 Child launch, 1 Child send, **7
+Root joins**; cleanup `child-settlement-observed`; zero cleanup errors.
+
+**I (`rescue-interrupt --survival-control-selector progress-terminal`) — SPENT-AND-CONSUMED:
+executed; the delivery identity unestablishable after a named unsupported-call shape (§21.2.3).**
+The executed command equals §20.2's executable content exactly (same option set and values, same
+order; only §20.2's trailing comment line dropped — the same presentation-only deviation as O1,
+§21.1). Output dir `/tmp/shell-wait-closure-i.7O0WIl`; record
+`rescue-interrupt.record.json` SHA-256
+`731feb13a4687b86f07bf2995710d271feb942a0646cd970f1c2ea4743837a72`; start 09:19:36Z, end
+09:27:55Z (499 s wall); driver exit 0; `status: executed`; `capVerified: true`, `setupAttempts: 2`,
+fixture owning session `3a7c2d85-e029-4955-ad00-0ef2d5e05f67`. Registered: 1 held Root turn, 1
+Child launch, the declared survival control, 1 `interrupt_agent` call, 1 integration-free
+hold-deadline cleanup. **In-fixture preflight duties verified at launch (§20.5/§20.8):** the
+prepared fixture carried the capture seam ARMED — `STDOUT_CAPTURE_REQUIRED_CASES` membership
+(driver-level closed map, rescue-interrupt a member) with the generated preload ON DISK
+(`closure-stdout-preload.cjs` in the fixture `stdout-capture/` dir) and the fixture-owned
+survival-control script `survival-control.mjs` on disk (declared SHA-256
+`c510d81f296881a9e4e3c174429758c3e2f26c08cf7a63b26ac75d2e5ca30172`, 60 lines @2000 ms, designed
+exit 0, §16.4 emission-tag machinery byte-unchanged); `NODE_OPTIONS=--require …` verified LIVE on
+the actual spawned host process environment (the §19.3(e) in-fixture propagation duty — the
+previously-never-observed traversal is now observed on a registered launch); the durable reader's
+partition basis present; `WRAPPED_INTERRUPT_REQUIRED_CASES` frozen-EMPTY (direct-mode design only —
+the preflight's wrapped-reliance rejection arm neutral by registration). The implemented live
+preflight therefore PASSED at zero registered rejections (a preflight rejection at zero model turns
+would NOT have consumed the case per §20.6; none occurred).
+
+### 21.2 Bounded outcome facts per layer
+
+Per-layer reporting uses the plan's four categories: (a) observer incapability/not-proven;
+(b) measured production contract failure; (c) compatible observed native/natural behavior;
+(d) deliberate cleanup. Exact-output verdicts are reported SEPARATELY from long-wait success, and
+no prior retained success is erased by a new-observer result (§20.4's two-half-gate rule).
+
+#### 21.2.1 O1 (`rescue-long`) layer facts
+
+In-record provenance re-verification (§20.7, per record): the launched binary SHA-256 is recorded
+by `hashNativeExecutable` = `8813…e31` ✓; case-start observer digest
+`8db29d9c25d4ad7a30ea0366a3b7921ff218faed8d8b8a564eda148478e77e65` with record-time
+`sourcesChangedDuringRun: false` ✓ (no mid-run source change); settings match §20.4 clause 4 — cap
+3600000 `capVerified`, exec-default 3600000, worker 420000, budget 1200000, model `gpt-6.1-sol`
+requested (effective model metadata stays the `null` contract), both diagnostics `1`, and the
+normalized candidate-paragraph instruction hashes are BYTE-IDENTICAL to the recorded §17.3–§17.4
+candidate values (`2ea76cf02b01…` named-role / `5800e3ab814f…` generic @3600000) ✓; isolated
+fixture homes only (`CODEX_HOME`/`ZCODE_DATA_ROOT` fixture-owned).
+
+1. **Long-wait discriminator (the retained-M half) — MET, per poll.** ONE decisive original-handle
+   observation: `pollWallTimesMs = [386600]`, `outerReturns: 0`, `modelCalls: 2`, `rootJoins: 1`,
+   `pollStartedAtElapsedMs: 92862`, `remainingLifetimeMs: 386555` (basis
+   `hold-deadline-at-poll-start`). Oracle verdicts (run OFFLINE on the record facts at oracle v1):
+   `evaluateDecisivePollHeadroom({M=300004 retained, remaining=386555})` → **qualified true,
+   headroomMs 86551** — the §20.4 threshold margin is +56551 ms over M+30000 = 330004;
+   `classifyLongObservation(...)` → **`beyond-reference`** (386600 > 300004). The wait-policy
+   marker: `decisivePollExplicitYield: absent`, `decisiveCallSurface: code-mode-wrapper`,
+   `decisiveInnerNonterminality: inner-process-exited` (completed first return 386658 ms,
+   basis `rollout-event-timestamps`) — no decisive pragma; the §16.6 data-quality guards hold.
+2. **Exact terminal stdout linkage — v(OLD) comparator mismatch PRESERVED as history; the defect
+   was the INSTRUMENT'S EXPECTATION, now version-corrected offline; v(NEW) verdict: MATCHED.**
+   `evaluateExactTerminalLinkage` (oracle v1 — the family oracle is byte-UNCHANGED), RAW INSTRUMENT
+   OUTPUT of the LAUNCHED instrument against its then-declared fixture
+   profile: **`matched: false`, reason `output-truncated`** (preserved verbatim as the v-record —
+   never overwritten). The attributable capture is COMPLETE (capture status `complete`, no
+   truncation flag), byteCount **34**, capture-time digest
+   `61ccf5084f7b6d8dcf00b5081772afc8d85148708e5dda979343cf8b7ed82927`, launcher exit **0**.
+   **The INSTRUMENT DEFECT (diagnosed statically, then corrected offline with versioned
+   adjudication per the plan §3 file table and the §19.2 convention):** the launched
+   instrument's expectation builder (`shellWaitEvidenceRequest`'s derivation, driver.mjs) used
+   the TERMINAL-MANAGEMENT framing (the 114-byte `Resumable: yes` + hint view from the declared
+   `PUBLIC_RESULT_RESUMABLE=true` constant — the framing `terminalResultJob`
+   (zcode-companion.mjs:2482-2496) supplies ONLY for the `result` management command, call sites
+   :207/:209) for a FOREGROUND `invoke-prepared rescue` invocation — whose production contract
+   returns the RAW durable job (`runDirectInvocation` preparedInvocation branch
+   zcode-companion.mjs:822 → `runCompanion` :1019-1020 → `scripts/lib/review.mjs:421`
+   `output = { job: publication.job, result: publication.result }`; `publication.job` = the RAW
+   `store.finishJob` winner, review.mjs:743-761 — NO `resumable` field) and renders EXACTLY
+   `"ZCODE_RESCUE_PUBLIC_SENTINEL_7C9C\n"` (34 bytes, exit 0) — RECOMPUTED OFFLINE through the
+   real production formatter, byte-for-byte the recorded capture. **The production foreground
+   return shape is NOT a defect and NOT a production-contract failure; S3's
+   preserve-existing-stdout requirement is satisfied by the existing foreground contract itself.**
+   The corrected instrument (v2, `RESCUE_EXPECTATION_DERIVATION_VERSION = 2` in
+   release-qualification.mjs; `exactRescueForegroundRenderedExpectation` renders the raw-job
+   return shape through the real `formatDirectInvocationSuccess`; the v1 builder
+   `exactRescueRenderedExpectation` stays exported UNCHANGED for genuine management/status
+   results) was proven test-first offline, and the RETAINED records were RE-ADJUDICATED OFFLINE
+   at v2 (the §19.2-convention script retained at
+   `/tmp/shell-wait-evidence-closure/task5/readjudicate-o1-o2-v2.mjs`, SHA-256
+   `708c8048afb6505a7d1cb485d6feb79b648d34795fbc208842a189b26523a788`, output retained at
+   `…/readjudicate-o1-o2-v2.output.txt` SHA-256
+   `3db38159ae02a75cc1b03fb0bda07e82a01456b35685b8bfe5395f840aa4cfbc`; zero model turns, zero
+   labels): the capture BYTES were disposed with the fixture, so the v2 verdict rests on the
+   digest-identity argument over the RETAINED record facts — the preload's capture-time digest
+   (computed AT CAPTURE CLOSE over exactly the bytes it wrote, §19.3(b)) EQUALS the SHA-256 of
+   the v2 expectation string and the recorded byteCount/exitCode/capture-status match, so the
+   complete capture contained exactly the expectation bytes (SHA-256 preimage resistance);
+   `evaluateExactTerminalLinkage` at v2 → **`matched: true`** (O1 AND O2 identically). Whether
+   the management path's definite indicator (`result` renders `Resumable: no` — with missing
+   permission/binding inputs `resumableJobIndicator` returns `false`, NOT indefinite, verified
+   offline) versus the foreground path's structural absence is worth a production-contract
+   observation remains a Task-6 scoped-recommendation NOTE with the production files read-only
+   (chain citations above) — nothing in it implies the foreground path needs a production change
+   for output preservation. Independent stderr count: NOT IMPLEMENTED by the
+   frozen seam meta contract
+   (captureComplete/truncated/byteCount/captureSha256/maxBytes/exitCode only — the §19.7
+   projection's stderr line stays deferred) → `null`, never zero, named-implemented-scope.
+   Sentinel corroboration from the merged stream stays consistent (`publicResultMatchedSentinel:
+   true` — the sentinel IS those 34 bytes; the merged transcript is never substituted for the
+   comparison).
+3. **Child/Companion/Gate-A layers.** Linkage checked: `childThreadId
+   01a162ce-9373-79e3-94cd-707d3a5cf906`, `parentThreadId 01a162cd-d289-70b3-b727-0ee16c50aaff`,
+   `companionLaunchCount: 1`, `companionSendCount: 1`, `originalHandleChecked: true` (Gate-A facts
+   carried). Child settlement OBSERVED, basis
+   `exact-launch-handle-linked-completed-exit-code-output`; layers: `remoteTerminal: true`,
+   `localProcessReaping: 'natural-exit-observed'`, `durableObligations: null` — the REGISTERED
+   null-supplier contract for non-status/interrupt cases (§20.8: durable settlement stays a Gate-D
+   deliverable; recorded `null`, never zero). Root acknowledgement 505363 ms, settlement detected
+   505372 ms, held ended 505372 ms (held-turn monotonic clock). NO process kill
+   (`verifiedTerminated: false`, `codexTerminated: false`) — natural completion.
+4. **Category + cleanup.** (a) The mismatch was an INSTRUMENT DEFECT — the launched
+   instrument's expectation builder applied terminal-management framing to a foreground
+   invocation — now diagnosed, version-corrected offline (v2, item 2), with the correction
+   proven test-first and the retained records re-adjudicated offline (matched:true at v2);
+   the capture seam itself measured correctly throughout (byte-verified, never reconstruction).
+   (b) The production foreground return shape is NOT a defect and NOT a production-contract
+   failure — S3's preserve-existing-stdout requirement is satisfied by the existing foreground
+   contract itself; the production files were NOT edited. Whether the MANAGEMENT path's definite
+   indicator (the `result` command renders `Resumable: no` definitively) versus the foreground
+   path's structural absence merits a production-contract observation is a Task-6
+   scoped-recommendation note (§21.4), never a truncation finding and never a foreground-change
+   implication. (c) The child's natural
+   long completion is compatible
+   observed behavior (prior §17.3 L success untouched). (d) Cleanup label
+   `child-settlement-observed`, disposal complete, 0 errors — deliberate.
+
+**Gate B for O1: ALL FOUR §20.4 per-poll conditions MET at the corrected v2 adjudication —
+(1) remaining 386555 ≥ 330004 (oracle: qualified true, headroomMs 86551); (2) `beyond-reference`
+(386600 > M 300004); (3) COMPLETE exact linkage `matched: true` at the corrected foreground
+expectation (v2 re-adjudication, §21.2.1 item 2; the v1 `matched: false`/`output-truncated`
+verdicts preserved verbatim as history); (4) settings matched (instruction hashes byte-identical,
+cap verified, all declared settings equal).** Scoped honestly: condition 3's basis is
+`RESCUE_EXPECTATION_DERIVATION_VERSION` 2's foreground expectation (production-contract-derived,
+never capture-derived), established offline over the retained record facts by digest identity —
+S3's preserve-stdout requirement is satisfied by the existing foreground contract itself.
+
+#### 21.2.2 O2 (`rescue-repeat`) layer facts
+
+Same in-record verification shape as O1 (binary SHA ✓, observer digest case-start = record-time,
+`sourcesChangedDuringRun: false` ✓, instruction hashes byte-identical `2ea76cf0…`/`5800e3ab…` ✓,
+cap verified, all declared settings equal per arm).
+
+1. **Long-wait discriminator — MET, per poll.** ONE decisive observation: `pollWallTimesMs =
+   [386500]`, `outerReturns: 0`, `modelCalls: 2`, `rootJoins: 7`, `pollStartedAtElapsedMs: 73026`,
+   `remainingLifetimeMs: 386392` (`hold-deadline-at-poll-start`). Oracles (v1): headroom
+   **qualified true, headroomMs 86388** (+56388 over the 330004 threshold);
+   **`beyond-reference`** (386500 > 300004). Marker: `decisivePollExplicitYield: absent`,
+   `code-mode-wrapper`, `inner-process-exited`, first return completed 386506 ms
+   (`rollout-event-timestamps`). The 7-root-join count is the recorded per-run join behavior
+   difference (O1 had 1) — measured and retained, not a precondition.
+2. **Exact terminal stdout linkage — the SAME instrument-defect story, twice-measured; v(NEW)
+   verdict MATCHED like O1.** Capture complete, byteCount
+   **34**, captureSha256 **`61ccf508…` — BYTE-IDENTICAL to O1's capture digest** (the identical
+   sentinel-line-only stdout; identical launcher exit 0); v(OLD) instrument output preserved
+   verbatim: `matched: false`, reason `output-truncated`, against the identical (v1,
+   terminal-management) expectation shape. The production foreground bytes were
+   therefore measured twice on two independent launches/runs, byte-identical and attributable —
+   and the adjudication is the SAME as O1's: the v1 mismatch was the instrument's wrong
+   (management-view) expectation, the production foreground contract is intact, and the offline
+   v2 re-adjudication (§21.2.1 item 2 — the same digest-identity argument over the retained
+   record facts, the O2 capture digest equaling the v2 expectation digest) returns
+   **`matched: true`** for O2 as well.
+3. **Child/Companion/Gate-A layers.** `childThreadId 01a162df-b65e-7ef2-95e6-2d9863bcfa9d`,
+   `parentThreadId 01a162df-35cc-7b40-b3c8-71e5a7690f7d` (distinct from O1), launch/send 1/1,
+   `originalHandleChecked: true`. Settlement observed
+   (`exact-launch-handle-linked-completed-exit-code-output`); `remoteTerminal: true`,
+   `natural-exit-observed`, `durableObligations: null` (registered contract). Root acknowledgement
+   468232 ms / settlement 468239 ms. NO kills.
+4. **Category + cleanup.** As O1's item 4 (the instrument defect corrected offline; the
+   production foreground shape not a defect; (c) natural completion; (d)
+   `child-settlement-observed` cleanup, complete, 0 errors).
+
+**Gate B for O2: ALL FOUR §20.4 per-poll conditions MET at the corrected v2 adjudication —
+(1) remaining 386392 ≥ 330004 (oracle: qualified true, headroomMs 86388); (2) `beyond-reference`
+(386500 > M 300004); (3) COMPLETE exact linkage `matched: true` at the corrected foreground
+expectation (v2 re-adjudication; the v1 verdicts preserved verbatim as history); (4) settings
+matched (instruction hashes byte-identical, cap verified, all declared settings equal) — the SAME
+scope note as O1's (v2 basis, digest-identity establishment, S3 satisfied by the existing
+foreground contract). The fresh matching corroboration the repeat requirement asked for is
+THEREFORE ACHIEVED at the corrected adjudication: two independent runs, byte-identical
+contract-conforming bytes, both `matched: true` at v2.**
+
+#### 21.2.3 I (`rescue-interrupt`) layer facts
+
+1. **INSTALL-RETENTION CHECK (§20.5 item 3 — the FIRST verification step): NOT MEASURED.** The
+   registered check (does the installed CLI's rollout actually retain the host
+   `SubAgentActivity(kind=interrupted)` item?) requires the source-pinned admission scan
+   (`admitInterruptHostDelivery` over the captured Root rollout with the exact pending Child id).
+   It could not run: the evidence adjudication returned `evidence.inconclusive:
+   unsupported-call-shape` before producing supported linkage — one collected `exec_command` tool
+   call does not match the BOUNDED supported shapes (direct call, simple wrapper, linked outer
+   continuation). The withheld diagnostic (recorded in `evidence.excerpts[0]`, body suppressed per
+   the fail-closed rule) names the unclassified form precisely: classification
+   `unclassified-script-cell`, `bodyType: string`, 2 input lines, 231 input bytes, statement head
+   `bound-await`, tail `text-binding`, `bindingEquality: equal`, `parserStage: output`,
+   `wholeBodyStatementMatch: false`, withheld-body SHA-256
+   `e9856478c99a23a93f7997d75418f5352c74cf6cb894df671b908ed032116e84`. WITHOUT supported linkage
+   the exact Child id is unestablishable, the §19.4 admission's conjuncts cannot be evaluated
+   against a backlog rollout scan, and the persisted record correctly carries NO `hostDelivery`
+   block: **the delivery layer fails CLOSED with the collection-incompleteness reason**
+   (`interrupt.missingPrerequisite: "the owning-session interrupt delivery could not be observed
+   in this run: the evidence collection did not complete (rollouts unavailable or the held
+   observation failed before evidence collection)"`). This is NOT `host-activity-item-absent` — a
+   positive retention ABSENCE was NOT established; the §19.4/§19.7 retention question stays OPEN,
+   named. §20.1 rule 1 applies: an unsupported shape after real turns CONSUMES the case.
+2. **The interrupt call itself (recorded before the collection failure).** `callCount: 1` (the
+   exactly-one contract held), family `v2` (the DIRECT `interrupt_agent` tool — NOT a wrapped
+   code-mode cell), `previousStatus: "running"` — the delivered interrupt's pre-dispatch snapshot
+   named a NONTERMINAL active turn. A terminal snapshot label (the
+   `TERMINAL_INTERRUPT_PREVIOUS_STATUSES` set, §19.9 round 6) would have driven the mapper's
+   `previous-status-terminal-no-interruption-claim` basis and the oracle's
+   `terminal-before-interrupt` rejection — that is NOT what fired. The recorded
+   three-valued join fact stays `terminalBeforeInterrupt: null`
+   (`terminalBeforeInterruptBasis: 'no-terminal-state-evidence'`, item 8) — `"running"` is a
+   PRE-dispatch snapshot, never a post-delivery terminal-state conclusion, so the join value is
+   UNKNOWN, not `false`. Target `kind: "unknown"`, value suppressed, `chars: 23` (the byte length
+   of the caller-supplied target — the historical id-shaped length; never the text), the
+   alias-vs-exact-id form UNVERIFIED (the spawn-acknowledgement linkage is null on this record).
+   `orderingBound: false` → `settled: null`, `settledBasis:
+   'ordering-unbound-not-attributed'` (the §16.3 attribution guard's named basis). `delivered`,
+   `exactTargetMatch`: null (unobserved, never false-by-guess). The Root's turn acknowledged at
+   179677 ms (held clock); child-poll start 74067 ms; the held lifecycle ended at the hold
+   deadline 462107 ms (label `observation`), zero cleanup errors, NO process kills.
+3. **Responsiveness (§20.5 item 6): NOT APPLICABLE — never applied, never zero.**
+   `pendingIntervalMs: null`, `deliveryToSettlementMs: null`, `timingBasis: 'unavailable'`. The
+   retained ≤60000-ms bound stays REGISTERED-BUT-NOT-YET-APPLICABLE exactly as recorded (§19.6,
+   §20.5 item 6): the §19.4 admission set was never satisfied on a live record, so the bound does
+   not adjudicate the turn/cell/poll layer here.
+4. **Survival control (§20.5 item 4 — the declared independent control).** The DECLARATION is
+   recorded (selector `progress-terminal`; fixture-owned script bytes SHA `c510d81f…`; 60 lines;
+   2000-ms cadence; designed exit 0; emission-tag clock
+   `control-process-monotonic-elapsed-ms-since-start`; command source
+   `fixture-owned bytes; never caller-supplied`). The OBSERVED facts are `null`:
+   `survivalControl: null` — the control's read sequence could not be extracted from the rollouts
+   (the same collection failure), so **no-collateral is NOT qualified** (`null` stays `null`,
+   fail-closed, never fabricated). The control's no-stop/no-input discipline held on the
+   declaration; its survival evidence is unestablished.
+5. **Durable job/binding/executor obligations — the passive reader RAN and captured the production
+   authorized-stop path's settled state (a CLEANUP-TIME snapshot — see the fence treatment at the
+   end of this item and the overlay at item 8).** The Task-2 passive snapshot reader
+   (`interruptDurableSnapshotSupplier`, §19.9) started BEFORE the watch and completed under the
+   unchanged passivity fence: partition **resolved** (fixture `workspaceKey
+   e0eb72a2b32503cd53959ace6d0fb3216094f8bf3e4dce7a88a84be88564a9d8`, `canonicalWorkspace: false`
+   recorded), enumeration 1 entry / within bounds, owner binding present, the EXACT job resolved
+   through the owner-index mode: job `89ac0376d398187df2a50598192d2dd69cacf4d112a69237651f6c5dc4ca0c4f`,
+   owner = the observed PARENT (Root) session `01a162e9-3726-7ae1-8c4a-50d44c82593d`,
+   ownerTurn `01a162e9-3c10-7481-a61a-d00f03f6ad58`, executor verified against the observed Child
+   → **`executorLinkage: 'verified'`** (the exported gate for all Child-attributed outcomes).
+   Production-published final state: winner **`terminal: 'cancelled'`**; **stop intent PRESENT and
+   VALID, cause `'session-end'`, requestedAt `2026-10-22T09:23:10.361Z`** — a REAL production stop
+   authority act (the §19.5 predicated existence — never assumed by the trial), riding the
+   interrupted session's end via the existing authorized path; duties: `runnerCleanupDuty:
+   not-applicable` (record carries NO marked runner claim — `rescueRunnerVersion: null`),
+   `endedObligation: settled: true`, `writableGuard: not-applicable` (NOT retained),
+   `bindingCurrency: current` (anchors exactly that job), `lifecycleEpoch: not-applicable` (no
+   epoch declared for this observation). Retained record facts: `executionOwner: host-child`,
+   `hostPlacement: foreground`, retained `childPid: 92106` (process aliveness NEVER probed — no
+   lease acquisition, no signal), `workerLeaseId e655a5c3…` recorded. Passivity proven:
+   before/after fingerprint EQUAL (`passive.snapshotEqual: true`), `lockState: 'present'`
+   (observed, never acquired/waited). **`aggregate: 'settled'`** — every applicable §19.5 duty is
+   POSITIVELY established IN THE SNAPSHOT; `completedAtMs 1792661275722`, equal to the recorded
+   cleanup-boundary
+   epoch fact (recorded verbatim as completed-AT-boundary, no interpretation beyond).
+   **EXPLICITLY NON-NATIVE, AND QUALIFICATION-UNESTABLISHED:** the snapshot completed AT the
+   §20.5-item-5 fence boundary (the "at or after the boundary" class), so this settled obligations
+   aggregate is a CLEANUP-TIME observation that grounds NO native/natural-interruption credit
+   claim of any kind, AND — under §20.5 item 5's fence rule (observations completing at or after
+   the boundary receive CLEANUP classification, never credit) — it earns NO Gate D qualification
+   credit either: the obligations layer's QUALIFICATION status is **UNESTABLISHED** (see the
+   overlay at item 8); what the snapshot establishes is WHAT the production authorized-stop path
+   had durably published by cleanup time (§16.2's frozen convergence, observed), never a
+   pre-cleanup settlement fact.
+6. **Companion outcome (§20.5 item 7 — the remote layer; the local limitation stands).** The
+   offline join (per §19.9) derives **`companionOutcome: 'terminal-result'`** with
+   **terminalWinner `cancelled`** from the durable job's production-published TERMINAL winner —
+   through the verified executor linkage (child-attributed outcomes gated on `executorLinkage ==
+   'verified'` — it is). The **LOCAL process-reaping layer stays `null`** — the registered
+   unobservable limitation (§19.9): the layer is named-unobservable on this path, never inferred,
+   and the companion layer qualifies through the remote outcome alone — BUT the remote outcome's
+   SOURCE here is the same completed-AT-boundary durable snapshot, so the Companion layer's
+   QUALIFICATION status inherits the item-5 fence treatment: **UNESTABLISHED-for-qualification**
+   (raw join output preserved; see the overlay at item 8). Per the misclassification
+   protection: the 'cancelled' winner rides the REAL authorized session-end stop path; the record
+   keeps `nativeInterruptionClaimed: false` and NO causal attribution of the durable cancellation
+   to the interrupt is claimed by this adjudication (§16.2/§20.5 item 7 sentences verbatim).
+7. **The completion-shaped child-settlement watch: NOT observed (`settlement.observed: false`) —
+   the §16.2-frozen convergence stands:** a native Child interruption produces no
+   completion-shaped settlement; the watch provably cannot settle this path. Recorded as
+   compatible observed behavior (category (c)), never a production failure (category (b)).
+   `stdoutCapture: status 'incomplete', reason 'capture-meta-missing'` — on the interrupted path
+   the launcher never delivered a final stdout (named observer fact, never reconstructed; the
+   production output half for I stays unestablished), `hostExit: 0`, `processExit: null`.
+8. **The offline versioned adjudication (executed on the SAVED record; nothing re-derived from
+   memory).** `nativeInterruptionGateDInput(record)` → `{ delivery: { delivered: null,
+   exactTargetMatch: null, aliasResolved: null, terminalBeforeInterrupt: null,
+   terminalBeforeInterruptBasis: 'no-terminal-state-evidence', deliverySent: null,
+   previousStatusOnly: true, unreadableContinuation: false, pendingWindowConfirmed: false,
+   hostActivityAdmitted: null }, turnSettled: null, deliveryToSettlementMs: null, companionOutcome:
+   'terminal-result', durableObligations: 'settled', cleanupKill: false, survivalControl: null,
+   terminalWinner: 'cancelled', naturalCompletionObserved: false, statusObservationTimeoutOnly:
+   false }`; `evaluateNativeInterruptionSettlement` (**NATIVE_INTERRUPTION_ORACLE_VERSION 2**,
+   RELEASE_QUALIFICATION_VERSION 1) → **`qualified: false`** with the 11 named reasons
+   (`delivery-not-established`, `delivery-dispatch-unestablished`, `alias-unresolved`,
+   `terminal-state-unestablished`, `previous-status-snapshot-only`, `pending-window-unconfirmed`,
+   `delivery-target-unmatched`, `host-activity-unadmitted`, `turn-settlement-unobserved`,
+   `settlement-latency-unestablished`, `survival-control-unadjudicated`); layers —
+   delivery **false**, turnSettlement **false**, **companion TRUE**, **durableObligations TRUE**,
+   noCollateral **false**; `terminalWinner: 'cancelled'`; `RESPONSIVENESS_BOUND_MS` = 60000
+   (unapplied). The Stop-evidence/`previousStatusOnly` convention held (round-5 semantics: a
+   second rollback proven delivery + confirmed window would upgrade it; none is present).
+   **QUALIFICATION OVERLAY (applied on top of the preserved instrument output, per §20.5 item 5):**
+   the durable observation behind the join completed AT the recorded cleanup boundary
+   (`completedAtMs == cleanupBoundaryAtMs == 1792661275722`, item 5), so the oracle's
+   **companion: TRUE** and **durableObligations: TRUE** layer results are CLEANUP-TIME INSTRUMENT
+   RESULTS — replayed verbatim above and preserved as such, but carrying NO qualification credit.
+   The QUALIFICATION status of both layers is **UNESTABLISHED** (no pre-boundary observation
+   supports them); Gate D therefore stands **delivery-unestablished AND
+   obligations/Companion-unestablished-for-qualification** — a fresh pre-boundary observation
+   (not a replay) is the only thing that can establish either layer.
+9. **Category + cleanup.** (a) NOT PROVEN, with named reasons: the installed host-item retention,
+   the exact delivery identity/pending window, the turn/cell settlement latency, the survival
+   control/no-collateral layer, the I-case stdout half, AND (fence rule, §20.5 item 5) the
+   obligations/Companion qualification layers — cleanup-time observations only. The instrument-side GAP discovered
+   post-launch (the supported-shape classifier's unclassified-script-cell coverage) is recorded as
+   the Task-6 defect with its halt-F evaluation (§21.3). (b) NO production contract failure was
+   measured — the durable authorized-path's published state (what the snapshot shows) is
+   consistent with its design. (c) The one-call v2 interrupt on
+   an active turn, the §16.2 layer-separation behavior (the interrupt inducing no durable stop
+   authority of its own — the session-end stop intent is a separate authorized act), and the
+   durable/Companion CLEANUP-TIME observations are
+   compatible observed behavior. (d) The hold-deadline observation cleanup, zero kills, complete
+   disposal, 0 errors — deliberate.
+
+### 21.3 Ledger status and F adjudication (plan status vs ACTUAL consumption)
+
+| Label | Registered (§20.1) | ACTUAL status | Reason |
+| --- | --- | --- | --- |
+| O1 (`rescue-long`) | 1 conditional | **spent-and-consumed: executed** | the capture/state seams passed offline; one §20.4-qualified launch ran to natural settlement; discriminator half MET; exact-linkage half **MET at the corrected v2 adjudication** (`matched: true`; the launched instrument's v1 `matched: false` comparator verdict preserved verbatim as history; §21.2.1) |
+| O2 (`rescue-repeat`) | 1 conditional | **spent-and-consumed: executed** | the fresh matching corroboration RAN once and — after the versioned instrument correction — ACHIEVED its aim: byte-identical contract-conforming bytes, `matched: true` at v2 (§21.2.2); O1's v1-era mismatch was the instrument's expectation defect, never a production divergence |
+| I (`rescue-interrupt`) | 1 conditional | **spent-and-consumed: executed** | exactly one v2 interrupt call recorded on an active turn; the delivery-identity/per-layer attribution unestablished after the named unsupported-call shape consumed the evidence adjudication (§21.2.3 items 1–2); the durable/Companion layers recorded as CLEANUP-TIME observations (raw oracle replay true; qualification UNESTABLISHED, §21.2.3 item 8's overlay) |
+| F | 1 TOTAL shared conditional | **UNSPENT (0 of 1)** | no F-eligible cause arose (below) |
+
+Total logical cases: **3 of the 4-case maximum**. No retry, relabel, or per-label allowance was
+used anywhere; no preflight rejection was ever recorded (all three launches passed theirs).
+
+**F adjudication — unspent, with named reasons:**
+
+- **O1/O2** produced ONE measured, attributable, TWICE-REPEATED comparator mismatch against the
+  launched instrument's expectation (the 34-byte sentinel-line-only stdout, digest `61ccf508…`,
+  byte-identical across both runs; the v1 `matched: false`/`output-truncated` comparator results
+  preserved verbatim) — and the cause was DIAGNOSED STATICALLY and then CORRECTED as a VERSIONED
+  OFFLINE instrument fix (§21.2.1 item 2; `RESCUE_EXPECTATION_DERIVATION_VERSION` 2;
+  **Supersession (2026-10-22, the versioned correction):** the previous F wording — "NOT
+  INSTRUMENT-CORRECTABLE, a successor would deterministically reproduce the same shape" — was
+  written BEFORE the correction existed and stands as history. With the defect now demonstrated
+  AND corrected offline per §20.6's instrument-correction rule — test-first RED→GREEN, v2
+  re-adjudication of the RETAINED records returning `matched: true` (the §19.2 convention;
+  prior verdicts preserved) — NO successor run is needed and none is authorized by this record:
+  the correction is complete offline, the Gate B exact-linkage half closes at v2 on the
+  retained facts, and F stays unspent with THAT as the reason. Per §20.6's standing rule,
+  ANOTHER live run after such a correction would still need F or new authorization — this
+  record requests neither.) The production foreground return shape was NEVER the defect — the
+  instrument measured it correctly — and S3's preserve-stdout requirement is satisfied by the
+  existing foreground contract itself ⇒ **F not spent for O1/O2** — unspent because the
+  demonstrated defect is already corrected offline with the retained records re-adjudicated, not
+  because a successor would be futile.
+- **I** ended in a named unsupported-call shape AFTER real launches — §20.6 lists this EXACTLY as
+  never-an-F-cause ("a new unknown shape after launch (consumed with partial facts)"). The
+  instrument-side defect evaluation is recorded anyway (per the Task-5 halt duty): the supported
+  pipeline's bounded shape classifier does not admit the observed executed form (the named
+  withheld-body SHA-256 `e9856478…`, statement shape `bound-await`/`text-binding`, 2 lines,
+  231 bytes — the named missing finite form per §2's whitelist rule); the candidate one-named
+  change (admit ONLY that form, versioned OFFLINE first per §19.2) is a RESEARCH-implementation
+  correction for Task 6/PR scope — Task 5's authorization covers records and report only, and the
+  prohibited diff stays EMPTY. **F not spent for I.**
+- No setting change, no model/paragraph deviation, no budget expiry, no refused persisted
+  preregistration occurred anywhere. F stays UNSPENT-with-reason: the ONE shared F launch was
+  never eligible, and the ledger is CLOSED without it (§20.6: "after F the ledger is closed" — it
+  closes unspent here).
+
+### 21.4 Scoped recommendation inputs (per-layer closures vs open blockers; the final adopt/do-not-adopt verdict is §22 with full verification)
+
+- **Long-wait mechanism (S1's discriminator half): re-corroborated on the CURRENT pin.** Two fresh
+  independent natural original-handle observations (386600 / 386500 ms), each with
+  poll-start remaining lifetime 386555 / 386392 ms ≥ the M+30000 = 330004 threshold (margins
+  +56551 / +56388), no decisive pragma, code-mode-wrapper surface, handle-linked natural
+  settlement, on byte-identical candidate paragraph hashes (`2ea76cf0…`/`5800e3ab…`) and a verified
+  3600000 cap. The retained M = 300004 / cadence 7-vs-1 results (§17.2/§17.6) were CITED, never
+  re-derived; no new calibration/cadence campaign started (§20.4).
+- **Exact output (Gate B linkage half): CLOSED at the corrected v2 adjudication — the mismatch
+  was an INSTRUMENT EXPECTATION DEFECT, corrected offline with versioned re-adjudication; the
+  production foreground contract is intact.** The delivered launcher stdout
+  (complete, byte-verified, exit 0) is the render of the RAW durable job the `invoke-prepared`
+  foreground path returns: production never applies `terminalResultJob` on this chain
+  (zcode-companion.mjs:822 → :1019-1020 → scripts/lib/review.mjs:421 → the raw `finishJob`
+  winner from review.mjs:743-761; `terminalResultJob` :2482-2496 is applied only at :207/:209,
+  the `result` MANAGEMENT command), so the Resumability-Indicator/hint lines are structurally
+  absent and the offline recompute through the real formatter equals the recorded capture
+  byte-for-byte (`ZCODE_RESCUE_PUBLIC_SENTINEL_7C9C\n`, 34 bytes, digest `61ccf508…`, byte-identical
+  across O1/O2). The launched instrument's v1 expectation builder applied terminal-MANAGEMENT
+  framing to that foreground invocation — a demonstrated input/oracle defect fixed exactly per
+  the plan §3 file table ("fix only demonstrated input/oracle defects with versioned
+  adjudication"): `RESCUE_EXPECTATION_DERIVATION_VERSION` 2, test-first RED→GREEN, the retained
+  O1/O2 records RE-ADJUDICATED OFFLINE at v2 — **`matched: true` for BOTH** (the §19.2
+  convention; the v1 verdicts preserved verbatim as history) — so all four §20.4 per-poll
+  conditions stand MET for both polls (§21.2.1/§21.2.2 Gate B paragraphs). S3's
+  preserve-existing-stdout requirement is SATISFIED by the existing foreground contract itself —
+  no production change is needed or proposed for output preservation. Remaining Task-6
+  scoped-recommendation NOTE (observation only, production files read-only): the MANAGEMENT
+  `result` path renders the resumability indicator DEFINITELY (with missing permission/binding
+  inputs `resumableJobIndicator` returns `false`, NOT indefinite — verified offline;
+  job-control.mjs:1009) while the foreground path structurally renders none — whether that
+  management-path indicator behavior merits a production-contract observation is §22's call;
+  nothing in it implies the foreground path needs a production change for output preservation,
+  and no delivery-time-input probe is needed — the mechanism is statically established and the
+  corrected adjudication stands on retained facts.
+- **Native delivery (Gate D delivery-identity layer): OPEN — the §19.4 installed-retention
+  question is UNANSWERED, and the §19.9 scanner never ran because the observed invocation form
+  falls outside the bounded supported-shape set (named withheld-body SHA `e9856478…`).** The
+  §20.6-compliant path: ONE named parser admission (the withheld structural form only), versioned
+  offline against the retained record diagnostic first, then a registered successor trial — all
+  Task-6/PR authority.
+- **Owned settlement (Gate D obligations): OPEN for qualification — recorded as a CLEANUP-TIME
+  observation.** After the Root's one-call v2 interrupt, the retained snapshot shows the production
+  authorized-stop path
+  persisted a valid `'session-end'` stop intent and the exact job `'cancelled'` with
+  `executorLinkage: 'verified'`, no marked-runner claim outstanding, no retained writable guard,
+  binding current, aggregate `settled` (raw oracle replay `durableObligations: true` preserved) —
+  but the snapshot completed AT the §20.5-item-5 fence boundary, so the obligations layer stands
+  UNESTABLISHED-for-qualification (no pre-boundary observation supports it; §21.2.3 item 8's
+  overlay). The §16.2 convergence (native interruption induces no
+  trial-created stop authority; the EXISTING authorized path owns durable settlement) is OBSERVED
+  on the record's cleanup-time snapshot — it is not credited as a Gate D closure.
+- **Companion (remote): recorded from the durable production-published
+  terminal winner (`terminal-result`, winner `cancelled`; raw oracle replay true) as a CLEANUP-TIME
+  observation — qualification UNESTABLISHED under the same fence (a fresh pre-boundary
+  observation is required to qualify it); the LOCAL reaping layer stays the
+  registered named-unobservable limitation (never inferred).**
+- **No-collateral survival control: OPEN (null, fail-closed)** — the control ran its declared
+  registration but its observed facts are unestablishable on this record; the control layer stays
+  not-proven until a successor trial whose evidence collection completes.
+- **Unchanged carried qualifications** (this Task does NOT silently qualify them): BG live
+  placement unproven; Review no-send separate production scope; AR/ST prior single-run compatible;
+  generic structurally unavailable; the host-global numeric default has no supported Role-scoped
+  override; Gate B/D closure would NOT make a blanket shared-default deployment verdict — and Gate
+  D's delivery AND obligations/Companion-qualification layers are NOT
+  closed by this Task (the latter two are cleanup-time observations only, §21.2.3 item 8); Gate
+  B's linkage half IS closed at the corrected v2 adjudication (§21.2.1/§21.2.2), scoped to the
+  foreground-expectation basis and the digest-identity establishment over the retained records.
+
+### 21.5 Gates (on the final amended Task-5 bytes; every result verbatim)
+
+**History (the pre-correction state):** Task 5's first three live launches and the first two
+review-fix amendments changed ONLY documentation bytes, so the research suite was skipped with
+the recorded reason "live runs must not change code; nothing did" (§20.9's 862-test battery was
+then the implementation gate of record).
+
+**The round-3 instrument correction changed research code** (sanctioned by the plan §3 file
+table: release-qualification.mjs "fix only demonstrated input/oracle defects with versioned
+adjudication"; the changed files: `tools/shell-wait-probe/release-qualification.mjs` — the v2
+`RESCUE_EXPECTATION_DERIVATION_VERSION` + `exactRescueForegroundRenderedExpectation`;
+`tools/shell-wait-probe/driver.mjs` — `shellWaitEvidenceRequest` derives via the v2 builder;
+`tests/shell-wait-probe.test.mjs` — the new v2 pin + the two aligned derivation tests rewritten
+in place) — so the FULL gate battery ran on the final amended bytes; every result verbatim:
+
+| Gate command | Result |
+| --- | --- |
+| `npm run test:shell-research` | **ℹ tests 863 / ℹ suites 68 / ℹ pass 863 / ℹ fail 0 / ℹ skipped 0** (862 + the 1 net-new v2-expectation pin test; the two v1-derivation tests rewritten in place with supersession annotations; TDD RED recorded first: the new v2 test failed 1/0/1 on `RESCUE_EXPECTATION_DERIVATION_VERSION` undefined against the pre-fix bytes, plus the 2 aligned failures, then GREEN) |
+| `node --test tests/test-selection.test.mjs` | **6/6 pass, fail 0, exit 0** |
+| `npm run lint` | clean, exit 0 (one interim `no-unused-vars` on the now-unused `PUBLIC_RESULT_RESUMABLE` driver import, fixed by the import trim) |
+| `npm run typecheck` | clean, exit 0 |
+| `node scripts/check-line-endings.mjs` | *"LF line endings verified in 542 tracked files."*, exit 0 |
+| `git diff --check` | exit 0, no output |
+| prohibited diff `git diff 0b522b70b0ed72d7d1566de581dc306c70b38fac --stat -- skills/ agents/ scripts/ hooks/ .codex-plugin/ marketplace/ docs/superpowers/specs/ package.json npm-shrinkwrap.json` | **EMPTY**, exit 0 |
+
+Changed research-file digests (SHA-256, the final amended tree): `driver.mjs` =
+`5e2c8ed1aa0ef562e0b8c8171a200419a8e8f7d99877738bc8fe099ad9ca91b0`;
+`release-qualification.mjs` =
+`5963d65b68395fa6cd77eae8aff8bf7bbe0ba403558bf28b610162e2fdcaf698`;
+`tests/shell-wait-probe.test.mjs` =
+`7e0fddff4992b8ce6f669c64019979c4f5c7d76234218680fe8b435d737d44eb`. **The executing observer
+digest moved accordingly** (`zcode-shell-wait-observer-v5`, same NUL-separated construction): the
+three live launches carried `8db29d9c…` (case start = record time, `sourcesChangedDuringRun:
+false` — history, §20.3's dated annotation); the post-correction digest any FUTURE registered run
+re-pins against is **`30d197361244d04836ca7f945e6c94ff2e67e812c59cc44fda12b4a97959d2cf`**.
+`fixture.mjs`, `evidence.mjs`, `closure-observation.mjs`, `shape-diagnostic.mjs`,
+`wait-comparison.mjs` and `tests/test-selection.test.mjs` are byte-identical to the §20.3
+recorded values.
+
+**Task 5 exit:** the eligible closure cases are executed and adjudicated per layer with named
+category reasons; every label's consumption status agrees between §20.1's dated block and §21.3; the
+open blockers are precise (the Gate-D delivery layer + the named
+parser-admission correction path; the obligations/Companion qualification layers — cleanup-time
+observations only, unestablished pending a pre-boundary observation; the no-collateral layer);
+the Gate-B linkage half CLOSED at the corrected v2 adjudication (the instrument expectation
+defect version-corrected offline, `matched: true` twice); three labels consumed, F unspent (the
+O1/O2 defect demonstrated AND corrected offline — no successor needed; the I unsupported shape a
+§20.6 never-cause), and
+NO production code/config byte changed. Scope/authority expansion (a successor interrupt trial, a
+production repair decision) would require Task 6/user direction, not this record.

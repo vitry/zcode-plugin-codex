@@ -23,14 +23,14 @@ import { mkdir, readdir, readFile, lstat, stat, writeFile } from 'node:fs/promis
 import { isAbsolute, join, relative, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { PUBLIC_RESULT_RESUMABLE, PUBLIC_RESULT_SENTINEL, SURVIVAL_CONTROL_LINE_COUNT, captureVerifiedProcessIdentity, createShellWaitFixture, inspectVerifiedProcessIdentity, releaseCompletionGate, survivalControlPromptDirective, terminateVerifiedProcess } from './fixture.mjs';
+import { PUBLIC_RESULT_SENTINEL, SURVIVAL_CONTROL_LINE_COUNT, captureVerifiedProcessIdentity, createShellWaitFixture, inspectVerifiedProcessIdentity, releaseCompletionGate, survivalControlPromptDirective, terminateVerifiedProcess } from './fixture.mjs';
 import { renderRescueLauncherCommand } from '../../scripts/lib/rescue-launcher-command.mjs';
 import { runProcess } from '../../scripts/lib/process.mjs';
 import { codexLaunch } from '../../scripts/lib/tool-launch.mjs';
 import { parseCodexRolloutJsonl } from '../../tests/helpers/codex-rescue-qualification.mjs';
 import { EXECUTING_EVIDENCE_SOURCE, interruptDeliveryAttributionGuard, admitInterruptHostDelivery, extractInterruptInteraction, INTERRUPT_TARGET_HEX_SHAPE, extractSurvivalControlFacts, inspectShellWaitEvidence, observeSpawnAcknowledgementIdentity, parseCallStatements, parseToolOutput, precedingStatementsCompleted, statementOutputAt, TERMINAL_INTERRUPT_PREVIOUS_STATUSES } from './evidence.mjs';
 import { EXECUTING_CLOSURE_OBSERVATION_SOURCE, admitStdoutCapture, readDurableObligationSnapshot } from './closure-observation.mjs';
-import { EXECUTING_RELEASE_QUALIFICATION_SOURCE, evaluateSurvivalControl, exactRescueRenderedExpectation } from './release-qualification.mjs';
+import { EXECUTING_RELEASE_QUALIFICATION_SOURCE, evaluateSurvivalControl, exactRescueForegroundRenderedExpectation } from './release-qualification.mjs';
 import { EXECUTING_SHAPE_DIAGNOSTIC_SOURCE } from './shape-diagnostic.mjs';
 
 
@@ -3033,24 +3033,30 @@ export function shellWaitEvidenceRequest(request) {
   if (!spec) throw invalidCaseInput(`unknown shell wait case: ${String(request.case)}`);
   // Codex review round 8: the byte-exact terminal expectation is DERIVED
   // OFFLINE from the deterministic production renderer plus the case's
-  // DECLARED harmless output profile — rescue-family cases declare the
-  // fixture's public result AND its resumability fact (round-4 review fix:
-  // the rendered terminal view carries the Resumability Indicator, so the
-  // derived expectation is COMPLETE; an unestablished fact would derive no
-  // expectation at all, leaving the exact equality unestablished — never a
-  // partial framing-less expectation that false-rejects valid output or
-  // false-accepts framing-less output). The derivation inputs are case
-  // constants computed once here, so the default live executor threads the
-  // expectation through THIS validated seam and every real policy run
-  // carries the exact-byte check in its evidence facts; no free-text
-  // expected-output flag exists. Root-family cases keep their own declared
-  // result-marker layer and derive no rescue expectation (explicitly
-  // absent, never silently skipped). A supplied expectation is validated at
-  // THIS boundary exactly like the evidence boundary.
+  // DECLARED harmless output profile. Task-5 instrument correction
+  // (2026-10-22, RESCUE_EXPECTATION_DERIVATION_VERSION 2, report §21.2.1):
+  // the expectation is derived per the INVOKED path's production contract —
+  // every rescue-family case delivers through the `invoke-prepared rescue`
+  // FOREGROUND chain, which returns the RAW durable job (review.mjs:421 →
+  // the store.finishJob winner, review.mjs:743-761) and NEVER applies
+  // `terminalResultJob` (the only job-view `resumable` producer, applied
+  // solely by the `result` management command), so the complete foreground
+  // contract output is the result line plus its LF. The v1 derivation (the
+  // terminal-MANAGEMENT view from the declared resumability fact —
+  // `exactRescueRenderedExpectation`, retained UNCHANGED for genuine
+  // management/status results) was the demonstrated input defect behind the
+  // O1/O2 comparator mismatches. The derivation inputs are case constants
+  // computed once here, so the default live executor threads the expectation
+  // through THIS validated seam and every real policy run carries the
+  // exact-byte check in its evidence facts; no free-text expected-output flag
+  // exists. Root-family cases keep their own declared result-marker layer and
+  // derive no rescue expectation (explicitly absent, never silently skipped).
+  // A supplied expectation is validated at THIS boundary exactly like the
+  // evidence boundary.
   const exactExpectedTerminal = request.exactExpectedTerminal !== undefined && request.exactExpectedTerminal !== null
     ? request.exactExpectedTerminal
     : spec.family === 'rescue'
-      ? exactRescueRenderedExpectation({ result: PUBLIC_RESULT_SENTINEL, resumable: PUBLIC_RESULT_RESUMABLE })
+      ? exactRescueForegroundRenderedExpectation({ result: PUBLIC_RESULT_SENTINEL })
       : null;
   if (exactExpectedTerminal !== null
     && (!exactExpectedTerminal || typeof exactExpectedTerminal !== 'object'

@@ -18275,20 +18275,23 @@ process.exit(result.status ?? 1);
       assert.equal(Object.hasOwn(unobserved.facts.completion, 'exactTerminalMatch'), false);
     });
 
-    test('the live evidence request DERIVES the exact expectation for every rescue case (codex review round 8)', async () => {
+    test('the live evidence request DERIVES the exact expectation for every rescue case (codex review round 8; v2 per-invoked-path — task-5 instrument correction)', async () => {
       // The derivation is OFFLINE and case-constant: the deterministic
-      // production renderer (renderOutput, via exactRescueRenderedExpectation
-      // — the same independent source these tests use) applied to the case's
-      // DECLARED harmless output profile. The rescue case profile declares
-      // the fixture's public result AND its resumability fact (round-4
-      // review fix: the rendered terminal view carries the Resumability
-      // Indicator, so the expectation is COMPLETE — an unestablished fact
-      // would derive no expectation at all, never a partial framing-less
-      // one). No caller supplies the expectation: the live default executor
-      // gets it through the SAME validated seam, so every real policy run
-      // carries the exact-byte check in its evidence facts.
-      const { PUBLIC_RESULT_RESUMABLE } = await import('../tools/shell-wait-probe/fixture.mjs');
-      const derived = exactRescueRenderedExpectation({ result: SENTINEL, resumable: PUBLIC_RESULT_RESUMABLE });
+      // production formatter applied to the INVOKED path's return shape.
+      // History (round 8 as amended by round 4): the v1 derivation rendered
+      // the terminal-MANAGEMENT view (result + declared Resumability
+      // Indicator) for every rescue result. The task-5 instrument correction
+      // (`RESCUE_EXPECTATION_DERIVATION_VERSION` 2, report §21.2.1)
+      // SUPERSEDES that for the live wiring: every rescue-family case
+      // delivers through the `invoke-prepared rescue` FOREGROUND chain whose
+      // production contract renders the RAW durable job —
+      // `exactRescueForegroundRenderedExpectation` is the corrected v2
+      // source, and the values come from the production contract, never from
+      // captured bytes. No caller supplies the expectation: the live default
+      // executor gets it through the SAME validated seam, so every real
+      // policy run carries the exact-byte check in its evidence facts.
+      const { exactRescueForegroundRenderedExpectation } = await import('../tools/shell-wait-probe/release-qualification.mjs');
+      const derived = exactRescueForegroundRenderedExpectation({ result: SENTINEL });
       for (const label of ['rescue-baseline', 'rescue-long', 'rescue-repeat', 'rescue-noise', 'rescue-interrupt', 'background']) {
         const request = shellWaitEvidenceRequest({ case: label, command: LAUNCHER, rollouts: [], zcodeCalls: [], workerDurationMs: 420_000, pollMs: 3_600_000, workerStillAliveAfterObservation: false });
         assert.deepEqual(request.exactExpectedTerminal, derived, `${label} carries the derived exact-byte expectation`);
@@ -18315,48 +18318,106 @@ process.exit(result.status ?? 1);
       assert.deepEqual(evidence.facts.completion.exactTerminalMatch, { matched: null, reason: 'stdout-stream-attribution-unavailable', releaseQualificationVersion: 1 });
     });
 
-    test('the wired rescue expectation carries the COMPLETE production framing and needs the declared Resumability Indicator (round-4 review fix)', async () => {
-      // Verified production shape (READ-ONLY trace): renderOutput's succeeded
-      // terminal view renders `Resumable: yes/no` whenever the job view
-      // carries the projection-derived indicator (scripts/lib/render.mjs
-      // :34-38, plus the resume hint for a true indicator), and
-      // terminalResultJob (scripts/zcode-companion.mjs:2492-2495) supplies
-      // that indicator from resumableJobIndicator (scripts/lib/job-control.mjs
-      // :1009-1029 — accepted session + same-turn permission snapshot +
-      // binding currency, definite for the live single-turn succeeded run).
-      // An expectation WITHOUT the line is PARTIAL: it false-rejects valid
-      // output as extra-output and false-accepts framing-less output. The
-      // fixture therefore DECLARES the resumability fact, the wiring derives
-      // the COMPLETE expectation from it, and an UNESTABLISHED fact derives
-      // NO expectation at all — never a partial framing-less one.
-      const { PUBLIC_RESULT_RESUMABLE } = await import('../tools/shell-wait-probe/fixture.mjs');
-      assert.equal(PUBLIC_RESULT_RESUMABLE, true, 'the fixture declares the resumability fact of its successful rescue result view');
+    test('the v1 management-view builder is retained UNCHANGED for status/management results; the live wiring derives the v2 foreground contract (task-5 instrument correction, superseding the round-4 framing pin)', async () => {
+      // SUPERSESSION (2026-10-22 task-5 instrument correction,
+      // RESCUE_EXPECTATION_DERIVATION_VERSION 2, report §21.2.1): this test's
+      // round-4 form pinned the terminal-MANAGEMENT framing as THE wired
+      // rescue expectation. The static chain (READ-ONLY) established that the
+      // registered `invoke-prepared rescue` foreground invocation renders the
+      // RAW durable job (terminalResultJob is never applied there), so the
+      // round-4 "complete framing" premise held only for the MANAGEMENT
+      // `result` path — the live wiring now derives the v2 FOREGROUND
+      // expectation (its completeness-for-path is pinned by the v2 test
+      // above). What REMAINS true of the v1 builder — and is pinned here — is
+      // its management semantics: the complete terminal view for a definite
+      // indicator (renderOutput's succeeded terminal view,
+      // scripts/lib/render.mjs:34-38, the indicator supplied by
+      // terminalResultJob, scripts/zcode-companion.mjs:2492-2495, from
+      // resumableJobIndicator, scripts/lib/job-control.mjs:1009-1029) and NO
+      // expectation for an unestablished fact (never a partial framing-less
+      // expectation).
       const { renderOutput } = await import('../scripts/lib/render.mjs');
-      const complete = exactRescueRenderedExpectation({ result: SENTINEL, resumable: PUBLIC_RESULT_RESUMABLE });
-      assert.equal(complete.output, renderOutput({ result: SENTINEL, job: { resumable: PUBLIC_RESULT_RESUMABLE } }),
-        'the complete expectation IS the production render with the indicator line');
-      assert.match(complete.output, new RegExp(`^${SENTINEL}\\nResumable: yes\\n`, 'u'), 'the framing includes the rendered Resumable line');
-      // The live wiring derives the SAME complete expectation from the
-      // declared fact.
-      const request = shellWaitEvidenceRequest({ case: 'rescue-interrupt', command: LAUNCHER, rollouts: [], zcodeCalls: [], workerDurationMs: 420_000, pollMs: 3_600_000, workerStillAliveAfterObservation: false });
-      assert.deepEqual(request.exactExpectedTerminal, complete, 'the wired derivation carries the complete framing');
-      // (a) An attributable capture carrying sentinel + the correct Resumable
-      // line (+ hint) MATCHES — previously rejected as extra-output against
-      // the partial framing-less expectation.
-      const matched = inspectShellWaitEvidence(evidenceInput(complete.output, { exactExpectedTerminal: request.exactExpectedTerminal, observedTerminalStdout: complete.output }));
-      assert.deepEqual(matched.facts.completion.exactTerminalMatch, { matched: true, reason: null, releaseQualificationVersion: 1 });
-      // (b) A capture MISSING the required framing is rejected — never
-      // accepted (previously the partial expectation byte-matched it).
-      const framingless = inspectShellWaitEvidence(evidenceInput(`${SENTINEL}\n`, { exactExpectedTerminal: request.exactExpectedTerminal, observedTerminalStdout: `${SENTINEL}\n` }));
-      assert.equal(framingless.facts.completion.exactTerminalMatch.matched, false, 'framing-less output never satisfies the exact gate');
-      assert.equal(framingless.facts.completion.exactTerminalMatch.reason, 'output-truncated');
-      // (c) An UNESTABLISHED resumability fact derives NO expectation — the
-      // exact equality stays unestablished (no verdict key), never a partial
-      // expectation and never a false rejection.
+      const complete = exactRescueRenderedExpectation({ result: SENTINEL, resumable: true });
+      assert.equal(complete.output, renderOutput({ result: SENTINEL, job: { resumable: true } }),
+        'the v1 management expectation IS the production render with the indicator line');
+      assert.match(complete.output, new RegExp(`^${SENTINEL}\\nResumable: yes\\n`, 'u'), 'the v1 management framing includes the rendered Resumable line');
       assert.equal(exactRescueRenderedExpectation({ result: SENTINEL, resumable: null }), null);
       assert.equal(exactRescueRenderedExpectation({ result: SENTINEL }), null);
-      const unestablished = inspectShellWaitEvidence(evidenceInput(complete.output));
+      // The v2 live wiring no longer derives that management view for rescue
+      // cases: the wired expectation is the foreground contract output.
+      const request = shellWaitEvidenceRequest({ case: 'rescue-interrupt', command: LAUNCHER, rollouts: [], zcodeCalls: [], workerDurationMs: 420_000, pollMs: 3_600_000, workerStillAliveAfterObservation: false });
+      assert.deepEqual(request.exactExpectedTerminal, { output: `${SENTINEL}\n`, exitCode: 0 }, 'the wired derivation is the v2 foreground contract output');
+      // (a) An attributable capture of the exact foreground bytes MATCHES the
+      // wired expectation.
+      const matched = inspectShellWaitEvidence(evidenceInput(request.exactExpectedTerminal.output, { exactExpectedTerminal: request.exactExpectedTerminal, observedTerminalStdout: request.exactExpectedTerminal.output }));
+      assert.deepEqual(matched.facts.completion.exactTerminalMatch, { matched: true, reason: null, releaseQualificationVersion: 1 });
+      // (b) A capture carrying the management framing is the named
+      // extra-output divergence against the foreground contract — never
+      // normalized away, and never (as under v1) the expectation itself.
+      const framingless = inspectShellWaitEvidence(evidenceInput(complete.output, { exactExpectedTerminal: request.exactExpectedTerminal, observedTerminalStdout: complete.output }));
+      assert.equal(framingless.facts.completion.exactTerminalMatch.matched, false, 'management-view bytes never satisfy the foreground exact gate');
+      assert.equal(framingless.facts.completion.exactTerminalMatch.reason, 'extra-output');
+      // (c) No threaded expectation leaves the equality unestablished.
+      const unestablished = inspectShellWaitEvidence(evidenceInput(request.exactExpectedTerminal.output));
       assert.equal(Object.hasOwn(unestablished.facts.completion, 'exactTerminalMatch'), false, 'no threaded expectation leaves the equality unestablished');
+    });
+
+    test('the expectation derivation follows the INVOKED path’s production contract (v2: the invoke-prepared foreground shape renders the raw durable job; task-5 instrument correction)', async () => {
+      // Static chain (READ-ONLY, §21.2.1; the §19.2 offline-versioning
+      // convention): the registered `invoke-prepared rescue` foreground chain
+      // returns the RAW durable job — runDirectInvocation's preparedInvocation
+      // branch (zcode-companion.mjs:822, ending at the runCompanion call
+      // :1019-1020) reaches review.mjs:421
+      // `output = { job: publication.job, result: publication.result }` where
+      // publication.job is the RAW store.finishJob winner (review.mjs:743-761)
+      // — and the foreground chain NEVER applies terminalResultJob
+      // (zcode-companion.mjs:2482-2496, the only producer of the job-view
+      // `resumable` field; its only call sites are :207/:209, the `result`
+      // management command). formatDirectInvocationSuccess → renderOutput
+      // over that shape renders `${result}\n`. The v1 builder
+      // (exactRescueRenderedExpectation with the DECLARED resumable fact)
+      // derived the terminal-MANAGEMENT view for every rescue result — a
+      // demonstrated input defect for the foreground invocation: the O1/O2
+      // comparator mismatches were artifacts of that wrong expectation, not
+      // production divergences. v2 derives the expectation per the INVOKED
+      // path; values come from the production contract, never from captured
+      // bytes.
+      const { RESCUE_EXPECTATION_DERIVATION_VERSION, exactRescueForegroundRenderedExpectation } = await import('../tools/shell-wait-probe/release-qualification.mjs');
+      assert.equal(RESCUE_EXPECTATION_DERIVATION_VERSION, 2, 'the expectation derivation is at the v2 foreground correction');
+      const { formatDirectInvocationSuccess } = await import('../scripts/lib/direct-invocation-result.mjs');
+      const { createHash } = await import('node:crypto');
+      // The RAW durable record's public projection shape (production fields,
+      // NO resumable — terminalResultJob is the only producer and never runs
+      // on this path).
+      const rawJob = { id: 'a'.repeat(64), command: 'rescue', status: 'succeeded', readOnly: false };
+      const foreground = exactRescueForegroundRenderedExpectation({ result: SENTINEL });
+      assert.deepEqual(foreground, { output: `${SENTINEL}\n`, exitCode: 0 },
+        'the foreground expectation is the production render of the raw-job return shape');
+      assert.equal(foreground.output, formatDirectInvocationSuccess({ job: rawJob, result: SENTINEL }).text,
+        'the derived bytes equal the real formatter’s output for the invoked path');
+      assert.equal(
+        createHash('sha256').update(foreground.output, 'utf8').digest('hex'),
+        '61ccf5084f7b6d8dcf00b5081772afc8d85148708e5dda979343cf8b7ed82927',
+        'the statically predicted foreground bytes equal the recorded O1/O2 capture digest (§21.2.1 chain; never read from the capture)');
+      // The live wiring derives the SAME v2 foreground expectation for every
+      // rescue-family case (all six deliver through the invoke-prepared
+      // foreground path), replacing the v1 terminal-management framing.
+      for (const label of ['rescue-baseline', 'rescue-long', 'rescue-repeat', 'rescue-noise', 'rescue-interrupt', 'background']) {
+        const request = shellWaitEvidenceRequest({ case: label, command: LAUNCHER, rollouts: [], zcodeCalls: [], workerDurationMs: 420_000, pollMs: 3_600_000, workerStillAliveAfterObservation: false });
+        assert.deepEqual(request.exactExpectedTerminal, foreground, `${label} carries the v2 foreground expectation`);
+      }
+      // The v2 expectation is COMPLETE for its path (never a partial
+      // expectation): the exact foreground bytes MATCH, and a capture carrying
+      // the terminal-management framing is the named extra-output divergence.
+      const matched = inspectShellWaitEvidence(evidenceInput(foreground.output, { exactExpectedTerminal: foreground, observedTerminalStdout: foreground.output }));
+      assert.deepEqual(matched.facts.completion.exactTerminalMatch, { matched: true, reason: null, releaseQualificationVersion: 1 });
+      const terminalFraming = exactRescueRenderedExpectation({ result: SENTINEL, resumable: true });
+      const extra = inspectShellWaitEvidence(evidenceInput(terminalFraming.output, { exactExpectedTerminal: foreground, observedTerminalStdout: terminalFraming.output }));
+      assert.deepEqual(extra.facts.completion.exactTerminalMatch, { matched: false, reason: 'extra-output', releaseQualificationVersion: 1 },
+        'management-view bytes are extra-output against the foreground contract — never normalized away');
+      // Input validation mirrors the v1 discipline (bounded nonempty result).
+      assert.throws(() => exactRescueForegroundRenderedExpectation({ result: '' }), /rescue foreground expectation/iu);
+      assert.throws(() => exactRescueForegroundRenderedExpectation({ result: 'x'.repeat(4097) }), /rescue foreground expectation/iu);
     });
 
     test('exact stdout equality needs STREAM ATTRIBUTION; merged-only output is unestablished (codex review round 12)', () => {
