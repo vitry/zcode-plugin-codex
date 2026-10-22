@@ -1084,6 +1084,17 @@ function buildCaseRecord(caseInput, fixture, liveFacts, /** @type {'executed' | 
         : {}),
       ...(fixtureRecord.survivalControl ? { survivalControlDeclaration: fixtureRecord.survivalControl } : {}),
     } : {}),
+    // Codex overall review round 2 (finding 2): the capture-enabled fixture's
+    // BOUNDED tap declaration (preload name + SHA-256, maxBytes, the
+    // invocation gate selector, the nonce-binding environment-variable seams
+    // — digests and closed configuration, never the private fixture paths)
+    // persists beside the capture provenance, mirroring the
+    // survivalControlDeclaration pattern: fixture disposal deletes the
+    // preload, and the retained record must keep the separately recorded tap
+    // provenance (the admission projection carries only the captured-output
+    // digest). A capture-less fixture records no declaration key (schema
+    // stability).
+    ...(fixtureRecord.closureStdoutCapture ? { stdoutCaptureDeclaration: fixtureRecord.closureStdoutCapture } : {}),
     held: {
       endedBeforeGate: liveFacts.held?.endedBeforeGate ?? null,
       cleanupLabel: liveFacts.held?.cleanupLabel ?? null,
@@ -1338,7 +1349,20 @@ export async function runHeldHostTurn(input) {
   // source itself (this function scope, so the budget timer below can stamp
   // BEFORE the abort whose forwarded kills follow). Min-semantics keep the
   // earliest initiation when several sites record.
+  // Codex overall review round 3: the normal-completion `finally` abort is
+  // pure WATCHER TEARDOWN — by then the host process has already exited,
+  // nothing is terminated, and the launch closures' shared-signal forwarders
+  // firing on that abort must not stamp a cleanup boundary (a boundary
+  // manufactured there over-rejected naturally completing durable reads in
+  // the pre-boundary fence: the reviewer's 20/20 reproduction). The recorder
+  // is INERT while the teardown flag is set; every REAL initiation keeps its
+  // own source stamp — the budget timer records AT THE ABORT SOURCE before
+  // aborting, the runner deadline watcher records before its abort, and the
+  // controlled-termination cleanup sequence records at its initiation (none
+  // of which runs during teardown).
+  let budgetAbortIsTeardown = false;
   const recordTerminationInitiation = () => {
+    if (budgetAbortIsTeardown) return;
     const initiatedAtMs = Date.now();
     if (cleanup.cleanupBoundaryAtMs === null || initiatedAtMs < cleanup.cleanupBoundaryAtMs) {
       cleanup.cleanupBoundaryAtMs = initiatedAtMs;
@@ -1657,7 +1681,29 @@ export async function runHeldHostTurn(input) {
       } else {
         cleanup.label = 'early-exit';
         timeline.endedAtElapsedMs = Math.round(now() - startMs);
-        answer = { endedBeforeGate: true, budgetExpired, identity: undefined, processAliveWhileHeld: null, result: boundary.value, cleanup, timeline };
+        // Codex overall review round 4: the RESULT-FIRST, watcher-less branch
+        // — exactly the rescue-interrupt shape (no settlement watcher, no
+        // statusDeadlineFlow) — previously went straight to early-exit
+        // cleanup without sampling the durable reader, losing the outstanding
+        // job/guard obligations observation before cleanup changes them. When
+        // a reader is supplied, START it here and JOIN it before the
+        // early-exit cleanup (which runs after this answer, at the wrapper's
+        // ended-before-gate termination cleanup) under the SAME fence
+        // contract as every other join site: buildDurableSettlementLayer
+        // stamps the read's OWN completion instant and applies the
+        // budget/cleanup-boundary fence. The early-exit classification itself
+        // is unchanged; no reader supplied → the named null-supplier contract
+        // (no childSettlement block, exactly like the other gating sites).
+        const durableRead = typeof input.readDurableSnapshot === 'function' ? startDurableSnapshotRead(input) : null;
+        const joined = durableRead !== null
+          ? await buildDurableSettlementLayer(null, durableRead, budgetExpired, budgetController.signal, cleanup)
+          : null;
+        answer = {
+          endedBeforeGate: true, budgetExpired, identity: undefined, processAliveWhileHeld: null, result: boundary.value, cleanup, timeline,
+          ...(joined !== null
+            ? { childSettlement: { observed: false, basis: null, layers: joined.settlementLayers, ...(joined.durableSnapshot === undefined ? {} : { durableSnapshot: joined.durableSnapshot }) } }
+            : {}),
+        };
       }
     } else {
       identity = await captureProcessIdentity();
@@ -1917,6 +1963,10 @@ export async function runHeldHostTurn(input) {
     // keeps reading and sleeping — including after fixture deletion — and the
     // CLI can always terminate after completed cleanup. A thrown failure (for
     // example a rejecting host result) passes through this finally too.
+    // The teardown flag goes up BEFORE the abort so the launch closures'
+    // forwarders firing on it cannot stamp a boundary (see the recorder gate
+    // above): every real initiation has already stamped at its own source.
+    budgetAbortIsTeardown = true;
     budgetController.abort();
     clearInterval(budgetTimer);
   }
@@ -2226,7 +2276,7 @@ export function interruptDurableSnapshotSupplier(fixture, observedIdentity = nul
  * adjudicator.
  * @param {Record<string, any>} record the persisted case record
  * @returns {{ delivery: { delivered: boolean | null, exactTargetMatch: boolean | null, aliasResolved: boolean | null,
- *   terminalBeforeInterruptBasis: string, terminalBeforeInterrupt: boolean | null, deliverySent: boolean | null, previousStatusOnly: boolean, unreadableContinuation: boolean, pendingWindowConfirmed: boolean | null, hostActivityAdmitted: boolean | null }, turnSettled: boolean | null, deliveryToSettlementMs: number | null, companionOutcome: 'ceased' | 'terminal-result' | 'survived-unsettled' | null, durableObligations: 'settled' | 'unresolved' | null, cleanupKill: boolean, survivalControl: Record<string, unknown> | null, terminalWinner: 'succeeded' | 'failed' | 'cancelled' | null, naturalCompletionObserved: boolean, statusObservationTimeoutOnly: boolean }}
+ *   terminalBeforeInterruptBasis: string, terminalBeforeInterrupt: boolean | null, deliverySent: boolean | null, previousStatusOnly: boolean, unreadableContinuation: boolean, pendingWindowConfirmed: boolean | null, hostActivityAdmitted: boolean | null }, turnSettled: boolean | null, deliveryToSettlementMs: number | null, companionOutcome: 'ceased' | 'terminal-result' | 'survived-unsettled' | null, durableObligations: 'settled' | 'unresolved' | null, cleanupKill: boolean, survivalControl: Record<string, unknown> | null, terminalWinner: 'succeeded' | 'failed' | 'cancelled' | null, naturalCompletionObserved: boolean, statusObservationTimeoutOnly: boolean, durableReadPostCleanupBoundary: boolean, durableReadBoundaryBasis: string | null }}
  */
 export function nativeInterruptionGateDInput(record) {
   if (!record || typeof record !== 'object') throw invalidCaseInput('the Gate D join needs the persisted case record.');
@@ -2263,6 +2313,26 @@ export function nativeInterruptionGateDInput(record) {
     && (durableSnapshot && typeof durableSnapshot === 'object'
       ? /** @type {any} */ (durableSnapshot).executorLinkage === 'verified'
       : false);
+  // Codex overall review (2026-10-22, the strict PRE-boundary fence): the
+  // durable read's OWN completion timestamp is compared against the FINAL
+  // recorded cleanup boundary (`interrupt.cleanupBoundaryAtMs`) — a read
+  // completing AT or AFTER the boundary is a CLEANUP-TIME observation (the
+  // §20.5-item-5 semantics the recorded I case's manual overlay applied,
+  // report §21.2.3 — now code-enforced) and grounds NO qualification credit:
+  // the Companion outcome, the terminal winner and the obligations aggregate
+  // stay UNPUBLISHED below, with the established round-19
+  // cleanup-attribution basis riding the join (never silently dropped). The
+  // fence is established only when BOTH endpoints exist; a read with no
+  // comparable boundary keeps the prior behavior.
+  const durableCompletedAtMs = durableSnapshot && typeof durableSnapshot === 'object'
+    ? /** @type {any} */ (durableSnapshot).completedAtMs ?? null
+    : null;
+  const cleanupBoundaryAtMs = typeof interrupt.cleanupBoundaryAtMs === 'number'
+    ? interrupt.cleanupBoundaryAtMs
+    : null;
+  const durableReadAtOrAfterBoundary = typeof durableCompletedAtMs === 'number'
+    && cleanupBoundaryAtMs !== null
+    && durableCompletedAtMs >= cleanupBoundaryAtMs;
   // The Companion outcome layer (codex round 1 — the cancelled-poll path):
   // the completion-shaped watch is frozen out of the interrupt case, so the
   // CompanIONS's REMOTE outcome is observed through the durable job's
@@ -2273,13 +2343,17 @@ export function nativeInterruptionGateDInput(record) {
   // §19.9 limitation: no post-abort poll exists to decode a Companion exit).
   /** @type {'ceased' | 'terminal-result' | 'survived-unsettled' | null} */
   let companionOutcome = null;
+  // The overall-review fence applies to the DURABLE-derived branches only:
+  // an at/after-boundary durable read publishes no Companion evidence (the
+  // independently observed watch/reaping branches keep their own mapper-level
+  // cleanup attribution).
   if (settlementLayers?.remoteTerminal === true) companionOutcome = 'terminal-result';
-  else if (jobStatus !== null && durableEstablished) companionOutcome = 'terminal-result';
+  else if (jobStatus !== null && durableEstablished && !durableReadAtOrAfterBoundary) companionOutcome = 'terminal-result';
   else if (settlementLayers?.localProcessReaping === 'natural-exit-observed') companionOutcome = 'ceased';
   // Codex round 3: the survived-unsettled classification is equally
   // CHILD-attributed (the durable work observed alive-unsettled) — it is
   // published only on a POSITIVELY verified executor linkage.
-  else if (durableAggregate === 'unresolved' && durableEstablished) companionOutcome = 'survived-unsettled';
+  else if (durableAggregate === 'unresolved' && durableEstablished && !durableReadAtOrAfterBoundary) companionOutcome = 'survived-unsettled';
   const completedBeforeCall = typeof interrupt.completedBeforeCallMs === 'number';
   const settledBasis = typeof interrupt.settledBasis === 'string' ? interrupt.settledBasis : null;
   // Codex round 5: the ADMITTED delivery inside a CONFIRMED window is the
@@ -2369,14 +2443,23 @@ export function nativeInterruptionGateDInput(record) {
     companionOutcome,
     // Layer separation (codex round 3): the obligations layer reports its own
   // aggregate per-fact even when the Child-attributed outcomes are refused
-  // for an unverified executor.
-  durableObligations: durableAggregate === 'settled' ? 'settled' : durableAggregate === 'unresolved' ? 'unresolved' : null,
+  // for an unverified executor — or withheld by the overall-review
+  // pre-boundary fence (an at/after-boundary durable read is cleanup-time
+  // evidence, never qualification credit).
+  durableObligations: !durableReadAtOrAfterBoundary && durableAggregate === 'settled' ? 'settled' : !durableReadAtOrAfterBoundary && durableAggregate === 'unresolved' ? 'unresolved' : null,
     // The cleanup boundary is a mapper-level fact (the settled resolution's
     // own timestamp at/after the earliest recorded boundary): the join never
     // re-derives it from coarse kill flags.
     cleanupKill: interrupt.settlementCleanupGenerated === true,
     survivalControl: /** @type {any} */ (record).survivalControl ?? null,
-    terminalWinner: durableEstablished ? jobStatus : null,
+    terminalWinner: durableEstablished && !durableReadAtOrAfterBoundary ? jobStatus : null,
+    // The overall-review fence's NAMED facts (schema-additive): whether the
+    // durable read completed at/after the final recorded cleanup boundary,
+    // and under which established cleanup-attribution basis the
+    // Companion/winner/obligations credit was withheld. Absent comparable
+    // endpoints → false/null (the fence is established only when both exist).
+    durableReadPostCleanupBoundary: durableReadAtOrAfterBoundary,
+    durableReadBoundaryBasis: durableReadAtOrAfterBoundary ? 'budget-cleanup-termination-not-attributed' : null,
     // The natural-completion guard: a natural completion basis whose winner
     // was recorded `cancelled` is the misclassification the oracle blocks.
     naturalCompletionObserved: settledBasis === 'terminal-observation-after-delivery',
@@ -3825,10 +3908,10 @@ async function executeDefaultLiveCaseBody({ input, fixture }) {
  * admission's reason is routed through {@link redactPrivatePaths} (the same
  * treatment as the rollouts failure): a raw fs error message may embed the
  * private capture path, which never persists.
- * @param {{ status: string, reason: string | null, byteCount: number | null, captureSha256: string | null, exitCode: number | null, closureObservationVersion: number | null } | null} admission
+ * @param {{ status: string, reason: string | null, byteCount: number | null, captureSha256: string | null, exitCode: number | null, exitAttribution?: 'verified' | 'unknown', closureObservationVersion: number | null } | null} admission
  * @param {unknown} admissionError
  * @param {ShellWaitFixtureHandle} fixture
- * @returns {{ status: string, reason: string | null, byteCount: number | null, captureSha256: string | null, exitCode: number | null, closureObservationVersion: number | null }}
+ * @returns {{ status: string, reason: string | null, byteCount: number | null, captureSha256: string | null, exitCode: number | null, exitAttribution: 'verified' | 'unknown' | null, closureObservationVersion: number | null }}
  */
 export function stdoutCaptureProvenance(admission, admissionError, fixture) {
   if (admissionError !== null && admissionError !== undefined) {
@@ -3838,11 +3921,14 @@ export function stdoutCaptureProvenance(admission, admissionError, fixture) {
       byteCount: null,
       captureSha256: null,
       exitCode: null,
+      // Codex overall review: the exit-attribution fact rides the persisted
+      // block schema-additively (null when no admission exists to attribute).
+      exitAttribution: null,
       closureObservationVersion: null,
     };
   }
   if (admission === null || admission === undefined) {
-    return { status: 'admission-failed', reason: 'admission-unavailable', byteCount: null, captureSha256: null, exitCode: null, closureObservationVersion: null };
+    return { status: 'admission-failed', reason: 'admission-unavailable', byteCount: null, captureSha256: null, exitCode: null, exitAttribution: null, closureObservationVersion: null };
   }
   return {
     status: admission.status,
@@ -3850,6 +3936,7 @@ export function stdoutCaptureProvenance(admission, admissionError, fixture) {
     byteCount: admission.byteCount,
     captureSha256: admission.captureSha256,
     exitCode: admission.exitCode,
+    exitAttribution: admission.exitAttribution ?? null,
     closureObservationVersion: admission.closureObservationVersion,
   };
 }

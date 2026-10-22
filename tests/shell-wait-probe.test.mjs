@@ -6809,6 +6809,131 @@ process.exit(result.status ?? 1);
       assert.equal(held.processAliveWhileHeld, true);
     });
 
+    test('the normal-completion teardown abort records NO cleanup boundary — only real termination initiations do (overall review fix, round 3)', async () => {
+      // The production forwarder shape (the default executor's launch closure
+      // installs this listener on the shared budget signal: record the
+      // cleanup boundary, then forward the abort to the turn controller).
+      // On a NATURAL completion the host process has ALREADY exited when the
+      // wrapper's `finally` aborts the budget controller — the forwarder then
+      // fires on pure watcher teardown, and stamping there manufactured a
+      // spurious cleanup boundary that the durable-cleanup fence
+      // (nativeInterruptionGateDInput's pre-boundary check) over-rejected on
+      // naturally completing reads (the reviewer's 20/20 reproduction). The
+      // recorder is INERT during teardown; every REAL initiation keeps its
+      // own source stamp.
+      let resolveResult;
+      const held = await runHeldHostTurn({
+        launch: async (budgetContext) => {
+          budgetContext.signal.addEventListener('abort', () => {
+            if (typeof budgetContext?.recordCleanupBoundary === 'function') budgetContext.recordCleanupBoundary();
+          }, { once: true });
+          return { result: new Promise((resolve) => { resolveResult = resolve; }) };
+        },
+        waitForGate: async () => {},
+        captureProcessIdentity: async () => ({ pid: 66131, ppid: 77, nonce: TEST_NONCE, startIdentity: 'start-a' }),
+        readProcessIdentity: async () => ({ pid: 66131, ppid: 77, nonce: TEST_NONCE, startIdentity: 'start-a' }),
+        waitForProcessExit: async () => {},
+        sleep: async () => {},
+        releaseGate: async () => { resolveResult({ code: 0, stdout: 'sentinel', stderr: '' }); },
+        now: (() => { let value = 0; return () => (value += 1000); })(),
+        holdMs: 0,
+        budgetMs: 60_000,
+      });
+      assert.equal(held.budgetExpired, false);
+      assert.equal(held.endedBeforeGate, false);
+      assert.equal(held.cleanup.label, 'observation');
+      assert.equal(held.cleanup.cleanupBoundaryAtMs, null,
+        'the teardown abort must never manufacture a cleanup boundary on a naturally completing turn');
+      // Part B — a REAL termination-initiation boundary (the launch's own
+      // runner-side kill initiation calling the recorder while the turn is
+      // live) is still recorded, in the same wall-clock millisecond region as
+      // any durable-read completion, so the fence can still fire on it.
+      let resolveResultB;
+      const heldB = await runHeldHostTurn({
+        launch: async (budgetContext) => {
+          return { result: new Promise((resolve) => {
+            resolveResultB = () => {
+              budgetContext.recordCleanupBoundary();
+              resolve({ code: 0, stdout: 'sentinel', stderr: '' });
+            };
+          }) };
+        },
+        waitForGate: async () => {},
+        captureProcessIdentity: async () => ({ pid: 66132, ppid: 78, nonce: TEST_NONCE, startIdentity: 'start-a' }),
+        readProcessIdentity: async () => ({ pid: 66132, ppid: 78, nonce: TEST_NONCE, startIdentity: 'start-a' }),
+        waitForProcessExit: async () => {},
+        sleep: async () => {},
+        releaseGate: async () => { resolveResultB(); },
+        now: (() => { let value = 0; return () => (value += 1000); })(),
+        holdMs: 0,
+        budgetMs: 60_000,
+      });
+      assert.equal(heldB.budgetExpired, false);
+      assert.equal(typeof heldB.cleanup.cleanupBoundaryAtMs, 'number',
+        'a real termination-initiation recording during the run is preserved verbatim');
+      // Part C — budget expiry keeps its AT-SOURCE boundary (the timer stamps
+      // before aborting; never weakened by the teardown distinction).
+      const heldC = await runHeldHostTurn({
+        launch: async () => ({ result: new Promise(() => {}), terminate: async () => {} }),
+        waitForGate: async () => new Promise(() => {}),
+        captureProcessIdentity: async () => ({ pid: 66133, ppid: 79, nonce: TEST_NONCE, startIdentity: 'start-a' }),
+        readProcessIdentity: async () => ({ pid: 66133, ppid: 79, nonce: TEST_NONCE, startIdentity: 'start-a' }),
+        holdMs: 5_000,
+        budgetMs: 50,
+      });
+      assert.equal(heldC.budgetExpired, true);
+      assert.equal(typeof heldC.cleanup.cleanupBoundaryAtMs, 'number', 'the budget-expiry boundary is stamped at the abort source');
+    });
+
+    test('the result-first watcher-less branch samples the durable reader before early-exit cleanup (overall review fix, round 4)', async () => {
+      // The dependency-injected reproduction of the finding: a RESULT-FIRST
+      // boundary (Root finished before the gate) on an interrupt-shaped run —
+      // NO settlement watcher, NO statusDeadlineFlow — previously went
+      // directly to early-exit cleanup without invoking the supplied durable
+      // reader (reads: 0, no snapshot), losing the outstanding job/guard
+      // obligations observation before cleanup changes them. The branch now
+      // STARTS the reader (when supplied) and JOINS it before the early-exit
+      // cleanup under the SAME fence contract as every other join site
+      // (buildDurableSettlementLayer stamps the read's own completion instant
+      // and applies the budget/cleanup-boundary fence); the early-exit
+      // classification itself is unchanged, and the no-reader control keeps
+      // the named null-supplier contract (no childSettlement block).
+      let reads = 0;
+      const held = await runHeldHostTurn({
+        launch: async () => ({ result: Promise.resolve({ code: 0, stdout: 'early root finish', stderr: '' }) }),
+        waitForGate: async () => new Promise(() => {}),
+        readDurableSnapshot: async () => {
+          reads += 1;
+          return { aggregate: 'settled', reasons: [], executorLinkage: 'verified', job: { presence: 'found', projection: { status: 'succeeded' } } };
+        },
+        holdMs: 0,
+        budgetMs: 60_000,
+      });
+      assert.equal(held.endedBeforeGate, true, 'the result-first boundary keeps the early-exit classification');
+      assert.equal(held.cleanup.label, 'early-exit', 'the early-exit label is unchanged');
+      assert.equal(reads, 1, 'the supplied durable reader RAN (was 0 before the fix)');
+      assert.ok(held.childSettlement, 'the joined settlement record rides the held turn');
+      assert.equal(held.childSettlement.observed, false);
+      assert.equal(held.childSettlement.basis, null);
+      assert.equal(held.childSettlement.layers.durableObligations, 'settled', 'the settled obligations join through the layer');
+      assert.equal(held.childSettlement.layers.localProcessReaping, null);
+      assert.ok(held.childSettlement.durableSnapshot, 'the typed durable snapshot joins');
+      assert.equal(held.childSettlement.durableSnapshot.aggregate, 'settled');
+      assert.equal(typeof held.childSettlement.durableSnapshot.completedAtMs, 'number',
+        'the read carries its own completion instant (the fence contract input)');
+      // The no-reader control: the named null-supplier contract (no
+      // childSettlement block) and the unchanged early-exit classification.
+      const control = await runHeldHostTurn({
+        launch: async () => ({ result: Promise.resolve({ code: 0, stdout: 'early root finish', stderr: '' }) }),
+        waitForGate: async () => new Promise(() => {}),
+        holdMs: 0,
+        budgetMs: 60_000,
+      });
+      assert.equal(control.endedBeforeGate, true);
+      assert.equal(control.cleanup.label, 'early-exit');
+      assert.equal('childSettlement' in control, false, 'no reader supplied → no settlement block (the null-supplier contract)');
+    });
+
     test('the held turn records its actual timeline on a documented monotonic clock, including a late poll start', async () => {
       // Real short timings on the turn's own monotonic clock (Date.now-based):
       // the launcher is observed at ~60 ms and the poll's first observation at
@@ -10397,6 +10522,68 @@ process.exit(result.status ?? 1);
       assert.ok(!serialized.includes(ALIAS_TARGET), 'no alias text persists');
     });
 
+    test('the persisted case record carries the bounded stdout-tap declaration and survives a reload (overall review fix, round 2)', async (t) => {
+      // Mirror of the survivalControlDeclaration pattern (codex overall
+      // review, round 2): the capture-enabled fixture records a BOUNDED
+      // closureStdoutCapture block (preload name + SHA-256, maxBytes, the
+      // invocation gate selector, the nonce-binding environment-variable
+      // seams — digests and closed configuration, never the private paths).
+      // buildCaseRecord must persist it, because fixture disposal deletes the
+      // preload and the retained record would otherwise lose the separately
+      // recorded tap provenance (the admission projection carries only the
+      // captured-output digest, never the tap digest). A capture-less record
+      // carries NO declaration key (schema stability).
+      const { runShellWaitCase } = await import('../tools/shell-wait-probe/driver.mjs');
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-tapdecl-persist-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const facts = mapFacts(wiringRollouts());
+      const tapDeclaration = {
+        preload: 'closure-stdout-preload.cjs',
+        preloadSha256: 'a'.repeat(64),
+        maxBytes: 65536,
+        gate: {
+          argv: ['invoke-prepared', 'rescue'],
+          declaredEntryRealpathSha256: 'b'.repeat(64),
+          selector: 'fixture-only capture environment present AND realpath(argv[1]) equal to the declared installed launcher realpath AND argv exactly [invoke-prepared, rescue]',
+        },
+        environmentVariables: ['ZCODE_SHELL_WAIT_CAPTURE_DIR', 'ZCODE_SHELL_WAIT_CAPTURE_NONCE', 'ZCODE_SHELL_WAIT_CAPTURE_ENTRY', 'ZCODE_SHELL_WAIT_CAPTURE_MAX_BYTES'],
+      };
+      const persistFixture = {
+        workspace: '/private/tmp/t3-tapdecl-ws', codexHome: '/private/tmp/t3-tapdecl-home',
+        installedRoot: '/private/tmp/t3-tapdecl-installed', env: { HOME: '/private/tmp/t3-tapdecl-home' },
+        record: { variant: 'candidate', appliedArtifacts: [], closureStdoutCapture: tapDeclaration },
+        stdoutCapture: { captureDirectory: '/private/tmp/t3-tapdecl/capture', nonce: 'c'.repeat(64), preloadPath: '/private/tmp/t3-tapdecl/closure-stdout-preload.cjs', entryRealpath: '/private/tmp/t3-tapdecl/launcher.mjs', maxBytes: 65536 },
+        dispose: async () => {},
+      };
+      const persisted = await runShellWaitCase(
+        { case: 'rescue-interrupt', codexBinary: process.execPath, sourceSha: 'a'.repeat(40), workerDurationMs: 420_000, capMs: 3_600_000, pollMs: 3_600_000, budgetMs: 1_200_000, output: root },
+        { createFixture: async () => persistFixture, executeLiveCase: async () => facts },
+      );
+      assert.deepEqual(persisted.stdoutCaptureDeclaration, tapDeclaration,
+        'the bounded tap declaration persists beside the capture provenance');
+      // Reload the RETAINED record from disk (post-disposal): the declaration
+      // survives (the tap digest outlives the deleted preload).
+      const { readdir: listDir, readFile: readBytes } = await import('node:fs/promises');
+      const recordName = (await listDir(root)).find((name) => name.endsWith('.record.json'));
+      const reloaded = JSON.parse(await readBytes(join(root, recordName), 'utf8'));
+      assert.deepEqual(reloaded.stdoutCaptureDeclaration, tapDeclaration);
+      // Schema stability: a capture-less fixture (no closureStdoutCapture
+      // block) produces a record with NO declaration key.
+      const plainRoot = await mkdtemp(join(tmpdir(), 'shell-wait-tapdecl-plain-'));
+      t.after(() => rm(plainRoot, { recursive: true, force: true }));
+      const plainFixture = {
+        workspace: '/private/tmp/t3-tapdecl-plain-ws', codexHome: '/private/tmp/t3-tapdecl-plain-home',
+        installedRoot: '/private/tmp/t3-tapdecl-plain-installed', env: { HOME: '/private/tmp/t3-tapdecl-plain-home' },
+        record: { variant: 'candidate', appliedArtifacts: [] },
+        dispose: async () => {},
+      };
+      const plain = await runShellWaitCase(
+        { case: 'rescue-long', codexBinary: process.execPath, sourceSha: 'a'.repeat(40), workerDurationMs: 420_000, capMs: 3_600_000, pollMs: 3_600_000, budgetMs: 1_200_000, output: plainRoot },
+        { createFixture: async () => plainFixture, executeLiveCase: async () => facts },
+      );
+      assert.equal('stdoutCaptureDeclaration' in plain, false, 'a capture-less record carries no declaration key');
+    });
+
     test('the mapper computes and persists the host-delivery admission and the closed ordering facts', () => {
       const facts = mapFacts(wiringRollouts());
       assert.deepEqual(facts.interrupt.hostDelivery, {
@@ -10493,6 +10680,66 @@ process.exit(result.status ?? 1);
       const anonymousVerdict = evaluateNativeInterruptionSettlement(anonymous);
       assert.equal(anonymousVerdict.qualified, false);
       assert.ok(anonymousVerdict.reasons.includes('delivery-target-unmatched'));
+    });
+
+    test('a durable read completing at/after the cleanup boundary earns NO Gate D qualification credit (overall review fix 1)', () => {
+      // The RECORDED I shape (report §21.2.3): the passive reader completed in
+      // the SAME millisecond the observation cleanup boundary was recorded
+      // (completedAtMs == cleanupBoundaryAtMs == 1792661275722) — the manual
+      // qualification overlay classified the settled aggregate as a
+      // cleanup-time observation. The fence is now CODE-ENFORCED in the join:
+      // on at/after-boundary durable evidence the Companion outcome, the
+      // terminal winner and the obligations aggregate stay UNPUBLISHED with
+      // the established round-19 cleanup-attribution basis riding the join
+      // (never silently dropped), so `qualified` can never be true on that
+      // evidence alone — NO manual overlay involved.
+      const atBoundary = 1792661275722;
+      const atBoundaryInput = nativeInterruptionGateDInput(gateDRecord((record) => {
+        record.interrupt.cleanupBoundaryAtMs = atBoundary;
+        record.child.durableSnapshot.completedAtMs = atBoundary;
+      }));
+      assert.equal(atBoundaryInput.durableReadPostCleanupBoundary, true, 'the named after-boundary fact rides the join');
+      assert.equal(atBoundaryInput.durableReadBoundaryBasis, 'budget-cleanup-termination-not-attributed',
+        'the established cleanup-attribution basis names the withholding');
+      assert.equal(atBoundaryInput.companionOutcome, null, 'cleanup-time Companion evidence is not credited');
+      assert.equal(atBoundaryInput.terminalWinner, null, 'cleanup-time winner evidence is not credited');
+      assert.equal(atBoundaryInput.durableObligations, null, 'cleanup-time obligation evidence is not credited');
+      const atBoundaryVerdict = evaluateNativeInterruptionSettlement(atBoundaryInput);
+      assert.equal(atBoundaryVerdict.qualified, false, 'the oracle can never qualify on at/after-boundary durable evidence alone');
+      // The PRE-boundary control (strictly before the final boundary): the
+      // credit flows exactly as before — Companion outcome, winner and
+      // obligations aggregate all publish.
+      const preBoundaryInput = nativeInterruptionGateDInput(gateDRecord((record) => {
+        record.interrupt.cleanupBoundaryAtMs = SETTLEMENT_MS + 60_000;
+        record.child.durableSnapshot.completedAtMs = SETTLEMENT_MS;
+      }));
+      assert.equal(preBoundaryInput.durableReadPostCleanupBoundary, false);
+      assert.equal(preBoundaryInput.durableReadBoundaryBasis, null);
+      assert.equal(preBoundaryInput.companionOutcome, 'terminal-result');
+      assert.equal(preBoundaryInput.terminalWinner, 'succeeded');
+      assert.equal(preBoundaryInput.durableObligations, 'settled');
+      // A durable read with NO comparable boundary (either timestamp absent)
+      // keeps the prior behavior — the fence is established only when BOTH
+      // endpoints exist.
+      const unboundedInput = nativeInterruptionGateDInput(gateDRecord());
+      assert.equal(unboundedInput.durableReadPostCleanupBoundary, false);
+      assert.equal(unboundedInput.companionOutcome, 'terminal-result');
+      // The NATURAL-COMPLETION shape (overall review round 3): the turn's
+      // teardown abort records NO boundary at all (the recorder is inert
+      // during teardown — runHeldHostTurn's round-3 regression), so the
+      // record carries NO boundary endpoint while the durable read DID
+      // complete: the fence stays unestablishable and the settled
+      // obligations, Companion outcome and terminal winner KEEP their credit.
+      const naturalRecord = gateDRecord((record) => {
+        delete record.interrupt.cleanupBoundaryAtMs;
+        record.child.durableSnapshot.completedAtMs = 1792661275722;
+      });
+      assert.equal('cleanupBoundaryAtMs' in naturalRecord.interrupt, false, 'premise: no boundary endpoint rides the record');
+      const naturalInput = nativeInterruptionGateDInput(naturalRecord);
+      assert.equal(naturalInput.durableReadPostCleanupBoundary, false, 'the fence is unestablishable without the boundary endpoint');
+      assert.equal(naturalInput.companionOutcome, 'terminal-result', 'credit KEEPS on a naturally completing turn');
+      assert.equal(naturalInput.terminalWinner, 'succeeded');
+      assert.equal(naturalInput.durableObligations, 'settled');
     });
 
     test('the plan pipeline negatives stay named through the join (adjudication inputs, never silently dropped)', () => {
@@ -22062,7 +22309,7 @@ describe('cleanup-boundary attribution for exit-code settlements (round-9 review
       const outcome = await spawnBounded(process.execPath, [scope.probe, 'invoke-prepared', 'rescue'], scope.env);
       assert.equal(outcome.code, 0);
       assert.equal(outcome.stdout, 'result\nextra\n', 'the production delivery keeps both writes');
-      const admission = await admitStdoutCapture({ captureDirectory: scope.captureDirectory, nonce: scope.nonce });
+      const admission = await admitStdoutCapture({ captureDirectory: scope.captureDirectory, nonce: scope.nonce, expectedExitCode: outcome.code });
       assert.equal(admission.status, 'complete', `the exit-listener bytes must be inside the admitted capture (actual ${admission.status}: ${admission.reason})`);
       assert.equal(admission.stdout, 'result\nextra\n', 'the admitted capture is byte-exact over ALL writes incl. exit handlers');
       assert.equal(admission.byteCount, Buffer.byteLength('result\nextra\n', 'utf8'));
@@ -22208,6 +22455,87 @@ describe('cleanup-boundary attribution for exit-code settlements (round-9 review
       assert.equal(admission.stdout, null, 'a mismatched capture never yields stdout');
       const linkage = closureExactLinkage(admission, { output: 'result\n', exitCode: 7 });
       assert.equal(linkage.matched, null, 'the oracle stays unestablished on the mismatch');
+    });
+
+    test('an admission without a supplied expected exit carries UNKNOWN exit attribution — the linkage can never match on it (overall review fix 2)', async (t) => {
+      // The STALE-META scenario: the capture meta reports exit 0 while the
+      // process actually exits 7 (the round-9 probe). An admission admitted
+      // WITHOUT an expectedExitCode cannot detect the staleness, so its meta
+      // exit code is UNCHECKED — the linkage's exit comparison stays
+      // unestablished (matched can never be true on an unknown/unchecked
+      // exit), with the named reason. The verified control (the SAME capture
+      // admitted against the supplied-and-matched expected exit, and a
+      // truly-exiting probe) keeps full attribution and matches.
+      const scope = await captureScope(t, { probe: { name: 'stale-code-probe.mjs', body: [
+        'process.stdout.write("result\\n");',
+        'process.on("beforeExit", function () { process.once("exit", function () { process.exitCode = 7; }); });',
+      ].join('\n') } });
+      const outcome = await spawnBounded(process.execPath, [scope.probe, 'invoke-prepared', 'rescue'], scope.env);
+      assert.equal(outcome.code, 7, `the process actually exits 7 (actual ${outcome.code})`);
+      const unchecked = await admitStdoutCapture({ captureDirectory: scope.captureDirectory, nonce: scope.nonce });
+      assert.equal(unchecked.status, 'complete', `the unchecked admission stays complete (actual ${unchecked.status}: ${unchecked.reason})`);
+      assert.equal(unchecked.exitCode, 0, 'the stale meta reports its own exit 0');
+      assert.equal(unchecked.exitAttribution, 'unknown', 'an admission without a supplied expected exit carries UNKNOWN attribution');
+      const uncheckedLinkage = closureExactLinkage(unchecked, { output: 'result\n', exitCode: 0 });
+      assert.equal(uncheckedLinkage.matched, null, 'matched can never be true on an unknown/unchecked exit');
+      assert.equal(uncheckedLinkage.reason, 'exit-attribution-unknown');
+      // The verified control: the SAME capture admitted against the
+      // supplied-and-matched expected exit carries VERIFIED attribution.
+      const verified = await admitStdoutCapture({ captureDirectory: scope.captureDirectory, nonce: scope.nonce, expectedExitCode: 7 });
+      assert.equal(verified.status, 'incomplete', 'the parent-observed 7 rejects the stale meta 0 (the round-9 mismatch, unchanged)');
+      const trulyZeroScope = await captureScope(t, { probe: { name: 'zero-exit-probe.mjs', body: [
+        'process.stdout.write("result\\n");',
+      ].join('\n') } });
+      const zeroOutcome = await spawnBounded(process.execPath, [trulyZeroScope.probe, 'invoke-prepared', 'rescue'], trulyZeroScope.env);
+      assert.equal(zeroOutcome.code, 0);
+      const verifiedZero = await admitStdoutCapture({ captureDirectory: trulyZeroScope.captureDirectory, nonce: trulyZeroScope.nonce, expectedExitCode: 0 });
+      assert.equal(verifiedZero.status, 'complete');
+      assert.equal(verifiedZero.exitAttribution, 'verified', 'a supplied-and-matched expected exit verifies the attribution');
+      const verifiedLinkage = closureExactLinkage(verifiedZero, { output: 'result\n', exitCode: 0 });
+      assert.equal(verifiedLinkage.matched, true, 'the verified-exit control still matches');
+    });
+
+    test('a captureError outside the preload’s closed vocabulary is classified — private text never persists (overall review fix, round 2)', async (t) => {
+      // The preload writes EXACTLY FOUR named captureError strings, each
+      // suffixing the fs error code or 'unknown' (the preload source's four
+      // failure sites: capture-file-unavailable / capture-encode-failed /
+      // capture-hash-failed / capture-write-failed). An admission of a meta
+      // carrying an in-vocabulary captureError keeps that string VERBATIM as
+      // its reason; a meta carrying ANY other value (e.g. a tampered meta
+      // embedding a private-looking path) is the FIXED classification
+      // 'capture-error-unclassified' — the raw text never reaches the
+      // admission reason and never persists through the provenance block
+      // (stdoutCaptureProvenance passes admission reasons through verbatim:
+      // exactly the leak this closes).
+      const { writeFile } = await import('node:fs/promises');
+      const { stdoutCaptureProvenance } = await import('../tools/shell-wait-probe/driver.mjs');
+      const scope = await captureScope(t, { probe: { name: 'vocab-probe.mjs', body: 'process.stdout.write("result\\n");' } });
+      const outcome = await spawnBounded(process.execPath, [scope.probe, 'invoke-prepared', 'rescue'], scope.env);
+      assert.equal(outcome.code, 0);
+      const metaPath = join(scope.captureDirectory, `${scope.nonce}.meta.json`);
+      const meta = JSON.parse(await readFile(metaPath, 'utf8'));
+      assert.equal(meta.captureError, undefined, 'premise: the clean meta carries no captureError');
+      // (a) An in-vocabulary member passes through VERBATIM.
+      await writeFile(metaPath, `${JSON.stringify({ ...meta, captureError: 'capture-write-failed:EACCES' })}\n`, { mode: 0o600 });
+      const inVocab = await admitStdoutCapture({ captureDirectory: scope.captureDirectory, nonce: scope.nonce });
+      assert.equal(inVocab.status, 'incomplete');
+      assert.equal(inVocab.reason, 'capture-write-failed:EACCES');
+      // (b) A tampered private-looking captureError is the FIXED
+      // classification; the canary never persists.
+      const canary = '/private/tmp/secret-fixture/stdout-capture/abc.meta.json';
+      await writeFile(metaPath, `${JSON.stringify({ ...meta, captureError: canary })}\n`, { mode: 0o600 });
+      const tampered = await admitStdoutCapture({ captureDirectory: scope.captureDirectory, nonce: scope.nonce });
+      assert.equal(tampered.status, 'incomplete');
+      assert.equal(tampered.reason, 'capture-error-unclassified', 'the out-of-vocabulary value is the fixed classification, never the raw text');
+      const fixture = { codexHome: '/private/tmp/secret-fixture/home', workspace: '/private/tmp/secret-fixture/ws', installedRoot: '/private/tmp/secret-fixture/installed', env: { HOME: '/private/tmp/secret-fixture/home' } };
+      const block = stdoutCaptureProvenance(tampered, null, fixture);
+      assert.equal(block.reason, 'capture-error-unclassified');
+      assert.ok(!JSON.stringify(block).includes('secret-fixture'), 'the tampered private text never persists in the provenance block');
+      // (c) A non-string captureError is equally the fixed classification.
+      await writeFile(metaPath, `${JSON.stringify({ ...meta, captureError: { embedded: canary } })}\n`, { mode: 0o600 });
+      const nonString = await admitStdoutCapture({ captureDirectory: scope.captureDirectory, nonce: scope.nonce });
+      assert.equal(nonString.status, 'incomplete');
+      assert.equal(nonString.reason, 'capture-error-unclassified');
     });
 
     // -------------------------------------------------------------------------
@@ -22410,7 +22738,7 @@ describe('cleanup-boundary attribution for exit-code settlements (round-9 review
       const exactOutcome = await spawnBounded(process.execPath, [exactScope.probe, 'invoke-prepared', 'rescue'], exactScope.env);
       assert.equal(exactOutcome.code, 0);
       assert.equal(exactOutcome.stdout, 'a'.repeat(65536), 'all 65536 bytes delivered');
-      const exactAdmission = await admitStdoutCapture({ captureDirectory: exactScope.captureDirectory, nonce: exactScope.nonce });
+      const exactAdmission = await admitStdoutCapture({ captureDirectory: exactScope.captureDirectory, nonce: exactScope.nonce, expectedExitCode: 0 });
       assert.equal(exactAdmission.status, 'complete', `an exactly-bound capture is NOT truncated (actual ${exactAdmission.status}: ${exactAdmission.reason})`);
       assert.equal(exactAdmission.byteCount, BOUNDARY);
       const exactLinkage = closureExactLinkage(exactAdmission, { output: 'a'.repeat(BOUNDARY), exitCode: 0 });
@@ -22622,7 +22950,7 @@ describe('cleanup-boundary attribution for exit-code settlements (round-9 review
       const outcome = await spawnBounded(process.execPath, [scope.probe, 'invoke-prepared', 'rescue'], scope.env);
       assert.equal(outcome.code, 0);
       assert.equal(outcome.stdout, '');
-      const admission = await admitStdoutCapture({ captureDirectory: scope.captureDirectory, nonce: scope.nonce });
+      const admission = await admitStdoutCapture({ captureDirectory: scope.captureDirectory, nonce: scope.nonce, expectedExitCode: outcome.code });
       assert.equal(admission.status, 'complete', 'an empty capture is a VALID attributable capture');
       assert.equal(admission.byteCount, 0);
       assert.equal(admission.stdout, '');
@@ -22725,7 +23053,7 @@ describe('cleanup-boundary attribution for exit-code settlements (round-9 review
       const outcome = await spawnBounded(process.execPath, [scope.probe, 'invoke-prepared', 'rescue'], scope.env);
       assert.equal(outcome.code, 0);
       assert.ok(outcome.stderr.includes(PUBLIC_RESULT_SENTINEL), 'the counterfeit sentinel was delivered on stderr');
-      const admission = await admitStdoutCapture({ captureDirectory: scope.captureDirectory, nonce: scope.nonce });
+      const admission = await admitStdoutCapture({ captureDirectory: scope.captureDirectory, nonce: scope.nonce, expectedExitCode: outcome.code });
       assert.equal(admission.status, 'complete');
       assert.equal(admission.stdout, 'different stdout\n', 'the capture holds stdout only');
       assert.ok(!admission.stdout.includes(PUBLIC_RESULT_SENTINEL));
@@ -22775,7 +23103,7 @@ describe('cleanup-boundary attribution for exit-code settlements (round-9 review
       ].join('\n') } });
       const outcome = await spawnBounded(process.execPath, [scope.probe, 'invoke-prepared', 'rescue'], scope.env);
       assert.equal(outcome.code, 0);
-      const admission = await admitStdoutCapture({ captureDirectory: scope.captureDirectory, nonce: scope.nonce });
+      const admission = await admitStdoutCapture({ captureDirectory: scope.captureDirectory, nonce: scope.nonce, expectedExitCode: outcome.code });
       assert.equal(admission.status, 'complete');
       const linkage = closureExactLinkage(admission, { output: 'expected\n', exitCode: 0 });
       assert.equal(linkage.matched, false, 'the three BOM bytes are extra content: the comparison can never strip them');
@@ -22810,7 +23138,7 @@ describe('cleanup-boundary attribution for exit-code settlements (round-9 review
       ].join('\n') } });
       const success = await spawnBounded(process.execPath, [successScope.probe, 'invoke-prepared', 'rescue'], successScope.env);
       assert.equal(success.code, 0);
-      const complete = await admitStdoutCapture({ captureDirectory: successScope.captureDirectory, nonce: successScope.nonce });
+      const complete = await admitStdoutCapture({ captureDirectory: successScope.captureDirectory, nonce: successScope.nonce, expectedExitCode: success.code });
       assert.equal(complete.status, 'complete');
       const matched = closureExactLinkage(complete, expectation);
       assert.equal(matched.matched, true, 'the pipeline-established capture equals the independently derived production framing');
@@ -22822,7 +23150,7 @@ describe('cleanup-boundary attribution for exit-code settlements (round-9 review
         `process.stdout.write(text + 'extra');`,
       ].join('\n') } });
       await spawnBounded(process.execPath, [extraScope.probe, 'invoke-prepared', 'rescue'], extraScope.env);
-      const extraAdmission = await admitStdoutCapture({ captureDirectory: extraScope.captureDirectory, nonce: extraScope.nonce });
+      const extraAdmission = await admitStdoutCapture({ captureDirectory: extraScope.captureDirectory, nonce: extraScope.nonce, expectedExitCode: 0 });
       const extraLinkage = closureExactLinkage(extraAdmission, expectation);
       assert.equal(extraLinkage.matched, false, 'extra trailing stdout fails the exact gate');
       assert.equal(extraLinkage.reason, 'extra-output');
@@ -23026,12 +23354,14 @@ describe('cleanup-boundary attribution for exit-code settlements (round-9 review
       assert.match(String(block.reason), /<redacted>/u, 'the reason keeps the failure shape with paths redacted');
       assert.equal(block.byteCount, null);
       assert.equal(block.closureObservationVersion, null);
-      // A successful admission passes its bounded fields through unchanged.
+      assert.equal(block.exitAttribution, null, 'no admission exists to attribute (schema-additive)');
+      // A successful admission passes its bounded fields through unchanged
+      // (the overall-review exit-attribution fact rides schema-additively).
       const complete = stdoutCaptureProvenance(
-        { status: 'complete', reason: null, byteCount: 3, captureSha256: 'a'.repeat(64), exitCode: 0, closureObservationVersion: 1 },
+        { status: 'complete', reason: null, byteCount: 3, captureSha256: 'a'.repeat(64), exitCode: 0, exitAttribution: 'verified', closureObservationVersion: 1 },
         null, fixture,
       );
-      assert.deepEqual(complete, { status: 'complete', reason: null, byteCount: 3, captureSha256: 'a'.repeat(64), exitCode: 0, closureObservationVersion: 1 });
+      assert.deepEqual(complete, { status: 'complete', reason: null, byteCount: 3, captureSha256: 'a'.repeat(64), exitCode: 0, exitAttribution: 'verified', closureObservationVersion: 1 });
     });
   });
 

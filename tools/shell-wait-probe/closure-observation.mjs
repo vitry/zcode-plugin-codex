@@ -397,10 +397,19 @@ export function captureEnvironment(input) {
  *   captureSha256: string | null,
  *   verifiedDigest: string | null,
  *   exitCode: number | null,
+ *   exitAttribution?: 'verified' | 'unknown',
  *   captureComplete: boolean | null,
  *   truncated: boolean | null,
  * }} StdoutCaptureAdmission
  */
+
+// The preload's CLOSED captureError vocabulary (codex overall review round 2,
+// finding 1): the exact named strings the preload can write — its four
+// failure sites each suffixing the fs error code (an fs `error.code` string)
+// or the literal 'unknown'. Anything else is out of vocabulary.
+const CAPTURE_ERROR_VOCABULARY = /^capture-(?:file-unavailable|encode-failed|hash-failed|write-failed):([A-Za-z0-9_]{1,64}|unknown)$/u;
+/** The fixed classification for an out-of-vocabulary captureError (its raw text is never persisted). */
+const CAPTURE_ERROR_UNCLASSIFIED = 'capture-error-unclassified';
 
 /** @param {StdoutCaptureAdmission['status']} status @param {string | null} reason @returns {StdoutCaptureAdmission} */
 function admissionVerdict(status, reason) {
@@ -448,8 +457,22 @@ function validateCaptureMeta(meta) {
     || TERMINAL_ARGV_SELECTOR.some((segment, index) => /** @type {unknown[]} */ (meta.argv)[index] !== segment)) return { ok: false, reason: 'capture-meta-shape-invalid' };
   if (typeof meta.entryRealpath !== 'string' || meta.entryRealpath.length === 0 || !isAbsolute(meta.entryRealpath)) return { ok: false, reason: 'capture-meta-shape-invalid' };
   if (!Number.isSafeInteger(meta.durationMs) || /** @type {number} */ (meta.durationMs) < 0) return { ok: false, reason: 'capture-meta-shape-invalid' };
-  if (meta.captureError !== undefined && typeof meta.captureError !== 'string') return { ok: false, reason: 'capture-meta-shape-invalid' };
   if (/** @type {number} */ (meta.byteCount) > /** @type {number} */ (meta.maxBytes)) return { ok: false, reason: 'capture-meta-shape-invalid' };
+  // Codex overall review round 2 (finding 1): `captureError` is validated
+  // against the preload's CLOSED vocabulary — the EXACT four named strings
+  // the preload can write (its four failure sites, each suffixing the fs
+  // error code or the literal 'unknown'). An in-vocabulary value passes
+  // through VERBATIM (it is the named observer failure); any other value —
+  // e.g. a tampered meta embedding private-looking text — is replaced by the
+  // FIXED classification `capture-error-unclassified`: the raw text never
+  // reaches the admission reason and never persists through the provenance
+  // block (which passes admission reasons through un-redacted). The withheld
+  // value's text is not kept in any form.
+  if (meta.captureError !== undefined) {
+    if (typeof meta.captureError !== 'string' || !CAPTURE_ERROR_VOCABULARY.test(meta.captureError)) {
+      return { ok: true, meta: { .../** @type {any} */ (meta), captureError: CAPTURE_ERROR_UNCLASSIFIED } };
+    }
+  }
   return { ok: true, meta: /** @type {any} */ (meta) };
 }
 
@@ -628,6 +651,14 @@ export async function admitStdoutCapture(input) {
     captureSha256: record.captureSha256,
     verifiedDigest,
     exitCode: record.exitCode,
+    // Codex overall review (2026-10-22): the meta's self-reported exit code
+    // is the OBSERVED exit ONLY when the admission verified it against a
+    // SUPPLIED expectedExitCode (the live evidence path supplies the
+    // handle-linked launcher exit — codex round 10). An admission admitted
+    // WITHOUT an expected exit carries exit attribution UNKNOWN: its meta
+    // exit is unchecked (the stale-meta scenario — metadata 0, actual exit
+    // 7), and the linkage's exit comparison stays unestablished on it.
+    exitAttribution: expectedExitCode !== undefined ? 'verified' : 'unknown',
     captureComplete: true,
     truncated: false,
   };
@@ -652,6 +683,15 @@ export function closureExactLinkage(admission, expectation) {
   }
   if (expectation === null || expectation === undefined) {
     return { matched: null, reason: 'expectation-unestablished', closureObservationVersion: CLOSURE_OBSERVATION_VERSION };
+  }
+  // Codex overall review (2026-10-22): an admitted capture's meta exit code
+  // is the OBSERVED exit ONLY when it was admitted against a SUPPLIED and
+  // matched expectedExitCode (`exitAttribution: 'verified'`); an admission
+  // without one carries exit attribution UNKNOWN — the linkage's exit
+  // comparison is unestablished (matched can never be true on an
+  // unknown/unchecked exit), with the named reason.
+  if (admission.status === 'complete' && admission.exitAttribution !== 'verified') {
+    return { matched: null, reason: 'exit-attribution-unknown', closureObservationVersion: CLOSURE_OBSERVATION_VERSION };
   }
   if (!isPlainObject(expectation) || typeof expectation.output !== 'string' || expectation.output.length === 0
     || !Number.isSafeInteger(expectation.exitCode) || /** @type {number} */ (expectation.exitCode) < 0) {

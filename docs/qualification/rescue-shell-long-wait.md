@@ -10830,6 +10830,9 @@ Root join and diagnostic/model/source settings — recorded, never silently alte
   > digest all three Task-5 launches verifiably carried at case start AND record time
   > (`sourcesChangedDuringRun: false` on every record — the correction is POST-run, never a mid-run
   > change), exactly like the prior version-bump supersessions kept above.
+  > **Superseded 2026-10-22 (the overall-review fix commits):** the live re-pin value is now
+  > **`4ba3d833996a6fe98f284de77f04d9e3e18b02d315341a5a5d2df579791b422e`** — the full
+  > supersession chain is recorded in §22.1's dated annotation.
 
 ### 20.4 O1/O2 Gate B corroboration preconditions and the cross-pin applicability statement
 
@@ -11514,6 +11517,15 @@ contract-conforming bytes, both `matched: true` at v2.**
    supports them); Gate D therefore stands **delivery-unestablished AND
    obligations/Companion-unestablished-for-qualification** — a fresh pre-boundary observation
    (not a replay) is the only thing that can establish either layer.
+   > **Dated annotation (2026-10-22, the overall-review fix):** this fence is now CODE-ENFORCED —
+   > `nativeInterruptionGateDInput` (driver.mjs) compares the durable read's `completedAtMs`
+   > against the FINAL `interrupt.cleanupBoundaryAtMs` and withholds the
+   > Companion/winner/obligations credit on at/after-boundary durable evidence by itself (the
+   > additive named facts `durableReadPostCleanupBoundary`/`durableReadBoundaryBasis`, the
+   > established round-19 basis `budget-cleanup-termination-not-attributed`; the regression test
+   > replays THIS record's equal-timestamp shape to `qualified: false` without any manual
+   > overlay). The overlay above stands as the recorded history of the manual adjudication; the
+   > code now enforces the same semantics mechanically (§22's overall-review-fix record).
 9. **Category + cleanup.** (a) NOT PROVEN, with named reasons: the installed host-item retention,
    the exact delivery identity/pending window, the turn/cell settlement latency, the survival
    control/no-collateral layer, the I-case stdout half, AND (fence rule, §20.5 item 5) the
@@ -11647,6 +11659,15 @@ used anywhere; no preflight rejection was ever recorded (all three launches pass
 
 ### 21.5 Gates (on the final amended Task-5 bytes; every result verbatim)
 
+> **Dated counts annotation (2026-10-22, the overall-review fix — updated in place at the
+> round-4 amend):** the counts in this section's table describe the Task-5 amended bytes (863
+> tests) and stand as history; the overall-review fix commit added FIVE net-new regression tests
+> across its four rounds (round 1: the pre-boundary fence and the exit-attribution gate; round
+> 2: the closed captureError vocabulary and the persisted tap declaration; round 3: the
+> teardown-inert cleanup-boundary recorder; round 4: the result-first durable-reader sampling),
+> so the research suite on the AMENDED fix-commit bytes is **869 / 68 / 869 / 0 / 0** (§22's
+> overall-review-fix record carries the full post-fix battery, gates 1–10 verbatim).
+
 **History (the pre-correction state):** Task 5's first three live launches and the first two
 review-fix amendments changed ONLY documentation bytes, so the research suite was skipped with
 the recorded reason "live runs must not change code; nothing did" (§20.9's 862-test battery was
@@ -11713,15 +11734,267 @@ SHA-256 `8813367285524ac798dd96d1b071aea30d58708c7226fd236cd275cf1cfdee31`; Code
 `status --short` EMPTY — both identical to the §19.1/§20.7/§21.1 records. No source/binary mapping
 is implied, as always.
 
+**Overall-review fix record (2026-10-22, the branch-level codex review `review-mvjiz3bs-m9ukni`,
+base `0b522b7`; TWO P2 code findings — TDD regression-first, zero model turns, production
+read-only, prohibited diff EMPTY).**
+
+- **Finding 1 — the durable evidence is now fenced against the FINAL cleanup boundary in the
+  offline join.** Finding: when a durable read finishes and cleanup starts in the same
+  millisecond, the join could retain cleanup-time Companion/winner/obligations credit (the
+  recorded I case exhibits `completedAtMs == cleanupBoundaryAtMs == 1792661275722` and needed the
+  manual §21.2.3 overlay). TEST FIRST:
+  `a durable read completing at/after the cleanup boundary earns NO Gate D qualification credit
+  (overall review fix 1)` — RED: **1 test / 0 pass / 1 fail**, first assertion `the named
+  after-boundary fact rides the join` actual `undefined` vs `true` (the pre-fix join published
+  `companionOutcome: 'terminal-result'`/`terminalWinner: 'succeeded'`/`durableObligations:
+  'settled'` and the oracle returned `qualified: true` on that evidence). FIX:
+  `tools/shell-wait-probe/driver.mjs` `nativeInterruptionGateDInput` — the strict pre-boundary
+  fence compares the durable read's `completedAtMs` against the FINAL
+  `interrupt.cleanupBoundaryAtMs`; completion at/after the boundary withholds the Companion/
+  winner/obligations credit (the established round-19 basis
+  `budget-cleanup-termination-not-attributed` rides the join as the ADDITIVE named facts
+  `durableReadPostCleanupBoundary`/`durableReadBoundaryBasis` — never silently dropped; the
+  fence is established only when BOTH endpoints exist; the independently observed watch/reaping
+  Companion branches keep their own mapper-level cleanup attribution). GREEN: the recorded
+  I-record shape (equal timestamps) yields `qualified: false` WITHOUT any manual overlay; the
+  pre-boundary control (`completedAtMs` strictly before the boundary) keeps full credit; the
+  no-comparable-endpoint control keeps the prior behavior.
+- **Finding 2 — an admitted capture's meta exit code is the OBSERVED exit only when VERIFIED.**
+  Finding: `admitStdoutCapture` called without `expectedExitCode` returns a complete capture with
+  an UNCHECKED meta exit code, and `closureExactLinkage` treated that value as the observed
+  process exit — the stale-meta scenario (metadata 0, actual exit 7) could `matched: true`
+  against an exit-0 expectation. TEST FIRST:
+  `an admission without a supplied expected exit carries UNKNOWN exit attribution — the linkage
+  can never match on it (overall review fix 2)` — RED: **1 test / 0 pass / 1 fail**, first
+  assertion `an admission without a supplied expected exit carries UNKNOWN attribution` actual
+  `undefined` vs `'unknown'` (the pre-fix linkage returned `matched: true` on the unchecked
+  exit-0 meta). FIX: `tools/shell-wait-probe/closure-observation.mjs` — `admitStdoutCapture`'s
+  complete admission gains the additive `exitAttribution: 'verified' | 'unknown'` ('verified'
+  only when a supplied `expectedExitCode` was present and matched — the live evidence path
+  already supplies the handle-linked launcher exit, codex round 10);
+  `closureExactLinkage` refuses a complete-but-unverified admission — `matched: null`, the named
+  reason **`exit-attribution-unknown`** (matched can never be true on an unknown/unchecked
+  exit; unknown exit attribution is PRESERVED, never guessed);
+  `tools/shell-wait-probe/driver.mjs` `stdoutCaptureProvenance` persists the fact
+  schema-additively (null when no admission exists). GREEN: the stale-meta admission is
+  `matched: null` / `exit-attribution-unknown`; the verified-exit control (supplied-and-matched
+  expected exit on a truly-zero-exit probe) still `matched: true`. Eight aligned tests updated:
+  six capture-seam tests, the pipeline extra-trailing test and the provenance redaction pin now
+  admit with the supplied expected exit exactly as the live evidence path does (no assertion
+  weakened — the byte comparisons are unchanged; only the exit attribution is established the
+  production way).
+- **Fix-commit attribution adjudication (why a dedicated commit instead of the skill's per-task
+  fixup rebase):** every evidence record §19–§22 pins the EXACT task-commit SHAs (e.g. §22.1's
+  lineage and §21's record-digest bindings cite `250222d`/`7532207`/`2a7c2b1`/`297fdd3`);
+  rewriting any task commit would falsify the pinned ledger. Per the skill's sanctioned bend,
+  both fixes land in ONE dedicated overall-review fix commit on top of the Task-6 commit —
+  research instrument bytes only (`driver.mjs`, `closure-observation.mjs`,
+  `tests/shell-wait-probe.test.mjs`), production files untouched (the prohibited diff stays
+  EMPTY below), the plan §3 file-ownership rules intact (the fixes are offline
+  join/admission-verification hardening in the existing modules — no new interpreter, no
+  lifecycle state machine).
+- **Post-fix digests (SHA-256, the fix-commit tree):** `driver.mjs` =
+  `3cf944997cad6694d1b24c48a1f5792c4007ec6fee96e68ac402b1cfab9454e9`;
+  `closure-observation.mjs` =
+  `7cfe54cb387ba909bf7b72417f9e9c5296d591f04d18d108863a9276052068ad`;
+  `tests/shell-wait-probe.test.mjs` =
+  `e9dc161020d48ec6814250b07cee30d3b78665aa4e3a2e04efcf3bc5d8c02218` (`release-qualification.mjs`,
+  `fixture.mjs`, `evidence.mjs`, `shape-diagnostic.mjs`, `wait-comparison.mjs`,
+  `tests/test-selection.test.mjs` byte-identical to the §22.1 values). **The executing observer
+  digest moved again** (`zcode-shell-wait-observer-v5`, same NUL-separated construction):
+  §22.1's post-Task-5 `30d197361244d04836ca7f945e6c94ff2e67e812c59cc44fda12b4a97959d2cf`
+  future-repin value is SUPERSEDED — the digest any FUTURE registered run re-pins against is now
+  **`8b95cea102d733a9ad33f11b018e70fd9f971ae8ab52ed56df3bd09baeb6df40`** (`30d19736…` and
+  `8db29d9c…` stand as the launch-era history, §20.3/§20.7/§21.1's dated annotations).
+- **Post-fix battery (gates 1–10 re-run verbatim on the fix-commit tree; every result verbatim):**
+  research **ℹ tests 865 / ℹ suites 68 / ℹ pass 865 / ℹ fail 0 / ℹ skipped 0** (863 + the 2
+  net-new overall-review tests); selection **6/6, fail 0**; prep/binding/route **417/417/0**;
+  lifecycle/reconciliation/relay **126/126/0**; job-control/mcp **213/213/0**; lint **clean,
+  exit 0**; typecheck **clean, exit 0** (one interim TS2353 on the un-annotated admission
+  typedef, fixed by the additive `exitAttribution` field); line-endings *"LF line endings
+  verified in 542 tracked files."*, exit 0; `git diff --check` clean; prohibited diff **EMPTY**,
+  exit 0. `npm test` (gate 11) is NOT re-run for this fix commit per the task procedure — the
+  §22.2 verification-copy gate of record stays pinned to the `297fdd3` verified bytes, and the
+  battery refresh (including gate 11 on the final bytes) belongs to the CLOSING amend.
+
+**Round 2 (the branch-level re-review `review-mvjkbhvy-d9rsr8`, base `0b522b7` — the two prior
+fixes verified; TWO NEW P2s, drip-feed in the capture-record area; TDD regression-first, zero
+model turns, production read-only, prohibited diff EMPTY; fixed in the SAME dedicated
+overall-review fix commit by AMEND — `0e1b5a6` was not yet a pinned base for any record beyond
+§22's lineage line, so the amend falsifies nothing).**
+
+- **Round-2 finding 1 — captureError is validated against the preload's CLOSED vocabulary; an
+  out-of-vocabulary value is the fixed classification, its text never persisted.** Finding:
+  `validateCaptureMeta` accepted ANY string for `captureError`, and the admission's capture-error
+  branch returned that string verbatim as the reason — which `stdoutCaptureProvenance` persists
+  UN-redacted, so a tampered meta embedding private text would leak it into the retained record.
+  TEST FIRST: `a captureError outside the preload's closed vocabulary is classified — private
+  text never persists (overall review fix, round 2)` — RED: **(within the 2-test run) 0 pass /
+  2 fail**, the finding's assertion `the out-of-vocabulary value is the fixed classification,
+  never the raw text` actual `/private/tmp/secret-fixture/stdout-capture/abc.meta.json` vs
+  expected `'capture-error-unclassified'` — the canary leaked verbatim through the admission
+  reason. FIX: `tools/shell-wait-probe/closure-observation.mjs` — the module-level closed
+  vocabulary `CAPTURE_ERROR_VOCABULARY` (enumerated from the preload source's FOUR failure
+  sites: `capture-file-unavailable:<fs-code|unknown>`, `capture-encode-failed:…`,
+  `capture-hash-failed:…`, `capture-write-failed:…`) and
+  `validateCaptureMeta` replacing an out-of-vocabulary (or non-string) `captureError` with the
+  FIXED classification **`capture-error-unclassified`** — the raw text is never kept in any
+  form; in-vocabulary members pass through VERBATIM (each is a named observer failure). GREEN:
+  the in-vocabulary member's reason is exactly `capture-write-failed:EACCES`; the tampered
+  canary's reason is `capture-error-unclassified` and the persisted provenance block contains NO
+  canary; a non-string captureError is equally classified.
+- **Round-2 finding 2 — the bounded stdout-tap declaration PERSISTS in the case record.**
+  Finding: capture-enabled fixtures populate `fixture.record.closureStdoutCapture` (preload name
+  + SHA-256, maxBytes, the invocation gate selector, the nonce-binding environment seams), but
+  `buildCaseRecord` never retained it — once disposal deletes the preload, the retained record
+  loses the separately recorded tap provenance (the admission projection carries only the
+  captured-output digest, never the tap digest). TEST FIRST: `the persisted case record carries
+  the bounded stdout-tap declaration and survives a reload (overall review fix, round 2)` — RED:
+  `the bounded tap declaration persists beside the capture provenance` actual `undefined` vs the
+  expected block. FIX: `tools/shell-wait-probe/driver.mjs` `buildCaseRecord` — the mirror of the
+  survivalControlDeclaration pattern: the fixture's bounded `closureStdoutCapture` block
+  persists as the record's ADDITIVE `stdoutCaptureDeclaration` (digests and closed configuration
+  only, never the private fixture paths); a capture-less fixture records NO declaration key
+  (schema stability). GREEN: the capture-enabled run's persisted record carries the declaration
+  deep-equal to the fixture's block and survives the from-disk reload; the capture-less control
+  record carries no key.
+- **Round-2 post-fix digests (SHA-256, the AMENDED fix-commit tree — the round-1 values
+  `3cf94499…`/`7cfe54cb…`/`e9dc1610…` stand as the intra-commit round-1 history):** `driver.mjs`
+  = `f908f5c0bb025311fb1bb2825eb40f802f23bf94330120eb91715119638ae1be`;
+  `closure-observation.mjs` =
+  `46b7f5e282b811c3bb88518a6f2d36f54da2f586eac74fe40c134978a90f6fa7`;
+  `tests/shell-wait-probe.test.mjs` =
+  `8a62191677174840556cab094a0767c34e33f50c9dbf820b6f61e995c689e66c` (`release-qualification.mjs`,
+  `fixture.mjs`, `evidence.mjs`, `shape-diagnostic.mjs`, `wait-comparison.mjs`,
+  `tests/test-selection.test.mjs` byte-identical to the §22.1 values). **The executing observer
+  digest moved again**: the chain is `8db29d9c…` (the three live launches) → `30d19736…` (the
+  task-5 v2 correction) → `8b95cea1…` (the overall-review round 1 — SUPERSEDED within this same
+  amended commit) → the digest any FUTURE registered run re-pins against:
+  **`4ba3d833996a6fe98f284de77f04d9e3e18b02d315341a5a5d2df579791b422e`**.
+- **Round-2 post-fix battery (gates 1–10 re-run verbatim on the AMENDED tree; every result
+  verbatim):** research **ℹ tests 867 / ℹ suites 68 / ℹ pass 867 / ℹ fail 0 / ℹ skipped 0** (865
+  + the 2 net-new round-2 tests); selection **6/6, fail 0**; prep/binding/route **417/417/0**;
+  lifecycle/reconciliation/relay **126/126/0**; job-control/mcp **213/213/0**; lint **clean,
+  exit 0**; typecheck **clean, exit 0**; line-endings *"LF line endings verified in 542 tracked
+  files."*, exit 0; `git diff --check` clean; prohibited diff **EMPTY**, exit 0. Gate 11
+  (`npm test`) remains the §22.2 record pinned to the `297fdd3` verified bytes; the battery
+  refresh on the truly-final bytes (including gate 11) belongs to the CLOSING amend.
+
+**Round 3 (the branch-level re-review `review-mvjl3bej-7vggs8` — ONE P2: the round-1 fence
+OVER-REJECTS; TDD regression-first, zero model turns, production read-only, prohibited diff
+EMPTY; fixed in the SAME dedicated overall-review fix commit by AMEND).**
+
+- **Finding — the normal-completion watcher teardown manufactured a spurious cleanup boundary.**
+  Finding: on normal completion `runHeldHostTurn` aborts its budget controller in `finally`, and
+  the launch closures' shared-signal forwarders (installed by the production `runTurn`: record
+  the cleanup boundary, then forward the abort) fire on that pure TEARDOWN — the host process has
+  already exited, nothing is terminated — so a boundary stamped there (same millisecond as a
+  durable-read completion) made the round-1 pre-boundary fence withhold the settled obligations,
+  Companion outcome and terminal winner of NATURALLY COMPLETING observations (the reviewer's
+  direct reproduction rejected 20/20 such observations without any process termination). TEST
+  FIRST: `the normal-completion teardown abort records NO cleanup boundary — only real
+  termination initiations do (overall review fix, round 3)` — RED: **1 test / 0 pass / 1 fail**,
+  `the teardown abort must never manufacture a cleanup boundary on a naturally completing turn`
+  actual `1792676944855` vs expected `null` — the teardown abort stamped a spurious boundary.
+  FIX (the reviewer's option (b) — the explicit termination-initiation gate the teardown abort
+  does not set): `tools/shell-wait-probe/driver.mjs` `runHeldHostTurn` — a
+  `budgetAbortIsTeardown` flag set ONLY immediately before the `finally`'s
+  `budgetController.abort()` makes `recordTerminationInitiation` (the recorder the budget
+  context exposes as `recordCleanupBoundary`) INERT during teardown; every REAL initiation keeps
+  its own source stamp — the budget timer records AT THE ABORT SOURCE before aborting
+  (min-semantics keep the earliest), the runner deadline watcher records before its abort, and
+  the controlled-termination cleanup sequence (`runTerminationCleanup`: budget-expiry,
+  ended-before-gate, failure paths) records at its initiation, all BEFORE the teardown flag goes
+  up. GREEN: the naturally completing turn (with the production forwarder shape installed)
+  records NO boundary; Part B — a REAL termination-initiation recording during the run
+  (runner-side kill initiation) is preserved verbatim; Part C — budget expiry keeps its
+  at-source boundary. **Fence-matrix rerun (no weakening):** the round-1 test stays green
+  unchanged (a REAL boundary equal to the read completion still withholds; the
+  `budget-cleanup-termination-not-attributed` basis still names it; pre-boundary still credits)
+  and gains the natural-completion row: a record with NO boundary endpoint but a completed read
+  (`cleanupBoundaryAtMs` absent — exactly what a natural completion now persists) leaves the
+  fence unestablishable and the settled obligations/Companion/winner KEEP their credit.
+- **Round-3 post-fix digests (SHA-256, the AMENDED fix-commit tree — the round-2 values
+  `f908f5c0…`/`8a621916…` stand as the intra-commit round-2 history; `closure-observation.mjs`
+  is byte-identical to its round-2 value):** `driver.mjs` =
+  `f172c5fb16038f46589732a4cec71d857caab0e70e20a14e597aea2d583abb58`;
+  `tests/shell-wait-probe.test.mjs` =
+  `dcca6f8422a09e55b768b64b66285a8193b96f5efa8665846cda37a93200e6d7`. **The executing observer
+  digest moved again**: the chain is `8db29d9c…` (the three live launches) → `30d19736…` (the
+  task-5 v2 correction) → `8b95cea1…` (overall-review round 1) → `4ba3d833…` (round 2 —
+  SUPERSEDED within this same amended commit) → the digest any FUTURE registered run re-pins
+  against: **`05c0c05926dbba2eb42304347c126402ed9c9bb8a0bf9cc44d55f29ae2521136`**.
+- **Round-3 post-fix battery (gates 1–10 re-run verbatim on the AMENDED tree; every result
+  verbatim):** research **ℹ tests 868 / ℹ suites 68 / ℹ pass 868 / ℹ fail 0 / ℹ skipped 0** (867
+  + the 1 net-new round-3 test); selection **6/6, fail 0**; prep/binding/route **417/417/0**;
+  lifecycle/reconciliation/relay **126/126/0**; job-control/mcp **213/213/0** (the focused
+  rescue suites re-run for the record although the driver is NOT in their import graph — grep
+  verified); lint **clean, exit 0** (one interim unused-`t` parameter, fixed); typecheck
+  **clean, exit 0**; line-endings *"LF line endings verified in 542 tracked files."*, exit 0;
+  `git diff --check` clean; prohibited diff **EMPTY**, exit 0. Gate 11 (`npm test`) remains the
+  §22.2 record pinned to the `297fdd3` verified bytes; the battery refresh on the truly-final
+  bytes (including gate 11) belongs to the CLOSING amend.
+
+**Round 4 (the branch-level re-review `review-mvjlxmdm-zsivkf` — ONE P2: the result-first,
+watcher-less branch never sampled the durable reader; TDD regression-first with the
+dependency-injected reproduction, zero model turns, production read-only, prohibited diff EMPTY;
+fixed in the SAME dedicated overall-review fix commit by AMEND).**
+
+- **Finding — the result-first interrupt-shaped run skipped the durable reader entirely.**
+  Finding: when Root finishes before `waitForGate` resolves, the result-first branch is taken;
+  for `rescue-interrupt` neither a settlement watcher nor `statusDeadlineFlow` is supplied, so
+  that branch went directly to early-exit cleanup WITHOUT invoking the durable reader — losing
+  the outstanding job/guard obligations observation before cleanup changes them (the
+  dependency-injected reproduction returned `reads: 0` and no snapshot despite supplying
+  `readDurableSnapshot`). TEST FIRST: `the result-first watcher-less branch samples the durable
+  reader before early-exit cleanup (overall review fix, round 4)` — RED: **1 test / 0 pass /
+  1 fail**, `the supplied durable reader RAN (was 0 before the fix)` actual `0` vs expected `1`.
+  FIX: `tools/shell-wait-probe/driver.mjs` `runHeldHostTurn`'s result-first watcher-less branch —
+  when `input.readDurableSnapshot` is a function the branch STARTS the reader (`startDurableSnapshotRead`)
+  and JOINS it (`buildDurableSettlementLayer(null, durableRead, budgetExpired, …)`) BEFORE the
+  early-exit cleanup (which runs after the answer, at the wrapper's ended-before-gate
+  termination cleanup), under the SAME fence contract as every other join site (the read's OWN
+  completion instant stamped at the carrier and the budget/cleanup-boundary fence applied);
+  the persisted `childSettlement` block (`observed: false, basis: null, layers, durableSnapshot`)
+  rides schema-additively exactly like the status-deadline branch's. The EARLY-EXIT
+  CLASSIFICATION ITSELF IS UNCHANGED (`endedBeforeGate: true`, `cleanup.label: 'early-exit'`);
+  the no-reader control keeps the named null-supplier contract (no `childSettlement` block, the
+  same gating shape as the other sites). GREEN: the injected run records `reads: 1`, the joined
+  block carries the settled aggregate + the completion instant, and the no-reader control stays
+  key-free.
+- **Round-4 post-fix digests (SHA-256, the AMENDED fix-commit tree — the round-3 values
+  `f172c5fb…`/`dcca6f84…` stand as the intra-commit round-3 history; `closure-observation.mjs`
+  byte-identical to its round-2 value):** `driver.mjs` =
+  `9cbb8c0eb9b51185d95d06a6cd1340558c02a96bad0ede85129515a170b009a0`;
+  `tests/shell-wait-probe.test.mjs` =
+  `1193cb7dd4adc73e98a69a8e181c0ed06b17386d6d81789f26906fa1a2fb4850`. **The executing observer
+  digest moved again**: the chain is `8db29d9c…` (the three live launches) → `30d19736…` (the
+  task-5 v2 correction) → `8b95cea1…` (overall-review round 1) → `4ba3d833…` (round 2) →
+  `05c0c059…` (round 3 — SUPERSEDED within this same amended commit) → the digest any FUTURE
+  registered run re-pins against:
+  **`57359bff248ab6723ae3cdff7e325ff3c0d7419495730be76a552965c6881431`**.
+- **Round-4 post-fix battery (gates 1–10 re-run verbatim on the AMENDED tree; every result
+  verbatim):** research **ℹ tests 869 / ℹ suites 68 / ℹ pass 869 / ℹ fail 0 / ℹ skipped 0** (868
+  + the 1 net-new round-4 test); selection **6/6, fail 0**; prep/binding/route **417/417/0**;
+  lifecycle/reconciliation/relay **126/126/0**; job-control/mcp **213/213/0** (rerun for the
+  record; the driver is NOT in their import graph); lint **clean, exit 0**; typecheck **clean,
+  exit 0**; line-endings *"LF line endings verified in 542 tracked files."*, exit 0;
+  `git diff --check` clean; prohibited diff **EMPTY**, exit 0. Gate 11 (`npm test`) remains the
+  §22.2 record pinned to the `297fdd3` verified bytes; the battery refresh on the truly-final
+  bytes (including gate 11) belongs to the CLOSING amend.
+
 ### 22.1 The final bytes and their provenance
 
 Commit lineage from the merged base `0b522b70b0ed72d7d1566de581dc306c70b38fac` (PR #70):
 `e0413d9` (Task 1 → §19.1–§19.7) → `250222d` (Task 2 → §19.8) → `7532207` (Task 3 → §19.9) →
-`2a7c2b1` (Task 4 → §20) → `297fdd3` (Task 5 → §21) → this Task-6 commit. The Task-6 commit
+`2a7c2b1` (Task 4 → §20) → `297fdd3` (Task 5 → §21) → this Task-6 commit → the overall-review
+fix commit (the §22-header record: TWO P2 instrument-hardening fixes, a dedicated commit — the
+SHA-pinned ledger is never rebased). The Task-6 commit
 changes ONLY two docs files (`docs/qualification/rescue-shell-long-wait.md` — this section — and
-the plan's checkbox ticks); zero `tools/`/`tests/`/production bytes change, so the implementation
-bytes verified below ARE the final implementation bytes (the plan's docs-only-closing equality
-condition; the prohibited-diff proof in §22.2 is the negative side of the same proof).
+the plan's checkbox ticks); the fix commit changes ONLY the three research-instrument files
+(`driver.mjs`, `closure-observation.mjs`, `tests/shell-wait-probe.test.mjs` — the digests below);
+zero production bytes change in either (the prohibited-diff proof in §22.2 is the negative side
+of the same proof).
 Implementation-file SHA-256 at the verified tree: `driver.mjs`
 `5e2c8ed1aa0ef562e0b8c8171a200419a8e8f7d99877738bc8fe099ad9ca91b0`, `release-qualification.mjs`
 `5963d65b68395fa6cd77eae8aff8bf7bbe0ba403558bf28b610162e2fdcaf698`,
@@ -11734,8 +12007,35 @@ launches carried `8db29d9c…` (case start = record time, §21.1); the post-corr
 observer digest `30d197361244d04836ca7f945e6c94ff2e67e812c59cc44fda12b4a97959d2cf` remains the
 re-pin value for ANY future registered run (§20.3/§20.7 dated annotations) — unchanged by Task 6
 (zero launches).
+> **Dated annotation (2026-10-22, the overall-review fix commit — updated in place at the
+> round-4 amend):** the three research-file digests above describe the PRE-fix tree and stand as
+> history; the fix commit (rounds 1–4) moved `driver.mjs` to
+> `9cbb8c0eb9b51185d95d06a6cd1340558c02a96bad0ede85129515a170b009a0`,
+> `closure-observation.mjs` — previously untouched since the §20.3 freeze — to
+> `46b7f5e282b811c3bb88518a6f2d36f54da2f586eac74fe40c134978a90f6fa7`, and
+> `tests/shell-wait-probe.test.mjs` to
+> `1193cb7dd4adc73e98a69a8e181c0ed06b17386d6d81789f26906fa1a2fb4850` (`release-qualification.mjs`
+> and the four other untouched modules stay at their recorded values; the intra-commit round-1
+> digests `3cf94499…`/`7cfe54cb…`/`e9dc1610…`, round-2 `f908f5c0…`/`46b7f5e2…`/`8a621916…` and
+> round-3 `f172c5fb…`/`dcca6f84…` stand as their rounds' history). The future-repin observer
+> digest is SUPERSEDED accordingly: any FUTURE registered run re-pins against
+> **`57359bff248ab6723ae3cdff7e325ff3c0d7419495730be76a552965c6881431`** (`8db29d9c…` →
+> `30d19736…` → `8b95cea1…` → `4ba3d833…` → `05c0c059…` → `57359bff…`, each supersession
+> annotated where it was recorded).
 
 ### 22.2 Final-source gate battery (the plan's Task-6 command list; every result verbatim)
+
+> **Dated note (2026-10-22, the overall-review fix — updated in place at the round-4 amend):**
+> the table below is the battery of record for the `297fdd3` verified bytes and stands as
+> history. The overall-review fix commit re-ran gates 1–10 VERBATIM on the fix-commit tree after
+> EACH round (the counts moved: round 1 research **865/865**, round 2 research **867/867**,
+> round 3 research **868/868**, round 4 research **869/869**; the focused suites **417/417**,
+> **126/126**, **213/213** unchanged — re-run for the record although the driver is NOT in their
+> import graph; lint/typecheck clean; line-endings 542; `git diff --check` clean; prohibited
+> diff EMPTY — every result in §22's overall-review-fix record). Gate 11 (`npm test`, the
+> verification-copy procedure) is NOT re-run for the fix commit per the task procedure: this
+> gate-11 record stays pinned to the `297fdd3` verified bytes, and the battery refresh on the
+> truly-final bytes (including gate 11) belongs to the CLOSING amend.
 
 All gates ran on 2026-10-22 with unambiguous exit capture (no pipe truncation), twice where the
 first capture method was defective (see the capture note below). "Source" = where the command ran.
