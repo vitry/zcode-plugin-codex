@@ -11695,3 +11695,375 @@ O1/O2 defect demonstrated AND corrected offline — no successor needed; the I u
 §20.6 never-cause), and
 NO production code/config byte changed. Scope/authority expansion (a successor interrupt trial, a
 production repair decision) would require Task 6/user direction, not this record.
+
+## 22. 2026-10-22 evidence-closure Task 6: final-source verification, review record and the scoped recommendation (offline; zero model turns)
+
+Task 6 of the 2026-10-21 plan, executed 2026-10-22 in the same worktree (branch
+`docs/rescue-shell-wait-evidence-closure`) on top of the Task-5 commit
+`297fdd32f919179759e1071cfd0549c7bfdc07e7`. OFFLINE throughout: zero model turns, zero live cases,
+zero label consumption — the Task-5 ledger stands CLOSED (3 of the 4-case maximum, §21.3) and this
+task ran no launch of any kind. This section is ADDITIVE — §1–§21 stand byte-unchanged (append-only
+per the plan's file-ownership table; the §§13–18 campaign history, §19's implementation records and
+§20–§21's registrations/adjudications are carried, never rewritten). The untracked scratch
+(`findings.md`, `progress.md`, `task_plan.md`) was preserved untouched and never staged or committed.
+Pins re-verified at Task-6 time, nothing trusted forward: binary `codex-cli 0.163.0`, realpath
+`/Users/zhangzikai/.codex/packages/standalone/releases/0.163.0-aarch64-apple-darwin/bin/codex`,
+SHA-256 `8813367285524ac798dd96d1b071aea30d58708c7226fd236cd275cf1cfdee31`; Codex source
+`/Users/zhangzikai/Workspace/Codes/github/codex` HEAD `dffa0deb69268ed4ac31578794c9ea897b336ae3`,
+`status --short` EMPTY — both identical to the §19.1/§20.7/§21.1 records. No source/binary mapping
+is implied, as always.
+
+### 22.1 The final bytes and their provenance
+
+Commit lineage from the merged base `0b522b70b0ed72d7d1566de581dc306c70b38fac` (PR #70):
+`e0413d9` (Task 1 → §19.1–§19.7) → `250222d` (Task 2 → §19.8) → `7532207` (Task 3 → §19.9) →
+`2a7c2b1` (Task 4 → §20) → `297fdd3` (Task 5 → §21) → this Task-6 commit. The Task-6 commit
+changes ONLY two docs files (`docs/qualification/rescue-shell-long-wait.md` — this section — and
+the plan's checkbox ticks); zero `tools/`/`tests/`/production bytes change, so the implementation
+bytes verified below ARE the final implementation bytes (the plan's docs-only-closing equality
+condition; the prohibited-diff proof in §22.2 is the negative side of the same proof).
+Implementation-file SHA-256 at the verified tree: `driver.mjs`
+`5e2c8ed1aa0ef562e0b8c8171a200419a8e8f7d99877738bc8fe099ad9ca91b0`, `release-qualification.mjs`
+`5963d65b68395fa6cd77eae8aff8bf7bbe0ba403558bf28b610162e2fdcaf698`,
+`tests/shell-wait-probe.test.mjs`
+`7e0fddff4992b8ce6f669c64019979c4f5c7d76234218680fe8b435d737d44eb` — each equal to the §21.5
+recorded value; `fixture.mjs`, `evidence.mjs`, `closure-observation.mjs`, `shape-diagnostic.mjs`,
+`wait-comparison.mjs` and `tests/test-selection.test.mjs` are untouched since the §20.3 freeze (no
+Task-4/5/6 commit touched them). Observer digest history stands as annotated: the three live
+launches carried `8db29d9c…` (case start = record time, §21.1); the post-correction executing
+observer digest `30d197361244d04836ca7f945e6c94ff2e67e812c59cc44fda12b4a97959d2cf` remains the
+re-pin value for ANY future registered run (§20.3/§20.7 dated annotations) — unchanged by Task 6
+(zero launches).
+
+### 22.2 Final-source gate battery (the plan's Task-6 command list; every result verbatim)
+
+All gates ran on 2026-10-22 with unambiguous exit capture (no pipe truncation), twice where the
+first capture method was defective (see the capture note below). "Source" = where the command ran.
+
+| # | Gate command (plan Task-6 list) | Source | Verbatim result |
+| --- | --- | --- | --- |
+| 1 | `npm run test:shell-research` | worktree at `297fdd3` | **ℹ tests 863 / ℹ suites 68 / ℹ pass 863 / ℹ fail 0 / ℹ cancelled 0 / ℹ skipped 0 / ℹ todo 0** (duration_ms 61993.184291 and 57432.373375 on two same-bytes runs), exit **0**, zero `✖` lines |
+| 2 | `node --test tests/test-selection.test.mjs` | worktree at `297fdd3` | **tests 6 / pass 6 / fail 0 / skipped 0** (duration_ms 41.636292), exit **0** |
+| 3 | `node --test tests/rescue-preparation.test.mjs tests/rescue-binding.test.mjs tests/rescue-route-planner.test.mjs` | worktree at `297fdd3` | **tests 417 / pass 417 / fail 0 / skipped 0** (duration_ms 29234.930834), exit **0** |
+| 4 | `node --test tests/rescue-lifecycle.test.mjs tests/rescue-child-reconciliation.test.mjs tests/rescue-progress-relay.test.mjs` | worktree at `297fdd3` | **tests 126 / pass 126 / fail 0 / skipped 0** (duration_ms 42935.165416), exit **0** |
+| 5 | `node --test tests/job-control.test.mjs tests/mcp-result.test.mjs` | worktree at `297fdd3` | **tests 213 / pass 213 / fail 0 / skipped 0** (duration_ms 57783.591292), exit **0** |
+| 6 | `npm run lint` | worktree at `297fdd3` | eslint clean, no output, exit **0** |
+| 7 | `npm run typecheck` | worktree at `297fdd3` | `tsc --noEmit` clean, no output, exit **0** |
+| 8 | `node scripts/check-line-endings.mjs` | worktree at `297fdd3` | *"LF line endings verified in 542 tracked files."*, exit **0** |
+| 9 | `git diff --check` | worktree at `297fdd3` | no output, exit **0** |
+| 10 | prohibited diff `git diff 0b522b70b0ed72d7d1566de581dc306c70b38fac --stat -- skills/ agents/ scripts/ hooks/ .codex-plugin/ marketplace/ docs/superpowers/specs/ package.json npm-shrinkwrap.json` | worktree at `297fdd3` | **EMPTY** (no output), exit **0** — the plan's "Prohibited diff expected EMPTY" holds on the final tree |
+| 11 | `npm test` | verification copy `/tmp/swverify.BW3cgb` (procedure below) | **routine suite: ℹ tests 3397 / pass 3394 / fail 0 / cancelled 0 / skipped 3 / todo 0** (duration_ms 691350.527333); **marketplace suite: ℹ tests 2 / pass 2 / fail 0 / skipped 0** (duration_ms 11298.690042); combined **3399 tests / 3396 pass / 0 fail / 3 skipped / 0 cancelled**, `NPM_TEST_EXIT=0` (captured verbatim from `$?` without a pipe), **zero `✖` lines in the entire 3546-line log**. The 3 skips are the standing documented opt-in gates (`﹣` SKIP lines recorded verbatim in the log): `codex-skills-unqualified` ×2 — *"installed marketplace skill crosses a real ephemeral Codex turn into ZCode"* (`Set ZCODE_CODEX_SKILLS_E2E=1…`) and *"installed Rescue uses one isolated native child for initial and choice continuations"* (`Set ZCODE_CODEX_RESCUE_E2E=1…`); `real-zcode-unqualified` — *"real ZCode discovery, two-turn session, read-only Companion, cancellation, model, and history import"* (`Set ZCODE_REAL_E2E=1…`) — the same three §18.3 documented skips, the standing design, not new omissions |
+
+**Gate 1's capture note:** the first same-bytes invocation of gate 1 (and gates 2–7) captured its
+exit through a pipeline whose status proved unreliable under this shell; the counts above are
+byte-identical across both captures (863/68/863/0/0), and every gate was RE-RUN with the exit
+captured directly from `$?` into a file (`G1…G7` all `exit=0`) — the re-run values are the recorded
+ones. No gate was waived; no failure was retried into a pass (there were zero gate failures to
+retry).
+
+**The `npm test` verification-copy procedure (plan Task-6 paragraph, followed exactly):**
+
+- **Attempt 1 — FAILED; the failure is recorded and stays failed.** Copy method:
+  `git archive 297fdd3 | tar -x` into `mktemp -d /tmp/swverify.XXXXXX` → `/tmp/swverify.EmH3MG`,
+  with a normal copied `node_modules` directory (`cp -R`, verified `drwxr-xr-x`, not a symlink) and
+  a byte-proof manifest of all 542 tracked files (SHA-256 per file, worktree vs copy:
+  **identical**, manifest digest `8cb3ea2ee374155b66350e4d1ea94dc0ef80af222c5885d83e2e3668d27070be`).
+  The copy's PATH carried no guarded identity word. `npm test` then FAILED: the marketplace suite's
+  named failure — preserved verbatim — was *"✖ future writable-concurrency ADR remains absent from
+  real package and marketplace artifacts"* with
+  `Error: Command failed: git clone --quiet --no-hardlinks /private/tmp/swverify.EmH3MG/ …` →
+  `fatal: repository '/private/tmp/swverify.EmH3MG/' does not exist` (exit code 128): that test
+  clones the repository root itself, and a `git archive` extraction contains no `.git`. The routine
+  suite portion of attempt 1 exited 0 (the `&&` chain reached the second command) but its counts
+  were lost to the defective pipe capture above — reported as NOT CAPTURED, never reconstructed.
+  Attribution: a construction defect of the verification copy (missing `.git`), not a defect in any
+  source byte; diagnosed from the retained error text.
+- **Attempt 2 — the gate of record.** A FRESH copy was built (the attempt-1 copy was never reused —
+  the plan's no-old-clone rule): `mktemp -d /tmp/swverify.XXXXXX` → `/tmp/swverify.BW3cgb`, then
+  `git clone --no-local --no-hardlinks` of the worktree at `297fdd3` (a self-contained repository
+  clone: `rev-parse HEAD` = `297fdd3…`, `status --short` empty, the three untracked scratch files
+  structurally excluded because a clone carries tracked content only), then a normal copied
+  `node_modules` directory (`cp -R`, real directory, not a symlink). Byte-proof: SHA-256 manifests
+  of all **542** tracked files computed on both sides and compared — **identical**, manifest digest
+  again `8cb3ea2ee374155b66350e4d1ea94dc0ef80af222c5885d83e2e3668d27070be`; the copy path carries no
+  guarded identity word; ALL selected implementation files were present (the whole tracked tree).
+  `npm test` ran there with output redirected to a file and the exit captured from `$?`: the gate-11
+  result above. Both verification copies and both manifest files were disposable `/tmp` state and
+  were deleted after the runs; nothing from them entered the repository.
+
+**The machine/load lottery note (per the campaign's bounded-attribution discipline):** no gate
+failed on the final bytes; the only named failure in the entire battery is attempt 1's
+environment-construction failure above, whose corrected rerun passed with zero `✖` lines. No
+spawn-timeout symptom appeared anywhere; nothing needed the "root cause unisolated" language, and
+no failed run was re-labelled.
+
+### 22.3 Evidence carried forward — the record proper (§13–§21 history preserved; nothing reopened)
+
+**Retained proven long-wait/cadence facts (CITED, never re-derived; §1's retained-successes table):**
+M = 300004 ms measured from the managed named Child's own nonterminal poll on CLI 0.163.0 (§17.2);
+L and fresh R one natural original-handle observation each at 388400 ms with remaining-at-poll-start
+388336/388313 ms ≥ M+30000 (§17.3–§17.4); the canonical 60000 control at 7 observations vs candidate
+L/R at 1 each — reduced re-entry (§17.6, Gate C PASS); outer-default C0/C1 v2 with no decisive
+pragma (§17.8); PR #70's full-suite byte gate at `b4f3db9` (§18.3a) — a historical exact-byte gate,
+superseded as the gate of record for THIS branch by §22.2 above. Task 5 re-corroborated the
+discriminator on the current pin twice (O1/O2: decisive original-handle observations 386600/386500 ms;
+poll-start remaining lifetime 386555/386392 ms ≥ the 330004 threshold, margins +56551/+56388; oracle
+v1 `beyond-reference` both), §21.2.1/§21.2.2/§21.4. No new M/B/C0/C1 or calibration/cadence campaign
+was started (§20.4's no-new-campaign rule held).
+
+**Observation strategy and provenance (§19.3/§19.5/§19.8):** the only stdout observer ever used is
+the fixture-generated passive preload selected in §19.3 after proving NO supported split-stream
+capture exists at the exact source lines (`combine_output_receivers` merges PTY streams; `stderr`
+empty by construction) — armed only inside disposable fixtures via `NODE_OPTIONS --require` on the
+exact `['invoke-prepared','rescue']` argv (inert on wrong entry/argv/prepare/Status/runner/foreign
+processes, pipeline-proven), nonce-keyed `wx`-0600 capture state, 64-KiB bound, digest computed at
+capture close, production bytes/exit proven unchanged (fast-fail envelope byte-identical with and
+without the preload; never reconstructed from merged transcript bytes). The only durable observer is
+the passive snapshot reader (`readDurableObligationSnapshot`) evaluating ONLY exported production
+predicates over the exact fixture-owned partition with before/after fingerprint equality, no lock
+acquisition, no lease probe. Host-event admission is the §19.4 six-conjunct registered set (exactly
+one `interrupt_agent` call; exactly one matching `SubAgentActivity(kind=interrupted)` item joined by
+call id and `agent_thread_id` to the spawn acknowledgement; owning-Root rollout; inside the
+confirmed pending window; timed; `previous_status` a pre-dispatch snapshot only), implemented in
+Task 3 with every registered counterexample failing closed. The `NODE_OPTIONS` propagation blocker
+(§19.7 item 1) was discharged at the I case's in-fixture preflight — the traversal is now observed
+on a registered launch (§21.1).
+
+**Supported source versus installed events:** at the pinned source `dffa0deb`, the host-generated
+interrupt activity item IS durably retained by construction (Paginated default on installed local
+storage, §19.4) — but §19.4's own rule stands: source presence is not an installed observation, and
+the installed-retention check remains **OPEN** (§21.2.3 item 1): it was the I case's FIRST
+verification step and was NOT MEASURED — the evidence adjudication was consumed by one named
+unsupported call shape (the withheld 2-line/231-byte `bound-await`/`text-binding` script cell,
+SHA-256 `e9856478…`) before the §19.4 admission could scan the captured rollout; the record carries
+NO `hostDelivery` block with the collection-incompleteness reason — this is NOT
+`host-activity-item-absent` (no positive absence was established). The §19.9 codex-round-4
+limitation also stands: the pinned host persists no nested exec-call ids, so code-mode-WRAPPED
+interrupts are named-unjoinable (`host-activity-wrapped-interrupt-unjoinable`, fail closed,
+preflight-rejected pre-launch) and DIRECT-mode is the only qualified interruption path.
+
+**Stdout/framing — the Task-5 instrument correction and v2 adjudication story (the v1 record
+preserved):** the launched instrument's v1 expectation builder applied terminal-MANAGEMENT framing
+(the `Resumable: yes` + hint view) to the foreground `invoke-prepared rescue` invocation, producing
+`matched: false` / `output-truncated` on a COMPLETE 34-byte capture (digest `61ccf508…`,
+byte-identical across O1/O2, launcher exit 0) — the raw v1 comparator results are PRESERVED VERBATIM
+as history (§21.2.1 item 2, §21.3), never overwritten. The production foreground contract is intact:
+`terminalResultJob` never applies on the `invoke-prepared` chain (zcode-companion.mjs:822 →
+:1019-1020 → review.mjs:421 → the raw `finishJob` winner, review.mjs:743-761; the management framing
+exists only on the `result` command at :207/:209). The defect was corrected as a VERSIONED OFFLINE
+instrument fix sanctioned by the plan §3 file table (`RESCUE_EXPECTATION_DERIVATION_VERSION` 2,
+`exactRescueForegroundRenderedExpectation`; test-first RED→GREEN; §21.5's gate battery re-run), and
+the retained records re-adjudicated offline at v2 — **`matched: true` for BOTH** (the §19.2
+digest-identity convention; prior verdicts kept). No production stdout change was needed or
+proposed; S3's preserve-existing-stdout requirement is satisfied by the existing foreground contract
+itself.
+
+**Durable snapshots:** the I case's durable observation is a REAL production snapshot — winner
+`cancelled` through a valid `'session-end'` stop intent, `executorLinkage: 'verified'` against the
+observed Child, no marked-runner claim, no retained writable guard, binding current, aggregate
+`settled`, Companion remote outcome `terminal-result`, local reaping the registered named-unobservable
+`null` (§21.2.3 item 5–6) — but it completed AT the §20.5-item-5 cleanup fence boundary
+(`completedAtMs == cleanupBoundaryAtMs == 1792661275722`), so it is recorded as a CLEANUP-TIME
+observation: the raw oracle replay (`durableObligations: true`, `companion: true`,
+NATIVE_INTERRUPTION_ORACLE_VERSION 2) is preserved verbatim and carries NO qualification credit
+(§21.2.3 item 8's overlay). The §16.2 convergence (a native Child interruption induces no stop
+authority of its own; the existing authorized path owns durable settlement; natural winners stay
+natural) was OBSERVED as compatible behavior, never credited as interrupt settlement.
+
+**Per-layer native/natural/cleanup results:** Gate B — **CLOSED at the corrected v2 adjudication,
+twice-measured** (both halves: the discriminator per poll AND exact terminal linkage `matched: true`
+per poll, on the retained records; scoped to the foreground-expectation basis and the
+digest-identity establishment, §21.4). Gate D — **NOT closed**: the delivery-identity layer
+**unestablished** (installed retention + the ONE named parser admission outstanding; the exact
+Child id unestablishable without supported linkage); the obligations/Companion layers
+**cleanup-time-unestablished-for-qualification** (no pre-boundary observation); the no-collateral
+survival-control layer **unobserved** (`survivalControl: null`, fail-closed, the collection failure
+reason riding the record). Turn/cell responsiveness: never applied (the ≤60000-ms bound stays
+REGISTERED-BUT-NOT-YET-APPLICABLE, §19.6/§20.5 item 6 — the admission set was never satisfied on a
+live record), never zero. Cleanup: deliberate on all three cases (`child-settlement-observed` ×2;
+hold-deadline observation on I), zero kills, complete disposal, zero cleanup errors.
+
+**Every label status (§20.1 frozen ledger vs §21.3 actual):** O1 (`rescue-long`)
+**spent-and-consumed: executed** — discriminator MET; exact linkage MET at v2 (v1 mismatch preserved
+as history); O2 (`rescue-repeat`) **spent-and-consumed: executed** — corroboration achieved its aim
+at v2, byte-identical contract-conforming bytes; I (`rescue-interrupt`)
+**spent-and-consumed: executed** — exactly one v2 interrupt on an active turn (`previousStatus:
+"running"`, `callCount: 1`), delivery identity and downstream layers unestablished after the named
+unsupported-call shape consumed the evidence adjudication; F **UNSPENT (0 of 1)** — the O1/O2
+defect was demonstrated AND corrected offline (no successor needed; another live run would still
+need F or new authorization, §20.6), and the I shape is §20.6's never-an-F-cause class. Total
+logical cases **3 of the 4-case maximum**; no retry, relabel or per-label allowance anywhere.
+
+**Bounded raw-data disposal/retention omissions (unchanged, named):** the historical §18.1 record
+dirs hold no reusable raw host events (23-char target bytes scrubbed at capture; rollouts disposed;
+F's typed projection incomplete — each named, §19.2); the Task-5 records are redacted fixture
+records in disposable `/tmp/shell-wait-closure-*` dirs (target text suppressed at 23 chars, the
+withheld-body diagnostic carried as SHA-256 + structural facts only); §16–§22 persist ONLY bounded
+typed facts, digests and safe identifiers. **No private rollout, preparation, auth, job body,
+credential or user-configuration data is copied into this repository anywhere in §22** — every §22
+citation is a typed fact or digest the records already carry (`redactPrivatePaths` semantics apply
+to any path-bearing citation).
+
+### 22.4 Spec and gate mapping — S1–S7, Q1–Q6, Gates A–E, requirements UNCHANGED
+
+The §8 gates and the 2026-10-05 spec are UNCHANGED by this branch (the prohibited diff is EMPTY,
+§22.2 gate 10 — no spec, production, config, Skill, Role, cache or dependency byte moved). Labels
+per §18.4. Task-6 deltas against the §18.4/§18.5 baselines are marked Δ.
+
+| Item | Final status on this branch | Basis |
+| --- | --- | --- |
+| S1 preparation/binding authority, exact atomic binding | **observed** (unchanged) | Gate A PASS carried on the seven qualifying records (§18.5); the O1/O2/I launches each re-met the one-launch/one-send/original-handle contract in-record (§21.1); binding/preparation contract suites green on the final bytes (§22.2 gates 3–5) |
+| S2 one Companion, original handle, empty-input polls, no second inner poll while pending | **observed** (unchanged) | §18.4's record stands; O1/O2 re-demonstrated single sequential polls with `outerReturns: 0` (§21.2.1–§21.2.2) |
+| S3 byte-for-byte terminal public stdout, exit/error/choice semantics | **Δ exact-bytes now PROVEN on the foreground rescue path** (was NOT PROVEN) | Gate B linkage half CLOSED at v2, twice-measured on complete attributable captures (§21.2.1/§21.2.2); result/choice/error/queue contracts green on the final bytes (§22.2); scoped to the `invoke-prepared rescue` foreground chain measured — not a whole-surface byte claim |
+| S4 placement matrix; Review enqueue-only; Status observation-only | **MIXED (unchanged)** | Placement/queue regressions green (§22.2); BG live placement still NOT PROVEN (fail-closed, §17.14.2 — nothing in Tasks 1–6 re-qualified it); RV untouched (no-send early exit remains separate production scope, §17.14.3); ST kept its query deadline separate |
+| S5 interruption/loss/timeouts/100-hour ceiling; unrelated work survives | **Δ NOT PROVEN (interruption) — now with per-layer precision** (was blanket BLOCKED) | Gate D delivery-unestablished + obligations/Companion cleanup-time-unestablished-for-qualification + no-collateral unobserved (§22.3); `nativeInterruptionClaimed: false` everywhere; no ceiling/detector/deadline change (prohibited diff EMPTY); reconciliation/loss/ceiling suites green (§22.2 gates 3–5) |
+| S6 named/generic parity, no fallback weakening | **named observed; generic source-confirmed UNAVAILABLE (unchanged)** | Route `named` on all three Task-5 records; generic structurally unreachable (§17.14.4); G never forced; no grammar/whitelist growth beyond the §19.9 one-shape admission (unsupported shapes still fail closed) |
+| S7 production isolation, no config/cache/source changes | **verified (unchanged)** | Prohibited diff EMPTY at the final tree (§22.2 gate 10); production dirs/user config/Codex source read-only through Task 6; fixtures temporary and disposed |
+| Q1 which installed path launches the Child; which config layers reach it | **observed + source-confirmed (unchanged)** | §18.4's basis stands; `capVerified` + exec-default override in-record on all three Task-5 launches |
+| Q2 can the Child receive the longer observation | **named observed (Δ now with attributable stdout); generic not-proven/unavailable** | O1/O2: 386600/386500-ms natural observations inside the 3600000 window with the §20.4 conditions MET per poll INCLUDING exact linkage at v2 (§21.2.1–§21.2.2) |
+| Q3 reduced re-entry, discriminator, fresh repeat | **Δ repeat verdict now CLOSED at v2 (was `inconclusive` fail-closed)** | 1-vs-7 cadence retained (§17.6); the repeat's exported verdict was `inconclusive` solely on exact-terminal linkage (§18.5 Gate B) — that linkage is now twice-measured `matched: true`, so the fail-closed cause is gone; discriminator corroborated on the current pin (§21.4) |
+| Q4 noise; native interruption; sidecar | **noise observed compatible; interruption Δ precisely-blocked (was blanket-blocked); sidecar not measurable** | N compatible (§17.14.1); the interruption gap is now NAMED per layer (delivery retention + one parser admission; pre-boundary obligations/Companion observation; control read sequence) instead of "unobservable evidence path"; no Status intent occurred |
+| Q5 Root-owned Review / AR / ST eligibility | **AR + ST observed compatible (single runs); RV NOT qualified (unchanged)** | §17.14.3 stands; Task 6 ran no RV/BG case and authorizes none (§22.7) |
+| Q6 smallest supported deployment change and surfaces | **Δ answered with the §22.7 scoped draft** | The paragraph half remains the only isolable per-Role surface; the numeric outer-default half remains host-global host config with NO supported Role-scoped override (none invented); unqualified affected consumers still block broad adoption |
+| Gate A (actual route / authority) | **PASS, scoped as §18.5 (unchanged)** | carried; no Task 1–6 record degraded it; the three new launches each re-satisfied the route/launch/send/handle conjuncts in-record |
+| Gate B (long discriminator / repeat) | **Δ CLOSED — both halves, on the current pin, twice-measured at v2** (was fail-closed `inconclusive`) | §21.2.1/§21.2.2/§21.4 + the §22.3 instrument-correction story; requirement UNCHANGED — the gate closed because the evidence now exists, not because the gate moved |
+| Gate C (reduced intervention) | **PASS on the measured counts (unchanged)** | §17.6–§17.7 carried; no new cadence campaign (§20.4) |
+| Gate D (native responsiveness / settlement) | **Δ NOT CLOSED, now per-layer** (was BLOCKED at every layer) | delivery-unestablished (installed-retention OPEN + the ONE named parser admission, offline-versioned first); obligations/Companion cleanup-time-unestablished-for-qualification; no-collateral unobserved; requirement UNCHANGED — §20.5's fence rule is applied, not relaxed |
+| Gate E (preserved behavior / eligibility) | **MIXED (unchanged)** | §18.5: RV NOT qualified (no-send — production scope); BG NOT PROVEN (live placement); AR/ST compatible single runs; generic structurally unavailable; negatives/ceilings preserved by the EMPTY prohibited diff + green suites |
+
+**B/D closure is NOT full compatibility/rollout (explicit, per the plan):** Gate B's closure is a
+two-record, one-chain, one-pin exact-output result (foreground `invoke-prepared rescue` at CLI
+0.163.0 / source `dffa0deb`); Gate D is NOT closed at all. Even a hypothetical full B/D closure
+would NOT re-qualify: Review (RV no-send is a separate production-scope defect, untouched), BG live
+placement (unproven, fail-closed on the historical unclassified cell), AR/ST beyond their recorded
+single runs, or the generic route (structurally unavailable). **No new RV or BG campaign is
+authorized by this report.** The host-global numeric outer default still has **no supported
+Role-scoped override** — none is invented here — and **broad shared-default adoption remains
+blocked** by the unqualified affected consumers (every other code-mode consumer plus Root-owned
+Review). Requirements were never lowered anywhere: where a layer closed, it closed by new measured
+evidence under the frozen oracles; where it did not, it is named above.
+
+### 22.5 Independent review record — PREPARED, to be completed by the closing amend
+
+Per the plan's Task-6 checkbox, the final branch requires independent review of (a) Spec fidelity
+and (b) implementation/evidence/privacy, with actual reviewers, revisions, findings and narrow
+correction rechecks recorded HERE before the checkbox closes. The reviews run through the
+pipeline's review gates AFTER this commit; **both checkboxes (review and recommendation
+confirmation) intentionally remain OPEN in this commit.** The reviews that WILL be recorded in this
+subsection by the closing amend:
+
+- **[PLACEHOLDER — pipeline self-review of the final branch]**: reviewer identity, scope,
+  findings (P1/P2/P3), fixes and narrow rechecks. — *PENDING, to be filled by the closing amend.*
+- **[PLACEHOLDER — branch-level codex review]**: reviewer identity, scope
+  (spec fidelity + implementation/evidence/privacy on the final bytes), findings, fixes and narrow
+  rechecks. — *PENDING, to be filled by the closing amend.*
+- Prior in-campaign review history (§19.9's self-review round 1 + codex rounds 1–12 across Tasks
+  2–3, and §21's post-launch corrections) is CONTEXT, not a substitute: those reviewed the Task-2/3
+  implementations and the Task-5 corrections, not this final branch state.
+- Provider-outage rule: an unavailable reviewer is recorded as PENDING here — never a silently
+  substituted gate, and never permission for indefinite review loops (plan checkbox 3's rule).
+
+### 22.6 Plan-completeness audit (Task 6's own exhaustive reconciliation, executed before committing)
+
+Every checkbox across Tasks 1–6 was reconciled against the report and the actual tree; no stale
+status line and no orphan placeholder was found anywhere in the report (the only `TODO/TBD/FIXME`
+class scan hits are `mktemp -d …XXXXXX` template literals — command syntax, not placeholders).
+
+| Plan task | Checkboxes | Evidence state reconciled |
+| --- | --- | --- |
+| Task 1 | 6/6 `[x]` | each carries a DONE annotation citing §19.1–§19.6 (all six subsections exist with the recorded pins/digests); §19.7's three dependent blockers: item 1 discharged at the I preflight (§21.1), item 2 still OPEN by design (the installed-retention question, §22.3), item 3 implemented in Task 2 (§19.8) |
+| Task 2 | 5/5 `[x]` | DONE annotations cite §19.8 (the 64-test RED→GREEN record + the 25+12 reader/driver-join describes and the twelve recorded codex rounds); the implementation exists (`closure-observation.mjs`, the reader, the joins) and is green in §22.2 gates 1/3–5 |
+| Task 3 | 5/5 `[x]` | DONE annotations cite §19.9 (the 22-admission-test record; the round-1…round-7 codex chain; the round-4 wrapped-interrupt limitation) and §20.9/§21.5 (the pre-launch gate battery); checkbox 5's tick is explicitly retrospective-to-the-§20.9 pre-launch evidence, stated as such in the plan |
+| Task 4 | 5/5 `[x]` | DONE annotations cite §20.1–§20.8; the §20.10 dated ledger-status block agrees with §21.3 (O1/O2/I spent-and-consumed, F unspent, 3 of 4) |
+| Task 5 | 4/5–exit block | all four checkboxes carry DONE annotations citing §21.1–§21.4; the §21 Exit line (MET) matches §21.2–§21.4's content; §21.5's digests re-verified byte-identical against the final tree (§22.1) |
+| Task 6 | 2/5 `[x]` at this commit | checkboxes 1–3 ticked by THIS commit (this section = checkbox 1; §22.4 = checkbox 2; §22.2 = checkbox 3); checkboxes 4 (independent review) and 5 (scoped recommendation confirmation) remain OPEN with their pending reasons recorded HERE and in §22.5/§22.7 — no stale tick |
+
+Cross-reference resolution: §21.4's "the final adopt/do-not-adopt verdict is §22" resolves at
+§22.7; §21.5's "§21.4's inputs feed Task 6's §22" resolves at §22.3/§22.7; §20.10 ↔ §21.3 agree;
+§19.4/§19.6 registrations are cited where their standing is stated (§22.3); every §22 citation
+target (§16.2, §16.4, §17.2, §17.6, §17.14.x, §18.3a, §18.4, §18.5, §19.1–§19.9, §20.1–§20.10,
+§21.1–§21.5) exists in this report. Counts/digests: 863 research tests = §20.9's 862 + the 1 v2 pin
+(§21.5) = §22.2's 863; the three §21.5 implementation digests match the final bytes exactly
+(§22.1); the observer-digest history (`8db29d9c…` launched / `30d19736…` future re-pin) is
+consistent across §20.3, §20.7, §21.1 and §21.5. Zero model turns and zero live cases in Task 6 —
+consistent with the ledger's closed state (no label was available to spend: §21.3).
+
+### 22.7 Scoped recommendation — **DRAFT-PENDING-REVIEW**
+
+> **Status: DRAFT-PENDING-REVIEW.** This draft is recorded in this commit per the plan's Task-6
+> structure; the closing amend confirms or revises it AFTER the §22.5 reviews land. **No wording
+> here authorizes any automatic config/Skill/Role/cache change, any production edit, any new
+> campaign, or any blanket version/platform claim. Research completion is NOT production adoption:
+> everything below is an evidence statement plus a scoped DECISION FRAMEWORK for the separately
+> authorized production decision — the original production goals remain binding.**
+
+**(a) ADOPT (unqualified, evidence-complete):** *nothing is adopted by this research.* No surface
+reaches an unconditional adopt verdict on this branch: the managed-Rescue candidate's mandatory
+native-settlement gate (Gate D) is not closed (§22.3), and adoption authority is human and
+separate by definition (§1, §18.6 precedent).
+
+**(b) ADOPT-ONLY-ON-LISTED-SURFACE (evidence-qualified, decision-ready on that surface alone):**
+
+- **The established long-wait/cadence mechanism** — qualified on the current pin and now with its
+  discriminator re-corroborated twice (M = 300004 retained; O1/O2 decisive natural observations
+  386600/386500 ms with +56551/+56388 ms headroom over the M+30000 threshold; 1-vs-7 cadence
+  retained; Gate A/C facts carried). The evidence-covered surface is the **per-Role
+  waiting-PARAGRAPH template artifact** (explicit per-call windows) for the **foreground
+  `rescue-long` / `rescue-repeat` commands** — the only isolable deployment half (§17.14.5, Q6).
+  A production decision to adopt THIS mechanism on THIS surface is supported by the record.
+- **Exact-output B (closed at v2 via the instrument correction — the defect story stated
+  honestly):** the two halves of Gate B now both hold on measured evidence; the historical
+  `inconclusive` existed because the instrument's v1 EXPECTATION was wrong, not because the
+  production output was (§22.3). The production foreground contract needed NO change and received
+  NONE; the evidence is scoped to the measured foreground chain and is not a whole-surface byte
+  claim. This part strengthens (i) but authorizes nothing by itself.
+
+**(c) DO-NOT-ADOPT-YET (named blockers; each surface stays out until its blocker closes under its
+own future authorization):**
+
+- **Native/obligations D (therefore `rescue-interrupt` and anything relying on interrupt-time
+  settlement):** delivery-unestablished (the §19.4 installed-retention question is OPEN; the ONE
+  named parser admission is unmade), obligations/Companion qualification cleanup-time-unestablished
+  (no pre-boundary observation exists), no-collateral unobserved. Not closed by this branch; not
+  closable by this report.
+- **The host-global numeric outer default:** no supported Role-scoped override exists (none
+  invented); raising it reaches Root-owned Review (unqualified — the no-send early exit is separate
+  production scope) and every other code-mode consumer (unqualified on this record). Broad
+  shared-default adoption remains blocked.
+- **BG live placement, Review (RV), AR/ST beyond recorded single runs, the generic route:** each
+  remains its own separate unproven/separately-scoped limit (§22.4 Gate E row); no new RV/BG
+  campaign is authorized here.
+
+**(d) Per-command deployment eligibility (which commands the evidence actually covers):**
+
+| Command | Evidence coverage | Eligible surface under this draft |
+| --- | --- | --- |
+| `rescue-long` | Gate B both halves (v2, measured) + Gate A/C facts + retained M | the (b) surface only — per-Role waiting paragraph, foreground |
+| `rescue-repeat` | same, twice-measured (byte-identical contract-conforming captures) | the (b) surface only |
+| `rescue-interrupt` | the one v2 call was delivered-and-recorded on an active turn, but ALL Gate D layers stand unestablished/unobserved (§22.3) | **none — (c)**; open blockers: installed-retention check, ONE-parser-admission + successor trial, pre-boundary obligations/Companion observation, control read-sequence capture |
+
+**Smallest separate actions (PROPOSALS — each requires its own future authorization; none is
+authorized by this report):** (1) the §20.5/§21.4 registered **I-case ONE-parser-admission arm** —
+admit ONLY the withheld structural form (SHA-256 `e9856478…`, statement head `bound-await`,
+2 lines/231 bytes) in the existing bounded parser, versioned OFFLINE against the retained record
+diagnostic first (§19.2 convention), then a registered successor interrupt trial; (2) a
+**pre-boundary obligations/Companion observation** registered into that same successor trial's
+design (the only thing that can qualify the fence-fenced layers, §21.2.3 item 8); (3) the §21.4
+**management-`result`-path resumability-indicator observation note** — observation-only, production
+files read-only, no foreground implication, no delivery-time-input probe needed; it merits only a
+noted look under whatever future authority touches the management path; (4) the standing separate
+production scopes (Review no-send cause; BG live placement) remain where §18.6 left them — recorded
+blockers with no campaign authorized. If core B/D were to close later while RV/BG/global-config
+scope does not, the exact result to state is §18.6's shape: per-surface eligibility only, never a
+blanket verdict. The original waiting mechanism is **not** called unsuccessful anywhere above —
+its mechanism and its exact output are the two parts this branch DID establish.
+
+### 22.8 Raw-data note for Task 6
+
+Task 6 consumed no live case and produced no new raw observation data. Its only artifacts are this
+section, the plan's checkbox ticks, and disposable `/tmp` verification state (two verification
+copies `/tmp/swverify.EmH3MG` and `/tmp/swverify.BW3cgb`, both deleted after the runs; two manifest
+files, deleted; gate logs under `/tmp`, disposable). The failed attempt-1 result and the passing
+attempt-2 result are both recorded verbatim above (§22.2) — the failed run stays failed in the
+record; nothing was waived. No private rollout, preparation, auth or job body entered the
+repository at any point in Tasks 1–6.
