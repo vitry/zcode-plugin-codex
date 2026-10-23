@@ -12794,3 +12794,1580 @@ recorded verbatim in §22.2's dated completion — the failed run stays failed i
 nothing was waived. This records commit itself adds only docs bytes: the tracked `tests/` and
 `tools/` sorted-manifest digests are byte-identical to `47f0b33`'s (§22.2's dated completion), so
 no executable byte — and no raw-data surface — changed.
+
+## 23. 2026-10-23 interrupt-closure Task 1: admission/retention/sampling preregistration (offline; zero model turns)
+
+Task 1 of the [2026-10-23 plan](../superpowers/plans/2026-10-23-rescue-shell-wait-interrupt-closure.md),
+executed 2026-10-23 in the fresh worktree `.worktrees/rescue-shell-wait-interrupt-closure` (branch
+`docs/rescue-shell-wait-interrupt-closure`) at base `dba2e8ad8534b5800fd1faff98ad904f492dcf1d`.
+OFFLINE throughout: ZERO model turns, zero live launches, zero labels spent (the §21.3 ledger stays
+closed; this plan's own I/F labels are Task 4 registrations, not authorizations to launch), zero
+production/source/config edits. Changed bytes: this section and the plan's Task-1 checkbox ticks —
+nothing else (verified by the hygiene gates at §23.7). The §16.2/§19.4/§19.5/§19.6/§20.5/§21.2.3
+registrations are CITED, never re-decided; their allowances stay spent and nothing here reopens them.
+
+### 23.1 Re-pin (checkbox 1; all commands executed 2026-10-23 inside the worktree; nothing trusted forward)
+
+```text
+$ git status --short
+?? docs/superpowers/plans/2026-10-23-rescue-shell-wait-interrupt-closure.md
+?? findings.md
+?? progress.md
+?? task_plan.md
+$ git rev-parse HEAD
+dba2e8ad8534b5800fd1faff98ad904f492dcf1d
+$ /Users/zhangzikai/.codex/packages/standalone/releases/0.163.0-aarch64-apple-darwin/bin/codex --version
+codex-cli 0.163.0
+$ shasum -a 256 /Users/zhangzikai/.codex/packages/standalone/releases/0.163.0-aarch64-apple-darwin/bin/codex
+8813367285524ac798dd96d1b071aea30d58708c7226fd236cd275cf1cfdee31  /Users/zhangzikai/.codex/packages/standalone/releases/0.163.0-aarch64-apple-darwin/bin/codex
+$ git -C ../../../codex rev-parse HEAD
+dffa0deb69268ed4ac31578794c9ea897b336ae3
+$ git -C ../../../codex status --short
+(empty — clean)
+$ node tools/shell-wait-probe/driver.mjs --help
+usage: node tools/shell-wait-probe/driver.mjs --case <case> --codex <absolute executable> --source-sha <40-hex> --output <private empty directory> [--worker-duration-ms ms] [--cap-ms ms] [--poll-ms ms] [--budget-ms ms] [--status-query-timeout-ms ms] [--unclassified-structural-diagnostic 1] [--unclassified-shape-diagnostic 1] [--model <id>] [--wait-policy config-default --exec-default-ms ms] [--interrupt-baseline-selector short-window-60000 | --survival-control-selector progress-terminal] (the wait policy is valid for every registered case with its declared §16.6 combination; the interrupt selectors are valid only for rescue-interrupt at their declared windows)
+cases: rescue-baseline, rescue-long, rescue-repeat, rescue-noise, rescue-interrupt, review-wait, adversarial-review-wait, status-wait, background
+(exit 0; 816 bytes; SHA-256 afa0e66db58a9ef5576ce868266a0c5257b3cc9dad5720e5fd31fb7b4a5ff6f1)
+```
+
+- **Selected executable**: absolute realpath
+  `/Users/zhangzikai/.codex/packages/standalone/releases/0.163.0-aarch64-apple-darwin/bin/codex`
+  (`realpath` resolves to itself — a real file, not a symlink), `codex-cli 0.163.0`, SHA-256
+  `8813367285524ac798dd96d1b071aea30d58708c7226fd236cd275cf1cfdee31` — byte-identical to the §1
+  preference, §19.1 baseline and all three §21.1 launch-time verifications. The 0.163.0 evidence
+  cohort stays closable on this exact binary.
+- **Ambient CLI — recorded SEPARATELY, never blended**: `command -v codex` resolves to
+  `/Users/zhangzikai/.local/bin/codex` → realpath
+  `/Users/zhangzikai/.codex/packages/standalone/releases/0.164.0-aarch64-apple-darwin/bin/codex`,
+  `codex-cli 0.164.0`. Any future launch MUST pass the selected 0.163.0 absolute path explicitly
+  (§20.2's command shape already does); no cross-version comparability is claimed, and 0.164.0
+  behavior stays unqualified (§1's version-boundary rules unchanged).
+- **Model metadata — requested vs effective**: REQUESTED = `gpt-6.1-sol` via the `--model` seam,
+  carried by the frozen §20.2 command registration (the §15.5/§19.1 authenticated bounded discovery
+  recorded it priority 0 / list-visible; this round did NOT re-run `codex debug models` — it is an
+  authenticated network discovery and this task's limits confine discovery to `--version`/help text;
+  its re-pin remains the §20.7 pre-EACH-launch duty). EFFECTIVE model metadata: `null` — never
+  established on any retained record, and this round establishes none. If the pre-launch discovery
+  cannot resolve the approved selection, the §20.7 stop rule applies; no other model is substituted
+  here.
+- **Source pin**: `dffa0deb69268ed4ac31578794c9ea897b336ae3`, `status --short` EMPTY (clean) —
+  byte-identical to the §16.2/§19.4 trace pin, so every §23.3 citation reproduces at the CURRENT
+  checkout without a moved-pin re-derivation. No source fetch/build/edit.
+- **Applicability boundary**: the exact 0.163.0 executable is present, executable, and reports its
+  identity at the `--version`/help level (bounded read-only discovery only — no auth/config value
+  read, no model turn, no install/build). Account/model-path support on that binary is re-pinned at
+  launch time per §20.7; if the binary disappears or stops being supported, that sub-step STOPS with
+  the recorded boundary — never a substitute executable.
+
+### 23.2 Retained fixture-owned records examined OFFLINE; the frozen two-line admission family (checkbox 2)
+
+**Retained corpus (all read-only, all digests re-verified 2026-10-23):**
+`/tmp/shell-wait-closure-i.7O0WIl/rescue-interrupt.record.json` — 12730 bytes, SHA-256
+`731feb13a4687b86f07bf2995710d271feb942a0646cd970f1c2ea4743837a72`, byte-identical to the §21.1
+record digest; the O1/O2 record dirs (`/tmp/shell-wait-closure-o1.YWUis4/`,
+`/tmp/shell-wait-closure-o2.GOsEp6/`); the Task-1/4/5 provenance artifacts
+(`/tmp/shell-wait-evidence-closure/{task1,task4,task5}/`, including the three launch-time
+`debug-models` raw catalogs and the I driver-stdout copy of the record). **Available bytes** are the
+redacted typed record only. **Discarded bodies, named**: the unclassified cell's RAW source (never
+persisted — the fail-closed excerpt withholds it by construction,
+`structuralExcerptForUnclassifiedInput`), all rollout bytes (`evidence.rolloutCount: null` and
+`evidence.childToolCallCount: null` on the record — the record has NO top-level `collection` key;
+rollouts disposed with the fixture home), the interrupt target text (23 chars suppressed).
+The withheld-body digest `e9856478c99a23a93f7997d75418f5352c74cf6cb894df671b908ed032116e84` and the
+2-line/231-byte lengths are a one-way recurrence fingerprint and structural bounds — they do NOT
+reconstruct the deleted raw source, no reconstruction from 231 bytes or from the hash was attempted
+or is acceptable, and no claim below rests on one.
+
+**What the retained diagnostic establishes (record `evidence.excerpts[0]`, verbatim fields):**
+classification `unclassified-script-cell`, tool `exec_command`, `bodyType: string`, 2 input lines,
+231 input bytes, directive absent; structural diagnostic `wholeBodyStatementMatch: false` with
+exactly ONE content-line fact — line 1, prefix class `const-r-await` (the anchored fixed-token test
+`/^const r = await tools\./u`), `braceDepthEnd: 0`, `endsWithSemicolon: true`,
+`tools: ["exec_command"]` — and NO `withheldLines` (so the second physical line is blank: the
+trailing-newline artifact); shape diagnostic v1 `coverage: complete`, `statementCount: 1` with one
+statement `{head: bound-await, tool: exec_command, argument: literal-object, lexical: complete,
+tail: text-binding}`, `bindingEquality: equal`, `parserStage: output`, `wholeInputConsumed: true`,
+`retention: full`.
+
+**Mechanism discrimination (sources read + empirical probes against the REAL modules, offline,
+temp-file only):** the shape classifier's emission head tolerates whitespace the pinned parser does
+not (`EMISSION_HEAD_PATTERN = /^text(?![\p{ID_Continue}$_])\s*\(/u` in shape-diagnostic.mjs vs
+`WRAPPER_PATTERN`'s literal `text\(` in evidence.mjs), and `diagnoseParserStage`'s own `output`
+stage is defined as exactly this family — a pinned wrapper head whose emission the existing grammar
+mechanically rejects (its doc comment names `text (r)` verbatim). Probes run through
+`parseCallStatements`/`inspectCallShape`: the forms `…exec_command({…});␠text (r);` and
+`…exec_command({…});␠text(␠r␠);` REPRODUCE THE ENTIRE retained signature (parser REJECTED;
+shape `{head: bound-await, tail: text-binding, stage: output, bindingEquality: equal,
+statementCount: 1}`), while the candidate confounds do NOT reproduce it and are thereby EXCLUDED as
+the historical cause: CRLF line endings and trailing-line whitespace are admitted by the per-line
+trim (stage `parse-accepted`); a canonical `text(r);` is admitted outright; and the blank-line
+positions do not reproduce the recorded signature either — a blank line BETWEEN the declaration and
+the emission lands at stage `output` with `statementCount: 2` (the record shows 1), a TRAILING blank
+content line after the divergent emission keeps `statementCount: 1` but would make `inputLines` 3
+(the record shows 2), and the `residual` stage arises only for a blank content line AFTER a CANONICAL
+emission. The binding name is proven `r` (prefix class + `bindingEquality:
+equal`), the emission argument is proven exactly that identifier (`tail: text-binding` — not
+`text-stringify-binding`, not `text-public-field`), and the emission shares line 1 (only one
+content-line fact exists).
+
+**FROZEN admitted form(s) — BEFORE any Task 2 implementation:** per content line, the EXISTING
+pinned wrapper statement family with exactly ONE relaxed dimension — bounded whitespace at the
+emission junctions:
+
+```text
+const r = await tools.(exec_command|write_stdin)(<literal-object>);   ← head/argument junctions: NO added whitespace (WRAPPER_PATTERN as-is)
+                            <existing \s*> text<ws₁>(<ws₂>r<ws₃>);?   ← ws₁/ws₂/ws₃: the ONLY relaxed junctions
+```
+
+i.e. ONE `const` binding named literally `r` = ONE awaited allowlisted tools call
+(`exec_command` proven by the retained record; `write_stdin` admitted as the same pinned
+`WRAPPER_PATTERN` head family, reaching the SAME existing call-value validation) whose argument is
+ONE literal object (JSON, or the existing bounded JS-literal fallback — the existing
+`parseWrapperArguments` semantics unchanged), followed on the SAME line by the cell's final `text`
+emission of that same binding `r` (`bindingEquality: equal`). **The whitespace bound, explicit:**
+each of ws₁/ws₂/ws₃ is a run of horizontal whitespace characters (space/tab) of length 1–8 —
+ONE junction-level bound, finite and checkable; length 0 is the already-admitted canonical form,
+and a longer run stays rejected. NOTHING else is relaxed: the head/argument junctions
+(`tools.(`, the object, the declaration's `);`) tolerate NO added whitespace; the
+declaration→`text` junction keeps the EXISTING `WRAPPER_PATTERN` `\s*` (pre-existing, never part
+of this freeze); the optional emission `;` and trailing-line whitespace keep their EXISTING
+semantics (the per-line trim already admits them — excluded as the historical cause above).
+The `text(JSON.stringify(r))` alternation is part of the existing family and stays
+unchanged (its tail class differs; it was never the historical shape). A directive remains neither
+required nor relaxed (this family registers with directive absent; directive-led cells keep the
+existing rules). **Supported bounds**: tool set exactly `{exec_command, write_stdin}`; literal-object
+argument ≤ `MAX_WRAPPER_ARGUMENT_CHARS` (4096); statements per cell ≤ `MAX_STATEMENTS_PER_CELL`
+(16); blank separator lines only BETWEEN statements (existing rule); the admitted statement must be
+the cell's complete content under the existing per-line rules.
+
+**Rejected surrounding syntax (each stays fail-closed with the existing safe diagnostics):** any
+second content statement or hidden second tools call (including a later awaited poll sharing the
+cell — per-statement output/continuation ownership is preserved and a shared-cell submission is
+NEVER evidence that a later awaited poll started); loops, function bodies, template literals, or
+any non-literal/dynamic argument form; binding names other than `r`; `let`/`var` declarations;
+missing emission, mismatched emission (`bindingEquality` not-equal/unrelated/unknown), or any other
+tail form (`text(r.<field>)`, `text(String(r))`, computed access); duplicate argument keys rejected
+by the existing literal decoder; truncated input; oversized bodies; a raw invalid directive; the
+private preparation frame (its own recognized path unchanged); extra leading/trailing statements;
+blank CONTENT lines beyond inter-statement separators (the `residual` stage stays rejected).
+Task 2's RED matrix must cover exactly the plan's listed negatives against THIS frozen family.
+
+DATED CORRECTION (2026-10-23, task-2 implementation): the frozen sentence above misdescribes the
+EXISTING decoder — the retained wrapper path's bounded literal decoder (`parseWrapperArguments`)
+has ALWAYS admitted duplicate JSON/literal object keys with LAST-WINS semantics, never rejected
+them (empirically verified against the real module at this task's base commit `5766037`: the
+canonical control `const r = await tools.exec_command({cmd:"a",cmd:"b"}); text(r);` decodes to
+`{cmd:"b"}`; no duplicate-key rejection exists on any admitted wrapper path — the
+`rejectDuplicatePreparationKeys` scanner guards only the PREPARATION frame). The admitted frozen
+family therefore inherits these unchanged decoder semantics exactly as the canonical family does
+(the freeze's own rule: `parseWrapperArguments` semantics unchanged, no new decoder). The
+implementation is pinned by the differential canonical-vs-relaxed assertion in
+`tests/shell-wait-probe.test.mjs` (describe "interrupt-closure task 2: the frozen
+emission-junction wrapper family", test "the argument literal bound and decoder semantics are
+unchanged (duplicates, truncation, oversize)" — same verdict, same last-wins value
+`{cmd:"b"}`). This corrects the REPORT's description only: the frozen grammar is unchanged, the
+decoder stays byte-identical, and nothing that was rejected before becomes admitted. §23.8
+records the implementation.
+
+**Identity boundary, stated explicitly:** a synthetic family fixture that reproduces every
+structural diagnostic above is instrument proof only — it is NOT proof of historical raw-body
+identity. The lost body is named by its digest alone; only a retained raw body could prove
+identity, and none exists anywhere in the corpus (§19.2's twelve historical dirs hold none either).
+The frozen family is the DEFENSIBLE finite form the retained facts support — admitted for forward
+measurement, never as a retroactive claim about the deleted bytes.
+
+### 23.3 Source retention vs actual artifact schema, traced separately (checkbox 3)
+
+- **Source retention chain — reproduces at the current clean HEAD** (`dffa0deb…`, §23.1):
+  `handle_interrupt_agent` resolves the target, dispatches `agent_control.interrupt(...)`, snapshots
+  `previous_status` PRE-dispatch, and only then emits `SubAgentActivityItem { id: call_id,
+  agent_thread_id, agent_path, kind: Interrupted }` via `emit_sub_agent_activity`
+  (`core/src/tools/handlers/multi_agents_v2/interrupt_agent.rs:33-77`;
+  `multi_agents_v2.rs:44-52` → ItemStarted/ItemCompleted); persistence policy
+  (`codex-rs/rollout/src/policy.rs` `persisted_item_completed_event`): `ItemStarted` is TRANSIENT,
+  Paginated mode keeps EVERY item kind (`_ => Cow::Borrowed`) including
+  `SubAgentActivity(kind=interrupted)`, Legacy keeps only `FunctionCallOutput|Plan|Extension(Sleep)`
+  plus `SubAgentActivity(kind=completed)`; the installed local store's
+  `LocalThreadStore::default_history_mode` returns **Paginated**
+  (`codex-rs/thread-store/src/local/mod.rs:481-484`), and a spawned V2 Child inherits the parent's
+  mode (`core/src/agent/control/spawn.rs:823-827`). Wire shape per §19.4's serde citation
+  (`event_msg`/`item_completed` payload, `SubAgentActivity` item, payload-level
+  `completed_at_ms`, `SubAgentActivityKind` snake_case `interrupted`). Source presence remains NOT
+  an installed observation (§19.4's own rule, unchanged).
+- **Actual artifact schema of what was retained — a DIFFERENT artifact**: the persisted case record
+  (schema: `interrupt.*` closed facts, `child.durableSnapshot`, `evidence.count`/`truncated`/
+  `excerpts[]` with `evidence.rolloutCount` and `evidence.childToolCallCount` — no top-level
+  `collection` key) carries NO rollout bytes and NO host-event payloads — `evidence.rolloutCount:
+  null`, `evidence.childToolCallCount: null`; the only host-event-adjacent bytes anywhere in the
+  corpus are the
+  bounded structural/shape diagnostics of §23.2. The event's own field completeness (presence of
+  `started_at_ms`, `model`, `reasoning_effort`, `agent_path` on the REAL installed item) is
+  therefore NOT determinable from already-retained data.
+- **Installed history mode: NOT determinable from retained data** — no historical host event
+  survives anywhere (this §23.2 corpus, §19.2's twelve §18.1 dirs, §17's disposed rollouts).
+  Consequently the registered I successor trial MEASURES RETENTION AS AN EXPLICIT OUTCOME — the
+  §19.4 first-verification-step duty and §20.5 item 3 stand UNCHANGED: the captured Root rollout is
+  scanned by `admitInterruptHostDelivery` before any other layer is adjudicated; an absent item
+  fails the delivery layer closed with `host-activity-item-absent` riding the record (a POSITIVE
+  absence claim requires a COMPLETED scan of a COLLECTED rollout — never a scan that never ran).
+  No invented API is required or demanded by this registration; the §23.5 schedule adds no new host
+  reads.
+
+### 23.4 Where one unsupported cell aborts the collection, and the host facts that survive it (checkbox 4)
+
+**The abort site (actual code path, current bytes):** `inspectShellWaitEvidence`
+(tools/shell-wait-probe/evidence.mjs:3663-3686) runs a fail-closed scan over EVERY event of EVERY
+collected rollout BEFORE any linkage or statement analysis: for any `custom_tool_call` whose
+`parseCallStatements(event)` returns `null` it returns
+`inconclusive('unsupported-call-shape', …, { manualAdjudicationRequired: true, excerpt })`
+IMMEDIATELY — never reaching `inspectLinkage` (evidence.mjs:3754), the sequence analysis, or any
+host-activity work. Downstream, `mapShellWaitLiveFacts` (tools/shell-wait-probe/driver.mjs) then
+(a) derives `interruptChildThreadId`/`interruptRootThreadId` ONLY when
+`evidence.status === 'supported'` (driver.mjs:4320-4327), so `admitInterruptHostDelivery`
+(driver.mjs:4339) runs with BOTH ids null — every identity/window conjunct unestablished — and
+(b) routes the record to `interrupt.missingPrerequisite` = the collection-incompleteness reason
+(driver.mjs:4959-4962) with NO `hostDelivery` block. This is precisely §21.2.3 item 1's recorded
+outcome: ONE unclassified 2-line/231-byte cell aborted the whole evidence adjudication BEFORE the
+host-activity scan, so the installed-retention question was NOT MEASURED (never `absent`).
+
+**Independently bounded facts that can safely survive that failure (preregistered for Task 2):**
+the interrupt CALL facts `extractInterruptInteraction` derives from RAW rollouts independent of the
+whole-case verdict — `attempted`, `callCount`, family, `previousStatus`, the suppressed target, the
+attributable ordering bounds (the historical record itself proves these survive: §21.2.3 item 2 was
+recorded BEFORE the collection failure); the spawn-acknowledgement identity via
+`observeSpawnAcknowledgementIdentity(rollouts)` (pure over raw rollouts — the exact
+child/parent ids or its named inexact reason, no dependence on the supported-case verdict); the
+host-activity ITEM facts via the admission's own bounded scan (`itemPresent`,
+`interruptedItemCount`, `idJoin`, `agentThreadIdMatch`, `timed`, `completedAtMs`, per-conjunct
+named reasons) wherever its OWN inputs — raw rollouts + the interaction — exist; the collection
+fact that rollouts WERE captured (the historical failure was in ADMISSION, not capture —
+`rolloutCount` may be positive while adjudication is `inconclusive`); and the passive durable
+snapshot, which already runs independent of evidence status (§21.2.3 item 5).
+
+**What does NOT survive, verbatim limits:** this does NOT qualify the Child call sequence —
+exactly-one-call as a sequence-discipline positive, the original-handle/pending-window
+confirmation, and the §16.3 case contract all require the supported-case analysis, so hidden
+additional calls, ambiguous IDs, or incomplete collection still BLOCK the relevant positive
+conjuncts (each stays named-unestablished, never guessed). Unsupported is NEVER relabeled `absent`
+or "unrelated": an unadmitted item or an aborted scan keeps its named reason on the record; only a
+completed scan of a collected rollout can establish a positive absence. A survivor fact earns no
+qualification credit by itself — the delivery layer's positives still require the full §19.4
+admission set, and Task 2 must expose the layer-level facts WITHOUT returning a bare overall
+failure (the plan's Task-2 checkbox 4 contract).
+
+### 23.5 Frozen pre-cleanup passive sampling schedule (checkbox 5; frozen BEFORE any cleanup)
+
+**Machinery (existing only — no new lifecycle engine):** the passive durable reader
+`readDurableObligationSnapshot` (closure-observation.mjs:1474, `DURABLE_SNAPSHOT_VERSION` 1 — never
+creates, chmods, locks, waits, writes, or reconciles; §19.5/§19.8), the supplier identity join
+`interruptDurableSnapshotSupplier` (driver.mjs:2239 — the OBSERVED exact spawn acknowledgement, owner
+= the observed PARENT, executor verified against the observed Child), the held-turn boundary
+machinery (`cleanup.cleanupBoundaryAtMs`, the min-maintained EARLIEST termination-initiation
+instant), and the read's own completion stamping + fence (`startDurableSnapshotRead`/
+`buildDurableSettlementLayer`; the join's `durableReadPostCleanupBoundary`). Rollout observation
+stays the driver's existing collection — **NO extra Child tool polls of any kind** (no new
+`write_stdin`, no Status substitute, no hidden polling script).
+
+**Frozen schedule:**
+
+1. **Baseline** — ONE passive read starts as soon as the exact identity is established (the
+   supplier non-null; in the interrupt case this is the observed spawn acknowledgement). Identity
+   never establishes ⇒ the baseline is OMITTED with its named reason
+   (`durable-identity-unobserved`), never guessed at another job.
+2. **Post-delivery reads** — after the attributable native delivery bound (the admitted host item's
+   `completedAtMs`, §19.4/§19.6 discipline) and after each attributable settlement observation,
+   further passive reads run at an interval of **≥1000 ms between read starts**, each under the
+   unchanged passivity fence.
+3. **Final independent observation** — the LAST read must COMPLETE strictly BEFORE the earliest
+   termination-initiation boundary (`cleanupBoundaryAtMs`). Termination-initiation boundaries are
+   exactly the existing recorded ones: budget abort, hold-deadline observation cleanup,
+   status-query-deadline cleanup, early-exit termination cleanup, fixture disposal; normal watcher
+   teardown without a recorded boundary is NOT one (§22 round-3 semantics). The fence is the
+   code-enforced one: a read completing at/after the boundary is a CLEANUP-TIME observation earning
+   NO qualification credit (`durableReadPostCleanupBoundary`, the §21.2.3 item 8 overlay made
+   mechanical).
+4. **Bounds** — maximum **600 read attempts** total, all inside the existing **1200000-ms
+   experiment budget** (the shared budget signal; sampling never extends it and never delays
+   cleanup: a read still in flight at the boundary/budget is abandoned at the signal with the named
+   omission). At most **32 transition/sample summaries** are retained per case, each a bounded
+   closed-fact block (aggregate, per-layer duty states, `executorLinkage`, job presence, the
+   read's own started/completed timestamps, fingerprint-equality, named reasons). Reads beyond the
+   attempt cap, budget-expired reads, unreadable suppliers, and never-resolving suppliers are
+   OMITTED/TIMED-OUT BY NAME — observer reasons riding the record, never business failures, never
+   zeros.
+5. **Per-snapshot integrity** — every snapshot keeps its OWN started/completed timestamps (the
+   completion instant is the fence input, never the join instant) and its own consistency/identity
+   proofs: the before/after partition fingerprint equality, `executorLinkage`, the owner-index
+   resolution state (exact/ambiguous/missing/unreadable named), and `lockState`
+   observed-never-acquired. Sample count NEVER implies state convergence — aggregates are
+   per-snapshot facts, never extrapolated across reads.
+6. **Duty/process evidence — production-defined only** — the §19.5 predicates (TERMINAL winner,
+   `validStopIntent`, `isMarkedRunnerClaim`, `endedObligationSettled`, writable-guard state,
+   binding currency) plus retained safe identifiers (`childPid` recorded, aliveness NEVER probed —
+   no lease acquisition, no signal). **No passive lease API is demanded or invented**: none exists
+   in the production path; an applicable layer the existing supported evidence cannot establish
+   stays named-unestablished (the Companion local-reaping limitation class, §19.9/§21.2.3).
+
+> **Dated annotation (2026-10-23, the Task-3 implementation's self-review round 1 — the frozen
+> clauses above stand unchanged; three bound interpretations SETTLED by the implementation, report
+> §23.9):** clause 2's ≥1000-ms floor is enforced by the scheduled wait PLUS one actual-clock
+> re-check (a scheduler that resolved earlier than requested gets the remainder once more; a
+> still-short start is the named `intervalShortfalls` fact on the sampling block — never a silent
+> compression; the primary mechanism remains the scheduler contract, the production default being a
+> real `setTimeout` sleep). Clause 4's "every omission named" extends to the omission ledger
+> itself: at most 16 omission entries are retained per block (an ACCOUNTING bound — the frozen
+> retention ceilings are the 600 attempts and the 32 summaries, not an omission count) and drops at
+> that bound are the named `omissionsTruncated`/`omissionsDroppedCount` facts. A post-baseline
+> attempt returning the identity-unobserved block (a mid-run rollout-load failure) is the named
+> `durable-read-identity-unobserved` omission — never an anonymous attempt-count bump.
+>
+> **Dated annotation (2026-10-23, the codex backfill review — the frozen clauses above stand
+> unchanged; the clause-4 summary-RETENTION mechanism settled, report §23.9):** the ≤32-summary
+> ledger ROLLS at the cap instead of dropping — the baseline and every state-transition summary
+> (a sample whose aggregate differs from the previous sample's observed aggregate; the additive
+> `transition` field) are pinned, a new summary at the cap rolls off the oldest non-baseline
+> non-transition summary (preferring a superseded same-aggregate member), and the roll-off rides
+> the named `summariesRolledOff` count. The mechanism exists because identity establishes
+> promptly while the §16.4 control clock schedules the interruption at ~80 s: a flat
+> drop-at-the-cap ledger would evict every post-delivery observation — the reads this schedule
+> exists to capture — unrecoverably before fixture disposal. Clause 4's cap discipline is
+> unchanged (≤32 retained, cap exhaustion still named); additionally, no attempt may run past an
+> already-recorded termination boundary or an already-aborted shared signal (the named
+> `durable-sampling-skipped-termination-already-recorded` omission), and sample summaries retain
+> the whitelisted cancellation-provenance fields the REAL reader publishes on the validated job
+> record (`stopCause`, `stopIntent.cause`, `stopIntent.requestedAt`) — never the record body.
+
+### 23.6 Preregistered expected outcomes per layer (checkbox 6)
+
+- **Native turn/cell/poll responsiveness**: the existing `RESPONSIVENESS_BOUND_MS` 60000-ms bound
+  (release-qualification.mjs:806, oracle v2) STAYS the oracle of record and STAYS **REGISTERED-BUT-
+  NOT-YET-APPLICABLE** until a live I record first satisfies the §19.4 admission set (§20.5 item 6
+  status re-confirmed: Task 1 of THIS plan did not — and could not — confirm installed
+  applicability). When applicable: delivery-to-settlement measured on ONE established ordering
+  (§19.6 join rules; null stays unestablished, never zero); no settlement by 60000 ms of the
+  attributable delivery bound is recorded NOT responsive — never retried into responsiveness.
+  **The 60000-ms figure and the §23.5 read budget are OBSERVATION bounds only** — production has NO
+  aggregate delivery-to-settlement deadline (§16.5's composition table stands) and this
+  registration creates no new production timeout, detector, or ceiling.
+- **Downstream settlement — separate layers on the ACTUAL production path**: the Companion REMOTE
+  outcome joins ONLY from the production-published durable terminal winner through a verified
+  executor linkage; `localProcessReaping` stays the registered named-unobservable `null`. The
+  durable obligations layer follows the §19.5 predicates over the §23.5 pre-boundary reads.
+  **Expected legitimate outcome shapes, preregistered**: "responsive cell + surviving unresolved
+  guard" (a retained writable guard is SAFE PRESERVATION — never failed settlement, never full
+  settlement); a natural terminal winner that settles after the interrupt is recorded NATURAL —
+  cancellation is NOT required and is never fabricated when the legitimate terminal winner is
+  natural success (the `natural-completion-misclassified-as-cancelled` blocker stands); the
+  interrupt itself persisting NO durable stop intent (§16.2) is the EXPECTED delivery-side result,
+  and a real `'session-end'` stop intent observed later is a SEPARATE authorized act, never
+  interrupt settlement.
+- **Genuine not-applicable duties — production-path evidence required**: a duty is
+  `not-applicable` ONLY with its demonstrated production reason on the record (the retained §21.2.3
+  item 5 shapes: `runnerCleanupDuty: not-applicable` requires NO marked runner claim
+  (`rescueRunnerVersion: null`); `writableGuard: not-applicable` requires the production
+  not-retained state; `lifecycleEpoch: not-applicable` requires no epoch declared for the
+  observation). Local/remote/guard UNKNOWNs are never silently discarded: unknown stays
+  named-unestablished (null, never zero, never folded into another layer).
+- **Delivery layer**: admitted (all six §19.4 conjuncts on a live record) — or the specific named
+  failure (`host-activity-item-absent` only after a completed scan; `-unjoinable`/`-unadmitted`
+  reasons per §19.9's registered limitations; DIRECT-mode is the only qualified path). A delivery
+  acknowledgement alone qualifies nothing downstream (§20.5 item 7 discipline unchanged).
+- **Survival control**: the byte-unchanged §16.4 emission-tag semantics; the final read after
+  settlement reported verbatim; survival proven only by an emission tag strictly after the delivery
+  bound.
+- **Sampling fence**: pre-boundary-completed reads joined later retain their facts and can earn
+  credit; at/after-boundary reads are cleanup-time observations (zero credit); missing timing,
+  incompatible clocks, torn snapshots, or uncertain origin stay unestablished.
+
+### 23.7 Task 1 exit and hygiene gates
+
+**Exit (plan Task 1):** the bounded grammar (§23.2), retention (§23.3), join/abort (§23.4) and
+sampling (§23.5) predicates are frozen with named unavailable mechanisms (installed retention, the
+effective model metadata, event field completeness, Companion local reaping) — not an assumption
+that a parser patch alone makes Gate D pass. Independent offline work continues even where a
+supported host seam is unavailable. No live case, production change, or label consumption follows
+from this section.
+
+**Hygiene gates (executed 2026-10-23 on the exact changed docs bytes):**
+`node scripts/check-line-endings.mjs` → *"LF line endings verified in 543 tracked files."*, exit 0
+(542 → 543 with this plan file's baseline commit); `git diff --check` → exit 0, no output. The
+research/selection/lint/typecheck suites were NOT run: this task changed ONLY the two documentation
+files (this report and the plan's Task-1 checkboxes) — zero modifications under `tools/` and
+`tests/`, so no executable bytes changed and §22.2's final-bytes battery remains the gate of record
+for the unchanged implementation (the §19 Task-1 precedent). The prohibited tracked-path diff
+against `dba2e8a` is EMPTY for `scripts/ hooks/ skills/ agents/ .codex-plugin/ marketplace/
+docs/superpowers/specs/ package.json npm-shrinkwrap.json` (docs-only change set). Untracked scratch
+(`findings.md`, `progress.md`, `task_plan.md`) preserved untouched and never staged.
+
+### 23.8 2026-10-23 interrupt-closure Task 2 executed: the frozen emission-junction family implemented and the independent host facts exposed (offline; zero model turns)
+
+Task 2 of the [2026-10-23 plan](../superpowers/plans/2026-10-23-rescue-shell-wait-interrupt-closure.md),
+executed 2026-10-23 in the same worktree on top of §23's Task-1 commit `5766037`, and committed as
+the task's single implementation commit (message: "research: admit the bounded emission-junction
+call form and expose independent host facts (interrupt-closure task 2)", amended in place with
+this registration). OFFLINE throughout: ZERO model turns, zero live launches, zero labels spent
+(the §21.3 ledger stays closed; the Task-4 I/F registrations are untouched). Production
+`scripts/`, `hooks/`, `skills/`, `agents/`, config, snapshots, dependencies, the spec and the
+Codex source stayed read-only (the prohibited tracked-path diff against `dba2e8a` is EMPTY — gate
+list below); scratch (`findings.md`, `progress.md`, `task_plan.md`) preserved untouched. Changed
+bytes: `tools/shell-wait-probe/evidence.mjs`, `tools/shell-wait-probe/driver.mjs`,
+`tests/shell-wait-probe.test.mjs`, this §23.2 correction + this section, and the plan's Task-2
+checkbox ticks — nothing else.
+
+- **Bounded whole-body admission (§23.2 grammar as implemented; plan checkbox 2)** —
+  `tools/shell-wait-probe/evidence.mjs:56-83` (the `EMISSION_JUNCTION_WRAPPER_PATTERN` freeze
+  comment) and `:710-729` (`parseCallStatements`' whole-body recognition, tried BEFORE the
+  directive strip and the line splitter on the RAW bytes — no strip-first bypass): exactly the
+  frozen form — the existing WRAPPER statement family with ONE relaxed dimension, `text<ws1>(<ws2>r<ws3>)`
+  with space/tab runs of length 0–8 at the three emission junctions only; head/argument junctions
+  copied verbatim (zero tolerance); the declaration→`text` junction keeps the existing same-line
+  `[ \t]*`; tools exactly `{exec_command, write_stdin}`; binding pinned `r` both sides (the
+  equality tail is structural); the `text(JSON.stringify(r))` tail UNRELAXED; directive absent
+  (directive-led cells keep the existing rules); one literal-object argument ≤ 4096 through the
+  SAME unchanged `parseWrapperArguments`; one trailing `\n` artifact admitted; interior newline /
+  trailing blank line / CRLF-split rejected; a whole-body match failing argument decode falls
+  through to the unchanged per-line machinery (additive only — every previously-admitted body
+  keeps its verdict, every unsupported form keeps its fail-closed diagnostics with the body
+  withheld). Per-statement output/continuation ownership is the canonical single-statement one; a
+  shared-cell submission is never evidence that a later awaited poll started.
+- **Independent host facts through the SAME path (§23.4 as preregistered; plan checkboxes 3–4)** —
+  `tools/shell-wait-probe/driver.mjs:2273-2284` (`INTERRUPT_PARTIAL_FACTS_VERSION = 1`, the NEW
+  offline-facts adjudicator version, provenance-separated from the live observer digest and from
+  any installed-trial stamp), `:4698-4703` (`wrappedInterrupt` projected beside `family`),
+  `:4741-4775` (the abort-case exposure: when the collection COMPLETED — `rolloutsFailureReason`
+  null, rollouts captured non-empty — and the whole-case adjudication aborted `inconclusive`, the
+  versioned `interrupt.partialFacts` block carries the spawn-acknowledgement identity
+  (`observeSpawnAcknowledgementIdentity`), the capture-vs-admission facts
+  (`rolloutCount` positive while `childToolCallCount` stays null), the adjudication reason, and
+  the source-rollout SHA-256 digest; `:5000-5051` (the fall-through mapping now keeps the
+  raw-rollout call facts — `attempted`, `callCount`, `family`, `previousStatus`, `target`,
+  `orderingBound` — while the delivery OUTCOME facts stay null, corrects `missingPrerequisite` to
+  name the admission abort instead of a collection failure, and lets the §19.4 admission block
+  persist with its per-conjunct named reasons; pre-turn/collection-failure behavior stays
+  byte-identical), `:1065-1074` (the record serializer persists `partialFacts`, schema-additive).
+  The NOT-qualified limits hold verbatim: the whole case stays inconclusive (`unsupported-call-shape`),
+  an unadmitted item never becomes `absent` (a positive absence rides only a completed scan of a
+  collected rollout — `host-activity-item-absent`; a bounded scan keeps
+  `host-activity-item-bound-exceeded` with absence unestablished; a never-run scan keeps
+  not-measured with no fabricated block), a hidden second attempt keeps
+  `host-activity-call-count-not-one`, a wrapped interrupt keeps
+  `host-activity-wrapped-interrupt-unjoinable`, and the Gate-D join/oracle refuse the delivery
+  layer on the persisted facts (the coexistence test asserts qualified=false with
+  `host-activity-unadmitted` + `previous-status-snapshot-only`, unconfirmed window, null
+  settlement/companion/winner).
+- **Tests** — `tests/shell-wait-probe.test.mjs:25042-25622` (describes at `:25055` and `:25346`;
+  the CRLF test at `:25125`), two describes, 23 tests: describe
+  "interrupt-closure task 2: the frozen emission-junction wrapper family (report §23.2)" (13
+  tests — the plan's checkbox-1 matrix: changed binding/sink name; per-junction 0/8/9 whitespace
+  bounds; same-line rule; trailing `\n` artifact vs trailing blank line; trailing-line whitespace;
+  CRLF line endings (the CRLF-terminated frozen cell reaching the same call-value parse as its LF
+  twin, interior CRLF split rejected — added by the task-2 self-review round); head/argument
+  zero tolerance; tool set; unrelaxed stringify tail; binding pinned `r`; let/var; mismatched/
+  computed/String tails; loops/functions/template/dynamic arguments; extra leading/trailing
+  statements; hidden second call; second awaited poll; blank-separator rule unchanged; duplicate
+  argument keys (differential canonical-vs-relaxed, last-wins per the §23.2 dated correction);
+  truncation; 4096/4097 argument bound; raw invalid directive; directive-led cell unchanged;
+  preparation path unchanged; e2e same-call-value validation; e2e extra-field discipline
+  identical to canonical; e2e over-bound fail-closed with body withheld) and describe
+  "interrupt-closure task 2: independent host facts survive an aborted evidence adjudication
+  (report §23.4)" (10 tests — raw-call facts + capture-vs-admission through the real
+  `inspectShellWaitEvidence` → `mapShellWaitLiveFacts` join; per-conjunct host-item facts;
+  the versioned partial-facts block; record persistence reloaded from disk; the
+  unknown-cell-coexists-with-observed-item test through the persisted record →
+  `nativeInterruptionGateDInput` → `evaluateNativeInterruptionSettlement` path with NO false
+  admitted window / exactly-one-call claim / settlement / adoption; positive absence;
+  scanner-not-reached; bounded scan; hidden extra interruption; wrapped unjoinable).
+- **RED→GREEN evidence** — parser slice: the admission tests failed on the pre-implementation
+  bytes with `parseCallStatements` returning null (`the frozen family must admit: …`, deepEqual
+  null-vs-admitted); the end-to-end tests failed with `actual: 'inconclusive', expected:
+  'supported'` and `{"reason":"unsupported-call-shape",…}` (the §21.2.3 item-1 abort),
+  verified by temporarily stashing the evidence.mjs change; host-fact slice RED: `attempted`
+  expected true got null, the collection-failure `missingPrerequisite` text unchanged,
+  `partialFacts` and `wrappedInterrupt` undefined. The self-review CRLF test was confirmed
+  PASSING on the implementation bytes and proven falsifiable by a mutation check (removing the
+  pattern's `\r?` tolerance flips it RED with "the CRLF-terminated frozen cell reaches the same
+  existing call-value validation as the LF form"), then the implementation was restored
+  byte-identically.
+- **Gates (final amended bytes, all exit 0)** — focused describes 13/13 and 10/10;
+  `npm run test:shell-research` 893/893 pass, 70 suites, 0 fail, 0 skipped (was 870/870 before
+  this task); `node --test tests/test-selection.test.mjs` 6/6; `npm run lint` clean;
+  `npm run typecheck` clean; `node scripts/check-line-endings.mjs` (543 tracked files, LF);
+  `git diff --check` clean; the prohibited tracked-path diff against `dba2e8a` (`scripts/ hooks/
+  skills/ agents/ .codex-plugin/ marketplace/ docs/superpowers/specs/ package.json
+  npm-shrinkwrap.json`) EMPTY. Ambient-identity isolation preserved: the new tests spawn nothing
+  beyond the established `runShellWaitCase` createFixture/executeLiveCase stub pattern and inherit
+  the file's `isolatedBaseEnv()` discipline; no fixture launcher, stop protocol, sampling, new
+  Child poll, Status substitute, binding identity, MCP reopening, operation timeout or inactivity
+  detector was added (Tasks 3's scope untouched).
+- **Versioning** — the new offline facts carry `INTERRUPT_PARTIAL_FACTS_VERSION = 1`
+  (`interrupt-partial-facts`, basis `raw-rollout-fixture-proof`) plus the original source-rollout
+  digest, never the old observer stamp; `RELEASE_QUALIFICATION_VERSION` 1,
+  `NATIVE_INTERRUPTION_ORACLE_VERSION` 2 and `SHAPE_DIAGNOSTIC_SCHEMA_VERSION` 1 are unchanged
+  (no demonstrated offline-fact defect in them — §23.2's dated correction above is the one report
+  -side fix, and it changes no executable byte).
+- **Status** — the instrument repair is implemented and regression-pinned; this does NOT close
+  Gate D, does not qualify the Child call sequence (hidden additional calls, ambiguous IDs, or
+  incomplete collection still block the positive conjuncts), and creates no production change.
+  The Task-4 live I/F labels stay unspent; the §23.5 schedule implementation is Task 3.
+
+> **Annotation (2026-10-23, codex round-2 review of this task's §23.4 exposure mapping; the fix is
+> folded into this task's commit by `git commit --fixup` + autosquash rebase (pre-rebase
+> identifiers: Task 2 = `27e1e7b`, Task 3 = `c86c912`; final identifiers recorded in the final
+> verification records); the frozen registration above is unchanged — its `:5000-5051`
+> registration cite reads the Task-2-era bytes, the mapping now lives at `driver.mjs:5529-5565`).**
+> Finding, verbatim: "[P2] Keep interrupt absence unknown after an unclassified cell —
+> tools/shell-wait-probe/driver.mjs:5532-5537. When the only interrupt appears in an unsupported
+> wrapper such as `const x = await tools.interrupt_agent({...}); text(x);`, the extractor skips that
+> cell. This branch nevertheless copies `attempted: false` and retains the definitive 'delivery was
+> not attempted' message. Previously, this failure path kept `attempted` null. The new projection
+> therefore turns parser uncertainty into negative evidence, potentially misdiagnosing an actual
+> interruption despite the overall inconclusive verdict. Preserve recognized attempts, but keep
+> absence unknown when unclassified cells could contain interrupt calls." CONFIRMED — in the
+> abort-exposure branch the spread of the extractor's no-call defaults (`attempted: false`,
+> `callCount: 0`, `wrappedInterrupt: false`, the definitive delivery-not-attempted
+> `missingPrerequisite`) projected the skipped cell's unclassifiability as negative evidence. FIXED
+> TEST-FIRST (TDD, the fix belongs to this Task-2 commit): the exposure mapping now splits by
+> recognized attempt — a RECOGNIZED call keeps the Task-2 keeper branch byte-for-byte
+> (`attempted: true`, `callCount`, `family`, `previousStatus`, the §19.4 admission block all
+> preserved), while a SKIPPED cell (no recognized call) keeps absence UNKNOWN: `attempted`,
+> `callCount`, `wrappedInterrupt` and the derived `previousStatusTerminal` stay `null` (never
+> false/0), and the carried message names the uncertainty ("… the whole-case evidence adjudication
+> aborted on an unsupported call shape …: whether an owning-session interrupt was attempted stays
+> unknown — the unclassified cell could hold the interrupt call, so the absence of a recognized
+> interrupt is parser uncertainty, never negative evidence …"), never the definitive
+> delivery-not-attempted claim; the §19.4 admission block still never rides without a recognized
+> call, and `interrupt.partialFacts` still carries the spawn identity, capture-vs-admission facts
+> and source-rollout digest. SIBLING-FIELD SWEEP (same mapping, same uncertainty-to-negative
+> standard): `callCount: 0` and `wrappedInterrupt: false` were the same conversion and are nulled;
+> `previousStatusTerminal: false` (derived from the unknown `previousStatus`) is nulled to the same
+> standard (the interrupt typedef documents it schema-additively as `boolean | null` alongside
+> `wrappedInterrupt?: boolean | null`); `family`, `previousStatus`, `target.kind`,
+> `exactTargetMatch`, `exactTargetMatchBasis`, `settled`, `settledBasis`, `pendingIntervalMs`,
+> `deliveryToSettlementMs` and `timingBasis` were verified ALREADY unknown (null) without a
+> recognized call — no fix needed; `orderingBound` stays as extracted (the Child-observation
+> binding fact — `false` is the unestablished stance, never a call-absence claim);
+> `unreadableContinuationObserved` stays observation-scoped ("no decoded continuation response
+> failed its own decode" — independent of call recognition); `requested: true` is the case label,
+> not evidence. RED (verbatim, on the pre-fix bytes): the focused describe
+> "interrupt-closure task 2 codex round 2: interrupt absence stays unknown after an unclassified
+> cell (report §23.8)" (`tests/shell-wait-probe.test.mjs:25769`, one test, own ambient identity,
+> real `inspectShellWaitEvidence` → real `mapShellWaitLiveFacts` join) failed with
+> `AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:` / `  false !== null` —
+> `facts.interrupt.attempted` was `false`, expected `null`, at the scenario-1 assertion; the same
+> test's scenario-2 keeper control (`interrupt_agent` recognized direct call through the SAME
+> aborted-adjudication mapping) passed GREEN before and after the fix (`attempted === true`,
+> `callCount === 1`, `family === 'v2'` preserved). The pre-existing §23.4 test "a scan that never
+> ran (no attempted call) stays not-measured — never a fabricated absence" had pinned the buggy
+> conversion in the SAME abort path (`attempted === false` + a `/delivery was not attempted/`
+> match) and was updated to the unknown standard in the same fixup (its post-fix RED:
+> `null !== false`); its no-fabricated-admission and spawn-identity assertions are unchanged.
+> Gates on the final rebased bytes (all exit 0): focused describe 1/1; the five gate describes
+> 69/69 (frozen family 13 + host facts 10 + round-2 1 + Task-3 sampling 18 + native delivery
+> wiring 27); `npm run test:shell-research` 915/915 pass, 72 suites (914/914 before this fix);
+> `node --test tests/test-selection.test.mjs` 6/6; `npm run lint` clean; `npm run typecheck`
+> clean; `node scripts/check-line-endings.mjs` (543 tracked files, LF); `git diff --check` clean;
+> the prohibited tracked-path diff against `dba2e8a` EMPTY. Scratch (`findings.md`, `progress.md`,
+> `task_plan.md`) untouched; nothing pushed.
+
+### 23.9 2026-10-23 interrupt-closure Task 3 executed: the §23.5 pre-cleanup passive sampling schedule implemented and the strict settlement fence closed in both joins (offline; zero model turns)
+
+Task 3 of the [2026-10-23 plan](../superpowers/plans/2026-10-23-rescue-shell-wait-interrupt-closure.md),
+executed 2026-10-23 in the same worktree on top of §23.8's Task-2 commit `fc3a09e`, and committed as
+the task's single implementation commit (message: "research: sample passive settlement state
+pre-cleanup and enforce the strict settlement fence (interrupt-closure task 3)"). OFFLINE throughout:
+ZERO model turns, zero live launches, zero labels spent (the §21.3 ledger stays closed; the Task-4
+I/F registrations are untouched). Production `scripts/`, `hooks/`, `skills/`, `agents/`, config,
+snapshots, dependencies, the spec and the Codex source stayed read-only (the prohibited tracked-path
+diff against `dba2e8a` is EMPTY — gate list below); scratch (`findings.md`, `progress.md`,
+`task_plan.md`) preserved untouched and never staged. Changed bytes:
+`tools/shell-wait-probe/driver.mjs`, `tests/shell-wait-probe.test.mjs`, this section, and the plan's
+Task-3 checkbox ticks — nothing else. `fixture.mjs` (`1b7b030d…`),
+`closure-observation.mjs` (`46b7f5e2…`), `release-qualification.mjs` (`5963d65b…`) and
+`evidence.mjs` (`33b0f6ae…`) are BYTE-IDENTICAL to the Task-2 tree (verified by
+`git diff fc3a09e --stat` over those four files + `tests/test-selection.test.mjs`: EMPTY) — the
+schedule reuses the existing passive reader, supplier seam, boundary machinery and fence without a
+single changed byte in them, exactly the §3 file-responsibility table's closure-observation rule
+("extend only a demonstrated missing read fact": no reader change was demonstrated necessary, so
+none was made).
+
+- **The strict fence closed in the OFFLINE replay (plan Task-3 checkbox 3; the online fence needed
+  no change)** — `nativeInterruptionGateDInput` (tools/shell-wait-probe/driver.mjs:2785-2807,
+  :2952-2954): when a cleanup boundary IS recorded, the durable snapshot must now PROVE a finite
+  completion instant strictly before it. The DEMONSTRATED defect: the online fence
+  (`buildDurableSettlementLayer`) already refused an unstamped completion (`completionAtMs === null`
+  arm) and any at/after-boundary completion (`>=`), but the offline replay credited a snapshot with
+  a MISSING or non-finite `completedAtMs` against a recorded boundary (the fence was "established
+  only when both endpoints exist" — an unprovable timing endpoint silently passed as pre-boundary).
+  Now: a missing/non-finite instant (a foreign clock representation is never parsed or normalized)
+  withholds the Companion outcome, the terminal winner and the obligations aggregate with the named
+  `durable-read-timing-unestablished` basis riding the join, and a snapshot whose own fingerprint
+  inequality rode the record (`passive.snapshotEqual === false` — torn, §19.5) is refused through
+  the established executor-linkage gate even under a `settled` aggregate label. Equality and later
+  samples never qualify (the pre-existing `>=` arm — the plan's pinned contract
+  `record.child.durableSnapshot.completedAtMs = record.interrupt.cleanupBoundaryAtMs` ⇒
+  `durableObligations: null` + `companionOutcome: null` was ALREADY code-enforced and stays pinned
+  by the existing overall-review-fix-1 test); a genuinely completed pre-boundary read keeps full
+  credit (unchanged); no recorded boundary keeps the prior behavior (the round-3 natural-completion
+  semantics). Fixture alignment: the `gateDRecord` pipeline factory now builds the PRODUCTION
+  snapshot shape (a credited persisted snapshot always carries its own `completedAtMs` —
+  buildDurableSettlementLayer stamps it; §21.2.3's real record carried it) and its "no comparable
+  boundary" keeper was re-pointed to the TRUE no-boundary shape (the boundary endpoint deleted) —
+  recorded, no guard weakened.
+- **The §23.5 pre-cleanup passive sampling schedule implemented (plan checkboxes 1-2)** —
+  frozen bounds as exported constants (driver.mjs:2229-2262): `DURABLE_SAMPLING_VERSION` 1,
+  `DURABLE_SAMPLING_MIN_INTERVAL_MS` 1000 (the clause-2 ≥1000-ms floor, applied conservatively to
+  EVERY consecutive attempt start — identity probes included), `DURABLE_SAMPLING_MAX_ATTEMPTS` 600,
+  `DURABLE_SAMPLING_MAX_SUMMARIES` 32, and the closed producer map
+  `DURABLE_SAMPLING_ENABLED_CASES` = {rescue-interrupt} (the §20.8 one-definition-site precedent).
+  The loop `startDurableSampling` (driver.mjs:2339-2596): started CONCURRENTLY with the held turn
+  immediately after launch (driver.mjs:1506-1516) — and NEVER past an already-recorded
+  termination: a boundary recorded while `input.launch()` was still pending (or an already-aborted
+  shared signal) skips the sampler before its first supplier call with the named
+  `durable-sampling-skipped-termination-already-recorded` omission (driver.mjs:2414-2427, codex
+  backfill review) — never at the fake-worker hold's end and never
+  after a termination branch has started (the §21.2.3 defect, now fixed); the BASELINE is the first
+  attempt whose result is not the named `durable-identity-unobserved` block (clause 1 —
+  establishment probes are counted attempts, never summaries, never guessed at another job; an
+  identity that never establishes omits the baseline with the registered named reason); interval
+  reads continue at the enforced floor — the scheduled wait RE-CHECKED against the actual clock
+  (self-review round 1: a scheduler that resolved earlier than requested gets the remainder once
+  more, and a still-short start is the named `intervalShortfalls` fact on the block, never a silent
+  compression and never a busy wait; with the production default scheduler the re-check finds the
+  floor honored and re-waits nothing); every read keeps its OWN started/completed instants
+  (clause 5) and a bounded closed-fact summary (aggregate, per-layer §19.5 duty states,
+  `executorLinkage`, job presence, the production-published winner status, the whitelisted
+  cancellation-provenance fields (`stopCause`, `stopIntent.cause`, `stopIntent.requestedAt` —
+  driver.mjs:2444-2462, codex backfill review), fingerprint equality, lock state, partition
+  status, ≤8 named reasons — never a private body). The summary LEDGER itself ROLLS at the frozen
+  cap (codex backfill review, driver.mjs:2546-2580): the BASELINE and every state-TRANSITION
+  summary are pinned, a new summary at the cap rolls off the oldest non-baseline non-transition
+  summary (preferring a superseded same-aggregate member) with the roll-off recorded as the named
+  `summariesRolledOff` count — so the post-delivery observations the §23.5 schedule exists to
+  capture always survive (identity establishes promptly while the §16.4 control clock schedules
+  the interruption at ~80 s; a flat drop-at-the-cap ledger would have discarded them unrecoverably)
+  — and only when every slot is baseline-or-transition does the summary-cap omission fire. A
+  post-baseline attempt that returns the identity-unobserved
+  block (a mid-run rollout-load failure) is a NAMED omission
+  (`durable-read-identity-unobserved`, self-review round 1) — no anonymous attempt-count bump. The
+  loop STOPs at the earliest termination-initiation boundary
+  (the min-maintained recorder hook, driver.mjs:1394) and at the shared budget signal's abort — a
+  read still in flight is abandoned AT the stop with its named omission
+  (`durable-read-abandoned-in-flight-at-termination-boundary` /
+  `durable-read-abandoned-at-shared-signal`, recorded SYNCHRONOUSLY by the stop so the held
+  record's final snapshot always carries it); a teardown-only abort names the SHARED SIGNAL, never
+  a manufactured termination boundary (§22 round-3 semantics preserved). A smaller injected cap is
+  honored; a larger one clamps to the frozen ceilings (bounded instrument tests, never weakened
+  bounds). The omission LEDGER retains at most 16 entries (an accounting bound — §23.5 freezes the
+  32-summary retention, not an omission count, and the summary-cap omissions alone can exceed it
+  under the default schedule); drops at that bound are themselves a named fact on the block
+  (`omissionsTruncated` + `omissionsDroppedCount`, self-review round 1) — never a silent cut.
+  READ-ONLY-NESS (the §19.8 fingerprint-sweep precedent): the loop only CALLS the existing
+  supplier seam (the live wiring is the byte-unchanged
+  `observeSpawnAcknowledgementIdentity` → `interruptDurableSnapshotSupplier` →
+  `readDurableObligationSnapshot` chain, driver.mjs:4297-4313) and derives summaries from its
+  results — it performs no other I/O, settles nothing, stops nothing, repairs nothing, authorizes
+  nothing, and NO path awaits it (cleanup can never be delayed by a read; a never-resolving
+  supplier is abandoned at the stop, an unreadable one is a named observer reason on the attempt's
+  summary — never business failures). Samples never self-settle: the settlement layers join ONLY
+  from the fenced final read (pinned by test); the sampling block is independent
+  transition/timestamp fact. Wiring: the block rides the held record's `childSettlement` on EVERY
+  exit path (the exit `finally`, driver.mjs:2023-2044 — after the abort that stops the sampler):
+  an answer that already carries a settlement block gains `durableSamples` beside it, and the
+  FAILURE-shaped answer (a rejecting gate/host result — which `executeDefaultLiveCase` persists
+  via `heldTurn`) carries the block on a minimal unobserved-settlement carrier
+  (`observed: false`, basis `held-turn-failed-before-settlement-observation`,
+  driver.mjs:2034-2036, self-review round 1) — the settlement observation itself stays honestly
+  unobserved on a failed turn; is projected by the mapper (driver.mjs:4713-4715, schema-additive —
+  runs without the schedule keep the mapping byte-identical), and persists beside the durable
+  snapshot through the SAME bounded redactor (driver.mjs:1145-1147; private fixture paths in
+  reason texts are redacted — pinned by the REAL-serializer persistence test). The
+  `HeldTurnInput` typedef gained the bounded `sampleDurableSnapshots` option (driver.mjs:3111).
+- **Layer obligations preserved (plan checkboxes 4-5; existing machinery, new discriminating
+  pins)** — the durable winner stays a REMOTE result fact through the verified-executor gate
+  (existing codex-round-2/3 tests stay green); terminal + outstanding marked-claim/guard duties
+  stay `durable-obligations-unresolved` (existing negatives test); process cessation is never
+  qualified from a reused PID or the fake peer exit alone (the process-identity discipline and
+  round-9/16 keepers); a layer the supported evidence cannot establish stays named-unestablished
+  (the reader's per-layer states — unchanged). NEW pin (report §23.6, the shape the recorded I case
+  actually produced): a genuine `'session-end'` stop intent keeps its OWN cause on the snapshot's
+  §19.5 layer facts while the join publishes the production-published `cancelled` winner and
+  `terminal-result` Companion outcome WITHOUT attributing either to the interrupt — the
+  interrupt's own settlement stays unobserved (`turnSettled: null`), `cleanupKill: false`,
+  `naturalCompletionObserved: false` (never a natural-completion misclassification, never
+  harness-native proof), and the oracle refuses native qualification on that record alone
+  (tests/shell-wait-probe.test.mjs:10878; GREEN immediately — the behavior was correct, the
+  discriminating test was missing, the §19.9 round-1 precedent).
+- **Gate-D pipeline coverage (plan checkbox 6)** — the §19.4 admission counterexamples, the
+  wrong-target/foreign/stale/duplicate-item matrix, multiple interrupts, explicit terminate,
+  rejected/unsent/unreadable delivery, post-cleanup cancellation, still-live Companion, unresolved
+  obligations, absent control, buffered-before-delivery lines and the emission-tag survival
+  semantics were ALREADY pinned end-to-end (§19.9's coverage map; the survival-control and
+  round-14/25 suites) — this task added the fence-endpoint variations above and re-proved the
+  whole matrix green on the final bytes. Output-v2 preservation (the O1/O2 exact-linkage
+  expectations) and ambient-test isolation (every new test uses the established stub/fixture
+  pattern, spawns nothing, inherits the file's isolation discipline; the sampling harness injects
+  supplier/sleep/gate with NO real fixture, NO launcher, NO stop protocol) stayed green throughout.
+- **Tests** — `tests/shell-wait-probe.test.mjs`: two describes and 21 new tests, plus the fixture
+  alignment noted above. Describe "interrupt-closure task 3: the §23.5 pre-cleanup durable
+  sampling schedule (report §23.5)" (tests/shell-wait-probe.test.mjs:25911, 18 tests): the frozen
+  bounds pin; the enabled-cases freeze; the baseline-at-identity-establishment ordering; the
+  budget-boundary in-flight abandonment; the teardown-only abort; the identity-never-establishes
+  omission; the ≥1000-ms floor and its clamp (with the actual-clock re-check); the smaller-cap/
+  larger-clamp matrix; the unreadable supplier; the samples-never-self-settle pin; and the REAL
+  mapper-projection + serializer persistence pin (reloaded from disk, private paths redacted,
+  schema-additive); plus the four self-review-round-1 regressions (the failure-shaped-record
+  carrier, the named omission truncation, the post-baseline identity-unobserved omission, the
+  floor re-check's named shortfall) and the three codex-backfill-review regressions (the
+  rolling-retention ledger, the already-terminated start, the real-reader cancellation
+  provenance). Describe "native delivery wiring" (27 tests total) gained: `a durable snapshot
+  with an unestablishable completion instant never earns credit against a recorded boundary`
+  (:10816), `a torn durable snapshot (fingerprint inequality) never settles the join` (:10855),
+  and `a genuine session-end stop intent keeps its own cause` (:10878 — its synthetic layer block
+  now carries the REAL reader's `layers.stopIntent` shape (applicability/presence/validity),
+  with the cause/timestamp provenance living where the reader publishes it — the validated job
+  record — and proven against the REAL reader by the provenance test).
+- **RED→GREEN evidence (focused runs; verbatim failure messages)** — fence slice RED (2/2 fail):
+  `a durable snapshot with an unestablishable completion instant…` → `actual: null, expected:
+  'durable-read-timing-unestablished'` (the named basis did not exist — credit flowed by default);
+  `a torn durable snapshot…` → `'settled' !== null` (a torn snapshot grounded the obligations
+  layer). GREEN: 27/27 in the describe after the join fix + the production-shaped factory field.
+  Sampling slice RED (10/10 fail on the pre-implementation bytes): `the frozen §23.5 bounds are
+  pinned…` → `the sampling block carries its own schema version` (DURABLE_SAMPLING_VERSION
+  undefined); `the sampling schedule is enabled…` → `TypeError: DURABLE_SAMPLING_ENABLED_CASES is
+  not iterable`; `the baseline sample starts at identity establishment…` → actual events
+  `["gate-released","identity-probe"]` — THE §23.5 DEFECT ITSELF: the only durable read ran after
+  the hold ended; `a read still in flight at the budget-initiated termination boundary…` /
+  `a teardown-only abort…` / `identity that never establishes…` / `an unreadable supplier…` /
+  `a settled sample never settles…` → `durableSamples` undefined (the sampling block did not
+  exist); `every inter-attempt delay…` → `one scheduled delay between each pair of starts
+  (actual [])`; `smaller injected caps…` → `Cannot read properties of undefined (reading
+  'attemptCap')`. GREEN: 11/11 (including the persistence pin). One aligned test adjustment during
+  GREEN: the teardown-only-abort test's supplier was changed from never-resolving to
+  slow-resolving (~300 ms first call) because with no sampler the SETTLEMENT read is the first
+  call and the pre-implementation turn correctly resolved through the budget race (~5.8 s) — the
+  fix makes the RED failure carry the expected missing-block reason instead of a budget-shape
+  accident; no assertion weakened.
+- **Versioning** — the new sampling block carries `DURABLE_SAMPLING_VERSION` 1 (a LIVE observation
+  block of the held record, provenance-separated from the observer digest and from the offline
+  partial-facts stamp). `DURABLE_SNAPSHOT_VERSION` 1, `INTERRUPT_PARTIAL_FACTS_VERSION` 1,
+  `RELEASE_QUALIFICATION_VERSION` 1, `NATIVE_INTERRUPTION_ORACLE_VERSION` 2 and
+  `RESCUE_EXPECTATION_DERIVATION_VERSION` 2 are UNCHANGED — the frozen oracle needed no change
+  (the fence is join-level; the oracle consumes the join's nulls). Changed-bytes digests (SHA-256,
+  the final Task-3 tree, after the self-review round and the codex backfill review below):
+  `driver.mjs` =
+  `342c664be601f34fe1f7dee91122d983eff64765cdb98d81edb375797a6901a5`;
+  `tests/shell-wait-probe.test.mjs` =
+  `14864cff3a8706dfd3ad9dda23730e761a3923748562359e5a7697022374521e`.
+- **Gates (final implementation bytes, 2026-10-23, verbatim counts; every exit 0)** — focused
+  describes: "native delivery wiring" **27/27**, "interrupt-closure task 3: the §23.5 pre-cleanup
+  durable sampling schedule" **18/18**;
+  `npm run test:shell-research` → **ℹ tests 914 / ℹ suites 71 / ℹ pass 914 / ℹ fail 0 / ℹ skipped
+  0** (893 + 21 new: 2 fence + 18 sampling + 1 session-end; the factory-completion-stamp alignment
+  is assertion-level);
+  `node --test tests/test-selection.test.mjs` → **6/6, fail 0**; `npm run lint` → clean, exit 0;
+  `npm run typecheck` → clean, exit 0; `node scripts/check-line-endings.mjs` → "LF line endings
+  verified in 543 tracked files.", exit 0 (543 = the Task-1 plan-file count; no new tracked file);
+  `git diff --check` → clean, exit 0; the prohibited tracked-path diff against `dba2e8a`
+  (`scripts/ hooks/ skills/ agents/ .codex-plugin/ marketplace/ docs/superpowers/specs/
+  package.json npm-shrinkwrap.json`) → EMPTY, exit 0.
+- **Status** — the instrument now samples passive settlement state pre-cleanup under the frozen
+  §23.5 schedule and enforces the strict settlement fence in both the online join and the offline
+  replay; early sampling can distinguish pre-boundary settlement from cleanup-time observations
+  per read (each read's own completion instant vs the recorded boundary). This does NOT close
+  Gate D: the ≥60000-ms responsiveness bound stays REGISTERED-BUT-NOT-YET-APPLICABLE (§23.6 — no
+  live record has satisfied the §19.4 admission set); the Companion local-reaping layer stays the
+  registered named-unobservable limitation; no new lifecycle behavior, no new stop authority, no
+  Cancel/OS-signal/reconciler calls, no Status substitute, no extra Child poll, no new operation
+  timeout or inactivity detector was implemented (the sampling interval is the §23.5-registered
+  OBSERVATION cadence — sampling never extends the 1200000-ms experiment budget and never delays
+  cleanup; the 100-hour ceiling and the between-polls Child Status sidecar rule are unchanged).
+  A fake-host success remains instrument proof only; the pre-live independent review of these
+  admission/sampling/oracle/privacy changes stays OPEN (plan Task-3 final checkbox) and no
+  registered live launch is authorized by this section. The Task-4 live I/F labels stay unspent.
+
+**Self-review round-1 fixes (2026-10-23; four findings over the pre-round tree, all sampler
+accounting/naming — the fence, read-only-ness, privacy and layer semantics verified CLEAN; each
+test-first with the RED recorded verbatim).** All four fixes are inside
+`tools/shell-wait-probe/driver.mjs` and the task's test file; the amended tree is the digested
+"final Task-3 tree" above and every gate above ran on it.
+
+1. **[P2] The sampling block was silently dropped on the FAILURE path while the registration
+   claimed "every exit path".** The exit `finally` attached `durableSamples` only when the answer
+   carried a `childSettlement` block, but the non-budget failure answer (a rejecting gate/host
+   result — the record `executeDefaultLiveCase` persists via `heldTurn`) has none. TEST FIRST:
+   `the sampling block rides the FAILURE-shaped held record too — a rejecting gate never drops the
+   samples (self-review round 1)` — RED: `the sampling block rides the FAILURE-shaped record` →
+   `actual: undefined`. FIX: the `finally` (driver.mjs:2023-2044) now attaches the final snapshot
+   on the failure-shaped answer too, on a minimal unobserved-settlement carrier (`observed: false`,
+   basis `held-turn-failed-before-settlement-observation`; the settlement observation itself stays
+   honestly unobserved on a failed turn) — it flows through the existing mapper projection and
+   serializer untouched. GREEN.
+2. **[P2] Omissions were silently truncated at the ledger bound (16) with no marker — under the
+   frozen default schedule every completed read after the 32nd summary names a summary-cap
+   omission (up to 568), so the truncation was the DEFAULT path.** TEST FIRST: `omissions dropped
+   at the retention bound are themselves named — never silently truncated (self-review round 1)`
+   (20 attempts / 1 summary) — RED: `the truncation is a named fact on the block` →
+   `actual: undefined`. FIX (driver.mjs:2273-2284, :2376-2392): the bound is a documented
+   accounting constant (`DURABLE_SAMPLING_OMISSION_RETENTION = 16` — §23.5 freezes the 32-summary
+   retention, not an omission count), and a drop at it sets the named
+   `omissionsTruncated: true` + `omissionsDroppedCount: n` facts on the block. GREEN (16 retained
+   + 4 named drops on the 20-attempt shape).
+3. **[P3] Post-baseline identity-unobserved attempts were anonymous, and the
+   `omitBaseline` attempt-cap arm was unreachable dead code.** After the baseline, an attempt
+   returning the identity-unobserved block (a mid-run rollout-load failure yields reasons
+   `['durable-identity-unobserved: <error>']`) only moved `attemptCount` — §23.5 clause 4 requires
+   an unreadable read to be named. TEST FIRST: `a post-baseline identity-unobserved attempt is a
+   named omission — no anonymous attempt (self-review round 1)` — RED: `actual [{"reason":
+   "durable-sampling-attempt-cap-reached"}]` (the attempt was unnamed). FIX
+   (driver.mjs:2528-2536): a post-baseline identity-unobserved attempt records the omission
+   `durable-read-identity-unobserved` with its attempt index (pre-baseline probes keep the
+   registered clause-1 naming); the dead arm in `omitBaseline` is removed (the baseline is null
+   ONLY while identity never established, so the reason is always
+   `durable-identity-unobserved`). GREEN (2 summaries + the named omission).
+4. **[P3] The ≥1000-ms floor was delegated entirely to the injected `sleep` — an
+   early-resolving scheduler would silently compress the starts while `intervalMs: 1000` still
+   rode the record.** TEST FIRST: `the ≥1000-ms floor is re-checked against the actual clock — an
+   early-resolving scheduler is a named shortfall, never a silent compression (self-review round
+   1)` — RED: `each interval whose ACTUAL spacing fell short is named` → `actual: undefined`. FIX
+   (driver.mjs:2490-2508): the scheduled wait is re-checked against the actual clock — a
+   scheduler that resolved early gets the remainder once more, and a still-short start increments
+   the named `intervalShortfalls` count on the block (never a silent compression, never a busy
+   wait; with the production default scheduler the re-check finds the floor honored and re-waits
+   nothing). One aligned test adjustment: the existing floor test's scheduled-wait count is now
+   two per interval under the injected immediate scheduler (the wait plus the re-check re-wait)
+   with the shortfall asserted — no assertion weakened; the registered floor and its clamp
+   assertions are unchanged. The §23.5 registration annotation below records the settled
+   enforcement interpretation. GREEN (2 named shortfalls on the immediate-scheduler shape).
+
+**§23.5 bound interpretations settled by this round (dated annotation; the frozen schedule text
+above stands unchanged):** clause 2's ≥1000-ms floor is enforced by the scheduled wait PLUS one
+actual-clock re-check (re-waiting the remainder once against a scheduler that resolved early); a
+still-short start is the named `intervalShortfalls` block fact — the primary mechanism remains the
+scheduler contract (the production default `(ms) => new Promise((resolve) => setTimeout(resolve,
+ms))` resolves no earlier than the requested delay). Clause 4's "every omission named" extends to
+the omission LEDGER itself: at most 16 omission entries are retained per block (an accounting
+bound, not a lifecycle bound) and drops at that bound are the named
+`omissionsTruncated`/`omissionsDroppedCount` facts; a post-baseline identity-unobserved attempt is
+the named `durable-read-identity-unobserved` omission.
+
+**Codex backfill review fixes (2026-10-23; three findings over the round-1-amended tree, all in
+the sampler; each test-first with the RED recorded verbatim; the fence, read-only-ness, privacy
+and layer semantics re-verified CLEAN).** All three fixes are inside
+`tools/shell-wait-probe/driver.mjs` and the task's test file; the amended tree is the digested
+"final Task-3 tree" above and every gate above ran on it.
+
+1. **[P1] The flat 32-slot summary ledger discarded every post-delivery observation.** Identity
+   establishes promptly while the §16.4 control clock schedules the interruption only at ~80 s —
+   the unconditional one-second cadence filled all 32 slots ~31 s after identity, so every
+   post-delivery summary (settlement transitions, the last pre-cleanup read) hit the cap and was
+   dropped, unrecoverable after fixture disposal. TEST FIRST: `the summary ledger never evicts
+   post-delivery observations — baseline and transitions are pinned, the newest survive (codex
+   backfill review)` (38 pre-delivery samples, then the settled transition at attempts 39-40) —
+   RED: `the LAST observation is never evicted` → `actual: 32`. FIX (driver.mjs:2546-2580): the
+   ledger ROLLS — the baseline and every state-TRANSITION summary (aggregate differing from the
+   previous sample's observed aggregate, the new additive `transition` field) are PINNED, a new
+   summary at the cap rolls off the oldest non-baseline non-transition summary (preferring a
+   superseded same-aggregate member), and the roll-off rides the named `summariesRolledOff` count;
+   only when every slot is baseline-or-transition does the summary-cap omission fire. The frozen
+   ≤32 bound and every other frozen bound are intact; the retained set is baseline + transitions
+   + the newest observations. GREEN (last attempt 40 retained with the pinned transition 39,
+   `summariesRolledOff` 9).
+2. **[P2] The sampler could start past an already-recorded termination.** The shared budget can
+   expire while `input.launch()` is still pending — the termination recorder ran while
+   `durableSampling` was null and the abort listener attached after the fact never fires; a
+   1-ms-budget/80-ms-launch reproduction recorded a completed baseline after the cleanup boundary.
+   TEST FIRST: `no attempt runs past an already-recorded termination — a budget expired during
+   launch skips the sampler by name (codex backfill review)` — RED: `no supplier call may run past
+   the already-recorded termination` → `actual: true`. FIX (driver.mjs:2414-2427 + the
+   `terminatedAlready` input threaded from the held turn, driver.mjs:1520-1523): the sampler
+   checks BOTH the recorded boundary and `signal.aborted` BEFORE its first supplier call — the
+   skipped start is the named `durable-sampling-skipped-termination-already-recorded` (or
+   `-shared-signal-already-aborted`) omission, zero attempts consumed, `stoppedReason` names the
+   termination boundary, and the offline fence correctly sees no post-boundary sample. GREEN
+   (attemptCount 0, no supplier call).
+3. **[P2] Sample summaries discarded the cancellation provenance the REAL reader publishes, and
+   the SessionEnd join test masked it with a synthetic layer field.** For actual reader results
+   the cause and request time live on the validated job record
+   (`job.projection.stopIntent.cause/.requestedAt`, `stopCause`); the reader's `layers.stopIntent`
+   carries only applicability/presence/validity — so a retained pre-cleanup sample could not
+   distinguish a genuine SessionEnd from another cancellation when the final snapshot is
+   unavailable or fenced out. TEST FIRST (the REAL reader shape against a REAL fixture-owned
+   partition — the §21.2.3 recorded I shape through the production stop path):
+   `sample summaries retain the real reader cancellation provenance — cause and request time from
+   job.projection (codex backfill review)` — RED: `the production-published winner status rides
+   the summary` → `actual: undefined`. FIX (driver.mjs:2444-2462): the summaries retain the
+   whitelisted cause/timestamp fields only — `jobStatus`, `stopCause`, `stopIntentCause`,
+   `stopIntentRequestedAt` (a bounded enum + canonical ISO timestamp; never the whole record
+   body). The SessionEnd join test's synthetic `layers.stopIntent.cause` field was REPLACED by the
+   REAL reader shape (applicability/presence/validity; the cause/timestamp now on
+   `job.projection` where the reader publishes it) — the provenance is proven by the new
+   real-reader test, not by a field the reader never emits. GREEN (cause `session-end`, the
+   request timestamp, and the confirmed cause all retained from the real reader). One test-stability
+   fix during GREEN: the provenance test's gate/result were made deferred with a 500-ms release —
+   the real reader takes ~100 ms per pass and an immediate result raced the teardown, flaking
+   `summaries[0]` to undefined (~1 run in 8); no assertion weakened.
+
+**Codex round-2 review fix (2026-10-23; one [P2] finding, this time over Task 2's §23.4
+abort-exposure mapping rather than the sampler; test-first with the RED recorded verbatim; all
+round-1 backfill fixes above re-verified untouched).** **[P2] Keep interrupt absence unknown after
+an unclassified cell** (the full verbatim text is recorded in §23.8's dated annotation, which this
+fix is folded into): in the abort-exposure branch (`driver.mjs:5529-5565` on the final bytes) the
+spread of the extractor's no-call defaults copied `attempted: false` and the definitive
+"delivery was not attempted" message even though the unsupported cell that aborted the adjudication
+could itself hold the interrupt — parser uncertainty projected as negative evidence. TEST FIRST:
+the focused describe "interrupt-closure task 2 codex round 2: interrupt absence stays unknown after
+an unclassified cell (report §23.8)" (`tests/shell-wait-probe.test.mjs:25769`; the only interrupt
+inside `const x = await tools.interrupt_agent({target:…}); text(x);`, an unadmittable cell, through
+the real `inspectShellWaitEvidence` → `mapShellWaitLiveFacts` join) — RED:
+`AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:` / `false !== null` on
+`facts.interrupt.attempted`. FIX (driver.mjs:5529-5565): the exposure branch splits by recognized
+attempt — a RECOGNIZED call keeps Task 2's keeper branch byte-for-byte; a SKIPPED cell keeps
+absence UNKNOWN (`attempted`/`callCount`/`wrappedInterrupt`/`previousStatusTerminal` null, the
+message naming the unsupported-call-shape abort and the stay-unknown semantics, no admission block
+fabricated, `interrupt.partialFacts` unchanged). Sibling-field sweep: `callCount`/`wrappedInterrupt`
+/`previousStatusTerminal` were the same uncertainty-to-negative conversion and are nulled;
+`family`/`previousStatus`/`target`/`exactTargetMatch`/`settled`/timing facts verified already
+unknown (null) without a recognized call; `orderingBound` stays (binding-scoped, unestablished
+≠ negative); `unreadableContinuationObserved` stays observation-scoped. The pre-existing §23.4
+test that pinned the old conversion ("a scan that never ran…") was updated to the same unknown
+standard in the same fixup. GREEN on the final rebased bytes: focused describe 1/1, gate describes
+69/69 (13+10+1+18+27), `npm run test:shell-research` 915/915, test-selection 6/6, lint/typecheck
+clean, line-endings 543 files LF, `git diff --check` clean, prohibited tracked-path diff against
+`dba2e8a` EMPTY. The Task-3 sampler/fence bytes are untouched by the fix (its `driver.mjs` diff is
+two hunks at `:5528+` and `:5663` — the mapping plus the schema-additive typedef line — both after
+every sampler/fence region — all `driver.mjs:` cites in this section
+re-verified resolving on the final bytes: `:1145-1147`, `:1394`, `:1506-1516`, `:1520-1523`,
+`:2023-2044`, `:2034-2036`, `:2229-2262`, `:2273-2284`, `:2339-2596`, `:2414-2427`, `:2444-2462`,
+`:2490-2508`, `:2528-2536`, `:2546-2580`, `:2785-2807`, `:3111`, `:4297-4313`, `:4713-4715`; the
+section's `tests/shell-wait-probe.test.mjs:25750` describe cite drifted +161 lines under the new
+Task-2 describe and is refreshed to `:25911` — `:10878` unchanged and verified).
+
+## 23.10 2026-10-23 interrupt-closure Task 4: the registered successor live ledger — the I launch frozen, executed and adjudicated (F adjudication recorded)
+
+Task 4 of the [2026-10-23 plan](../superpowers/plans/2026-10-23-rescue-shell-wait-interrupt-closure.md),
+executed 2026-10-23 in the same worktree on top of the Task-3 commit `dfa6b2f` (the closed Task-3
+tree: five commits `dba2e8a` → `5766037` (T1) → `27e1e7b` (T2) → `dfa6b2f` (T3), T2/T3 closed by
+the cumulative codex reviews ending zero-findings, `review-mvl4r1hj-twr6bd`). ONE registered live
+case ran under the §20.2 I command shape (the repaired instrument: the §23.2 emission-junction
+admission + the §23.5 sampling schedule); F never launched (its adjudication is at §23.10.7).
+The launch-time freeze below was WRITTEN AND FROZEN BEFORE the launch (plan Task 4: "new dated
+report registration BEFORE launch"); the outcome subsections record the run. Production
+`scripts/`, `hooks/`, `skills/`, `agents/`, config, snapshots, dependencies, the spec and the Codex
+source stayed read-only; scratch (`findings.md`, `progress.md`, `task_plan.md`) preserved untouched
+and never staged; no user/global config or cache edit, no auth dump, no push/PR/merge.
+
+### 23.10.1 The pre-launch freeze (registered BEFORE the launch; every value re-verified 2026-10-23 immediately before the launch, nothing trusted forward)
+
+**The exact registered command (the executable content; implemented flags only — the §20.2 I shape
+with the §23.1-selected absolute 0.163.0 path passed explicitly, never `command -v codex`):**
+
+```bash
+shell_case_output=$(mktemp -d /tmp/shell-wait-interrupt-closure-i.XXXXXX)
+ZCODE_SHELL_WAIT_E2E=1 node tools/shell-wait-probe/driver.mjs \
+  --case rescue-interrupt --survival-control-selector progress-terminal \
+  --codex /Users/zhangzikai/.codex/packages/standalone/releases/0.163.0-aarch64-apple-darwin/bin/codex \
+  --source-sha dfa6b2fedb0c3090ec685a3451c9b4da65b5e45f \
+  --output "$shell_case_output" --model gpt-6.1-sol \
+  --worker-duration-ms 420000 --poll-ms 3600000 --budget-ms 1200000 --cap-ms 3600000 \
+  --wait-policy config-default --exec-default-ms 3600000 \
+  --unclassified-structural-diagnostic 1 --unclassified-shape-diagnostic 1
+```
+
+Every flag is on the implemented 16-option surface (`--help` re-verified below); NO new flag is
+invented. `--source-sha` = the driving worktree's HEAD at launch (§20.3), which at freeze is the
+Task-3 commit `dfa6b2fedb0c3090ec685a3451c9b4da65b5e45f` — the exact tree the fixture installs and
+the exact instrument the record's observer digest pins.
+
+**The re-pin battery (executed 2026-10-23 immediately before the launch; all read-only, zero model
+turns; every check matched the §20.3/§23.1 records):** `git status --short` → ONLY the three
+untracked scratch files (tracked-clean beyond this task's report/plan bytes, which were staged
+nowhere at battery time); `git rev-parse HEAD` → `dfa6b2fedb0c3090ec685a3451c9b4da65b5e45f`;
+selected binary `--version` → `codex-cli 0.163.0`; selected binary SHA-256 →
+`8813367285524ac798dd96d1b071aea30d58708c7226fd236cd275cf1cfdee31` (realpath resolves to itself —
+the §21.1 launch pin, byte-identical all four verifications now); Codex source
+(`git -C ../../../codex`) → HEAD `dffa0deb69268ed4ac31578794c9ea897b336ae3`, `status --short` EMPTY
+(clean — the §16.2/§19.4/§23.3 trace pin, so the §23.3 retention chain reproduces unchanged);
+driver `--help` → 816 bytes, SHA-256
+`afa0e66db58a9ef5576ce868266a0c5257b3cc9dad5720e5fd31fb7b4a5ff6f1` (unchanged). Ambient CLI
+recorded SEPARATELY, never blended: `command -v codex` → `/Users/zhangzikai/.local/bin/codex`
+→ realpath `/Users/zhangzikai/.codex/packages/standalone/releases/0.164.0-aarch64-apple-darwin/bin/codex`,
+`codex-cli 0.164.0` — never launched, never compared cross-version (§23.1's boundary unchanged).
+
+**Model selection (the §20.7 pre-launch duty, executed this time):** `codex debug models` run with
+the SELECTED 0.163.0 binary — read-only authenticated catalog discovery, NO model turn (§20.1 rule
+2: installation/version/model-list discovery without a model turn is not a live case). Raw catalog
+retained OUTSIDE the repository at
+`/tmp/shell-wait-interrupt-closure-task4/debug-models.raw.json`, SHA-256
+`52f8de84b7c3047c3badf4a7f18c1dab1983480e9717b044f8ae6e6f5a2936b4` — byte-identical to the §20.7
+re-pin (600597 bytes). Digest-only reduction: **10 entries, 7 list-visible** (`gpt-6-chat-thinking`,
+`gpt-reserve`, `codex-auto-review` hidden), **`gpt-6.1-sol` list-visible at priority 0** — the
+exact recorded catalog shape (§20.3/§21.1: astra 3, sol 4, luna 5, 5.6-sol 6, terra 7, 5.6-luna 8).
+The requested approved model `gpt-6.1-sol` therefore RESOLVES through supported discovery; no
+applicability boundary arises and no substitution question exists. Effective host/Child model
+metadata stays the `null` contract (requested ≠ effective; never inferred).
+
+**Instrument provenance (SHA-256 over the exact launch tree `dfa6b2f`, recomputed 2026-10-23;
+every byte the run executes):** `driver.mjs` =
+`ef8d17f191fe6532d54bca5dfc18b388f16b67edc2456c94655707005f755a7c`;
+`evidence.mjs` = `33b0f6ae0936cb762b4df3d5d8ba2f8426a1659c51d2a8bc34f5db577a15d3ae`;
+`fixture.mjs` = `1b7b030d95dc0e4fb03d5ccb4596af51cda1441c3aa1c19c8bfad6a496c3e4a3` (byte-identical
+from the previous campaign's Task-2 tree onward);
+`closure-observation.mjs` = `46b7f5e282b811c3bb88518a6f2d36f54da2f586eac74fe40c134978a90f6fa7`;
+`release-qualification.mjs` = `5963d65b68395fa6cd77eae8aff8bf7bbe0ba403558bf28b610162e2fdcaf698`;
+`shape-diagnostic.mjs` = `2f300de25af3c12635d2dec400170a3e50b057dbe33f27a2375a01c0ffb1bb31`;
+`tests/shell-wait-probe.test.mjs` =
+`c49d250de948e9605661f5f483d274f0780f8c54f50bdde591f19dc102a0e394`;
+`tests/test-selection.test.mjs` =
+`3aec94d52ce48e39d95fa02ab0c114cb6328411b6bfd1edb1cf7f12fecb51e41`.
+**The executing observer digest RECOMPUTED on these launch bytes** (`zcode-shell-wait-observer-v5`,
+NUL-separated module-init over evidence ⊥ shape-diagnostic ⊥ release-qualification ⊥
+closure-observation ⊥ driver) =
+**`5ef97779813a168c73f9a9fb65ca927bfcb98bf5fdc3e3b804f79aab4397161b`** — the value this launch
+carries at case start and must equal at record time (`sourcesChangedDuringRun: false` duty). This
+supersedes `4ba3d833…` (the §22.1 value) because Tasks 2–3 changed `driver.mjs` and `evidence.mjs`;
+the supersession is the registered §20.3 pattern, never a mid-run change.
+**Dated correction to §23.9's changed-bytes line (the frozen grammar/schedule claims are
+unchanged):** §23.9 recorded `driver.mjs` = `342c664b…` and
+`tests/shell-wait-probe.test.mjs` = `14864cff…` for "the final Task-3 tree, after the self-review
+round and the codex backfill review" — those values were captured BEFORE the codex-backfill fixes
+were folded into the Task-3 commit. Both the pre-rebase Task-3 commit `c86c912` and the final
+`dfa6b2f` carry the values recorded ABOVE (`ef8d17f1…`/`c49d250d…`); the fold changed no claim,
+only bytes, and the four unchanged instrument files match §23.9 exactly. This section's recomputed
+values are the launch-relevant record.
+
+**Fixture-owned observer bytes frozen pre-launch:** the survival-control script is deterministic
+fixture-owned bytes (`survivalControlScript()`, no path/nonce interpolation) — SHA-256 recomputed
+offline over the generated bytes = `c510d81f296881a9e4e3c174429758c3e2f26c08cf7a63b26ac75d2e5ca30172`
+(879 bytes), byte-identical to the §21.1 I-launch declaration (60 lines @2000-ms cadence, designed
+natural exit 0, §16.4 emission-tag machinery). The fixture's prepared capture preload and
+normalized instruction hashes are preparation-time facts recorded on the record itself and verified
+at adjudication (the §20.7 in-record duty; the expected candidate paragraph hashes are the §20.4
+clause-4 values `2ea76cf02b01…`/`5800e3ab814f…` @3600000).
+
+**Actual Root wait configuration (recorded, never altered for a pass):** `--wait-policy
+config-default` — the fixture's `configDefaultWaitingParagraph` @3600000 (no directive line; the
+same-cell explicit `tools.wait` continuation requesting the same 3600000 ms; initial launcher yield
+unchanged ≤ 30000 ms) applied to the named Role template AND generic assignment skill; the inner
+observation request 3600000 ms (`--poll-ms`); the host cap key `background_terminal_max_timeout =
+3600000` with `capVerified` re-read at setup; the outer exec default 3600000 ms reaching the host
+EXCLUSIVELY as the composed `-c features.code_mode.default_exec_yield_time_ms=3600000` argv
+override (`--exec-default-ms`; never a fixture input); harmless hold 420000 ms
+(`--worker-duration-ms`); total experiment budget 1200000 ms (`--budget-ms`). The 100-hour ceiling
+and the single between-polls Child Status sidecar rule are unchanged (§2).
+
+**The finite command/turn sequence registered under I (the label consumes ONCE — a failed start or
+a diagnostics/model turn also consumes it; there is exactly ONE I):** one held Root turn carrying
+the §16.4 five-step directive (child launch → control launch → control-clock readiness →
+pre-delivery read → exactly ONE interrupt delivery) + the fixture's rescue-interrupt case prompt;
+1 internal Child launch + 1 send; 1 Root join; the declared survival control launched ONCE on its
+own `exec_command` handle (60 lines @2000 ms, never Status-observed, never sent input, never
+stopped); exactly ONE `interrupt_agent` delivery attempt expected (DIRECT mode only —
+`WRAPPED_INTERRUPT_REQUIRED_CASES` frozen-EMPTY); the §23.5 pre-cleanup passive sampling loop
+running CONCURRENTLY driver-side (zero model turns, zero Child polls); bounded cleanup at the
+earliest recorded termination boundary. Maximum 2 logical cases total (I + conditional F); no free
+exploratory/retention/smoke case; no old-allowance reuse (the §21.3 ledger stays closed).
+
+**Sampling schedule and expected outcomes carried into the launch BY REFERENCE (never re-decided):**
+the §23.5 six-clause frozen schedule WITH its two dated annotations (the rolling ≤32-summary
+retention ledger pinning baseline+transitions, the terminated-already start guard
+`durable-sampling-skipped-termination-already-recorded`, the real-reader cancellation-provenance
+fields); the §23.6 expected outcome shapes (the 60000-ms oracle stays
+REGISTERED-BUT-NOT-YET-APPLICABLE until the §19.4 admission set is satisfied ON THIS RECORD; the
+retention question is the explicit FIRST verification step — `host-activity-item-absent` only
+after a completed scan of a collected rollout, per §23.3/§20.5 item 3; "responsive cell + surviving
+unresolved guard" is a safe-preservation candidate shape; a natural terminal winner stays NATURAL;
+a real `'session-end'` stop intent is a SEPARATE authorized act, never interrupt settlement); the
+§23.4 never-relabel-absent rule. Cause classification stays four-way (normal completion / cancelled
+winner / genuine SessionEnd / harness cleanup — never conflated).
+
+**Connectivity pre-check (the §21.1 prudent extra, recorded before the launch):** shell
+`http_proxy`/`https_proxy` = `http://127.0.0.1:7890`; the listener is ALIVE (`verge-mihomo`
+PID 83570, LISTEN — the same listener as §21.1). Reachability through the proxy:
+`https://chatgpt.com/` → HTTP 403, `https://api.openai.com/v1/models` → HTTP 401 — both normal
+HTTP responses, NOT the recorded outage signatures. No proxy outage; the launch proceeded.
+
+### 23.10.2 Preflight verdict and the launch record (plan Task-4 checkbox 2)
+
+**The implemented live-launch preflight PASSED at zero registered rejections.** The driver runs
+`evaluateLiveLaunchPreflight` AFTER fixture preparation and BEFORE any host launch
+(driver.mjs:4106); a rejection there is a ZERO-MODEL-TURN fail-closed case failure that never
+consumes the label (§20.6) — none occurred. Every declared observer was armed on the actual
+prepared fixture: the survival-control script on disk (the fixture-owned `survival-control.mjs`,
+digest `c510d81f…` as frozen); the durable settlement reader's partition basis present; the
+registered stdout-capture seam ARMED with the fixture-generated preload on disk (declaration on
+the record: `closure-stdout-preload.cjs`, SHA-256
+`cb168b74d5175b9915d12cbc3e37f3655403cfdb4611940b2694f7196020e362`, maxBytes 65536, gate argv
+exactly `[invoke-prepared, rescue]`); `WRAPPED_INTERRUPT_REQUIRED_CASES` frozen-EMPTY (the
+direct-mode design; the wrapped-reliance rejection arm neutral by registration). The exact
+executable and expected role/paragraph were present: in-record `codexVersion 0.163.0` with
+`hashNativeExecutable` re-verification `codexBinarySha256 8813…e31` (`…Error: null`), `roleStatus:
+ready`, `capVerified: true`, `setupAttempts: 2`, and the normalized instruction hashes
+BYTE-IDENTICAL to the §20.4 clause-4 candidate values (`2ea76cf0…` named-role /
+`5800e3ab814f…` generic @3600000). Source provenance recorded on the record: `sourceSha
+dfa6b2f…` (`sourceWorktreeOwnedByFixture: true`), executing observer digest at CASE START =
+`5ef97779…` (the §23.10.1 launch value) with record-time `sourcesChangedDuringRun: false`. The
+model-selection duty (§23.10.1) resolved the requested `gpt-6.1-sol` pre-launch; the record
+carries `requestedModel: "gpt-6.1-sol"` with the effective-metadata `null` contract.
+
+**Launch record:** output dir `/tmp/shell-wait-interrupt-closure-i.kRQKtD` (fresh disposable
+mktemp); record `rescue-interrupt.record.json` 76741 bytes, SHA-256
+`13aae0ca41ba9ab25db1aeab33f97494e4563d1f685e6d75291233d064142549` — byte-identical to the
+retained driver-stdout copy `/tmp/shell-wait-interrupt-closure-task4/driver-stdout.json`; driver
+stderr EMPTY; driver exit 0; `status: executed`, `fixtureDisposed: true`, `cleanupComplete: true`,
+`cleanupErrorCount: 0`; fixture owning session `5c5e8d15-74e0-4fa7-aa14-1dca5bd88fc1`; route
+requested `rescue-foreground` (actual `null` — the supported-case analysis aborted, below); record
+time `2026-10-23T16:00:33.384Z` (~8 min wall including preparation and disposal). Isolated
+fixture homes only; scratch untouched; nothing pushed.
+
+### 23.10.3 The registered sequence as executed (§20.1 rule 1 accounting — I is SPENT-AND-CONSUMED)
+
+One held Root turn (the §16.4 five-step directive + the case prompt; Root acknowledgement at
+held-clock 253045 ms); 1 internal Child launch + send (the spawn-acknowledgement identity observed
+EXACT: child `01a16977-8bfb-7fa3-b0b4-eec9a6b6be38`, parent
+`01a16976-f6c8-7792-9cc6-7ec24e15cd29`); the declared survival control launched once (declaration
+verified: selector `progress-terminal`, script `c510d81f…`, 60 lines @2000 ms, designed exit 0);
+exactly ONE `interrupt_agent` call (`callCount: 1` — the exactly-one contract held; family `v2`
+DIRECT — the persisted classification; the mapper's separate `wrappedInterrupt` boolean is a typed
+live fact from the in-memory interaction mapping, NOT present on the persisted whitelist-shaped
+record — its false value is recorded here with that non-persisted provenance; pre-dispatch
+snapshot `previousStatus: "running"` — a NONTERMINAL active turn, so `terminalBeforeInterrupt`
+stays `null` on the `no-terminal-state-evidence` basis, never false); the §23.5 sampling loop (driver-side, zero model
+turns, zero Child polls); bounded cleanup at the scheduled hold-deadline observation end. The
+measured model-call count is UNESTABLISHED on this record (`observations.modelCalls: null` — the
+supported-case analysis aborted, below); the turn ran to its natural acknowledgement. Failed
+starts: none. Total logical cases: **1 of the max 2**; **I: spent-and-consumed**.
+
+### 23.10.4 The retention outcome — MEASURED POSITIVE at the item level; the delivery layer still fails closed (the §23.3 explicit first outcome; plan Task-4 checkbox 3)
+
+**The §19.4/§23.3 installed-retention question — open since §21.2.3 item 1 — is ANSWERED on a
+live record, and the answer is PRESENT IN THE CAPTURED ROLLOUTS:** the admission's bounded scan
+across BOTH captured rollout files (2 rollouts captured, `rolloutsFailureReason: null`, no item
+bound exceeded) found **exactly ONE `SubAgentActivity(kind=interrupted)` item**
+(`itemPresent: true`, `interruptedItemCount: 1`, `joinedItemCount: 0`, `foreignItemCount: 0`).
+This is a positive presence established by a COMPLETED scan of the COLLECTED rollouts — never
+`absent`-by-scan-failure, never not-measured. The installed 0.163.0 CLI's rollout capture RETAINS
+the host interruption item exactly as the §23.3 source chain predicted — at the item-presence
+level, with the item's Root-rollout OWNERSHIP explicitly UNESTABLISHED: the §19.4 conjunct-4
+owning-Root scoping (`rootRolloutOwned`) stays `null` because the Root identity derives only from
+the aborted supported-case analysis, and the admission counts interrupted items across BOTH
+captured rollouts, so under an unavailable Root identity `foreignItemCount: 0` classifies nothing
+as foreign and is NOT an ownership proof (source presence is now a measured installed fact at the
+item-presence level; WHICH rollout owns the item stays a named-unestablished join conjunct,
+exactly as the admission's single reason below records).
+
+**The delivery layer nevertheless fails CLOSED, exactly as §23.4 preregistered:** `admitted:
+false` with the SINGLE named reason `host-activity-owning-root-unestablished` — the owning-Root
+thread id derives ONLY from the supported-case analysis (driver.mjs:4320-4327), which aborted
+`unsupported-call-shape` on the unclassified cell before producing supported linkage, so every
+join conjunct stays unestablished (`idJoin: false` — unestablishable by the same cause, per the
+self-review-round-1 classification; `agentThreadIdMatch`, `rootRolloutOwned`,
+`insidePendingWindow`, `timed`, `completedAtMs` all `null`, never guessed). The reasons-list
+composition itself proves (by the admission's own code paths) that `callCount === 1` and the
+call's delivery decode was POSITIVELY established in the raw-rollout analysis (neither
+`host-activity-call-count-not-one` nor `-delivery-rejected`/`-delivery-unobserved` fired); the
+projected record still keeps `delivered`/`rejection` `null` per the §23.8 abort-exposure contract
+(delivery OUTCOME facts unestablished without the supported-case identity). The observed item is
+NOT erased and NO false admitted window is produced — the §23.4 coexistence discipline held
+verbatim on live bytes. Interrupt call facts retained: `attempted: true`, `family: "v2"`,
+`target.kind: "unknown"` (23 chars, suppressed, alias-vs-exact-id unverified), `orderingBound:
+false` → `settled: null` (`ordering-unbound-not-attributed`), `pendingIntervalMs: null`,
+`deliveryToSettlementMs: null`, `timingBasis: "unavailable"`. The §20.5-item-6 responsiveness
+bound therefore stays **REGISTERED-BUT-NOT-YET-APPLICABLE** (the §19.4 admission set was never
+satisfied on a live record; the latency stays `null`, never zero).
+
+### 23.10.5 The §23.5 pre-cleanup sampling schedule — first live execution, and the pre-teardown timeline it captured (plan Task-3 machinery on a real record)
+
+The sampling block (`child.durableSamples`, `DURABLE_SAMPLING_VERSION` 1): 467 attempts (≤600 ✓),
+interval 1000 ms with **zero interval shortfalls** (observed consecutive-start deltas
+1002–1006 ms — the floor plus actual-clock re-check honored), identity established at attempt 40,
+**baseline at attempt 40** (started 1792770805564, completed …5566 — as soon as the observed spawn
+acknowledgement made the supplier non-null; attempts 1–39 were named identity-unobserved
+establishment probes, counted as attempts, never summaries), 32 retained summaries (≤32 ✓) with
+**396 rolled off** — every roll-off a superseded same-aggregate member; the rolling ledger worked
+exactly as designed: the post-delivery reads this schedule exists to capture SURVIVED. The
+omission ledger is EMPTY (`omissionsTruncated: false`, `omissionsDroppedCount: 0`); the early
+pre-job reads (attempts 40–47) name `jobs-directory-missing`/`partition-missing` — named observer
+reasons, never zeros. The loop stopped with `durable-sampling-stopped-at-shared-signal` — the
+teardown-only stop naming the SHARED SIGNAL, never a manufactured termination boundary (no
+termination was ever initiated: zero kills — §22 round-3 semantics). Samples never self-settled
+(the settlement layers joined only from the fenced final read).
+
+**The captured pre-teardown timeline (per-snapshot facts, each with its own started/completed
+instants, `executorLinkage: 'verified'` and `snapshotEqual: true` on every job-bearing read):**
+attempts 48–250 — job FOUND, status `running`, aggregate `unresolved`, duties
+`ended-obligation-unsettled` + `writable-guard-retained` (the retained ledger holds attempts 228,
+229, …, 250 spanning held-clock ≈227–249.3 s); **attempt 251 — the state TRANSITION: aggregate
+`settled`, status `cancelled`, `stopCause: "session-end"`, completed 1792771016842** — a
+pre-teardown read completing ≈215 s before the held turn's end; attempt 467 — the final sample at
+teardown, same settled aggregate. Retained identifiers (safe): job
+`ddbf964704eb…7630d65`, owner = the observed PARENT session `01a16976-f6c8-…` (= the spawn
+identity's parentThreadId), ownerTurn `01a16976-fe69-…`, `childPid: 34974` (aliveness NEVER
+probed), `workerLeaseId d1346ce9…`.
+
+### 23.10.6 Per-layer Gate-D adjudication (the join + oracle on the persisted record; the qualification overlay; plan Task-4 checkbox 3 continued)
+
+**The code-enforced join and oracle were run OFFLINE on the persisted record (zero model turns,
+nothing re-derived from memory):** `nativeInterruptionGateDInput(record)` → `{ delivery: {
+delivered: null, exactTargetMatch: null, aliasResolved: null, terminalBeforeInterrupt: null,
+terminalBeforeInterruptBasis: 'no-terminal-state-evidence', deliverySent: null,
+previousStatusOnly: true, unreadableContinuation: false, pendingWindowConfirmed: false,
+hostActivityAdmitted: false }, turnSettled: null, deliveryToSettlementMs: null, companionOutcome:
+'terminal-result', durableObligations: 'settled', cleanupKill: false, survivalControl: null,
+terminalWinner: 'cancelled', durableReadPostCleanupBoundary: false, durableReadBoundaryBasis: null,
+naturalCompletionObserved: false, statusObservationTimeoutOnly: false }`;
+`evaluateNativeInterruptionSettlement` (oracle v2, release-qualification v1) → **`qualified:
+false`** with the 11 named reasons (`delivery-not-established`, `delivery-dispatch-unestablished`,
+`alias-unresolved`, `terminal-state-unestablished`, `previous-status-snapshot-only`,
+`pending-window-unconfirmed`, `delivery-target-unmatched`, `host-activity-unadmitted`,
+`turn-settlement-unobserved`, `settlement-latency-unestablished`,
+`survival-control-unadjudicated`); layers — delivery **false**, turnSettlement **false**,
+companion **TRUE (raw)**, durableObligations **TRUE (raw)**, noCollateral **false**;
+`terminalWinner: 'cancelled'`; the 60000-ms bound UNAPPLIED.
+
+**The fence treatment, recorded precisely:** NO termination-initiation boundary exists on this
+record (`interrupt.cleanupBoundaryAtMs` absent) — and none SHOULD: zero kills occurred
+(`verifiedTerminated: false`, `codexTerminated: false`), the held turn ended by the SCHEDULED
+hold-deadline observation end (label `observation`, gate released, natural worker exit), and the
+§22-round-3/§23.9 semantics deliberately refuse to manufacture a boundary at a natural teardown
+(a manufactured boundary over-rejects naturally completing reads — the reviewer's 20/20
+reproduction). With no boundary endpoint the mechanical fence keeps prior behavior
+(`durableReadPostCleanupBoundary: false` is "no comparable boundary", NOT "pre-boundary credit").
+**QUALIFICATION OVERLAY (the recorded adjudication, the §21.2.3 item-8 logic applied on
+substance):** the final settlement read's own completion instant (`durableSnapshot.completedAtMs`
+1792771233334) coincides with the hold-deadline instant (held-clock deadline 466809 ms ≈ epoch
+1792771233333) — a TEARDOWN-TIME observation. The raw **companion TRUE** and
+**durableObligations TRUE** layer results are therefore preserved verbatim as instrument results
+and carry **NO qualification credit**: both layers' QUALIFICATION status is **UNESTABLISHED**
+(what the snapshot establishes is WHAT the production authorized-stop path had durably published
+by teardown — never a pre-cleanup settlement fact). What IS new and pre-teardown: the §23.10.5
+sampling timeline — and by registration the samples never ground the settlement layers, so the
+timeline rides the record as independent observation fact, not credit.
+
+**Cause classification — the four causes kept DISTINCT:** (1) the durable job's `cancelled`
+winner rode the REAL authorized session-end stop intent (present/valid, cause `'session-end'`,
+requestedAt `2026-10-23T15:56:55.883Z` ≈ held-clock 249.4 s) — a SEPARATE authorized production
+act, NEVER interrupt settlement and NEVER cleanup (zero kills); the §16.2 convergence is OBSERVED
+on the pre-teardown timeline: the interrupt persisted NO durable stop authority — the job stayed
+`running` (unresolved, writable guard retained) through reads spanning the §16.4 control-clock
+readiness window up to ≈249.3 s held-clock, and no stop intent existed until the Root session's
+own end; (2) the held turn itself ended by the scheduled hold-deadline observation cleanup with a
+natural worker exit — not a budget abort, not a kill; (3) the child's natural completion: NOT
+observed (the completion-shaped watch `settlement.observed: false` — it provably cannot settle the
+interrupted path); (4) no genuine non-session-end stop path fired. `nativeInterruptionClaimed:
+false` throughout; `stdoutCapture: status 'incomplete', reason 'capture-meta-missing'` (the
+interrupted path never delivered a final stdout — named observer fact, never reconstructed);
+`survivalControl` OBSERVED facts `null` (the extraction requires the supported-case identity —
+the same §19.9/§21.2.3 named limitation shape; the declaration is verified, the no-stop/no-input
+discipline held on the declaration) — **no-collateral is NOT qualified** (`null` stays `null`,
+fail-closed). **Gate D overall on this run: FAILED CLOSED / unestablished — delivery
+unestablished (the §19.4 admission set unsatisfied: `host-activity-owning-root-unestablished`),
+turn settlement unobserved, latency unestablished, obligations/Companion
+unestablished-for-qualification, no-collateral unadjudicated.** Every unrecovered positive keeps
+its named reason; nothing was relabeled.
+
+### 23.10.7 Ledger status and the F adjudication (plan Task-4 checkboxes 4–5; live work STOPS)
+
+| Label | Registered (plan Task 4) | ACTUAL status | Reason |
+| --- | --- | --- | --- |
+| I (`rescue-interrupt --survival-control-selector progress-terminal`) | 1 conditional | **spent-and-consumed: executed** | the preflight passed, one real hosted run executed end-to-end (§23.10.2–§23.10.6); the whole-case evidence adjudication aborted on ONE new unclassified cell shape (below); the retention question measured POSITIVE at the item level; every delivery-layer positive stays named-unestablished; the pre-teardown sampling timeline and the session-end cause classification are ON the record |
+| F | 1 TOTAL conditional | **UNSPENT (0 of 1)** | no F-eligible cause arose (below) |
+
+Total logical cases: **1 of the max 2**. No retry, relabel, or per-label allowance was used; the
+preflight never rejected; no setting, model or paragraph deviation occurred; the budget never
+expired (the run ended at the scheduled hold deadline inside the budget).
+
+**The named blocker:** ONE unclassified `exec_command` cell — 2 input lines, 217 input bytes,
+directive absent, line-1 prefix class **`other`** (the historical record's was `const-r-await`),
+structural diagnostic `wholeBodyStatementMatch: false` with `braceDepthEnd: 0`,
+`endsWithSemicolon: true`, `tools: ["exec_command"]`; shape diagnostic `coverage: complete`,
+`statementCount: 1`, `{head: bound-await, tool: exec_command, argument: literal-object,
+lexical: complete, tail: text-binding}`, `bindingEquality: equal`, **`parserStage: "wrapper"`**
+(the historical record's was `output`), `wholeInputConsumed: true`, `retention: full`; withheld
+body SHA-256 `be3b9a1cbedba82f657d1403a6bcc8b2720cf2a08b002c06cfe8b67e24ab9cf1`. The shape
+classifier RECOGNIZES the wrapper family while the frozen parser rejects the bytes — the same
+fail-closed-with-withheld-body discipline as §21.2.3, on a NEW form.
+
+**F is NOT eligible — three independent grounds, recorded as the justified unspent close-out:**
+(1) **§20.6's explicit never-an-F-cause classes:** "a new unknown shape after launch (consumed
+with partial facts)" and "any host behavior that is actually registered/expected (§19.4's
+counterexamples fail closed BY DESIGN)" — the §23.2 frozen grammar DELIBERATELY pins the binding
+literally `r` (the only form the historical diagnostic proved) and lists "binding names other than
+`r`" and every other declaration head in its REJECTED list; the prefix class `other` proves line 1
+does not start `const r = await tools.` — the instrument rejected exactly what it was frozen to
+reject. (2) **No demonstrated instrument defect exists:** every module behaved exactly per its
+registration — the §23.2 grammar, the §23.4/Task-2 partial-facts exposure (which is precisely why
+the retention positive and the spawn identity survived), the §19.4 admission, the §23.5 schedule
+and the fence all performed as specified; the plan's "reproducible finite parser defect" route
+requires a demonstrated defect, and a frozen grammar declining a new form is not one. (3) **The
+correction path is not offline-versionable:** the body is withheld by construction (217 bytes +
+digest never reconstruct it — §23.2's identity boundary; no reconstruction attempted or
+acceptable), so no bounded correction can be tested against retained bytes, and admitting
+arbitrary binding names/heads would be a NEW Task-1-design registration decision — a grammar
+expansion, not the already-budgeted instrument correction. No successor is preregistered and none
+is requested; per §20.6's standing rule another live run after any such correction would still
+need new authorization.
+
+**I's partial facts are PRESERVED:** the versioned `interrupt.partialFacts` block (spawn identity
+exact, capture-vs-admission, source-rollout digest `5c2d64610335910a9bdc75cb65c5388a075e4c4947454c5dc7e9543b074d1a00`),
+the §23.10.4 retention positive, the §23.10.5 sampling timeline, and the §23.10.6 raw
+join/oracle output with the overlay. **Live work STOPS here** (the plan's "after a justified
+unspent close-out, stop live work"). Task 5 records the final mapping/disposition; auto-update or
+version drift remains a named applicability limit, never a free reset; versioned offline
+re-adjudication of this retained record stays allowed, never stamped as a fresh installed trial.
+
+**Artifact digests (all retained OUTSIDE the repository):** record
+`/tmp/shell-wait-interrupt-closure-i.kRQKtD/rescue-interrupt.record.json` SHA-256
+`13aae0ca41ba9ab25db1aeab33f97494e4563d1f685e6d75291233d064142549` (byte-identical driver-stdout
+copy at `/tmp/shell-wait-interrupt-closure-task4/driver-stdout.json`; empty stderr);
+`/tmp/shell-wait-interrupt-closure-task4/debug-models.raw.json` SHA-256
+`52f8de84b7c3047c3badf4a7f18c1dab1983480e9717b044f8ae6e6f5a2936b4` (byte-identical to the §20.7
+re-pin). The records are redacted fixture records — no preparation/auth/rollout bodies; this
+section cites only the bounded typed facts, digests and safe identifiers the records already
+carry (`redactPrivatePaths` applies to any path-bearing citation).
+
+## 23.11 2026-10-23 interrupt-closure Task 5: final exact-source verification and the scoped Gate-D disposition (offline; zero model turns, zero live launches)
+
+Task 5 of the [2026-10-23 plan](../superpowers/plans/2026-10-23-rescue-shell-wait-interrupt-closure.md),
+executed 2026-10-23 in the same worktree on top of the Task-4 commit `eceadef`. The final battery
+ran ON THE FINAL IMPLEMENTATION BYTES (the Task-4 tree — the Task-5 commit is docs-only, so the
+bytes it verifies ARE the branch's final implementation bytes; the equality proof is below).
+OFFLINE throughout: ZERO model turns, zero live launches, zero labels spent (the §23.10.7 ledger
+stands closed: I spent-and-consumed, F unspent-with-adjudication; no old allowance is reopened).
+Production `scripts/`, `hooks/`, `skills/`, `agents/`, config, snapshots, dependencies, the spec
+and the Codex source stayed read-only; scratch (`findings.md`, `progress.md`, `task_plan.md`)
+preserved untouched and never staged; no user/global config or cache edit, no auth dump, no
+push/PR/merge, no adoption, no config change.
+
+### 23.11.1 The final bytes and their provenance (all pins re-verified 2026-10-23 at battery time; nothing trusted forward)
+
+Commit lineage from the PR #71 merge base `dba2e8ad8534b5800fd1faff98ad904f492dcf1d`: `5766037`
+(T1 → §23.1–§23.7) → `27e1e7b` (T2 → §23.8) → `dfa6b2fedb0c3090ec685a3451c9b4da65b5e45f` (T3 →
+§23.9) → `eceadefe852ecd37e9db8c8683fd0a3a8b97b338` (T4, DOCS-ONLY — `git diff dfa6b2f..eceadef
+--stat` = exactly this report's §23.10 + the plan's Task-4 ticks) → this Task-5 commit (docs-only:
+this section + the plan's Task-5 ticks). The full branch change set (`git diff dba2e8a..HEAD
+--stat`) is EXACTLY five files: `tools/shell-wait-probe/driver.mjs`, `tools/shell-wait-probe/
+evidence.mjs`, `tests/shell-wait-probe.test.mjs`, this report, the plan — the sanctioned
+research-only set; zero production bytes anywhere (the prohibited-diff negative proof is battery
+gate 10 below).
+
+**Final pins (every value re-executed at battery time):** worktree `git rev-parse HEAD` →
+`eceadefe852ecd37e9db8c8683fd0a3a8b97b338`, `git status --short` → ONLY the three untracked
+scratch files; selected executable `/Users/zhangzikai/.codex/packages/standalone/releases/
+0.163.0-aarch64-apple-darwin/bin/codex` (realpath resolves to itself) → `codex-cli 0.163.0`,
+SHA-256 `8813367285524ac798dd96d1b071aea30d58708c7226fd236cd275cf1cfdee31` — byte-identical to the
+§1 preference, §19.1 baseline, §23.1 re-pin and the §23.10.1/§23.10.2 launch verifications (the
+0.163.0 evidence cohort is the completed cohort; the ambient CLI stays 0.164.0 at its OWN realpath
+— recorded separately, never launched, never blended, never qualified); Codex source
+(`../../../codex`) → HEAD `dffa0deb69268ed4ac31578794c9ea897b336ae3`, `status --short` EMPTY (the
+§16.2/§19.4/§23.3 trace pin, still clean); driver `--help` → 816 bytes, SHA-256
+`afa0e66db58a9ef5576ce868266a0c5257b3cc9dad5720e5fd31fb7b4a5ff6f1` (unchanged). All eight
+instrument module digests recompute BYTE-IDENTICAL to the §23.10.1 launch freeze: `driver.mjs`
+`ef8d17f1…`, `evidence.mjs` `33b0f6ae…`, `fixture.mjs` `1b7b030d…`, `closure-observation.mjs`
+`46b7f5e2…`, `release-qualification.mjs` `5963d65b…`, `shape-diagnostic.mjs` `2f300de2…`,
+`tests/shell-wait-probe.test.mjs` `c49d250d…`, `tests/test-selection.test.mjs` `3aec94d5…`.
+**The executing observer digest RECOMPUTED on the final tree** (the `zcode-shell-wait-observer-v5`
+NUL-separated module-init construction over evidence ⊥ shape-diagnostic ⊥ release-qualification ⊥
+closure-observation ⊥ driver, reproduced from the driver's own construction) =
+**`5ef97779813a168c73f9a9fb65ca927bfcb98bf5fdc3e3b804f79aab4397161b`** — EQUAL to the §23.10.1
+launch value and to the I record's case-start/record-time digest (`sourcesChangedDuringRun:
+false`): no supersession; the bytes that adjudicated the live I case are the final bytes.
+
+**Source/fixture/installed labels (standing):** SOURCE = the read-only pinned checkout
+`dffa0deb…` (presence evidence only; never matched to any binary); FIXTURE = the disposable
+fixture-owned homes the driver prepares and disposes (every executing helper/instruction byte
+digested at the §23.10.1 freeze); INSTALLED = the selected 0.163.0 binary above, the only live
+surface ever launched (the single I case). Labels are never blended: a fixture proof is instrument
+proof only; an installed fact rides a registered live record; a source reading is neither.
+
+### 23.11.2 The final-source gate battery (the plan's Task-5 command list; every result verbatim; exit captured from `$?` into a file, no pipe truncation)
+
+| # | Gate command (plan Task-5 list) | Source | Verbatim result |
+| --- | --- | --- | --- |
+| 1 | `npm run test:shell-research` | worktree at `eceadef` | **ℹ tests 915 / ℹ suites 72 / ℹ pass 915 / ℹ fail 0 / ℹ cancelled 0 / ℹ skipped 0 / ℹ todo 0** (duration_ms 56750.834958), exit **0**, zero `✖` lines — byte-equal to the §23.9 final-bytes record (915/915, 72 suites; no count moved) |
+| 2 | `node --test tests/test-selection.test.mjs` | worktree at `eceadef` | **tests 6 / suites 0 / pass 6 / fail 0 / cancelled 0 / skipped 0 / todo 0** (duration_ms 43.356958), exit **0** |
+| 3 | `node --test tests/rescue-preparation.test.mjs tests/rescue-binding.test.mjs tests/rescue-route-planner.test.mjs` | worktree at `eceadef` | **tests 417 / pass 417 / fail 0 / skipped 0** (duration_ms 26395.373583), exit **0** (the driver is not in these suites' import graph — re-run for the record) |
+| 4 | `node --test tests/rescue-lifecycle.test.mjs tests/rescue-child-reconciliation.test.mjs tests/rescue-progress-relay.test.mjs` | worktree at `eceadef` | **tests 126 / pass 126 / fail 0 / skipped 0** (duration_ms 38711.535208), exit **0** |
+| 5 | `node --test tests/job-control.test.mjs tests/mcp-result.test.mjs` | worktree at `eceadef` | **tests 213 / pass 213 / fail 0 / skipped 0** (duration_ms 50231.168042), exit **0** |
+| 6 | `npm run lint` | worktree at `eceadef` | eslint clean, no findings, exit **0** |
+| 7 | `npm run typecheck` | worktree at `eceadef` | `tsc --noEmit` clean, no findings, exit **0** |
+| 8 | `node scripts/check-line-endings.mjs` | worktree at `eceadef` | *"LF line endings verified in 543 tracked files."*, exit **0** |
+| 9 | `git diff --check` | worktree at `eceadef` | no output, exit **0** |
+| 10 | prohibited diff `git diff dba2e8ad8534b5800fd1faff98ad904f492dcf1d --stat -- scripts/ hooks/ skills/ agents/ .codex-plugin/ marketplace/ docs/superpowers/specs/ package.json npm-shrinkwrap.json` | worktree at `eceadef` | **EMPTY** (0 bytes), exit **0** — the plan's "Prohibited diff expected EMPTY" holds |
+| 11 | `npm test` | verification copy `/tmp/swverify.Eds0QC` of the worktree HEAD `eceadefe852…` (construction below) | **routine suite: ℹ tests 3397 / pass 3394 / fail 0 / cancelled 0 / skipped 3 / todo 0** (duration_ms 657494.62175); **marketplace suite: ℹ tests 2 / pass 2 / fail 0 / skipped 0** (duration_ms 16940.048292); combined **3399 tests / 3396 pass / 0 fail / 3 skipped / 0 cancelled**, exit **0** (captured verbatim from `$?`), **zero `✖` lines in the entire 3545-line log**. The 3 skips are the SAME three standing documented opt-in gates as §18.3/§22.2 (`﹣` SKIP lines recorded verbatim in the log): `codex-skills-unqualified` ×2 — *"installed marketplace skill crosses a real ephemeral Codex turn into ZCode"* (`Set ZCODE_CODEX_SKILLS_E2E=1…`) and *"installed Rescue uses one isolated native child for initial and choice continuations"* (`Set ZCODE_CODEX_RESCUE_E2E=1…`); `real-zcode-unqualified` — *"real ZCode discovery, two-turn session, read-only Companion, cancellation, model, and history import"* (`Set ZCODE_REAL_E2E=1…`) — the standing design, not new omissions |
+
+**Gate-11 copy construction (the §22.2 recipe, followed exactly):** `mktemp -d
+/tmp/swverify.XXXXXX` → `/tmp/swverify.Eds0QC`; `git clone --no-local --no-hardlinks` of the
+worktree at `eceadef` (clone `rev-parse HEAD` = `eceadefe852…`, `status --short` empty — the three
+untracked scratch files structurally excluded; `.git` present); a normal copied `node_modules`
+directory (`cp -R`, verified `drwxr-xr-x`, a real directory, not a symlink); byte-proof by the
+recorded manifest recipe — SHA-256 manifests of ALL **543** tracked files computed on both sides,
+**identical**, sorted-manifest digest **`9507ed5215bd294e27679c1b7c9932d99c697aa0e71fcbdaa5447fbe81d822b2`**
+on both sides (construction: `git ls-files -z | xargs -0 shasum -a 256 | awk '{print $1, $2}' |
+sort | shasum -a 256`); the copy path carries no guarded identity word. One attempt, one run, zero
+failures, no retries — no waiver needed. The copy, its manifests and the gate logs are disposable
+`/tmp` state; the copy was deleted after the run; nothing from it entered the repository.
+
+**The §22.2 named baseline limitation — encountered NOT on this clone:** the historically
+lottery-coupled fixtures (`tests/codex-rescue-qualification.test.mjs`,
+`tests/e2e/codex-skills-e2e.test.mjs` — the cwd-hash-coupled canonical-index precondition of
+§22.2's dated completion) RAN INSIDE this gate-11 run and PASSED on this clone path
+(`/tmp/swverify.Eds0QC` hashed favorably; their tests appear green in the log). For the record and
+per the plan's corroboration duty, the SAME bytes were also run in the worktree cwd: qualification
+**162/162, exit 0** (duration_ms 5936.888208); e2e **46 tests / 44 pass / 2 skipped / 0 fail**,
+exit **0** (duration_ms 4625.104958) — the green holds on the same bytes in both cwds this time.
+The §22.2 classification stands UNCHANGED as history: the failed `/tmp/swverify.Vn0rkr` record at
+`47f0b33` stays failed; the path-dependence of the historical greens stays annotated; the bounded
+repair remains a PROPOSAL requiring its own authorization; nothing here waives the limitation —
+this row is simply a first-attempt green whose clone path met the precondition.
+
+**Post-commit equality (recorded here, verified at the Task-5 commit):** the Task-5 commit changes
+ONLY the two docs files, so `git diff eceadef..HEAD --stat -- tools/ tests/` is EMPTY at the
+commit — the bytes gates 1–11 verified are the branch's final implementation bytes.
+
+### 23.11.3 The Gate-D conjunct map — every conjunct observed/failed/unestablished (from the §23.10 join/oracle output; nothing re-derived)
+
+The offline join `nativeInterruptionGateDInput(record)` and oracle
+`evaluateNativeInterruptionSettlement` (oracle v2, release-qualification v1) ran on the persisted
+I record (§23.10.6): `qualified: false` with the 11 named reasons
+(`delivery-not-established`, `delivery-dispatch-unestablished`, `alias-unresolved`,
+`terminal-state-unestablished`, `previous-status-snapshot-only`, `pending-window-unconfirmed`,
+`delivery-target-unmatched`, `host-activity-unadmitted`, `turn-settlement-unobserved`,
+`settlement-latency-unestablished`, `survival-control-unadjudicated`). The conjunct-level map
+(labels c1–c6 are THIS table's grouping of the §19.4 admission set, NOT §19.4's own numbering:
+§19.4's conjunct (1) bundles the owning-Root scoping this table splits out as c3, its (4) bundles
+that scoping with the pending-window conjunct c4, and its (2)+(3) merge into c2 — the set itself
+is unchanged and every conjunct is required):
+
+| Gate-D conjunct / layer | Status on the I record | Basis (§23.10 facts; never inferred beyond them) |
+| --- | --- | --- |
+| §19.4 c1 — exactly one `interrupt_agent` call | **POSITIVE (raw-call fact)** | `callCount: 1`; the admission's reasons-list composition proves `host-activity-call-count-not-one` never fired; delivery decode POSITIVELY established in the raw-rollout analysis (`-delivery-rejected`/`-delivery-unobserved` never fired) |
+| §19.4 c2 — exactly one matching `SubAgentActivity(interrupted)` item joined by call id + `agent_thread_id` to the spawn acknowledgement | **item-presence POSITIVE; the JOIN unestablished** | `itemPresent: true`, `interruptedItemCount: 1`, `foreignItemCount: 0` — a COMPLETED scan of BOTH collected rollouts (the §23.3 first outcome, measured, never `absent`-by-failure); `foreignItemCount: 0` is NOT an ownership proof under an unavailable Root identity; `idJoin: false` (unestablishable), `agentThreadIdMatch: null` — never guessed |
+| §19.4 c3 — owning-Root rollout | **unestablished** | `rootRolloutOwned: null` — WHICH rollout owns the item stays the named-unestablished conjunct; the owning-Root thread id derives ONLY from the supported-case analysis, which aborted `unsupported-call-shape` on the new unclassified cell before producing supported linkage (the single admission reason `host-activity-owning-root-unestablished`) |
+| §19.4 c4 — inside the confirmed pending window | **unestablished** | `insidePendingWindow: null`, `pendingWindowConfirmed: false` |
+| §19.4 c5 — timed | **unestablished** | `timed: null`, item `completedAtMs: null`; dispatch/pending/cancellation latencies all `null` (never zero); `timingBasis: "unavailable"`; `orderingBound: false` → `settled: null` (`ordering-unbound-not-attributed`) |
+| §19.4 c6 — `previous_status` a pre-dispatch snapshot only | **observed, snapshot-only** | `previousStatus: "running"` (a NONTERMINAL active turn — the interrupt was delivered onto a live turn); `previousStatusOnly: true`; `terminalBeforeInterrupt: null` on the `no-terminal-state-evidence` basis (never false) |
+| Delivery layer (the §19.4 admission set as a whole) | **FAILED CLOSED** | `hostActivityAdmitted: false` with the SINGLE named reason; delivery OUTCOME facts stay `null` per the §23.8 abort-exposure contract (`delivered`/`deliverySent`/`exactTargetMatch`/`aliasResolved` null — unestablished without the supported-case identity); layer result **false** |
+| Turn settlement | **false / unobserved** | `turnSettled: null`; `turn-settlement-unobserved` riding the oracle |
+| Settlement latency / responsiveness | **unestablished** | `deliveryToSettlementMs: null`; the ≤60000-ms bound stays **REGISTERED-BUT-NOT-YET-APPLICABLE** (the §19.4 admission set never satisfied on a live record) — UNAPPLIED, never zero (§23.6) |
+| Companion (remote outcome) | **raw TRUE; qualification UNESTABLISHED** | raw oracle `companionOutcome: 'terminal-result'` through verified executor linkage — preserved verbatim as an instrument result with NO qualification credit: the final settlement read is a TEARDOWN-TIME observation (`durableSnapshot.completedAtMs` 1792771233334 ≈ the hold-deadline instant ≈ epoch 1792771233333). A teardown-time snapshot is NEVER an interruption settlement; local reaping stays the registered named-unobservable `null` |
+| Durable obligations | **raw TRUE; qualification UNESTABLISHED** | raw oracle `durableObligations: 'settled'` — same teardown-time fence. The settled aggregate records what the production authorized-stop path (`'session-end'`) had durably published BY teardown; it is NEVER proof that all applicable physical executor duties were discharged (a terminal job does not infer local reaping, guard release or any unobserved layer). The pre-teardown timeline (§23.10.5) in fact shows the job `running`/`unresolved` with the writable guard RETAINED through reads up to ≈249.3 s held-clock — the §16.2 convergence OBSERVED, never credited |
+| No-collateral (independent survival control) | **unadjudicated — NOT qualified** | `survivalControl` OBSERVED facts `null` (the extraction requires the supported-case identity — the named limitation shape); the declaration is verified and the no-stop/no-input discipline held on the declaration; `noCollateral: false`; null stays null, fail-closed |
+| Cleanup attribution | **observed clean** | `cleanupKill: false` — zero kills (`verifiedTerminated: false`, `codexTerminated: false`); NO termination-initiation boundary exists on the record (`cleanupBoundaryAtMs` absent — correctly none: the held turn ended by the SCHEDULED hold-deadline observation end, and teardown never manufactures a boundary, §22 round-3/§23.9); `durableReadPostCleanupBoundary: false` means "no comparable boundary", NEVER pre-boundary credit |
+| Natural completion | **NOT observed** | `naturalCompletionObserved: false` — the completion-shaped watch (`settlement.observed: false`) provably cannot settle the interrupted path; no natural winner is claimed |
+| Cause classification (four causes DISTINCT) | **kept distinct** | (1) the job's `cancelled` winner rode the REAL authorized `'session-end'` stop intent (requestedAt ≈ held-clock 249.4 s) — a SEPARATE authorized production act, never interrupt settlement, never cleanup; (2) the held turn ended by the scheduled hold-deadline observation cleanup with a natural worker exit — not a budget abort, not a kill; (3) child natural completion NOT observed; (4) no genuine non-session-end stop path fired. `nativeInterruptionClaimed: false` throughout; `statusObservationTimeoutOnly: false`; `stdoutCapture` incomplete/`capture-meta-missing` (named observer fact, never reconstructed) |
+
+**S1–S7/Q1–Q6 coverage — carried from the unchanged contract suites (requirements UNCHANGED):**
+the §22.4 mapping CARRIES with one refinement. The spec and every production path are byte-identical
+to base (gate 10 EMPTY), and the unchanged contract suites re-proved green on the final bytes
+(gates 3–5: 417 + 126 + 213, plus the 915-test research suite and the full gate-11 run). Gate A
+PASS, Gate B CLOSED at the corrected v2 adjudication (twice-measured), Gate C PASS (1-vs-7), Gate
+E MIXED (RV/BG unqualified; no new campaign authorized) — all carried from §22.3/§22.4, nothing
+reopened, the retained long/cadence/output successes (M = 300004 ms; O1/O2 386600/386500 ms;
+exact-stdout v2) and every legacy verdict and failure history preserved. Gate D is **NOT CLOSED**,
+now with the §23.10 per-layer precision above; the one S5/Q4 refinement is the measured
+installed-retention answer: the §21.2.3 item-1 OPEN question (installed retention) is now ANSWERED
+POSITIVE at the item-presence level on a live 0.163.0 record — while every delivery-layer positive
+that depends on the owning-Root join stays named-unestablished.
+
+**Observer gap, not a production contract failure:** nothing in this run is a production defect.
+The instrument performed per its registration: the §23.2 frozen grammar rejected the new cell BY
+DESIGN (a non-`r` binding head is in the frozen rejected list — §20.6's never-an-F-cause class),
+the §23.4 exposure preserved every independently safe positive (retention, spawn identity,
+`callCount: 1`, the sampling timeline), the §23.5 schedule and fence measured and withheld exactly
+as registered, and every unrecovered positive kept its named reason — nothing relabeled. The
+blocker is an ADMISSION/JOIN gap (the owning-Root identity needs a supported-case analysis that
+one unclassified cell aborts). Because no production contract is violated, the plan's
+"for a real production issue, supply a minimal exact-path reproduction and proposed repair scope"
+arm does NOT fire; no production repair is proposed, shipped, or requested here.
+
+### 23.11.4 Independent review record
+
+**The independent pre-live review chain (carried; every research commit covered):** the plan-level
+reviews (`closure_spec_review`, `config_path_a_plan_review` — both CLEAR, recorded in the plan's
+planning-verification record); the T2/T3 self-review rounds (the §23.8 CRLF round with its
+mutation check; the §23.9 round-1 four findings, the codex backfill three findings, the codex
+round-2 one finding — each test-first with RED recorded verbatim) closing in the cumulative
+independent codex review **`review-mvl4r1hj-twr6bd` with ZERO findings** covering the T2+T3
+implementation — closed BEFORE the Task-4 launch (the §23.9 tick's retrospective record; the
+§23.10.1 freeze cites the same chain); the T4 launch/adjudication recorded per its own
+registrations (§23.10.1–§23.10.7).
+
+**The Task-5 in-task review duty (executed 2026-10-23; recorded by this section):**
+(1) **Spec fidelity re-verified** — gate 10's EMPTY prohibited diff proves the 2026-10-05 spec,
+S1–S7/Q1–Q6 requirements and all production bytes unchanged; the §23 chain's report cites were
+re-checked to resolve on the final bytes (`EMISSION_JUNCTION_WRAPPER_PATTERN` evidence.mjs:83
+inside the :56–83 freeze comment, whole-body recognition :721 inside :710–729; the
+`DURABLE_SAMPLING_*` frozen bounds driver.mjs:2229–2262; `INTERRUPT_PARTIAL_FACTS_VERSION`
+:2723; the offline fence :2785–2807; the abort-exposure mapping :5529–5565; the oracle
+`evaluateNativeInterruptionSettlement` release-qualification.mjs:863 with its named reasons at
+:897/:910/:934); the §23.2/§23.5/§23.6 frozen registrations stand unchanged (the two dated
+annotation sets record settled bound interpretations, never clause changes).
+(2) **Privacy rechecked on every new §23 record** — this section and §23.10 cite only bounded
+typed facts, digests and safe identifiers; the withheld bodies stay withheld by digest alone
+(`e9856478…`, `be3b9a1c…` — never reconstructed, no reconstruction attempted or acceptable); the
+fixture-record redaction (private fixture paths in reason texts) is pinned by the real-serializer
+persistence test; no private rollout, preparation, auth, job body or credential entered the
+repository anywhere in §23.
+(3) **Determinism under ambient Codex identity re-verified** — static audit: every
+`CODEX_THREAD_ID` reference in the research tests is confined to the established isolation
+machinery (the `isolatedBaseEnv()` strip + home/data-root redirection, tests
+`shell-wait-probe.test.mjs:40–59`/`:22285`/`:22414–22461`/`:23337` — the `:22285` mention is a
+comment inside the launcher `THREAD_ID_REQUIRED` envelope pin describe, itself part of the
+identity-gate machinery); the §23.8/§23.9 new describes contain
+ZERO spawn calls and ZERO `process.env` reads. Empirical: `CODEX_THREAD_ID=ambient-canary
+node --test --test-name-pattern='ambient CODEX_THREAD_ID' tests/shell-wait-probe.test.mjs` →
+exit 0, **1/1 pass** (duration_ms 453.033542); the same pattern WITHOUT ambient identity → exit 0,
+**1/1 pass** (duration_ms 428.215667). The round-2 restoration assertion (captured-original
+comparison, :22444) is intact.
+
+**The branch-level overall review is the ROOT's separate step, run AFTER this commit** (the plan's
+review duty; not dispatched inside this task, no review loop, no provider outage occurred —
+nothing to substitute). This section prepares its record; docs-only closing records may follow
+tested/reviewed implementation with equality proven (§23.11.2's post-commit equality note).
+
+### 23.11.5 The scoped disposition — three separate answers
+
+**(a) Native delivery / turn responsiveness: UNESTABLISHED on this run.** The delivery admission
+failed closed with the single named reason `host-activity-owning-root-unestablished` (the
+supported-case analysis aborted on the new unclassified wrapper cell); the delivery/dispatch/
+pending/cancellation latencies are all `null` (never zero); the ≤60000-ms native
+turn/cell-responsiveness bound remains REGISTERED-BUT-NOT-YET-APPLICABLE — registered, not
+applied, not met, not failed.
+
+**(b) Companion and ALL applicable owned/no-collateral settlement: UNESTABLISHED.** The raw TRUE
+companion and durable-obligation oracle results are preserved verbatim as instrument results and
+carry ZERO qualification credit: the final settlement read is a TEARDOWN-TIME observation
+coinciding with the hold deadline — never called an interruption settlement; a terminal job never
+proves all applicable physical executor duties. The pre-teardown sampling timeline (job
+`running`/`unresolved`, writable guard retained, through ≈249.3 s) rides the record as independent
+observation fact, not credit. The independent survival control's observed facts are `null`
+(unadjudicated) — no-collateral is NOT qualified.
+
+**(c) Deployment eligibility: NONE.** The unified **DO-NOT-ADOPT-YET** production recommendation
+stands (§22.7 as revised): Gate D is mandatory and NOT proven; the completed evidence cohort is
+the 0.163.0 I-case research record; long-wait/cadence/exact-output successes stay PROVEN
+RESEARCH-SCOPE facts; there is no fictional `rescue-long` product island to adopt; the remaining
+Review/BG/shared-default compatibility questions are unqualified and untouched by this branch.
+
+**Completion statement.** The finite Gate-D task is **PRECISELY BLOCKED**. The ledger is
+exhausted: I spent-and-consumed with a named fail-closed blocker (the new unclassified
+wrapper-shaped cell — a NEW-unknown-shape class per §20.6, its body withheld by construction,
+digest `be3b9a1c…`); F UNspendable on the §23.10.7 three-ground adjudication (no demonstrated
+instrument defect; the frozen grammar declined by design; no offline-versionable correction
+against a withheld body). The next action is NOT another feasibility campaign and NOT a ledger
+reset: it would be either a separately-authorized INSTRUMENT-DESIGN decision (a grammar-expansion
+registration — a new Task-1-design registration decision, versioned offline first against a
+retained raw body that does not yet exist) or a separately-authorized PRODUCTION/COMPATIBILITY
+change. Auto-update/version drift (the ambient 0.164.0) remains a named applicability limit, never
+a free reset; versioned offline re-adjudication of the retained I record stays allowed, never
+stamped as a fresh installed trial. **"Research finished" never means "default enabled."**
+
+### 23.11.6 Raw-data note for Task 5
+
+Task 5 consumed no live case and produced no new raw observation data. Its artifacts are this
+section, the plan's Task-5 checkbox ticks, and disposable `/tmp` state (the verification copy
+`/tmp/swverify.Eds0QC` — deleted after its run; the gate logs and the two manifest digests under
+`/tmp/interrupt-closure-task5-gates/`). The §23.10 records remain the only live-data artifacts of
+this campaign; they are redacted fixture records outside the repository, cited here only at the
+bounded typed-fact level. No private rollout, preparation, auth, job body, credential or
+user-configuration data entered the repository at any point in Tasks 1–5.

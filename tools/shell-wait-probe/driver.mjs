@@ -1062,6 +1062,15 @@ function buildCaseRecord(caseInput, fixture, liveFacts, /** @type {'executed' | 
       ...(liveFacts.interrupt?.attempted === true && liveFacts.interrupt?.hostDelivery !== undefined
         ? { hostDelivery: liveFacts.interrupt.hostDelivery }
         : {}),
+      // 2026-10-23 interrupt-closure Task 2 (schema-additive, abort-case runs
+      // only): the §23.4 versioned partial-facts block — the spawn
+      // acknowledgement identity, the capture-vs-admission distinction and
+      // the source-rollout digest under the NEW adjudicator version, never
+      // the live observer's stamp — so offline readers keep the layer facts
+      // that survive an aborted evidence adjudication.
+      ...(liveFacts.interrupt?.partialFacts !== undefined && liveFacts.interrupt?.partialFacts !== null
+        ? { partialFacts: liveFacts.interrupt.partialFacts }
+        : {}),
       ...(typeof liveFacts.interrupt?.cleanupBoundaryAtMs === 'number' ? { cleanupBoundaryAtMs: liveFacts.interrupt.cleanupBoundaryAtMs } : {}),
       ...(typeof liveFacts.interrupt?.cancelledAtMs === 'number' ? { cancelledAtMs: liveFacts.interrupt.cancelledAtMs } : {}),
       ...(typeof liveFacts.interrupt?.completedBeforeCallMs === 'number' ? { completedBeforeCallMs: liveFacts.interrupt.completedBeforeCallMs } : {}),
@@ -1129,6 +1138,13 @@ function buildCaseRecord(caseInput, fixture, liveFacts, /** @type {'executed' | 
       // without a supplier keep the persisted schema unchanged.
       ...(/** @type {any} */ (liveFacts.child)?.durableSnapshot !== undefined
         ? { durableSnapshot: redactDurableSnapshotForRecord(/** @type {any} */ (liveFacts.child).durableSnapshot, fixture) }
+        : {}),
+      // 2026-10-23 interrupt-closure Task 3 (report §23.5): the pre-cleanup
+      // sampling block persists beside the snapshot (same bounded redaction —
+      // the summaries' reason texts and duty layers can embed private paths)
+      // ONLY when the live facts carried it.
+      ...(/** @type {any} */ (liveFacts.child)?.durableSamples !== undefined
+        ? { durableSamples: redactDurableSnapshotForRecord(/** @type {any} */ (liveFacts.child).durableSamples, fixture) }
         : {}),
     },
     // R3 status-wait live flow: the observed launch acknowledgement and the
@@ -1361,12 +1377,21 @@ export async function runHeldHostTurn(input) {
   // controlled-termination cleanup sequence records at its initiation (none
   // of which runs during teardown).
   let budgetAbortIsTeardown = false;
+  // The §23.5 pre-cleanup sampling loop (2026-10-23 interrupt-closure
+  // Task 3), started after launch when the case's registered schedule is
+  // enabled and a durable supplier exists. Declared here so the termination
+  // -initiation recorder below can stop it AT the earliest boundary (clause
+  // 3/4: reads in flight at the boundary are abandoned there, named —
+  // sampling never observes past the boundary and never delays cleanup).
+  /** @type {ReturnType<typeof startDurableSampling> | null} */
+  let durableSampling = null;
   const recordTerminationInitiation = () => {
     if (budgetAbortIsTeardown) return;
     const initiatedAtMs = Date.now();
     if (cleanup.cleanupBoundaryAtMs === null || initiatedAtMs < cleanup.cleanupBoundaryAtMs) {
       cleanup.cleanupBoundaryAtMs = initiatedAtMs;
     }
+    if (durableSampling !== null) durableSampling.stopAtTerminationBoundary();
   };
   // The budget is polled against the injectable clock: in production this is
   // the monotonic performance.now(), and instrument tests can drive it
@@ -1389,6 +1414,11 @@ export async function runHeldHostTurn(input) {
     const timer = setTimeout(resolve, ms);
     budgetController.signal.addEventListener('abort', () => { clearTimeout(timer); reject(new Error('held turn aborted')); }, { once: true });
   });
+  // Hoisted so the exit `finally` can attach the §23.5 sampling block to the
+  // answer's childSettlement on EVERY exit path (the finally runs after the
+  // abort that stops the sampler).
+  /** @type {HeldTurnRecord | undefined} */
+  let answer;
   try {
 
   /** @type {{ result: Promise<{ code: number | null, stdout: string, stderr: string }>, terminate?: () => Promise<void> }} */
@@ -1453,8 +1483,6 @@ export async function runHeldHostTurn(input) {
     await safeTerminateCodex();
   };
 
-  /** @type {HeldTurnRecord} */
-  let answer;
   try {
     // Everything from here to the return is inside the cancellation finally, so
     // a thrown failure (including a rejecting host result) also aborts the
@@ -1475,6 +1503,29 @@ export async function runHeldHostTurn(input) {
       remainingMs: () => Math.max(0, Math.round(budgetDeadlineMs - now())),
       recordCleanupBoundary: recordTerminationInitiation,
     });
+    // 2026-10-23 interrupt-closure Task 3 (report §23.5): the pre-cleanup
+    // sampling schedule runs CONCURRENTLY with the held turn for the
+    // registered case(s) — the baseline starts as soon as the exact identity
+    // is established, never at the hold's end and never after a termination
+    // branch has started. Options are bounded: only smaller caps are
+    // injectable; the interval floor and both ceilings are frozen constants.
+    if (input.sampleDurableSnapshots && typeof input.readDurableSnapshot === 'function') {
+      const requested = input.sampleDurableSnapshots === true ? {} : input.sampleDurableSnapshots;
+      /** @param {unknown} value */
+      const finiteNumber = (value) => typeof value === 'number' && Number.isFinite(value);
+      durableSampling = startDurableSampling({
+        supplier: /** @type {() => Promise<Record<string, unknown>>} */ (input.readDurableSnapshot),
+        signal: budgetController.signal,
+        sleep,
+        // Codex backfill review: a boundary recorded while launch was pending
+        // (the recorder ran before this sampler existed) must fence the
+        // sampler at start — checked again inside via `signal.aborted`.
+        terminatedAlready: cleanup.cleanupBoundaryAtMs !== null,
+        intervalMs: Math.max(DURABLE_SAMPLING_MIN_INTERVAL_MS, finiteNumber(/** @type {any} */ (requested).intervalMs) ? /** @type {any} */ (requested).intervalMs : DURABLE_SAMPLING_MIN_INTERVAL_MS),
+        maxAttempts: Math.max(1, Math.min(DURABLE_SAMPLING_MAX_ATTEMPTS, finiteNumber(/** @type {any} */ (requested).maxAttempts) ? Math.floor(/** @type {any} */ (requested).maxAttempts) : DURABLE_SAMPLING_MAX_ATTEMPTS)),
+        maxSummaries: Math.max(1, Math.min(DURABLE_SAMPLING_MAX_SUMMARIES, finiteNumber(/** @type {any} */ (requested).maxSummaries) ? Math.floor(/** @type {any} */ (requested).maxSummaries) : DURABLE_SAMPLING_MAX_SUMMARIES)),
+      });
+    }
     timeline.launchedAtElapsedMs = Math.round(now() - startMs);
     /** @type {Promise<{ kind: 'result', value: { code: number | null, stdout: string, stderr: string } } | { kind: 'error', error: unknown }>} */
     const resultOutcome = Promise.resolve(control.result).then(
@@ -1953,10 +2004,10 @@ export async function runHeldHostTurn(input) {
   if (budgetExpired) {
     cleanup.label = 'budget-cleanup';
     await runTerminationCleanup();
-  } else if (answer.endedBeforeGate) {
+  } else if (answer !== undefined && answer.endedBeforeGate) {
     await runTerminationCleanup();
   }
-  return answer;
+  return /** @type {HeldTurnRecord} */ (answer);
   } finally {
     // Cancel and settle every outstanding gate/observation wait on EVERY exit
     // path (early exit, completion, failure, budget expiry), so no losing poll
@@ -1969,6 +2020,28 @@ export async function runHeldHostTurn(input) {
     budgetAbortIsTeardown = true;
     budgetController.abort();
     clearInterval(budgetTimer);
+    // 2026-10-23 interrupt-closure Task 3 (report §23.5): the abort above
+    // stopped the sampler (the shared-signal stop — a teardown-only abort
+    // names the signal, never a termination boundary); the FINAL sampling
+    // state — attempts, baseline, summaries, omissions — rides the held
+    // record's childSettlement block on EVERY exit path. The failure-shaped
+    // answer (a rejecting gate/host result) carries no settlement block — the
+    // sampler's facts still ride on a minimal unobserved-settlement carrier
+    // (self-review round 1): the mapper projects
+    // childSettlement.durableSamples onto that record and the settlement
+    // observation itself stays honestly unobserved (the turn failed).
+    if (durableSampling !== null && answer !== undefined) {
+      const samples = durableSampling.stateSnapshot();
+      if (answer.childSettlement && typeof answer.childSettlement === 'object') {
+        /** @type {any} */ (answer.childSettlement).durableSamples = samples;
+      } else {
+        /** @type {any} */ (answer).childSettlement = {
+          observed: false,
+          basis: answer.failure !== undefined ? 'held-turn-failed-before-settlement-observation' : null,
+          durableSamples: samples,
+        };
+      }
+    }
   }
 }
 
@@ -2147,6 +2220,382 @@ async function buildDurableSettlementLayer(childSettlement, durableRead, budgetE
 }
 
 /**
+ * The §23.5 frozen pre-cleanup passive sampling schedule's schema version
+ * (2026-10-23 interrupt-closure Task 3). The sampling block is a LIVE
+ * observation block of the held record — this version stamps its own schema
+ * so it can never be mistaken for the live observer's adjudication stamp or
+ * for an offline-facts adjudicator version.
+ */
+export const DURABLE_SAMPLING_VERSION = 1;
+
+/**
+ * The §23.5 clause 2 registered interval floor: ≥1000 ms between durable
+ * read STARTS (clause 2's post-delivery cadence, applied conservatively to
+ * every consecutive attempt start, identity probes included). Frozen — a
+ * caller-requested smaller interval is clamped, never honored.
+ */
+export const DURABLE_SAMPLING_MIN_INTERVAL_MS = 1000;
+
+/**
+ * The §23.5 clause 4 registered read-attempt ceiling: maximum 600 read
+ * attempts total, all inside the existing experiment budget. Frozen — a
+ * larger caller request is clamped; only a smaller cap can be injected
+ * (bounded instrument tests).
+ */
+export const DURABLE_SAMPLING_MAX_ATTEMPTS = 600;
+
+/**
+ * The §23.5 clause 4 registered retention ceiling: at most 32
+ * transition/sample summaries retained per case. Frozen — a larger caller
+ * request is clamped; only a smaller cap can be injected.
+ */
+export const DURABLE_SAMPLING_MAX_SUMMARIES = 32;
+
+/**
+ * The closed map of cases whose registered design runs the §23.5 pre-cleanup
+ * sampling schedule (the §20.8 producer-map precedent: the map is the ONE
+ * definition site; the live executor consults it when wiring
+ * {@link runHeldHostTurn}). The §23.5 schedule is the INTERRUPT case's
+ * registered schedule; status-wait and every other case keep their exact
+ * prior durable-read behavior.
+ */
+export const DURABLE_SAMPLING_ENABLED_CASES = Object.freeze(new Set(['rescue-interrupt']));
+
+/**
+ * The sampling omission ledger's retention bound (self-review round 1,
+ * 2026-10-23): at most 16 named omission entries are retained on the block.
+ * This is an ACCOUNTING bound (§23.5 freezes the 32-summary retention, not an
+ * omission count — under the frozen default schedule the summary-cap
+ * omissions alone can exceed it), not a lifecycle bound: drops at this bound
+ * are themselves named on the block (`omissionsTruncated` +
+ * `omissionsDroppedCount`), never silent.
+ */
+const DURABLE_SAMPLING_OMISSION_RETENTION = 16;
+
+/**
+ * Whether a supplier result is the established named identity-unobserved
+ * block (the live supplier's contract: an unresolvable spawn-acknowledgement
+ * identity yields `{ aggregate: 'unestablished', reasons:
+ * ['durable-identity-unobserved'…] }`). Identity probes are establishment
+ * attempts — counted, never sample summaries, never guessed at another job.
+ * @param {unknown} result
+ * @returns {boolean}
+ */
+function isDurableIdentityUnobservedResult(result) {
+  return result !== null && typeof result === 'object'
+    && /** @type {any} */ (result).aggregate === 'unestablished'
+    && Array.isArray(/** @type {any} */ (result).reasons)
+    && /** @type {unknown[]} */ (/** @type {any} */ (result).reasons).some((reason) => String(reason).startsWith('durable-identity-unobserved'));
+}
+
+/**
+ * The §23.5 pre-cleanup passive sampling loop (2026-10-23 interrupt-closure
+ * Task 3): bounded baseline + interval reads of the EXISTING passive durable
+ * reader through the case's existing supplier seam, run CONCURRENTLY with
+ * the held turn — never at the hold's end and never after a termination
+ * branch has started (the recorded I case's cleanup-time-only snapshot was
+ * the defect this schedule fixes, report §21.2.3 item 8 / §23.5).
+ *
+ * Frozen contract clauses (report §23.5; no new lifecycle behavior):
+ * 1. Baseline — the first attempt whose result is NOT the named
+ *    identity-unobserved block; establishment probes before it are counted
+ *    attempts, never summaries; identity that never establishes omits the
+ *    baseline with the registered `durable-identity-unobserved` reason.
+ * 2. Interval — every consecutive pair of read starts keeps the registered
+ *    ≥1000-ms floor (`DURABLE_SAMPLING_MIN_INTERVAL_MS`, clamped).
+ * 3. Fence cooperation — the loop STOPs at the earliest termination-initiation
+ *    boundary (the held turn's recorder hook) and at the shared budget
+ *    signal's abort (teardown included, which is NOT a boundary): a read
+ *    still in flight is abandoned AT the stop with its named omission, so
+ *    sampling never delays cleanup and never observes past the boundary. A
+ *    completed read keeps its own started/completed instants — the offline
+ *    strict fence decides credit per read.
+ * 4. Bounds — max 600 attempts (clamped), ≤32 retained summaries (clamped);
+ *    cap exhaustion and dropped summaries are named omissions. An
+ *    unreadable supplier is a named observer reason on the attempt's
+ *    summary; a never-resolving supplier is abandoned at the stop — neither
+ *    is ever a business failure, and neither can delay cleanup (the loop is
+ *    detached; no path awaits it).
+ * 5. Read-only-ness — the loop only CALLS the supplier and derives bounded
+ *    closed-fact summaries from its results (§19.8's fingerprint-sweep
+ *    precedent: the reader itself proves passivity; the loop adds no I/O,
+ *    settles nothing, stops nothing, repairs nothing, authorizes nothing).
+ * @param {{
+ *   supplier: () => Promise<Record<string, unknown>>,
+ *   signal: AbortSignal,
+ *   sleep: (ms: number) => Promise<void>,
+ *   intervalMs: number,
+ *   maxAttempts: number,
+ *   maxSummaries: number,
+ *   terminatedAlready?: boolean,
+ * }} input
+ *   `terminatedAlready` (codex backfill review): the held turn's earliest
+ *   termination-initiation boundary was recorded BEFORE the sampler could
+ *   start (the shared budget can expire while `input.launch()` is pending).
+ *   No attempt may run past it — the skipped start is the named
+ *   `durable-sampling-skipped-termination-already-recorded` omission.
+ * @returns {{ state: Record<string, any>, stopAtTerminationBoundary: () => void, stateSnapshot: () => Record<string, any> }}
+ */
+function startDurableSampling({ supplier, signal, sleep, intervalMs, maxAttempts, maxSummaries, terminatedAlready = false }) {
+  /** @type {Record<string, any>} */
+  const state = {
+    version: DURABLE_SAMPLING_VERSION,
+    intervalMs,
+    attemptCap: maxAttempts,
+    summaryCap: maxSummaries,
+    attemptCount: 0,
+    identityEstablishedAtAttempt: null,
+    baseline: null,
+    baselineOmittedReason: null,
+    stoppedReason: null,
+    summaries: [],
+    omissions: [],
+    // Self-review round 1 (2026-10-23): omissions dropped at the ledger bound
+    // are themselves a named fact — never a silent cut (§23.5 clause 4's
+    // every-omission-named discipline extends to the dropped ones).
+    omissionsTruncated: false,
+    omissionsDroppedCount: 0,
+    // Self-review round 1 (2026-10-23): the clause-2 floor is re-checked
+    // against the ACTUAL start spacing; an interval that still started short
+    // (a scheduler resolving earlier than requested) is named here — never a
+    // silent compression.
+    intervalShortfalls: 0,
+    // Codex backfill review (2026-10-23): the ledger ROLLS at the frozen cap
+    // (baseline and transitions pinned, the oldest superseded summary evicted)
+    // so post-delivery observations always survive — every rolled-off summary
+    // is a named count on the block, never a silent drop.
+    summariesRolledOff: 0,
+  };
+  let stopped = false;
+  /** @type {number | null} */
+  let inFlightAttemptIndex = null;
+  /** @type {(value?: unknown) => void} */
+  let resolveStopped = () => {};
+  const stoppedPromise = new Promise((resolve) => { resolveStopped = resolve; });
+  /** @param {Record<string, unknown>} omission */
+  const namedOmission = (omission) => {
+    if (state.omissions.length < DURABLE_SAMPLING_OMISSION_RETENTION) {
+      state.omissions.push(omission);
+      return;
+    }
+    state.omissionsTruncated = true;
+    state.omissionsDroppedCount += 1;
+  };
+  const omitBaseline = () => {
+    if (state.baseline !== null || state.baselineOmittedReason !== null) return;
+    // §23.5 clause 1: the baseline's omission names the identity. The
+    // baseline is null ONLY while identity never established (it is set at
+    // the establishing read), so this is always the registered reason — the
+    // former established-but-cap-dead arm was unreachable (self-review
+    // round 1) and is removed.
+    state.baselineOmittedReason = 'durable-identity-unobserved';
+  };
+  /** @param {'durable-sampling-stopped-at-termination-boundary' | 'durable-sampling-stopped-at-shared-signal'} reason */
+  const stop = (reason) => {
+    if (stopped) return;
+    stopped = true;
+    state.stoppedReason = reason;
+    // A read still in flight is abandoned AT the stop, named with its
+    // attempt (clause 4) — synchronously, so the held record's final
+    // snapshot always carries the abandonment.
+    if (inFlightAttemptIndex !== null) {
+      namedOmission({
+        attemptIndex: inFlightAttemptIndex,
+        reason: reason === 'durable-sampling-stopped-at-termination-boundary'
+          ? 'durable-read-abandoned-in-flight-at-termination-boundary'
+          : 'durable-read-abandoned-at-shared-signal',
+      });
+      inFlightAttemptIndex = null;
+    }
+    omitBaseline();
+    resolveStopped();
+  };
+  signal.addEventListener('abort', () => { stop('durable-sampling-stopped-at-shared-signal'); }, { once: true });
+  // Codex backfill review (2026-10-23): the shared budget can expire while
+  // `input.launch()` is still pending — the termination recorder fired before
+  // this sampler existed and an abort listener attached now would never fire.
+  // No attempt may run past the already-recorded termination: the skipped
+  // start is a named omission (the offline fence then sees no post-boundary
+  // sample), and the frozen bounds stay intact.
+  if (terminatedAlready === true || signal.aborted) {
+    namedOmission({
+      attemptIndex: 0,
+      reason: terminatedAlready === true
+        ? 'durable-sampling-skipped-termination-already-recorded'
+        : 'durable-sampling-skipped-shared-signal-already-aborted',
+    });
+    stop(terminatedAlready === true
+      ? 'durable-sampling-stopped-at-termination-boundary'
+      : 'durable-sampling-stopped-at-shared-signal');
+  }
+  /** @type {(snapshot: Record<string, unknown> | null, attemptIndex: number, startedAtMs: number, completedAtMs: number, isBaseline: boolean, isTransition: boolean) => Record<string, unknown>} */
+  const summarize = (snapshot, attemptIndex, startedAtMs, completedAtMs, isBaseline, isTransition) => {
+    const source = snapshot !== null && typeof snapshot === 'object' ? snapshot : {};
+    const passive = /** @type {any} */ (source).passive !== null && typeof /** @type {any} */ (source).passive === 'object' ? /** @type {any} */ (source).passive : {};
+    const partition = /** @type {any} */ (source).partition !== null && typeof /** @type {any} */ (source).partition === 'object' ? /** @type {any} */ (source).partition : {};
+    const job = /** @type {any} */ (source).job !== null && typeof /** @type {any} */ (source).job === 'object' ? /** @type {any} */ (source).job : {};
+    // The reader's job projection is the VALIDATED production record — the
+    // summaries retain only the whitelisted cancellation-provenance fields
+    // (codex backfill review): the published winner status, the confirmed
+    // stop cause and the stop intent's cause/request timestamp (a bounded
+    // enum + canonical ISO timestamp), never the whole record body. These
+    // are the fields a retained pre-cleanup sample needs to distinguish a
+    // genuine SessionEnd from any other cancellation when the final snapshot
+    // is unavailable or fenced out — the reader's `layers.stopIntent` block
+    // carries only applicability/presence/validity, not the cause.
+    const jobProjection = job.projection !== null && typeof job.projection === 'object' ? job.projection : {};
+    const stopIntent = jobProjection.stopIntent !== null && typeof jobProjection.stopIntent === 'object' ? jobProjection.stopIntent : {};
+    return {
+      attemptIndex,
+      baseline: isBaseline === true,
+      // §23.5 clause 4 names these "transition/sample summaries": a summary
+      // whose aggregate differs from the previous sample's observed aggregate
+      // is a TRANSITION — pinned by the retention mechanism below.
+      transition: isTransition === true,
+      startedAtMs,
+      completedAtMs,
+      aggregate: /** @type {any} */ (source).aggregate ?? null,
+      executorLinkage: /** @type {any} */ (source).executorLinkage ?? null,
+      jobPresence: job.presence ?? null,
+      jobStatus: jobProjection.status ?? null,
+      stopCause: typeof jobProjection.stopCause === 'string' ? jobProjection.stopCause : null,
+      stopIntentCause: typeof stopIntent.cause === 'string' ? stopIntent.cause : null,
+      stopIntentRequestedAt: typeof stopIntent.requestedAt === 'string' ? stopIntent.requestedAt : null,
+      snapshotEqual: passive.snapshotEqual ?? null,
+      lockState: passive.lockState ?? null,
+      partitionStatus: partition.status ?? null,
+      // The per-layer §19.5 duty states ride verbatim (bounded closed facts
+      // — the record serializer re-bounds and redacts on persistence).
+      layers: /** @type {any} */ (source).layers ?? null,
+      reasons: Array.isArray(/** @type {any} */ (source).reasons)
+        ? /** @type {unknown[]} */ (/** @type {any} */ (source).reasons).slice(0, 8).map((reason) => String(reason))
+        : [],
+    };
+  };
+  (async () => {
+    let lastStartAtMs = null;
+    // The aggregate of the most recent non-probe read — the transition key
+    // for the retention mechanism below (a summary whose aggregate differs
+    // from this is a state TRANSITION, pinned by the ledger).
+    let lastAggregate = null;
+    while (!stopped && state.attemptCount < maxAttempts) {
+      if (lastStartAtMs !== null) {
+        // Clause 2: the next read starts no earlier than the previous start
+        // plus the registered floor. The scheduled wait races the stop so a
+        // boundary or teardown during the interval is honored immediately —
+        // and the floor is RE-CHECKED against the actual clock (self-review
+        // round 1): a scheduler that resolved earlier than requested gets the
+        // remainder once more, and a still-short start is the named
+        // `intervalShortfalls` fact on the block — never a silent compression
+        // and never a busy wait (cleanup is never delayed). With the
+        // production default scheduler (a real setTimeout) the re-check finds
+        // the floor already honored and re-waits nothing.
+        let waitMs = Math.max(0, lastStartAtMs + intervalMs - Date.now());
+        if (waitMs > 0) {
+          await Promise.race([
+            Promise.resolve(sleep(waitMs)).then(() => {}, () => {}),
+            stoppedPromise,
+          ]);
+        }
+        waitMs = Math.max(0, lastStartAtMs + intervalMs - Date.now());
+        if (waitMs > 0) {
+          await Promise.race([
+            Promise.resolve(sleep(waitMs)).then(() => {}, () => {}),
+            stoppedPromise,
+          ]);
+          waitMs = Math.max(0, lastStartAtMs + intervalMs - Date.now());
+          if (waitMs > 0) state.intervalShortfalls += 1;
+        }
+      }
+      if (stopped) break;
+      const attemptIndex = state.attemptCount + 1;
+      state.attemptCount = attemptIndex;
+      const startedAtMs = Date.now();
+      lastStartAtMs = startedAtMs;
+      inFlightAttemptIndex = attemptIndex;
+      let result;
+      try {
+        result = await supplier();
+      } catch (error) {
+        // Clause 4: an unreadable supplier is a named observer reason on the
+        // attempt's summary — never a business failure.
+        result = { aggregate: 'unestablished', reasons: [error instanceof Error ? error.message : String(error)] };
+      }
+      inFlightAttemptIndex = null;
+      if (stopped) break; // the stop already recorded the abandonment; the late result is discarded
+      const completedAtMs = Date.now();
+      if (isDurableIdentityUnobservedResult(result)) {
+        // BEFORE identity: an establishment probe — counted, named through the
+        // registered baseline omission, never a sample summary (clause 1).
+        // AFTER the baseline the read observed NO durable state (a mid-run
+        // rollout-load failure yields the same block): a named omission on
+        // the attempt (clause 4) — never an anonymous count bump (self-review
+        // round 1).
+        if (state.baseline !== null) {
+          namedOmission({ attemptIndex, reason: 'durable-read-identity-unobserved' });
+        }
+        continue;
+      }
+      const incomingAggregate = /** @type {any} */ (result)?.aggregate ?? null;
+      const isTransition = lastAggregate !== null && incomingAggregate !== lastAggregate;
+      if (state.baseline === null) {
+        state.baseline = { attemptIndex, startedAtMs, completedAtMs };
+        state.identityEstablishedAtAttempt = attemptIndex;
+        state.baselineOmittedReason = null;
+      }
+      if (state.summaries.length >= maxSummaries) {
+        // §23.5 clause 4: at most 32 summaries are retained — but the ledger
+        // must not evict the observations the schedule exists to capture
+        // (codex backfill review: identity establishes promptly while the
+        // §16.4 control clock schedules the interruption at ~80 s, so a flat
+        // drop-at-the-cap ledger would discard every post-delivery
+        // observation unrecoverably). The ledger ROLLS: the baseline and
+        // every state-transition summary are PINNED, and a new summary at
+        // the cap rolls off the oldest non-baseline non-transition summary
+        // (preferring one whose aggregate matches the incoming sample — a
+        // superseded run member), recording the roll-off as a named count.
+        // Only when every slot is baseline-or-transition does the
+        // summary-cap omission fire. The retained set is therefore baseline +
+        // transitions + the newest observations, always ≤ the frozen bound.
+        let victimIndex = -1;
+        for (let index = 0; index < state.summaries.length; index += 1) {
+          const candidate = state.summaries[index];
+          if (candidate.baseline === true || candidate.transition === true) continue;
+          if (candidate.aggregate === incomingAggregate) { victimIndex = index; break; }
+        }
+        if (victimIndex === -1) {
+          for (let index = 0; index < state.summaries.length; index += 1) {
+            const candidate = state.summaries[index];
+            if (candidate.baseline === true || candidate.transition === true) continue;
+            victimIndex = index;
+            break;
+          }
+        }
+        if (victimIndex === -1) {
+          namedOmission({ attemptIndex, reason: 'durable-sampling-summary-cap-reached' });
+          lastAggregate = incomingAggregate;
+          continue;
+        }
+        state.summaries.splice(victimIndex, 1);
+        state.summariesRolledOff += 1;
+      }
+      state.summaries.push(summarize(result, attemptIndex, startedAtMs, completedAtMs, state.baseline.attemptIndex === attemptIndex, isTransition));
+      lastAggregate = incomingAggregate;
+    }
+    if (!stopped && state.attemptCount >= maxAttempts) {
+      // Clause 4: reads beyond the attempt cap are omitted by name.
+      namedOmission({ reason: 'durable-sampling-attempt-cap-reached' });
+      omitBaseline();
+    }
+  })().catch(() => { /* the detached sampler never fails the held turn */ });
+  return {
+    state,
+    stopAtTerminationBoundary: () => { stop('durable-sampling-stopped-at-termination-boundary'); },
+    stateSnapshot: () => ({ ...state, summaries: state.summaries.slice(), omissions: state.omissions.slice() }),
+  };
+}
+
+/**
  * Join the settlement layers and the typed durable snapshot into the
  * persisted watch outcome (2026-10-21 evidence-closure Task 2; codex round 5
  * finding 2 named the failed watch; codex round 6 finding 2 extended its use
@@ -2155,7 +2604,7 @@ async function buildDurableSettlementLayer(childSettlement, durableRead, budgetE
  * @param {boolean} watchFailed @param {{ observed: boolean, basis: string | null } | null} childSettlement
  * @param {{ remoteTerminal: boolean | null, localProcessReaping: 'natural-exit-observed' | 'cleanup-terminated' | null, durableObligations: 'settled' | 'unresolved' | null }} settlementLayers
  * @param {Record<string, unknown> | undefined} durableSnapshot
- * @returns {{ observed: boolean, basis: string | null, layers?: { remoteTerminal: boolean | null, localProcessReaping: 'natural-exit-observed' | 'cleanup-terminated' | null, durableObligations: 'settled' | 'unresolved' | null }, durableSnapshot?: Record<string, unknown> } | null}
+ * @returns {{ observed: boolean, basis: string | null, layers?: { remoteTerminal: boolean | null, localProcessReaping: 'natural-exit-observed' | 'cleanup-terminated' | null, durableObligations: 'settled' | 'unresolved' | null }, durableSnapshot?: Record<string, unknown>, durableSamples?: Record<string, unknown> } | null}
  */
 function joinChildSettlementRecord(watchFailed, childSettlement, settlementLayers, durableSnapshot) {
   if (watchFailed && childSettlement === null) {
@@ -2262,6 +2711,18 @@ export function interruptDurableSnapshotSupplier(fixture, observedIdentity = nul
 }
 
 /**
+ * The interrupt partial-facts adjudicator's OWN version (2026-10-23
+ * interrupt-closure Task 2, report §23.4): the offline-recoverable layer
+ * facts that survive an aborted whole-case evidence adjudication — the
+ * raw-rollout interrupt call facts, the spawn-acknowledgement identity, the
+ * capture-vs-admission distinction and the source-rollout digest — are
+ * stamped with THIS new identifier so they can never be mistaken for the
+ * live observer's own adjudication (the provenance.observer digest) or for a
+ * fresh installed-trial claim. v1 introduces the block.
+ */
+export const INTERRUPT_PARTIAL_FACTS_VERSION = 1;
+
+/**
  * The offline Gate D join (2026-10-21 evidence-closure Task 3): ONE place
  * maps a persisted case record into the frozen native-interruption oracle's
  * input (release-qualification.mjs evaluateNativeInterruptionSettlement), wiring EVERY layer through the exact observed identity. The
@@ -2299,6 +2760,51 @@ export function nativeInterruptionGateDInput(record) {
   // Only a production-TERMINAL status is an observed winner (the §19.5
   // TERMINAL set); anything else stays null, never a positive fact.
   const jobStatus = rawJobStatus === 'succeeded' || rawJobStatus === 'failed' || rawJobStatus === 'cancelled' ? rawJobStatus : null;
+  // Codex overall review (2026-10-22, the strict PRE-boundary fence): the
+  // durable read's OWN completion timestamp is compared against the FINAL
+  // recorded cleanup boundary (`interrupt.cleanupBoundaryAtMs`) — a read
+  // completing AT or AFTER the boundary is a CLEANUP-TIME observation (the
+  // §20.5-item-5 semantics the recorded I case's manual overlay applied,
+  // report §21.2.3 — now code-enforced) and grounds NO qualification credit:
+  // the Companion outcome, the terminal winner and the obligations aggregate
+  // stay UNPUBLISHED below, with the established round-19
+  // cleanup-attribution basis riding the join (never silently dropped). The
+  // fence is established only when BOTH endpoints exist; a read with no
+  // comparable boundary keeps the prior behavior.
+  // 2026-10-23 interrupt-closure Task 3 (report §23.5 strict fence, offline
+  // replay arm): when a boundary IS recorded, the snapshot must PROVE a
+  // finite completion instant strictly before it. A missing or non-finite
+  // instant (including a foreign clock representation — never parsed) leaves
+  // the fence's timing endpoint unestablishable: the credit is withheld with
+  // the named `durable-read-timing-unestablished` basis (the ONLINE fence
+  // already refuses an unstamped completion via buildDurableSettlementLayer's
+  // `completionAtMs === null` arm — this closes the replay gap). A snapshot
+  // whose own fingerprint inequality rode the record is torn (§19.5): its
+  // layers stay unknown, so a settled aggregate label beside
+  // `passive.snapshotEqual === false` is never trusted.
+  const durableCompletedAtMs = durableSnapshot && typeof durableSnapshot === 'object'
+    ? /** @type {any} */ (durableSnapshot).completedAtMs ?? null
+    : null;
+  const cleanupBoundaryAtMs = typeof interrupt.cleanupBoundaryAtMs === 'number'
+    ? interrupt.cleanupBoundaryAtMs
+    : null;
+  const durableTimingEstablished = typeof durableCompletedAtMs === 'number' && Number.isFinite(durableCompletedAtMs);
+  const durableReadAtOrAfterBoundary = cleanupBoundaryAtMs !== null
+    && durableTimingEstablished
+    && /** @type {number} */ (durableCompletedAtMs) >= cleanupBoundaryAtMs;
+  const durableReadTimingUnestablished = cleanupBoundaryAtMs !== null && !durableTimingEstablished;
+  const durableSnapshotTorn = durableSnapshot && typeof durableSnapshot === 'object'
+    && /** @type {any} */ (durableSnapshot).passive !== null && typeof /** @type {any} */ (durableSnapshot).passive === 'object'
+    ? /** @type {any} */ (durableSnapshot).passive.snapshotEqual === false
+    : false;
+  // The credit-withholding state (the fence plus the snapshot-integrity
+  // guard): a withheld read publishes no Companion/winner/obligations credit,
+  // and the named basis says which withholding fired (at/after boundary →
+  // the established round-19 cleanup attribution; unprovable timing → the
+  // §23.5 strict-fence timing basis; a torn snapshot is refused through the
+  // durableEstablished gate below — the snapshot's own `snapshot-unequal`
+  // reason rides the record).
+  const durableCreditWithheld = durableReadAtOrAfterBoundary || durableReadTimingUnestablished;
   // Codex round 2: the job's winner/executor evidence is consumable ONLY
   // from a POSITIVELY observed durable snapshot — an unestablished or torn
   // snapshot (e.g. the executor linkage unverified) is never consumed as
@@ -2312,27 +2818,8 @@ export function nativeInterruptionGateDInput(record) {
   const durableEstablished = (durableAggregate === 'settled' || durableAggregate === 'unresolved')
     && (durableSnapshot && typeof durableSnapshot === 'object'
       ? /** @type {any} */ (durableSnapshot).executorLinkage === 'verified'
-      : false);
-  // Codex overall review (2026-10-22, the strict PRE-boundary fence): the
-  // durable read's OWN completion timestamp is compared against the FINAL
-  // recorded cleanup boundary (`interrupt.cleanupBoundaryAtMs`) — a read
-  // completing AT or AFTER the boundary is a CLEANUP-TIME observation (the
-  // §20.5-item-5 semantics the recorded I case's manual overlay applied,
-  // report §21.2.3 — now code-enforced) and grounds NO qualification credit:
-  // the Companion outcome, the terminal winner and the obligations aggregate
-  // stay UNPUBLISHED below, with the established round-19
-  // cleanup-attribution basis riding the join (never silently dropped). The
-  // fence is established only when BOTH endpoints exist; a read with no
-  // comparable boundary keeps the prior behavior.
-  const durableCompletedAtMs = durableSnapshot && typeof durableSnapshot === 'object'
-    ? /** @type {any} */ (durableSnapshot).completedAtMs ?? null
-    : null;
-  const cleanupBoundaryAtMs = typeof interrupt.cleanupBoundaryAtMs === 'number'
-    ? interrupt.cleanupBoundaryAtMs
-    : null;
-  const durableReadAtOrAfterBoundary = typeof durableCompletedAtMs === 'number'
-    && cleanupBoundaryAtMs !== null
-    && durableCompletedAtMs >= cleanupBoundaryAtMs;
+      : false)
+    && !durableSnapshotTorn;
   // The Companion outcome layer (codex round 1 — the cancelled-poll path):
   // the completion-shaped watch is frozen out of the interrupt case, so the
   // CompanIONS's REMOTE outcome is observed through the durable job's
@@ -2348,12 +2835,12 @@ export function nativeInterruptionGateDInput(record) {
   // independently observed watch/reaping branches keep their own mapper-level
   // cleanup attribution).
   if (settlementLayers?.remoteTerminal === true) companionOutcome = 'terminal-result';
-  else if (jobStatus !== null && durableEstablished && !durableReadAtOrAfterBoundary) companionOutcome = 'terminal-result';
+  else if (jobStatus !== null && durableEstablished && !durableCreditWithheld) companionOutcome = 'terminal-result';
   else if (settlementLayers?.localProcessReaping === 'natural-exit-observed') companionOutcome = 'ceased';
   // Codex round 3: the survived-unsettled classification is equally
   // CHILD-attributed (the durable work observed alive-unsettled) — it is
   // published only on a POSITIVELY verified executor linkage.
-  else if (durableAggregate === 'unresolved' && durableEstablished && !durableReadAtOrAfterBoundary) companionOutcome = 'survived-unsettled';
+  else if (durableAggregate === 'unresolved' && durableEstablished && !durableCreditWithheld) companionOutcome = 'survived-unsettled';
   const completedBeforeCall = typeof interrupt.completedBeforeCallMs === 'number';
   const settledBasis = typeof interrupt.settledBasis === 'string' ? interrupt.settledBasis : null;
   // Codex round 5: the ADMITTED delivery inside a CONFIRMED window is the
@@ -2446,20 +2933,25 @@ export function nativeInterruptionGateDInput(record) {
   // for an unverified executor — or withheld by the overall-review
   // pre-boundary fence (an at/after-boundary durable read is cleanup-time
   // evidence, never qualification credit).
-  durableObligations: !durableReadAtOrAfterBoundary && durableAggregate === 'settled' ? 'settled' : !durableReadAtOrAfterBoundary && durableAggregate === 'unresolved' ? 'unresolved' : null,
+  durableObligations: !durableCreditWithheld && !durableSnapshotTorn && durableAggregate === 'settled' ? 'settled' : !durableCreditWithheld && !durableSnapshotTorn && durableAggregate === 'unresolved' ? 'unresolved' : null,
     // The cleanup boundary is a mapper-level fact (the settled resolution's
     // own timestamp at/after the earliest recorded boundary): the join never
     // re-derives it from coarse kill flags.
     cleanupKill: interrupt.settlementCleanupGenerated === true,
     survivalControl: /** @type {any} */ (record).survivalControl ?? null,
-    terminalWinner: durableEstablished && !durableReadAtOrAfterBoundary ? jobStatus : null,
+    terminalWinner: durableEstablished && !durableCreditWithheld ? jobStatus : null,
     // The overall-review fence's NAMED facts (schema-additive): whether the
     // durable read completed at/after the final recorded cleanup boundary,
     // and under which established cleanup-attribution basis the
-    // Companion/winner/obligations credit was withheld. Absent comparable
-    // endpoints → false/null (the fence is established only when both exist).
+    // Companion/winner/obligations credit was withheld (at/after boundary →
+    // the round-19 basis; a boundary-recorded snapshot that cannot prove a
+    // finite pre-boundary completion instant → the §23.5 timing basis).
+    // Absent comparable endpoints → false/null (the fence is established
+    // only when the boundary exists and the timing is proven).
     durableReadPostCleanupBoundary: durableReadAtOrAfterBoundary,
-    durableReadBoundaryBasis: durableReadAtOrAfterBoundary ? 'budget-cleanup-termination-not-attributed' : null,
+    durableReadBoundaryBasis: durableReadAtOrAfterBoundary
+      ? 'budget-cleanup-termination-not-attributed'
+      : durableReadTimingUnestablished ? 'durable-read-timing-unestablished' : null,
     // The natural-completion guard: a natural completion basis whose winner
     // was recorded `cancelled` is the misclassification the oracle blocks.
     naturalCompletionObserved: settledBasis === 'terminal-observation-after-delivery',
@@ -2593,7 +3085,15 @@ export async function evaluateLiveLaunchPreflight(input, dependencies = {}) {
  * `durableObligations` layer. A reader failure is a NAMED observer failure
  * on the held record, never a replaced business result; without a supplier
  * the layers keep the pre-Task-2 schema (durableObligations null, no durable
- * block).
+ * block). `sampleDurableSnapshots` (2026-10-23 interrupt-closure Task 3,
+ * report §23.5) additionally runs the pre-cleanup passive sampling schedule
+ * concurrently with the held turn through the SAME supplier — baseline at
+ * identity establishment, the registered ≥1000-ms interval, the frozen
+ * 600-attempt/32-summary ceilings, reads stopped (never credited past) at
+ * the earliest termination boundary and abandoned by name at the shared
+ * signal. Only the registered case(s) wire it
+ * ({@link DURABLE_SAMPLING_ENABLED_CASES}); the injected options can only
+ * SHRINK the bounds, never weaken them.
  * @typedef {{
  *   launch: (budgetContext?: { signal: AbortSignal, remainingMs: () => number, recordCleanupBoundary?: () => void }) => Promise<{ result: Promise<{ code: number | null, stdout: string, stderr: string }>, terminate?: () => Promise<void> }>,
  *   gatePath: string,
@@ -2608,6 +3108,7 @@ export async function evaluateLiveLaunchPreflight(input, dependencies = {}) {
  *   waitForChildSettlement?: (signal: AbortSignal) => Promise<{ observed: boolean, basis: string | null }>,
  *   waitForChildSettlementAfterJoin?: (signal: AbortSignal) => Promise<{ observed: boolean, basis: string | null }>,
  *   readDurableSnapshot?: () => Promise<Record<string, unknown>>,
+ *   sampleDurableSnapshots?: boolean | { intervalMs?: number, maxAttempts?: number, maxSummaries?: number },
  *   statusDeadlineFlow?: boolean,
  *   captureProcessIdentity?: () => Promise<unknown>,
  *   readProcessIdentity?: (identity: unknown) => Promise<unknown>,
@@ -2631,7 +3132,7 @@ export async function evaluateLiveLaunchPreflight(input, dependencies = {}) {
  *   endedBeforeGate: boolean,
  *   rootAcknowledged?: boolean,
  *   statusDeadlineReached?: boolean,
- *   childSettlement?: { observed: boolean, basis: string | null, layers?: { remoteTerminal: boolean | null, localProcessReaping: 'natural-exit-observed' | 'cleanup-terminated' | null, durableObligations: 'settled' | 'unresolved' | null }, durableSnapshot?: Record<string, unknown> } | null,
+ *   childSettlement?: { observed: boolean, basis: string | null, layers?: { remoteTerminal: boolean | null, localProcessReaping: 'natural-exit-observed' | 'cleanup-terminated' | null, durableObligations: 'settled' | 'unresolved' | null }, durableSnapshot?: Record<string, unknown>, durableSamples?: Record<string, unknown> } | null,
  *   budgetExpired: boolean,
  *   identity: unknown,
  *   processAliveWhileHeld: boolean | null,
@@ -3804,6 +4305,12 @@ async function executeDefaultLiveCaseBody({ input, fixture }) {
           ? Promise.resolve({ aggregate: 'unestablished', reasons: ['durable-identity-unobserved'] })
           : durableSupplier();
       },
+      // 2026-10-23 interrupt-closure Task 3 (report §23.5): the registered
+      // pre-cleanup sampling schedule runs for the interrupt case — the
+      // closed map is the ONE definition site (the §20.8 producer-map
+      // precedent); the frozen defaults (1000-ms floor, 600 attempts, 32
+      // summaries) need no override here.
+      ...(DURABLE_SAMPLING_ENABLED_CASES.has(input.case) ? { sampleDurableSnapshots: {} } : {}),
     } : {}),
     // P2-1 round-7 fix: the Status deadline flow is OBSERVATION-ONLY — the
     // background launch reserves a queued job and the Status query measures
@@ -4195,6 +4702,17 @@ export function mapShellWaitLiveFacts(input, held, evidence, codexVersion, rollo
     // records without it keep the mapping schema byte-identical.
     ...(held?.childSettlement && typeof held.childSettlement === 'object' && held.childSettlement.durableSnapshot !== undefined
       ? { durableSnapshot: held.childSettlement.durableSnapshot }
+      : {}),
+    // 2026-10-23 interrupt-closure Task 3 (report §23.5): the pre-cleanup
+    // sampling block (attempts, baseline, ≤32 per-read summaries with their
+    // own started/completed instants, named omissions) mirrors ONLY when the
+    // held record carried it — records from runs without the schedule keep
+    // the mapping schema byte-identical. The summaries are independent
+    // transition/timestamp facts: they never settle, stop, repair or
+    // authorize anything, and the offline strict fence judges each read's
+    // own completion instant against the recorded cleanup boundary.
+    ...(held?.childSettlement && typeof held.childSettlement === 'object' && held.childSettlement.durableSamples !== undefined
+      ? { durableSamples: held.childSettlement.durableSamples }
       : {}),
   };
   // P2-1 round-6 fix: the settled-background exemption enforces the
@@ -4674,6 +5192,11 @@ export function mapShellWaitLiveFacts(input, held, evidence, codexVersion, rollo
     requested: input.case === 'rescue-interrupt',
     attempted: interruptInteraction.attempted,
     family: interruptInteraction.family,
+    // Codex round 4's wrapped/direct classification (2026-10-23
+    // interrupt-closure Task 2: projected beside the family so a wrapped
+    // (code-mode-cell) interrupt keeps its named unjoinable limitation
+    // visible at the layer-fact level, never folded into the family label).
+    wrappedInterrupt: interruptInteraction.wrappedInterrupt,
     delivered: interruptInteraction.delivered,
     rejection: interruptInteraction.rejection,
     previousStatus: interruptInteraction.previousStatus,
@@ -4712,6 +5235,39 @@ export function mapShellWaitLiveFacts(input, held, evidence, codexVersion, rollo
     ...(interruptCleanupBoundaryAtMs !== null ? { cleanupBoundaryAtMs: interruptCleanupBoundaryAtMs } : {}),
     ...(interruptCancelledAtMs !== null ? { cancelledAtMs: interruptCancelledAtMs } : {}),
   };
+  // The §23.4 abort-case layer exposure (2026-10-23 interrupt-closure Task
+  // 2): when the evidence COLLECTION completed (real rollouts are in hand)
+  // but the whole-case ADJUDICATION aborted fail-closed (e.g. one unknown
+  // call shape), the raw-rollout layer facts stay recoverable and ride the
+  // mapping instead of being erased by the bare overall failure — while the
+  // overall case keeps its inconclusive verdict and every delivery-layer
+  // positive stays unestablished. The block is stamped with the NEW partial
+  // -facts adjudicator version and the source-rollout digest so offline
+  // readers can always tell these fixture-proof layer facts from the live
+  // observer's own supported-case analysis and from any installed-trial
+  // stamp (the plan's provenance-separation rule). A pre-turn failure or a
+  // rollout-collection failure exposes nothing: there are no raw rollouts to
+  // derive the facts from, and the historical collection-incompleteness
+  // behavior stays byte-identical there.
+  const interruptAbortLayerExposure = input.case === 'rescue-interrupt'
+    && rolloutsFailureReason === null
+    && evidence.status === 'inconclusive'
+    && Array.isArray(rollouts) && rollouts.length > 0;
+  const interruptPartialFacts = interruptAbortLayerExposure
+    ? {
+      adjudicator: 'interrupt-partial-facts',
+      version: INTERRUPT_PARTIAL_FACTS_VERSION,
+      // The provenance CLASS, not a stamp: these facts are derived from the
+      // run's own collected raw rollouts (fixture proof), never from the
+      // live observer's supported-case analysis and never presented as a
+      // fresh installed observation.
+      basis: 'raw-rollout-fixture-proof',
+      sourceRolloutsSha256: createHash('sha256').update(JSON.stringify(rollouts)).digest('hex'),
+      capture: { rolloutsCaptured: true, rolloutCount: rollouts.length, rolloutsFailureReason: null },
+      adjudication: evidence.inconclusive?.reason ?? null,
+      spawnIdentity: observeSpawnAcknowledgementIdentity(rollouts),
+    }
+    : null;
   if (rolloutsFailureReason !== null) {
     inconclusive = { reason: `rollouts-unavailable: rollout collection failed (${rolloutsFailureReason}); the case is inconclusive rather than zero.` };
   } else if (evidence.status === 'inconclusive' && evidence.inconclusive !== null) {
@@ -4937,7 +5493,15 @@ export function mapShellWaitLiveFacts(input, held, evidence, codexVersion, rollo
   }
   return {
     codexVersion,
-    collection: { rolloutCount: null, childToolCallCount: null, truncated: false },
+    collection: {
+      // §23.4 capture-vs-admission: when the collection completed but the
+      // adjudication aborted, the rollout count is a captured fact and only
+      // the supported-case call analysis stays unestablished. Every other
+      // fall-through path keeps the historical nulls.
+      rolloutCount: interruptAbortLayerExposure ? rollouts.length : null,
+      childToolCallCount: null,
+      truncated: false,
+    },
     route: { requested: caseRoute(input.case), actual: null },
     // A PRE-TURN failure (gate setup, version probe) never reached the held
     // lifecycle: every held fact stays unknown (null) instead of dereferencing
@@ -4953,14 +5517,53 @@ export function mapShellWaitLiveFacts(input, held, evidence, codexVersion, rollo
     // The pre-turn failure branch cannot observe the rollouts, so the
     // interaction facts stay unknown (null) with the explicit
     // could-not-observe reason — never the old permanently-null placeholder.
+    // §23.4 EXCEPTION (2026-10-23 interrupt-closure Task 2): when the
+    // collection COMPLETED and only the whole-case adjudication aborted, the
+    // raw-rollout call facts survive exactly as extracted (attempted, count,
+    // family, previous status, target, ordering bound — with the delivery
+    // OUTCOME facts staying unestablished), the §19.4 admission block rides
+    // with its per-conjunct named reasons, and the versioned partial-facts
+    // block carries the spawn identity and the source-rollout digest. The
+    // whole case keeps its inconclusive verdict; a survivor fact earns no
+    // qualification credit by itself.
     interrupt: input.case === 'rescue-interrupt'
-      ? {
-        ...interruptFacts,
-        attempted: null,
-        delivered: null,
-        missingPrerequisite: 'the owning-session interrupt delivery could not be observed in this run: the evidence collection did not complete '
-          + '(rollouts unavailable or the held observation failed before evidence collection)',
-      }
+      ? (interruptAbortLayerExposure
+        ? (interruptInteraction.attempted
+          ? {
+            ...interruptFacts,
+            delivered: null,
+            rejection: null,
+            missingPrerequisite: `the case's evidence collection completed (${String(rollouts.length)} rollout(s) captured) but the whole-case evidence adjudication aborted before the supported-case analysis (${evidence.inconclusive?.reason ?? 'unknown reason'}): the exact Child/Root identity join is unestablished, so every delivery-layer positive stays unestablished (the raw-rollout layer facts ride interrupt.partialFacts and interrupt.hostDelivery, never a qualification claim)`,
+            ...(interruptPartialFacts !== null ? { partialFacts: interruptPartialFacts } : {}),
+          }
+          : {
+            // Codex round-2 review fix (report §23.8): the extractor SKIPPED
+            // the unclassified cell, so "no recognized interrupt call" is
+            // PARSER UNCERTAINTY — the skipped cell could hold the interrupt
+            // — never negative evidence. Absence stays unknown: the
+            // call-shape facts stay null (never false/0, never
+            // absent-as-negative) and the message names the uncertainty
+            // instead of the definitive delivery-not-attempted claim. A
+            // RECOGNIZED attempt keeps the keeper branch above unchanged.
+            // (family/previousStatus/target/exactTargetMatch/settled are
+            // already null — unknown — without a recognized call.)
+            ...interruptFacts,
+            attempted: null,
+            callCount: null,
+            wrappedInterrupt: null,
+            previousStatusTerminal: null,
+            delivered: null,
+            rejection: null,
+            missingPrerequisite: `the case's evidence collection completed (${String(rollouts.length)} rollout(s) captured) but the whole-case evidence adjudication aborted on an unsupported call shape (${evidence.inconclusive?.reason ?? 'unknown reason'}): whether an owning-session interrupt was attempted stays unknown — the unclassified cell could hold the interrupt call, so the absence of a recognized interrupt is parser uncertainty, never negative evidence (the raw-rollout layer facts ride interrupt.partialFacts, never a qualification claim)`,
+            ...(interruptPartialFacts !== null ? { partialFacts: interruptPartialFacts } : {}),
+          })
+        : {
+          ...interruptFacts,
+          attempted: null,
+          delivered: null,
+          missingPrerequisite: 'the owning-session interrupt delivery could not be observed in this run: the evidence collection did not complete '
+            + '(rollouts unavailable or the held observation failed before evidence collection)',
+        })
       : interruptFacts,
     held: {
       endedBeforeGate: held?.endedBeforeGate ?? null,
@@ -5060,7 +5663,7 @@ const defaultLiveExecutor = /** @type {any} */ (executeDefaultLiveCase);
  *   hostResult?: { exitCode?: number | null, companionProcessExit?: number | null, sentinelMatched?: boolean | null, terminalStdoutChecked?: boolean | null, resultCheck?: string | null, resultCheckLabel?: string | null, exactTerminalMatch?: { matched: boolean | null, reason: string | null }, stdoutCapture?: { status: string, reason: string | null, byteCount: number | null, captureSha256: string | null, exitCode: number | null, closureObservationVersion: number | null } },
  *   linkage?: { checked?: boolean | null, mode?: 'rescue' | 'root' | null, rootThreadId?: string | null, childThreadId?: string | null, parentThreadId?: string | null, companionLaunchCount?: number | null, companionSendCount?: number | null, originalHandleChecked?: boolean | null },
  *   observations?: { outerReturns?: number | null, modelCalls?: number | null, rootJoins?: number | null, decisiveWallMs?: number | null, pollWallTimesMs?: (number | null)[] | null, pollStartedAtElapsedMs?: number | null, holdDeadlineElapsedMs?: number | null, remainingLifetimeMs?: number | null, remainingLifetimeBasis?: 'hold-deadline-at-poll-start' | 'unavailable' | null, pendingInnerAtEnd?: boolean | null },
- *   interrupt?: { requested?: boolean, attempted?: boolean | null, family?: 'v2' | 'v1' | null, delivered?: boolean | null, rejection?: string | null, previousStatus?: string | null, callCount?: number | null, orderingBound?: boolean, target?: { kind: 'agent-id' | 'task-name' | 'unknown' | null, value: string | null, suppressed: boolean, chars: number | null } | null, exactTargetMatch?: boolean | null, exactTargetMatchBasis?: string | null, settled?: boolean | null, settledBasis?: string | null, pendingIntervalMs?: number | null, deliveryToSettlementMs?: number | null, timingBasis?: 'rollout-event-timestamps' | 'unavailable' | null, missingPrerequisite?: string | null, pendingWindowObserved?: boolean, settlementCleanupGenerated?: boolean, unreadableContinuationObserved?: boolean, hostDelivery?: Record<string, unknown>, cleanupBoundaryAtMs?: number, cancelledAtMs?: number, completedBeforeCallMs?: number, completedAfterCallMs?: number },
+ *   interrupt?: { requested?: boolean, attempted?: boolean | null, family?: 'v2' | 'v1' | null, wrappedInterrupt?: boolean | null, delivered?: boolean | null, rejection?: string | null, previousStatus?: string | null, previousStatusTerminal?: boolean | null, callCount?: number | null, orderingBound?: boolean, target?: { kind: 'agent-id' | 'task-name' | 'unknown' | null, value: string | null, suppressed: boolean, chars: number | null } | null, exactTargetMatch?: boolean | null, exactTargetMatchBasis?: string | null, settled?: boolean | null, settledBasis?: string | null, pendingIntervalMs?: number | null, deliveryToSettlementMs?: number | null, timingBasis?: 'rollout-event-timestamps' | 'unavailable' | null, missingPrerequisite?: string | null, pendingWindowObserved?: boolean, settlementCleanupGenerated?: boolean, unreadableContinuationObserved?: boolean, hostDelivery?: Record<string, unknown>, partialFacts?: Record<string, unknown>, cleanupBoundaryAtMs?: number, cancelledAtMs?: number, completedBeforeCallMs?: number, completedAfterCallMs?: number },
  *   held?: {
  *     endedBeforeGate?: boolean | null,
  *     statusDeadlineReached?: boolean,

@@ -10784,10 +10784,15 @@ process.exit(result.status ?? 1);
       assert.equal(preBoundaryInput.companionOutcome, 'terminal-result');
       assert.equal(preBoundaryInput.terminalWinner, 'succeeded');
       assert.equal(preBoundaryInput.durableObligations, 'settled');
-      // A durable read with NO comparable boundary (either timestamp absent)
-      // keeps the prior behavior — the fence is established only when BOTH
-      // endpoints exist.
-      const unboundedInput = nativeInterruptionGateDInput(gateDRecord());
+      // A durable read with NO comparable boundary (the boundary endpoint
+      // absent — interrupt-closure task 3 aligned the shape: since the
+      // strict fence now refuses an unprovable completion instant, the
+      // prior-behavior keeper is the NO-boundary record, not the
+      // boundary-without-timestamp one) keeps the prior behavior — the
+      // fence is established only when the boundary endpoint exists.
+      const unboundedInput = nativeInterruptionGateDInput(gateDRecord((record) => {
+        delete record.interrupt.cleanupBoundaryAtMs;
+      }));
       assert.equal(unboundedInput.durableReadPostCleanupBoundary, false);
       assert.equal(unboundedInput.companionOutcome, 'terminal-result');
       // The NATURAL-COMPLETION shape (overall review round 3): the turn's
@@ -10806,6 +10811,122 @@ process.exit(result.status ?? 1);
       assert.equal(naturalInput.companionOutcome, 'terminal-result', 'credit KEEPS on a naturally completing turn');
       assert.equal(naturalInput.terminalWinner, 'succeeded');
       assert.equal(naturalInput.durableObligations, 'settled');
+    });
+
+    test('a durable snapshot with an unestablishable completion instant never earns credit against a recorded boundary (interrupt-closure task 3, report §23.5)', () => {
+      // §23.5 clause 3 / §23.6 sampling fence: the strict fence needs BOTH
+      // endpoints. A durable snapshot that cannot prove a finite completion
+      // instant (missing timing, or an ISO string — a DIFFERENT clock
+      // representation, never parsed) stays unestablished against the
+      // recorded cleanup boundary: the Companion outcome, the terminal
+      // winner and the obligations aggregate stay unpublished with the named
+      // timing basis riding the join. The online fence already refuses an
+      // unstamped completion (buildDurableSettlementLayer's
+      // `completionAtMs === null` arm) — the offline replay must refuse it
+      // identically instead of crediting by default.
+      const missingTiming = nativeInterruptionGateDInput(gateDRecord((record) => {
+        delete record.child.durableSnapshot.completedAtMs;
+      }));
+      assert.equal(missingTiming.durableReadPostCleanupBoundary, false,
+        'an unprovable instant is never CLAIMED as post-boundary — the named basis carries the withholding');
+      assert.equal(missingTiming.durableReadBoundaryBasis, 'durable-read-timing-unestablished',
+        'the withholding names the unestablishable timing');
+      assert.equal(missingTiming.durableObligations, null, 'unestablishable timing never credits the obligations aggregate');
+      assert.equal(missingTiming.companionOutcome, null, 'unestablishable timing never credits the Companion outcome');
+      assert.equal(missingTiming.terminalWinner, null, 'unestablishable timing never credits the terminal winner');
+      const incompatibleClock = nativeInterruptionGateDInput(gateDRecord((record) => {
+        record.child.durableSnapshot.completedAtMs = '2026-10-06T00:00:12.000Z';
+      }));
+      assert.equal(incompatibleClock.durableReadBoundaryBasis, 'durable-read-timing-unestablished',
+        'an incompatible clock representation stays unestablished, never parsed or normalized');
+      assert.equal(incompatibleClock.durableObligations, null);
+      assert.equal(incompatibleClock.companionOutcome, null);
+      // No boundary endpoint recorded: the fence stays unestablishable and
+      // the prior no-boundary behavior is unchanged (a snapshot without a
+      // comparable boundary keeps the pre-Task-3 semantics).
+      const unbounded = nativeInterruptionGateDInput(gateDRecord((record) => {
+        delete record.interrupt.cleanupBoundaryAtMs;
+        delete record.child.durableSnapshot.completedAtMs;
+      }));
+      assert.equal(unbounded.durableReadBoundaryBasis, null, 'no boundary endpoint means no fence withholding is named');
+      assert.equal(unbounded.durableObligations, 'settled', 'the no-boundary prior behavior is unchanged');
+    });
+
+    test('a torn durable snapshot (fingerprint inequality) never settles the join even with a settled aggregate (interrupt-closure task 3, report §23.5)', () => {
+      // §23.5 clause 5 / §19.5 consistency limit: a snapshot whose own
+      // before/after partition fingerprint inequality rode the record is a
+      // torn multi-file view — the affected layers stay unknown. The reader
+      // never emits aggregate 'settled' beside snapshotEqual false, so a
+      // record claiming both is contradictory and the join refuses it
+      // instead of trusting the aggregate label.
+      const torn = nativeInterruptionGateDInput(gateDRecord((record) => {
+        record.child.durableSnapshot.passive = { snapshotEqual: false, reason: 'the partition changed during the read pass', lockState: 'present' };
+      }));
+      assert.equal(torn.durableObligations, null, 'a torn snapshot never grounds the obligations layer');
+      assert.equal(torn.companionOutcome, null, 'a torn snapshot never grounds the Companion outcome');
+      assert.equal(torn.terminalWinner, null, 'a torn snapshot never grounds the terminal winner');
+      // The intact control: the same snapshot with a POSITIVELY equal
+      // fingerprint keeps full credit (the guard is equality-sensitive, not
+      // presence-sensitive).
+      const intact = nativeInterruptionGateDInput(gateDRecord((record) => {
+        record.child.durableSnapshot.passive = { snapshotEqual: true, reason: null, lockState: 'absent' };
+      }));
+      assert.equal(intact.durableObligations, 'settled');
+      assert.equal(intact.companionOutcome, 'terminal-result');
+    });
+
+    test('a genuine session-end stop intent keeps its own cause — never attributed to the interrupt, never harness-native proof (report §23.6)', () => {
+      // The §21.2.3 recorded I shape: after the (unattributed) interrupt, the
+      // production authorized path persisted a VALID 'session-end' stop
+      // intent and the exact job won 'cancelled'. The record keeps the
+      // distinction on every fact the join derives: the durable winner and
+      // the Companion remote outcome are the production-published facts
+      // (observed, never fabricated), while the INTERRUPT's own settlement
+      // stays unobserved (turnSettled null — the ordering was never bound),
+      // no cleanup attribution is claimed (cleanupKill false), and the
+      // misclassification blocker never fires (naturalCompletionObserved
+      // false — a session-end stop is its own authorized act, not a natural
+      // completion and not harness-native proof). The oracle therefore
+      // refuses native qualification on this record alone.
+      const sessionEnd = nativeInterruptionGateDInput(gateDRecord((record) => {
+        record.interrupt.settled = null;
+        record.interrupt.settledBasis = 'ordering-unbound-not-attributed';
+        record.interrupt.deliveryToSettlementMs = null;
+        record.interrupt.timingBasis = 'unavailable';
+        record.interrupt.delivered = null;
+        record.interrupt.exactTargetMatch = null;
+        record.interrupt.pendingWindowObserved = false;
+        record.child.settlementLayers.remoteTerminal = null;
+        record.child.durableSnapshot.aggregate = 'settled';
+        record.child.durableSnapshot.job.projection.status = 'cancelled';
+        // The reader's own stop-intent layer facts in the REAL emitted shape
+        // (applicability/presence/validity — never a cause; codex backfill
+        // review): the cause/timestamp provenance lives on the validated job
+        // record (`job.projection.stopIntent.cause/.requestedAt`, `stopCause`)
+        // and its retention into sample summaries is proven against the REAL
+        // reader in the sampling describe's provenance test.
+        record.child.durableSnapshot.layers = {
+          stopIntent: { applicable: true, present: true, valid: true, reason: null },
+          endedObligation: { settled: true },
+          runnerCleanupDuty: 'not-applicable',
+          writableGuard: 'not-applicable',
+          bindingCurrency: 'current',
+        };
+        record.child.durableSnapshot.job.projection.stopIntent = { version: 1, cause: 'session-end', requestedAt: '2026-10-22T09:23:10.361Z' };
+        record.child.durableSnapshot.job.projection.stopCause = 'session-end';
+      }));
+      assert.equal(sessionEnd.terminalWinner, 'cancelled', 'the production-published winner is observed verbatim');
+      assert.equal(sessionEnd.companionOutcome, 'terminal-result', 'the remote outcome joins from the durable winner (the registered limitation keeps the local layer null)');
+      assert.equal(sessionEnd.turnSettled, null, 'the interrupt\'s own settlement stays unobserved — the session-end act is never interrupt settlement');
+      assert.equal(sessionEnd.cleanupKill, false, 'no cleanup attribution is manufactured');
+      assert.equal(sessionEnd.naturalCompletionObserved, false, 'a session-end stop is never misclassified as a natural completion');
+      assert.equal(sessionEnd.durableObligations, 'settled', 'the obligations aggregate reports its own per-fact state');
+      const verdict = evaluateNativeInterruptionSettlement(sessionEnd);
+      assert.equal(verdict.qualified, false, 'the session-end cancellation alone can never qualify the native interruption');
+      assert.ok(verdict.reasons.includes('turn-settlement-unobserved'), JSON.stringify(verdict.reasons));
+      assert.ok(!verdict.reasons.includes('natural-completion-misclassified-as-cancelled'),
+        'the misclassification blocker stays silent — the cause is preserved, not confused');
+      assert.equal(verdict.terminalWinner, 'cancelled');
     });
 
     test('the plan pipeline negatives stay named through the join (adjudication inputs, never silently dropped)', () => {
@@ -11532,7 +11653,13 @@ process.exit(result.status ?? 1);
           // outcome is observed through the durable job's production-published
           // terminal winner, never hand-set here.
           settlementLayers: { remoteTerminal: null, localProcessReaping: null, durableObligations: 'settled' },
-          durableSnapshot: { aggregate: 'settled', reasons: [], executorLinkage: 'verified', layers: { winner: { terminalStatus: 'succeeded' } }, job: { presence: 'found', projection: { status: 'succeeded' } } },
+          // The PRODUCTION snapshot shape (interrupt-closure task 3): a
+          // credited durable snapshot always carries its OWN completion
+          // instant (buildDurableSettlementLayer stamps the carrier's
+          // completedAtMs into every snapshot it publishes; §21.2.3's real
+          // record carried it). Pipeline tests build the complete
+          // production-shaped snapshot and vary only the fence endpoint.
+          durableSnapshot: { aggregate: 'settled', reasons: [], executorLinkage: 'verified', completedAtMs: SETTLEMENT_MS, layers: { winner: { terminalStatus: 'succeeded' } }, job: { presence: 'found', projection: { status: 'succeeded' } } },
         },
         held: { processTermination: { verifiedTerminated: false, codexTerminated: false }, cleanupLabel: 'observation' },
         // The declared and QUALIFIED control verdict (the I1 shape): the
@@ -25034,6 +25161,1381 @@ describe('cleanup-boundary attribution for exit-code settlements (round-9 review
       assert.ok(!JSON.stringify(written.child.durableSnapshot).includes(privateWorkspace), 'the written record is redacted too');
       assert.equal(written.child.durableSnapshot.aggregate, 'settled', 'the non-private facts persist unchanged');
       assert.equal(written.child.durableSnapshot.job.projection.status, 'succeeded');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Interrupt-closure Task 2 (plan 2026-10-23): the report §23.2-frozen bounded
+  // emission-junction wrapper family. OFFLINE pipeline tests through the SAME
+  // `parseCallStatements` seam every collected custom_tool_call flows through
+  // (the fail-closed scan, the sequence analysis and the interrupt extractor
+  // all consume this one parser). The frozen admitted form is the EXISTING
+  // pinned wrapper statement family with exactly ONE relaxed dimension: runs
+  // of horizontal whitespace (space/tab, length 0-8) at the three EMISSION
+  // junctions `text<ws1>(<ws2>r<ws3>)`. Head/argument junctions keep
+  // WRAPPER_PATTERN's zero tolerance; tools exactly {exec_command,
+  // write_stdin}; one literal-object argument <= 4096; binding pinned `r`
+  // with the equality tail; directive absent. Every unsupported form stays
+  // fail-closed with the existing safe diagnostics, and only the frozen
+  // complete family reaches the existing call-value validation.
+  // -------------------------------------------------------------------------
+  describe('interrupt-closure task 2: the frozen emission-junction wrapper family (report §23.2)', async () => {
+    const { parseCallStatements, inspectShellWaitEvidence } = await import('../tools/shell-wait-probe/evidence.mjs');
+
+    const CANARY_CMD = 'synthetic-command-text';
+    const event = (input) => ({ payload: { type: 'custom_tool_call', name: 'exec', call_id: 'cell-1', input } });
+    /** @param {string} input @returns {string} the admitted single call's kind */
+    const admittedKind = (input) => {
+      const calls = parseCallStatements(event(input));
+      assert.notEqual(calls, null, `the frozen family must admit: ${input.slice(0, 72)}`);
+      assert.equal(calls.length, 1, 'the frozen family is exactly ONE statement per cell');
+      return calls[0].kind;
+    };
+    /** @param {string} input */
+    const rejected = (input, label = input) => {
+      assert.equal(parseCallStatements(event(input)), null, `unsupported form must stay fail-closed: ${label.slice(0, 72)}`);
+    };
+    const launchBody = (tool = 'exec_command', argument = `{cmd:"${CANARY_CMD}"}`) =>
+      `const r = await tools.${tool}(${argument});`;
+
+    test('the frozen family with one run at each emission junction reaches the same call-value parse (the retained-record reproduction)', () => {
+      // The §23.2 probe forms that reproduce the ENTIRE retained signature
+      // (parserStage: output) — the historical cell's shape, admitted for
+      // forward measurement only, never a retroactive identity claim.
+      assert.deepEqual(parseCallStatements(event(`${launchBody()} text (r);`)), [
+        { kind: 'exec_command', value: { cmd: CANARY_CMD }, directive: null, wrapped: true },
+      ]);
+      assert.deepEqual(parseCallStatements(event(`${launchBody()} text( r );`)), [
+        { kind: 'exec_command', value: { cmd: CANARY_CMD }, directive: null, wrapped: true },
+      ]);
+      assert.deepEqual(parseCallStatements(event(`${launchBody()} text\t( r\t);`)), [
+        { kind: 'exec_command', value: { cmd: CANARY_CMD }, directive: null, wrapped: true },
+      ]);
+    });
+
+    test('the length bounds are per-junction: 0 stays the canonical form, 8 is admitted, 9 is rejected at each of the three junctions', () => {
+      // ws = 0: the already-admitted canonical control (falsifiability).
+      assert.deepEqual(parseCallStatements(event(`${launchBody()} text(r);`)), [
+        { kind: 'exec_command', value: { cmd: CANARY_CMD }, directive: null, wrapped: true },
+      ]);
+      const eight = ' '.repeat(8);
+      const nine = ' '.repeat(9);
+      assert.equal(admittedKind(`${launchBody()} text${eight}(r);`), 'exec_command', 'ws1 at the upper bound');
+      assert.equal(admittedKind(`${launchBody()} text(${eight}r);`), 'exec_command', 'ws2 at the upper bound');
+      assert.equal(admittedKind(`${launchBody()} text(r${eight});`), 'exec_command', 'ws3 at the upper bound');
+      rejected(`${launchBody()} text${nine}(r);`, 'ws1 length 9');
+      rejected(`${launchBody()} text(${nine}r);`, 'ws2 length 9');
+      rejected(`${launchBody()} text(r${nine});`, 'ws3 length 9');
+      // A run of exactly 8 at ALL THREE junctions simultaneously is admitted;
+      // one junction at 9 rejects the whole cell.
+      assert.equal(admittedKind(`${launchBody()} text${eight}(${eight}r${eight});`), 'exec_command');
+      rejected(`${launchBody()} text${eight}(${nine}r${eight});`, 'mixed runs with one over bound');
+    });
+
+    test('the same-line rule and the trailing artifacts keep their existing semantics', () => {
+      // The emission shares the declaration's line: a two-line split stays
+      // rejected (the existing per-line grammar rejects each fragment).
+      rejected(`${launchBody()}\ntext (r);`, 'declaration and emission on separate lines');
+      // The trailing-newline artifact (the retained record's second physical
+      // line) is admitted; a real trailing BLANK line stays rejected.
+      assert.deepEqual(parseCallStatements(event(`${launchBody()} text (r);\n`)), [
+        { kind: 'exec_command', value: { cmd: CANARY_CMD }, directive: null, wrapped: true },
+      ]);
+      rejected(`${launchBody()} text (r);\n\n`, 'trailing blank line');
+      // Trailing-line horizontal whitespace keeps the per-line trim's
+      // existing semantics (never a new relaxation).
+      assert.deepEqual(parseCallStatements(event(`${launchBody()} text (r);   `)), [
+        { kind: 'exec_command', value: { cmd: CANARY_CMD }, directive: null, wrapped: true },
+      ]);
+    });
+
+    test('CRLF line endings keep their existing semantics: the CRLF-terminated frozen cell reaches the same call-value parse', () => {
+      // §23.2's existing-semantics exclusion (CRLF was never the historical
+      // cause): the frozen family admits the same single content line
+      // CRLF-terminated, decoding to the IDENTICAL call value as its LF twin,
+      // while an interior CRLF (declaration and emission on separate CRLF
+      // lines) stays rejected under the same-line rule.
+      const crlf = parseCallStatements(event(`${launchBody()} text (r);\r\n`));
+      assert.deepEqual(crlf, parseCallStatements(event(`${launchBody()} text (r);\n`)),
+        'the CRLF-terminated frozen cell reaches the same existing call-value validation as the LF form');
+      assert.deepEqual(crlf, [{ kind: 'exec_command', value: { cmd: CANARY_CMD }, directive: null, wrapped: true }]);
+      rejected(`${launchBody()}\r\ntext (r);\r\n`, 'interior CRLF split stays rejected');
+    });
+
+    test('head/argument junctions keep zero tolerance and the declaration-to-text junction keeps the existing tolerance', () => {
+      rejected(`const  r = await tools.exec_command({cmd:"x"}); text (r);`, 'head binding spacing');
+      rejected(`const r= await tools.exec_command({cmd:"x"}); text (r);`, 'head assignment spacing');
+      rejected(`const r = await tools .exec_command({cmd:"x"}); text (r);`, 'member-access spacing');
+      rejected(`const r = await tools.exec_command ({cmd:"x"}); text (r);`, 'call-paren spacing');
+      rejected(`const r = await tools.exec_command( {cmd:"x"} ); text (r);`, 'argument-object junction spacing');
+      rejected(`const r = await tools.exec_command({cmd:"x"}) ; text (r);`, 'declaration semicolon spacing');
+      // The declaration→text junction keeps the EXISTING WRAPPER_PATTERN \s*
+      // (pre-existing, never part of this freeze).
+      assert.equal(admittedKind(`${launchBody()}      text (r);`), 'exec_command');
+      // Tab/vertical-whitespace relaxation beyond the frozen [space/tab] runs
+      // is not admitted at the emission junctions either.
+      rejected(`${launchBody()} text\n(r);`, 'newline inside the emission head junction');
+    });
+
+    test('the tool set is exactly {exec_command, write_stdin} and the stringify tail keeps its existing unrelaxed form', () => {
+      assert.equal(admittedKind(`${launchBody('write_stdin', '{session_id:5,chars:"",yield_time_ms:60000}')} text (r);`), 'write_stdin');
+      rejected(`${launchBody('wait', '{cell_id:"cell-1"}')} text (r);`, 'tool outside the frozen set');
+      rejected(`${launchBody('interrupt_agent', '{target:"x"}')} text (r);`, 'root-control tool is not the observational family');
+      // `text(JSON.stringify(r))` stays EXACTLY as pinned today (its tail
+      // class differs; it was never the historical shape).
+      assert.equal(admittedKind(`${launchBody()} text(JSON.stringify(r));`), 'exec_command');
+      rejected(`${launchBody()} text (JSON.stringify(r));`, 'stringify tail is not relaxed');
+      rejected(`${launchBody()} text( JSON.stringify(r) );`, 'stringify tail is not relaxed (inner)');
+    });
+
+    test('the binding stays pinned to r with the equality tail; other names and tails stay rejected', () => {
+      rejected(`const out = await tools.exec_command({cmd:"x"}); text (out);`, 'changed binding/sink name');
+      rejected(`const responseText = await tools.exec_command({cmd:"x"}); text(responseText);`, 'changed binding, canonical emission');
+      rejected(`let r = await tools.exec_command({cmd:"x"}); text (r);`, 'let declaration');
+      rejected(`var r = await tools.exec_command({cmd:"x"}); text (r);`, 'var declaration');
+      rejected(`${launchBody()} text (q);`, 'mismatched emission binding');
+      rejected(`${launchBody()} text (r.status);`, 'computed field access tail');
+      rejected(`${launchBody()} text (String(r));`, 'String() tail');
+      rejected(`${launchBody()} text (JSON.stringify(r));`, 'stringify tail under relaxed spacing');
+    });
+
+    test('non-literal, dynamic and multi-statement cell bodies stay rejected (per-statement ownership preserved)', () => {
+      rejected(`for (const item of items) { await tools.exec_command({cmd:"x"}); } text (r);`, 'loop');
+      rejected(`function run() { return tools.exec_command({cmd:"x"}); } text (r);`, 'function body');
+      rejected('const r = await tools.exec_command({cmd:`template`}); text (r);', 'template literal argument');
+      rejected('const r = await tools.exec_command({cmd: buildCmd()}); text (r);', 'call-expression argument');
+      rejected('const r = await tools.exec_command(args); text (r);', 'identifier argument');
+      rejected(`text (x); ${launchBody()} text (r);`, 'extra leading statement');
+      rejected(`${launchBody()} text (r); text (x);`, 'extra trailing statement');
+      rejected(`${launchBody()} ${launchBody('write_stdin', '{session_id:5,chars:""}')} text (r);`, 'hidden second tools call');
+      rejected(`${launchBody()} const r = await tools.write_stdin({session_id:5,chars:""}); text (r);`, 'second awaited poll sharing the cell');
+      // Blank separator lines BETWEEN statements keep the existing rule
+      // (canonical two-statement cell with a blank separator stays admitted);
+      // they never make an unsupported statement admissible.
+      const pair = `${launchBody()} text(r)\n\nconst r = await tools.write_stdin({session_id:5,chars:"",yield_time_ms:60000}); text(r)\n`;
+      assert.equal(parseCallStatements(event(pair))?.length, 2, 'the existing blank-separator rule is unchanged');
+    });
+
+    test('the argument literal bound and decoder semantics are unchanged (duplicates, truncation, oversize)', () => {
+      // Duplicate argument keys keep the existing literal decoder's semantics
+      // (the canonical family's verdict; the relaxed form must land at the
+      // SAME verdict — the existing parseWrapperArguments, unchanged).
+      const duplicate = '{cmd:"a",cmd:"b"}';
+      const canonicalDuplicate = parseCallStatements(event(`${launchBody('exec_command', duplicate)} text(r);`));
+      const relaxedDuplicate = parseCallStatements(event(`${launchBody('exec_command', duplicate)} text (r);`));
+      assert.deepEqual(relaxedDuplicate, canonicalDuplicate, 'the relaxed form reaches the same existing argument decoder');
+      assert.deepEqual(relaxedDuplicate, [{ kind: 'exec_command', value: { cmd: 'b' }, directive: null, wrapped: true }]);
+      // Truncated input stays rejected.
+      rejected(`const r = await tools.exec_command({cmd:"x"`, 'truncated declaration');
+      rejected(`const r = await tools.exec_command({cmd:"x"}); text (r`, 'truncated emission');
+      rejected(`const r = await tools.exec_command({cmd:"x"}); text (r);}`, 'trailing brace');
+      // The literal-object bound is 4096 argument characters (the existing
+      // MAX_WRAPPER_ARGUMENT_CHARS, unchanged): exactly 4096 is admitted,
+      // 4097 rejected.
+      const argumentAtBound = `{cmd:"${'x'.repeat(4088)}"}`;
+      assert.equal(argumentAtBound.length, 4096);
+      assert.equal(admittedKind(`${launchBody('exec_command', argumentAtBound)} text (r);`), 'exec_command');
+      rejected(`${launchBody('exec_command', `{cmd:"${'x'.repeat(4089)}"}`)} text (r);`, 'argument over the bound');
+    });
+
+    test('directives keep their existing rules: the frozen family registers with directive absent', () => {
+      rejected(`// @exec: not-json\n${launchBody()} text (r);`, 'raw invalid directive');
+      rejected(`// @exec: {"yield_time_ms": 3600000}\n${launchBody()} text (r);`, 'a valid directive does not join the frozen family');
+      // Directive-led canonical cells keep their existing admission.
+      assert.equal(admittedKind(`// @exec: {"yield_time_ms": 3600000}\n${launchBody()} text(r);`), 'exec_command');
+      // The sanctioned private preparation frame keeps its own recognized
+      // path unchanged (never the frozen family, never relaxed).
+      const preparation = 'text(await tools.write_stdin({session_id:5,chars:JSON.stringify({version:5})+"\\n"}));';
+      assert.equal(parseCallStatements(event(preparation))?.[0]?.kind, 'write_stdin', 'the preparation path is unchanged');
+      rejected(preparation.replace('text(await', 'text (await'), 'relaxed preparation emission is not a shape');
+    });
+
+    // --- the SAME observer path: only the frozen family reaches the existing
+    // --- call-value validation; everything else stays fail-closed ---
+
+    const PARENT = 'parent-thread-1';
+    const CHILD = 'child-thread-1';
+    const AGENT_PATH = '/root/zcode_rescue_task_1';
+    const LAUNCHER = 'node "/installed/zcode/skills/rescue/launcher.mjs" invoke-prepared rescue';
+    const SENTINEL = 'ZCODE_RESCUE_PUBLIC_SENTINEL_7C9C';
+    const HANDLE = 91;
+    const sessionMeta = (id, extra = {}) => ({ type: 'session_meta', payload: { id, ...extra } });
+    const childMeta = (overrides = {}) => sessionMeta(CHILD, { parent_thread_id: PARENT, source: { subagent: { thread_spawn: { agent_path: AGENT_PATH } } }, ...overrides });
+    const fnCall = (name, callId, args) => ({ type: 'response_item', payload: { type: 'function_call', name, call_id: callId, arguments: JSON.stringify(args) } });
+    const completedOutput = (result) => [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify(result) }];
+    const callOutput = (callId, output) => ({ type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: callId, output } });
+    const relaxedCell = (kind, callId, value, emission = 'text (r)') =>
+      ({ type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: callId, input: `const r = await tools.${kind}(${JSON.stringify(value)}); ${emission}\n` } });
+    const canonicalCell = (kind, callId, value) =>
+      ({ type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: callId, input: `const r = await tools.${kind}(${JSON.stringify(value)}); text(JSON.stringify(r))\n` } });
+    const startedEvent = () => ({ type: 'event_msg', payload: { type: 'item_completed', item: { type: 'SubAgentActivity', kind: 'started', agent_thread_id: CHILD, agent_path: AGENT_PATH } } });
+    function rescueRollouts(launchCell, pollCell) {
+      return [
+        [
+          sessionMeta(PARENT),
+          fnCall('spawn_agent', 'spawn-1', { task_name: 'zcode_rescue_task_1', fork_turns: 'none', agent_type: 'zcode-rescue', message: 'Run the installed prepared ZCode Rescue forwarder now. Return its public stdout verbatim.' }),
+          startedEvent(),
+          fnCall('wait_agent', 'root-wait-1', { timeout_ms: 600000 }),
+        ],
+        [
+          childMeta(),
+          launchCell,
+          callOutput('launch-1', completedOutput({ output: '', session_id: HANDLE })),
+          pollCell,
+          callOutput('poll-1', completedOutput({ output: SENTINEL, exit_code: 0, session_id: HANDLE })),
+        ],
+      ];
+    }
+    const evidenceInput = (overrides = {}) => ({
+      rollouts: rescueRollouts(
+        canonicalCell('exec_command', 'launch-1', { cmd: LAUNCHER, workdir: '/installed/workspace' }),
+        canonicalCell('write_stdin', 'poll-1', { session_id: HANDLE, chars: '', yield_time_ms: 60000 }),
+      ),
+      zcodeCalls: [{ method: 'session/send', params: { sessionId: 'fake-session' } }],
+      command: LAUNCHER,
+      publicResult: SENTINEL,
+      requestedPollMs: 60_000,
+      workerStillAliveAfterObservation: false,
+      redactions: [],
+      ...overrides,
+    });
+
+    test('the frozen family reaches the SAME existing call-value validation end to end (identical supported facts)', () => {
+      const control = inspectShellWaitEvidence(evidenceInput());
+      assert.equal(control.status, 'supported');
+      assert.equal(control.facts.completion.qualified, true);
+      const relaxed = inspectShellWaitEvidence(evidenceInput({
+        rollouts: rescueRollouts(
+          relaxedCell('exec_command', 'launch-1', { cmd: LAUNCHER, workdir: '/installed/workspace' }),
+          relaxedCell('write_stdin', 'poll-1', { session_id: HANDLE, chars: '', yield_time_ms: 60000 }),
+        ),
+      }));
+      assert.equal(relaxed.status, 'supported', JSON.stringify(relaxed.inconclusive));
+      assert.equal(relaxed.facts.linkage.exact, true);
+      assert.equal(relaxed.facts.companion.launchCount, 1);
+      assert.equal(relaxed.facts.handle.originalHandleId, HANDLE);
+      assert.equal(relaxed.facts.handle.pollCount, 1);
+      assert.equal(relaxed.facts.completion.qualified, true, 'the relaxed cell behaves exactly like the canonical wrapper');
+      assert.deepEqual(relaxed.facts, control.facts, 'the frozen family reaches the same call values, so every supported fact matches');
+    });
+
+    test('the frozen family is subject to the same argument discipline (an extra field fails completion identically)', () => {
+      const withExtra = (cell) => {
+        cell.payload.input = cell.payload.input.replace('"yield_time_ms":60000', '"yield_time_ms":60000,"unclassified_extra":1');
+        return cell;
+      };
+      const control = inspectShellWaitEvidence(evidenceInput({
+        rollouts: rescueRollouts(
+          canonicalCell('exec_command', 'launch-1', { cmd: LAUNCHER, workdir: '/installed/workspace' }),
+          withExtra(canonicalCell('write_stdin', 'poll-1', { session_id: HANDLE, chars: '', yield_time_ms: 60000 })),
+        ),
+      }));
+      const relaxed = inspectShellWaitEvidence(evidenceInput({
+        rollouts: rescueRollouts(
+          relaxedCell('exec_command', 'launch-1', { cmd: LAUNCHER, workdir: '/installed/workspace' }),
+          withExtra(relaxedCell('write_stdin', 'poll-1', { session_id: HANDLE, chars: '', yield_time_ms: 60000 })),
+        ),
+      }));
+      assert.equal(relaxed.status, 'supported');
+      assert.equal(relaxed.facts.completion.qualified, false, 'the same existing call-value validation rejects the extra field');
+      assert.equal(relaxed.facts.completion.reason, control.facts.completion.reason, 'the discipline reason is byte-identical to the canonical cell');
+    });
+
+    test('forms outside the frozen bounds still abort the scan fail-closed with the body withheld', () => {
+      const overBound = `const r = await tools.exec_command({cmd:"${CANARY_CMD}"}); text          (r);`;
+      const result = inspectShellWaitEvidence(evidenceInput({
+        rollouts: rescueRollouts(
+          { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'launch-1', input: overBound } },
+          canonicalCell('write_stdin', 'poll-1', { session_id: HANDLE, chars: '', yield_time_ms: 60000 }),
+        ),
+      }));
+      assert.equal(result.status, 'inconclusive');
+      assert.equal(result.inconclusive.reason, 'unsupported-call-shape');
+      assert.equal(result.inconclusive.manualAdjudicationRequired, true);
+      const excerptText = JSON.stringify(result.inconclusive.excerpt);
+      assert.equal(excerptText.includes(CANARY_CMD), false, 'the unclassified excerpt keeps withholding the body content');
+      assert.equal(excerptText.includes('text          (r)'), false, 'the raw over-bound body never echoes into the excerpt');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Interrupt-closure Task 2 (plan 2026-10-23): independent host facts survive
+  // an aborted evidence adjudication (report §23.3/§23.4). One unknown cell
+  // aborts the WHOLE-CASE evidence analysis fail-closed — that must never
+  // erase the raw-rollout layer facts (the interrupt call facts, the
+  // spawn-acknowledgement identity, the §19.4 host-item admission scan with
+  // its per-conjunct reasons, the capture-vs-admission distinction) — and
+  // must never MANUFACTURE a positive either: an unadmitted item, a hidden
+  // extra interruption, or an unresolvable identity keeps its named
+  // unestablished reason, and the Gate D delivery layer stays failed through
+  // the SAME driver join → persisted record → offline Gate D input path.
+  // -------------------------------------------------------------------------
+  describe('interrupt-closure task 2: independent host facts survive an aborted evidence adjudication (report §23.4)', async () => {
+    const { inspectShellWaitEvidence } = await import('../tools/shell-wait-probe/evidence.mjs');
+    const { mapShellWaitLiveFacts, nativeInterruptionGateDInput, runShellWaitCase, INTERRUPT_PARTIAL_FACTS_VERSION } = await import('../tools/shell-wait-probe/driver.mjs');
+    const { evaluateNativeInterruptionSettlement } = await import('../tools/shell-wait-probe/release-qualification.mjs');
+
+    const CHILD_THREAD = 'a445b927-1e4d-4f11-9a34-2b6ac19b7d51';
+    const ROOT_THREAD = 'root-thread-1';
+    const AGENT_PATH = '/root/zcode_rescue_task_1';
+    const EMISSION_MS = Date.parse('2026-10-06T00:00:07.200Z');
+    const stamped = (timestamp, event) => ({ timestamp, ...event });
+    const fnCall = (name, callId, args, timestamp = null) => ({
+      ...(timestamp ? stamped(timestamp, {}) : {}),
+      type: 'response_item', payload: { type: 'function_call', name, call_id: callId, arguments: JSON.stringify(args) },
+    });
+    const fnOutput = (callId, output, timestamp = null) => ({
+      ...(timestamp ? stamped(timestamp, {}) : {}),
+      type: 'response_item', payload: { type: 'function_call_output', call_id: callId, output },
+    });
+    const completedOutputBody = (result) => [
+      { type: 'input_text', text: 'Script completed\n' },
+      { type: 'input_text', text: JSON.stringify(result) },
+    ];
+    const pendingOutputBody = (cellId) => [{ type: 'input_text', text: `Script running with cell ID ${cellId}\n` }];
+    const activityItem = ({ id, kind = 'interrupted', agentThreadId = CHILD_THREAD, threadId = ROOT_THREAD, completedAtMs = EMISSION_MS }) => ({
+      type: 'event_msg',
+      payload: {
+        type: 'item_completed',
+        thread_id: threadId,
+        turn_id: 'root-turn-1',
+        item: { type: 'SubAgentActivity', model: null, reasoning_effort: null, id, kind, agent_thread_id: agentThreadId, agent_path: AGENT_PATH },
+        completed_at_ms: completedAtMs,
+      },
+    });
+    const UNKNOWN_CELL = { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'unknown-1', input: 'console.log("synthetic-unknown-cell");\n' } };
+
+    /** The abort scenario: a complete §19.4-shaped interrupt delivery plus
+     * ONE unknown cell in the Child rollout that aborts the whole-case
+     * evidence adjudication. Each test varies one dimension. */
+    function abortRollouts({ hostItem = true, secondCall = false, wrappedInterrupt = false, itemBound = false, withStarted = true } = {}) {
+      const childEvents = [
+        { type: 'session_meta', payload: { id: CHILD_THREAD, parent_thread_id: ROOT_THREAD, source: { subagent: { thread_spawn: { agent_path: AGENT_PATH } } } } },
+        fnCall('exec_command', 'launch-1', { cmd: 'node launcher' }, '2026-10-06T00:00:00.000Z'),
+        fnOutput('launch-1', completedOutputBody({ output: '', exit_code: 0, session_id: 5 }), '2026-10-06T00:00:01.000Z'),
+        fnCall('write_stdin', 'poll-1', { session_id: 5, chars: '', yield_time_ms: 60000 }, '2026-10-06T00:00:02.000Z'),
+        fnOutput('poll-1', pendingOutputBody('cell-1'), '2026-10-06T00:00:02.500Z'),
+        UNKNOWN_CELL,
+      ];
+      const rootEvents = [
+        { type: 'session_meta', payload: { id: ROOT_THREAD } },
+        fnCall('spawn_agent', 'spawn-1', { task_name: 'zcode_rescue_task_1', fork_turns: 'none', agent_type: 'zcode-rescue', message: 'Run the installed prepared ZCode Rescue forwarder now. Return its public stdout verbatim.' }, '2026-10-06T00:00:00.000Z'),
+        ...(withStarted ? [{ type: 'event_msg', payload: { type: 'item_completed', thread_id: ROOT_THREAD, turn_id: 'root-turn-1', item: { type: 'SubAgentActivity', model: null, reasoning_effort: null, id: 'spawn-item-1', kind: 'started', agent_thread_id: CHILD_THREAD, agent_path: AGENT_PATH }, completed_at_ms: Date.parse('2026-10-06T00:00:00.500Z') } }] : []),
+        fnCall('wait_agent', 'root-wait-1', { timeout_ms: 600000 }, '2026-10-06T00:00:01.000Z'),
+        ...(wrappedInterrupt
+          ? [{ type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'int-wrapped', input: `text(await tools.interrupt_agent({target:"${CHILD_THREAD}"}));` } },
+             { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'int-wrapped', output: JSON.stringify({ previous_status: 'running' }) } }]
+          : [fnCall('interrupt_agent', 'int-1', { target: CHILD_THREAD }, '2026-10-06T00:00:07.000Z'),
+             fnOutput('int-1', JSON.stringify({ previous_status: 'running' }), '2026-10-06T00:00:07.100Z')]),
+        ...(secondCall ? [fnCall('interrupt_agent', 'int-2', { target: CHILD_THREAD }, '2026-10-06T00:00:08.000Z'), fnOutput('int-2', JSON.stringify({ previous_status: 'running' }), '2026-10-06T00:00:08.100Z')] : []),
+        ...(itemBound
+          ? Array.from({ length: 65 }, (_, index) => activityItem({ id: `bulk-${index}`, kind: 'started' }))
+          : []),
+        ...(hostItem ? [activityItem({ id: wrappedInterrupt ? 'int-wrapped' : 'int-1' })] : []),
+      ];
+      return [rootEvents, childEvents];
+    }
+
+    const heldStub = {
+      endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: true,
+      result: { code: null, stdout: '', stderr: '' },
+      cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: false, codexTerminated: false, nativeInterruptionClaimed: false, errors: [] },
+      timeline: null,
+    };
+    const fixtureStub = {
+      workspace: '/private/tmp/t4-ws', codexHome: '/private/tmp/t4-home',
+      installedRoot: '/private/tmp/t4-installed', env: { HOME: '/private/tmp/t4-home' },
+      record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
+    };
+    /** The SAME watch/observer path: the REAL evidence observer aborts on the
+     * unknown cell and its result feeds the REAL mapper. */
+    const mapAbort = (rolloutsOverrides = {}) => {
+      const rollouts = abortRollouts(rolloutsOverrides);
+      const evidence = inspectShellWaitEvidence({
+        rollouts,
+        zcodeCalls: [{ method: 'session/send', params: { sessionId: 'fake-session' } }],
+        command: 'node launcher',
+        publicResult: 'ZCODE_RESCUE_PUBLIC_SENTINEL_7C9C',
+        requestedPollMs: 60_000,
+        workerStillAliveAfterObservation: false,
+        redactions: [],
+      });
+      const facts = mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', pollMs: 3_600_000, waitPolicy: null, interruptBaselineSelector: null, survivalControlSelector: null },
+        heldStub, evidence, null, null, fixtureStub, rollouts, [], 'node launcher',
+      );
+      return { rollouts, evidence, facts };
+    };
+
+    test('an unknown cell aborts the whole case but the raw-rollout call facts and the capture-vs-admission distinction survive the mapping', () => {
+      const { evidence, facts } = mapAbort();
+      assert.equal(evidence.status, 'inconclusive');
+      assert.equal(evidence.inconclusive.reason, 'unsupported-call-shape', 'the unknown cell keeps failing the whole case closed');
+      assert.equal(facts.inconclusive.reason.startsWith('unsupported-call-shape'), true, 'the overall record stays a bare inconclusive at the top level');
+      // The §23.4 raw-rollout call facts survive.
+      assert.equal(facts.interrupt.attempted, true);
+      assert.equal(facts.interrupt.callCount, 1);
+      assert.equal(facts.interrupt.family, 'v2');
+      assert.equal(facts.interrupt.previousStatus, 'running');
+      assert.equal(facts.interrupt.orderingBound, false);
+      // The whole-case delivery positives stay unestablished — never guessed.
+      assert.equal(facts.interrupt.delivered, null);
+      assert.equal(facts.interrupt.exactTargetMatch, null);
+      assert.equal(facts.interrupt.settled, null);
+      assert.equal(facts.interrupt.settledBasis, 'ordering-unbound-not-attributed');
+      // Capture vs admission: the rollouts WERE captured; the supported-case
+      // call analysis is what aborted.
+      assert.equal(facts.collection.rolloutCount, 2);
+      assert.equal(facts.collection.childToolCallCount, null);
+    });
+
+    test('the §19.4 host-item scan facts survive with their per-conjunct named reasons (identity unestablished, item observed)', () => {
+      const { facts } = mapAbort();
+      assert.equal(facts.interrupt.missingPrerequisite.includes('unsupported-call-shape'), true, 'the abort reason names the admission abort, not a collection failure');
+      assert.equal(facts.interrupt.missingPrerequisite.includes('did not complete'), false, 'the collection-completed case is never relabeled as a collection failure');
+      const hostDelivery = facts.interrupt.hostDelivery;
+      assert.notEqual(hostDelivery, undefined, 'the admission block rides the mapped facts');
+      assert.equal(hostDelivery.checked, true);
+      assert.equal(hostDelivery.attemptedCall, true);
+      assert.equal(hostDelivery.itemPresent, true, 'the host item was observed by the completed scan');
+      assert.equal(hostDelivery.interruptedItemCount, 1);
+      assert.equal(hostDelivery.admitted, false, 'the item is never admitted without the exact identity join');
+      assert.equal(hostDelivery.idJoin, false);
+      assert.equal(hostDelivery.agentThreadIdMatch, null);
+      assert.equal(hostDelivery.timed, null);
+      assert.equal(hostDelivery.completedAtMs, null);
+      assert.ok(hostDelivery.reasons.includes('host-activity-owning-root-unestablished'), JSON.stringify(hostDelivery.reasons));
+      assert.equal(hostDelivery.reasons.includes('host-activity-item-absent'), false, 'an observed item is never relabeled absent');
+    });
+
+    test('the versioned offline partial-facts block carries the spawn identity and the source-rollout digest, never the observer stamp', () => {
+      const { facts } = mapAbort();
+      const partial = facts.interrupt.partialFacts;
+      assert.notEqual(partial, undefined, 'the §23.4 partial-facts block rides the abort case');
+      assert.equal(partial.version, INTERRUPT_PARTIAL_FACTS_VERSION);
+      assert.equal(INTERRUPT_PARTIAL_FACTS_VERSION, 1, 'the new adjudicator version identifier is introduced by this task');
+      assert.match(partial.adjudicator, /partial-facts/);
+      assert.equal(partial.basis.includes('raw-rollout'), true, 'the basis names the raw-rollout fixture-proof class');
+      assert.equal(partial.adjudication, 'unsupported-call-shape');
+      assert.deepEqual(partial.capture, { rolloutsCaptured: true, rolloutCount: 2, rolloutsFailureReason: null });
+      assert.equal(partial.spawnIdentity.checked, true);
+      assert.equal(partial.spawnIdentity.exact, true, 'the spawn acknowledgement identity is derivable from the raw rollouts alone');
+      assert.equal(partial.spawnIdentity.childThreadId, CHILD_THREAD);
+      assert.equal(partial.spawnIdentity.parentThreadId, ROOT_THREAD);
+      assert.match(partial.sourceRolloutsSha256, /^[0-9a-f]{64}$/u, 'the original source-rollout digest rides the block');
+    });
+
+    test('the persisted record keeps the whole case inconclusive while carrying the surviving layer facts (no adoption)', async (t) => {
+      const { facts } = mapAbort();
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-abort-persist-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const persistFixture = { ...fixtureStub, dispose: async () => {} };
+      const record = await runShellWaitCase(
+        { case: 'rescue-interrupt', codexBinary: process.execPath, sourceSha: 'a'.repeat(40), workerDurationMs: 420_000, capMs: 3_600_000, pollMs: 3_600_000, budgetMs: 1_200_000, output: root },
+        { createFixture: async () => persistFixture, executeLiveCase: async () => facts },
+      );
+      assert.notEqual(record.inconclusive, null, 'the whole case stays inconclusive — the survivor facts never qualify it');
+      assert.equal(record.cleanup.nativeInterruptionClaimed, false);
+      assert.equal(record.interrupt.attempted, true);
+      assert.equal(record.interrupt.callCount, 1);
+      assert.equal(record.interrupt.delivered, null);
+      assert.equal(record.interrupt.hostDelivery.itemPresent, true, 'the host-item facts persist beside the record');
+      assert.equal(record.interrupt.hostDelivery.admitted, false);
+      assert.equal(record.interrupt.partialFacts.version, INTERRUPT_PARTIAL_FACTS_VERSION);
+      assert.equal(record.interrupt.partialFacts.spawnIdentity.exact, true);
+      assert.equal(record.evidence.rolloutCount, 2, 'the capture fact persists (admission aborted, capture did not)');
+      // Reload the RETAINED record from disk (post-disposal offline join).
+      const recordName = (await readdir(root)).find((name) => name.endsWith('.record.json'));
+      const reloaded = JSON.parse(await readFile(join(root, recordName), 'utf8'));
+      assert.equal(reloaded.interrupt.hostDelivery.admitted, false);
+      assert.equal(reloaded.interrupt.partialFacts.version, INTERRUPT_PARTIAL_FACTS_VERSION);
+    });
+
+    test('an observed host item can coexist with the unknown cell WITHOUT a false admitted window, exactly-one-call claim, settlement or adoption', async (t) => {
+      const { facts } = mapAbort();
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-abort-gated-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const persistFixture = { ...fixtureStub, dispose: async () => {} };
+      await runShellWaitCase(
+        { case: 'rescue-interrupt', codexBinary: process.execPath, sourceSha: 'a'.repeat(40), workerDurationMs: 420_000, capMs: 3_600_000, pollMs: 3_600_000, budgetMs: 1_200_000, output: root },
+        { createFixture: async () => persistFixture, executeLiveCase: async () => facts },
+      );
+      const recordName = (await readdir(root)).find((name) => name.endsWith('.record.json'));
+      const reloaded = JSON.parse(await readFile(join(root, recordName), 'utf8'));
+      const gateInput = nativeInterruptionGateDInput(reloaded);
+      // The raw pending observation exists in the rollouts, but with the
+      // exact identity join unestablished the attributable window is NOT
+      // confirmed (never approximated) and the admission is false — so no
+      // open window may be claimed at all.
+      assert.equal(gateInput.delivery.pendingWindowConfirmed, false, 'without the exact identity join the pending window stays unconfirmed');
+      assert.equal(gateInput.delivery.hostActivityAdmitted, false, 'the observed item is a dispatch-identity bound, never an admission');
+      assert.equal(gateInput.delivery.previousStatusOnly, true, 'the previous-status snapshot stays snapshot-only');
+      assert.equal(gateInput.turnSettled, null, 'host activity is never by itself a Child abort or terminal result');
+      assert.equal(gateInput.companionOutcome, null);
+      assert.equal(gateInput.terminalWinner, null);
+      assert.equal(gateInput.deliveryToSettlementMs, null);
+      const verdict = evaluateNativeInterruptionSettlement(gateInput);
+      assert.equal(verdict.qualified, false, 'the unknown cell coexisting with an observed item never qualifies adoption');
+      assert.equal(verdict.layers.delivery, false);
+      assert.ok(verdict.reasons.includes('host-activity-unadmitted'), JSON.stringify(verdict.reasons));
+      assert.ok(verdict.reasons.includes('previous-status-snapshot-only'), JSON.stringify(verdict.reasons));
+      assert.ok(verdict.reasons.includes('terminal-winner-unobserved'), JSON.stringify(verdict.reasons));
+      assert.equal(verdict.layers.turnSettlement, false);
+      assert.equal(verdict.layers.noCollateral, false);
+    });
+
+    test('a completed scan of a collected rollout without any item is a POSITIVE absence (host-activity-item-absent rides the record)', () => {
+      // No SubAgentActivity item of ANY kind: the completed scan of the
+      // collected rollout establishes the positive absence (§23.3's explicit
+      // outcome — measured, never assumed).
+      const { facts } = mapAbort({ hostItem: false, withStarted: false });
+      const hostDelivery = facts.interrupt.hostDelivery;
+      assert.equal(hostDelivery.itemPresent, false);
+      assert.equal(hostDelivery.interruptedItemCount, 0);
+      assert.ok(hostDelivery.reasons.includes('host-activity-item-absent'), JSON.stringify(hostDelivery.reasons));
+      assert.equal(hostDelivery.admitted, false);
+    });
+
+    test('a scan that never ran (no attempted call) stays not-measured — never a fabricated absence', () => {
+      const rollouts = abortRollouts();
+      // Remove the interrupt call pair and the INTERRUPTED-kind host item
+      // (the spawn acknowledgement's started item stays): the delivery was
+      // never attempted, so there is nothing to scan for.
+      const stripped = rollouts.map((events, index) => index === 0
+        ? events.filter((event) => !['int-1', 'int-2', 'int-wrapped'].includes(event?.payload?.call_id)
+          && !(event?.payload?.item?.type === 'SubAgentActivity' && event?.payload?.item?.kind === 'interrupted'))
+        : events);
+      const evidence = inspectShellWaitEvidence({
+        rollouts: stripped,
+        zcodeCalls: [{ method: 'session/send', params: { sessionId: 'fake-session' } }],
+        command: 'node launcher', publicResult: 'x', requestedPollMs: 60_000,
+        workerStillAliveAfterObservation: false, redactions: [],
+      });
+      const facts = mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', pollMs: 3_600_000, waitPolicy: null, interruptBaselineSelector: null, survivalControlSelector: null },
+        heldStub, evidence, null, null, fixtureStub, stripped, [], 'node launcher',
+      );
+      // Codex round-2 review fix (report §23.8): with the whole-case
+      // adjudication aborted on the unknown cell, "no recognized call" is
+      // parser uncertainty — the call could live inside the unclassified
+      // cell — so absence stays UNKNOWN, never attempted:false and never the
+      // definitive delivery-not-attempted claim.
+      assert.equal(facts.interrupt.attempted, null);
+      assert.equal(facts.interrupt.callCount, null);
+      assert.equal(facts.interrupt.hostDelivery, undefined, 'no admission block is fabricated without a recognized call');
+      assert.equal(facts.interrupt.missingPrerequisite.includes('unknown'), true, 'the message names the uncertainty');
+      assert.equal(/delivery was not attempted/u.test(facts.interrupt.missingPrerequisite), false, 'never the definitive negative claim');
+      assert.equal(facts.interrupt.partialFacts.spawnIdentity.exact, true, 'the spawn identity still survives');
+    });
+
+    test('a bounded scan (item bound exceeded) keeps absence UNestablished with its named reason', () => {
+      const { facts } = mapAbort({ itemBound: true });
+      const hostDelivery = facts.interrupt.hostDelivery;
+      assert.ok(hostDelivery.reasons.includes('host-activity-item-bound-exceeded'), JSON.stringify(hostDelivery.reasons));
+      assert.equal(hostDelivery.reasons.includes('host-activity-item-absent'), false, 'a truncated scan never claims a positive absence');
+      assert.equal(hostDelivery.admitted, false);
+    });
+
+    test('a hidden extra interruption stays visible: the call count rides the record and fails the exactly-one conjunct', () => {
+      const { facts } = mapAbort({ secondCall: true });
+      assert.equal(facts.interrupt.callCount, 2, 'the extra attempt is never hidden by the abort');
+      const hostDelivery = facts.interrupt.hostDelivery;
+      assert.ok(hostDelivery.reasons.includes('host-activity-call-count-not-one'), JSON.stringify(hostDelivery.reasons));
+      assert.equal(hostDelivery.admitted, false);
+    });
+
+    test('an unsupported wrapped interrupt mapping keeps its named unjoinable reason through the abort path', () => {
+      const { facts } = mapAbort({ wrappedInterrupt: true });
+      assert.equal(facts.interrupt.wrappedInterrupt, true);
+      const hostDelivery = facts.interrupt.hostDelivery;
+      assert.ok(hostDelivery.reasons.includes('host-activity-wrapped-interrupt-unjoinable'), JSON.stringify(hostDelivery.reasons));
+      assert.equal(hostDelivery.admitted, false);
+      assert.equal(facts.interrupt.exactTargetMatch, null, 'the wrapped shape never earns an exact-target claim');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Interrupt-closure Task 2, codex review round 2 (report §23.8/§23.9): the
+  // §23.4 abort-exposure mapping must keep interrupt ABSENCE unknown when the
+  // extractor skipped an unclassified cell. "No interrupt-shaped call was
+  // RECOGNIZED" in a run whose whole-case adjudication aborted on an
+  // unsupported call shape is PARSER UNCERTAINTY — the skipped cell could
+  // hold the interrupt — never negative evidence: `attempted` and its
+  // sibling call-shape facts stay null (never false/0), and the carried
+  // message names the uncertainty instead of the definitive
+  // "delivery was not attempted" claim. A RECOGNIZED attempt stays preserved
+  // (the Task-2 keeper behavior does not regress).
+  // -------------------------------------------------------------------------
+  describe('interrupt-closure task 2 codex round 2: interrupt absence stays unknown after an unclassified cell (report §23.8)', async () => {
+    const { inspectShellWaitEvidence } = await import('../tools/shell-wait-probe/evidence.mjs');
+    const { mapShellWaitLiveFacts } = await import('../tools/shell-wait-probe/driver.mjs');
+
+    const CHILD_THREAD = '5d3a1f0b-8c42-4e97-9a11-6b2f0c4d8e77';
+    const ROOT_THREAD = 'round2-root-thread-1';
+    const AGENT_PATH = '/root/zcode_rescue_task_1';
+    const EMISSION_MS = Date.parse('2026-10-06T00:00:07.200Z');
+    const stamped = (timestamp, event) => ({ timestamp, ...event });
+    const fnCall = (name, callId, args, timestamp = null) => ({
+      ...(timestamp ? stamped(timestamp, {}) : {}),
+      type: 'response_item', payload: { type: 'function_call', name, call_id: callId, arguments: JSON.stringify(args) },
+    });
+    const fnOutput = (callId, output, timestamp = null) => ({
+      ...(timestamp ? stamped(timestamp, {}) : {}),
+      type: 'response_item', payload: { type: 'function_call_output', call_id: callId, output },
+    });
+    const completedOutputBody = (result) => [
+      { type: 'input_text', text: 'Script completed\n' },
+      { type: 'input_text', text: JSON.stringify(result) },
+    ];
+    const pendingOutputBody = (cellId) => [{ type: 'input_text', text: `Script running with cell ID ${cellId}\n` }];
+    const activityItem = ({ id, kind = 'interrupted' }) => ({
+      type: 'event_msg',
+      payload: {
+        type: 'item_completed',
+        thread_id: ROOT_THREAD,
+        turn_id: 'root-turn-1',
+        item: { type: 'SubAgentActivity', model: null, reasoning_effort: null, id, kind, agent_thread_id: CHILD_THREAD, agent_path: AGENT_PATH },
+        completed_at_ms: EMISSION_MS,
+      },
+    });
+    const UNKNOWN_CELL = { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'unknown-r2', input: 'console.log("synthetic-unknown-cell-r2");\n' } };
+
+    /** The abort scenario with one varied dimension: WHERE the interrupt
+     * emission lives. 'direct' = a recognized interrupt_agent call pair
+     * (the Task-2 keeper control); 'unsupported-cell' = the ONLY interrupt
+     * sits inside a cell the parser cannot classify (the round-2 finding). */
+    function round2Rollouts({ interrupt = 'direct' } = {}) {
+      const interruptEvents = interrupt === 'direct'
+        ? [fnCall('interrupt_agent', 'int-r2', { target: CHILD_THREAD }, '2026-10-06T00:00:07.000Z'),
+           fnOutput('int-r2', JSON.stringify({ previous_status: 'running' }), '2026-10-06T00:00:07.100Z')]
+        : [{ type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'int-r2', input: `const x = await tools.interrupt_agent({target:"${CHILD_THREAD}"}); text(x);` } },
+           { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'int-r2', output: JSON.stringify({ previous_status: 'running' }) } }];
+      return [
+        [
+          { type: 'session_meta', payload: { id: ROOT_THREAD } },
+          fnCall('spawn_agent', 'spawn-r2', { task_name: 'zcode_rescue_task_1', fork_turns: 'none', agent_type: 'zcode-rescue', message: 'Run the installed prepared ZCode Rescue forwarder now. Return its public stdout verbatim.' }, '2026-10-06T00:00:00.000Z'),
+          { type: 'event_msg', payload: { type: 'item_completed', thread_id: ROOT_THREAD, turn_id: 'root-turn-1', item: { type: 'SubAgentActivity', model: null, reasoning_effort: null, id: 'spawn-item-r2', kind: 'started', agent_thread_id: CHILD_THREAD, agent_path: AGENT_PATH }, completed_at_ms: Date.parse('2026-10-06T00:00:00.500Z') } },
+          fnCall('wait_agent', 'root-wait-r2', { timeout_ms: 600000 }, '2026-10-06T00:00:01.000Z'),
+          ...interruptEvents,
+          activityItem({ id: 'int-r2' }),
+        ],
+        [
+          { type: 'session_meta', payload: { id: CHILD_THREAD, parent_thread_id: ROOT_THREAD, source: { subagent: { thread_spawn: { agent_path: AGENT_PATH } } } } },
+          fnCall('exec_command', 'launch-r2', { cmd: 'node launcher' }, '2026-10-06T00:00:00.000Z'),
+          fnOutput('launch-r2', completedOutputBody({ output: '', exit_code: 0, session_id: 5 }), '2026-10-06T00:00:01.000Z'),
+          fnCall('write_stdin', 'poll-r2', { session_id: 5, chars: '', yield_time_ms: 60000 }, '2026-10-06T00:00:02.000Z'),
+          fnOutput('poll-r2', pendingOutputBody('cell-r2'), '2026-10-06T00:00:02.500Z'),
+          UNKNOWN_CELL,
+        ],
+      ];
+    }
+
+    const heldStub = {
+      endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: true,
+      result: { code: null, stdout: '', stderr: '' },
+      cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: false, codexTerminated: false, nativeInterruptionClaimed: false, errors: [] },
+      timeline: null,
+    };
+    const fixtureStub = {
+      workspace: '/private/tmp/r2-ws', codexHome: '/private/tmp/r2-home',
+      installedRoot: '/private/tmp/r2-installed', env: { HOME: '/private/tmp/r2-home' },
+      record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
+    };
+    /** The REAL evidence observer aborts on the unsupported shape and its
+     * result feeds the REAL mapper — the same public seam as §23.4. */
+    const mapRound2 = (overrides = {}) => {
+      const rollouts = round2Rollouts(overrides);
+      const evidence = inspectShellWaitEvidence({
+        rollouts,
+        zcodeCalls: [{ method: 'session/send', params: { sessionId: 'fake-session' } }],
+        command: 'node launcher',
+        publicResult: 'ZCODE_RESCUE_PUBLIC_SENTINEL_7C9C',
+        requestedPollMs: 60_000,
+        workerStillAliveAfterObservation: false,
+        redactions: [],
+      });
+      const facts = mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', pollMs: 3_600_000, waitPolicy: null, interruptBaselineSelector: null, survivalControlSelector: null },
+        heldStub, evidence, null, null, fixtureStub, rollouts, [], 'node launcher',
+      );
+      return { rollouts, evidence, facts };
+    };
+
+    test('the only interrupt sits in an unsupported wrapper cell: absence stays UNKNOWN — never attempted:false, never a definitive count, never the delivery-not-attempted claim — while a RECOGNIZED attempt stays preserved', () => {
+      // Scenario 1 (the round-2 finding): the ONLY interrupt emission lives
+      // inside a cell the parser cannot classify.
+      const { evidence, facts } = mapRound2({ interrupt: 'unsupported-cell' });
+      assert.equal(evidence.status, 'inconclusive');
+      assert.equal(evidence.inconclusive.reason, 'unsupported-call-shape', 'the unsupported interrupt cell keeps failing the whole case closed');
+      assert.equal(facts.inconclusive.reason.startsWith('unsupported-call-shape'), true);
+      // THE FIX (red before it): the extractor skipped the unclassified cell,
+      // so "no recognized call" is parser uncertainty — the skipped cell
+      // could hold the interrupt. Absence stays unknown, never negative
+      // evidence.
+      assert.equal(facts.interrupt.attempted, null);
+      assert.equal(facts.interrupt.callCount, null, 'a skipped cell never becomes a definitive zero-call count');
+      assert.equal(facts.interrupt.wrappedInterrupt, null, 'the unobserved call shape stays unknown, never "direct"');
+      assert.equal(facts.interrupt.family, null);
+      assert.equal(facts.interrupt.previousStatus, null);
+      assert.equal(facts.interrupt.delivered, null);
+      assert.equal(facts.interrupt.rejection, null);
+      assert.equal(facts.interrupt.settled, null);
+      assert.equal(facts.interrupt.exactTargetMatch, null);
+      // The carried message names the uncertainty, never the definitive
+      // negative claim.
+      assert.equal(facts.interrupt.missingPrerequisite.includes('unknown'), true, 'the message names the interruption as unknown');
+      assert.equal(facts.interrupt.missingPrerequisite.includes('unsupported-call-shape'), true, 'the message names the abort reason');
+      assert.equal(/delivery was not attempted/u.test(facts.interrupt.missingPrerequisite), false, 'never the definitive delivery-not-attempted claim');
+      // No admission block is fabricated; the partial-facts block still rides.
+      assert.equal(facts.interrupt.hostDelivery, undefined, 'no admission block is fabricated without a recognized call');
+      assert.equal(facts.interrupt.partialFacts.adjudication, 'unsupported-call-shape');
+      assert.equal(facts.interrupt.partialFacts.capture.rolloutCount, 2);
+      // Scenario 2 (the keeper control): a RECOGNIZED interrupt attempt goes
+      // through the SAME aborted-adjudication mapping and stays preserved —
+      // the Task-2 keeper behavior does not regress.
+      const keeper = mapRound2({ interrupt: 'direct' });
+      assert.equal(keeper.evidence.inconclusive.reason, 'unsupported-call-shape');
+      assert.equal(keeper.facts.interrupt.attempted, true, 'the recognized attempt stays preserved, never downgraded to unknown');
+      assert.equal(keeper.facts.interrupt.callCount, 1);
+      assert.equal(keeper.facts.interrupt.family, 'v2');
+      assert.equal(keeper.facts.interrupt.previousStatus, 'running');
+      // The delivery-layer outcomes stay unestablished exactly as before.
+      assert.equal(keeper.facts.interrupt.delivered, null);
+      assert.equal(keeper.facts.interrupt.exactTargetMatch, null);
+      assert.equal(keeper.facts.interrupt.settled, null);
+      assert.equal(keeper.facts.interrupt.hostDelivery !== undefined, true, 'the admission block still rides a recognized call');
+      assert.equal(keeper.facts.interrupt.missingPrerequisite.includes('delivery was not attempted'), false, 'the recognized case never carries the definitive negative claim');
+    });
+  });
+
+  describe('interrupt-closure task 3: the §23.5 pre-cleanup durable sampling schedule (report §23.5)', async () => {
+    const {
+      runHeldHostTurn,
+      nativeInterruptionGateDInput,
+      DURABLE_SAMPLING_VERSION,
+      DURABLE_SAMPLING_MIN_INTERVAL_MS,
+      DURABLE_SAMPLING_MAX_ATTEMPTS,
+      DURABLE_SAMPLING_MAX_SUMMARIES,
+      DURABLE_SAMPLING_ENABLED_CASES,
+    } = await import('../tools/shell-wait-probe/driver.mjs');
+
+    const IDENTITY = { pid: 70311, ppid: 91, nonce: 'f'.repeat(64), startIdentity: 'start-sampling' };
+    const settledSnapshot = (overrides = {}) => ({
+      aggregate: 'settled', reasons: [], executorLinkage: 'verified',
+      passive: { snapshotEqual: true, reason: null, lockState: 'absent' },
+      job: { presence: 'found', projection: { status: 'succeeded' } },
+      ...overrides,
+    });
+    const identityUnobserved = () => ({ aggregate: 'unestablished', reasons: ['durable-identity-unobserved'] });
+    const fixtureStub = {
+      workspace: '/private/tmp/t3-sampling-ws', codexHome: '/private/tmp/t3-sampling-home',
+      installedRoot: '/private/tmp/t3-sampling-installed', env: { HOME: '/private/tmp/t3-sampling-home' },
+      record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
+    };
+    const heldStub = {
+      endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: true,
+      result: { code: null, stdout: '', stderr: '' },
+      cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: false, codexTerminated: false, nativeInterruptionClaimed: false, errors: [] },
+      timeline: null,
+    };
+
+    /**
+     * The sampling harness: the ROOT result and the completion gate are
+     * independently deferrable so each test pins its own held/root-return
+     * ordering; the injected sleep records every requested inter-attempt
+     * delay and resolves immediately (the scheduling DECISION is the tested
+     * contract — real waiting is the production scheduler's job). The
+     * supplier is scripted per test and records its calls.
+     */
+    const samplingHarness = ({ supplier, resultMode = 'deferred', gateMode = 'immediate', holdMs = 0, budgetMs = 60_000, sampling = {}, ...overrides } = {}) => {
+      const events = [];
+      const sleepRequests = [];
+      let releaseGateNow = () => {};
+      let resolveResultNow = () => {};
+      const gatePromise = gateMode === 'immediate' ? Promise.resolve() : new Promise((resolve) => { releaseGateNow = () => resolve(); });
+      const resultPromise = resultMode === 'immediate'
+        ? Promise.resolve({ code: 1, stdout: 'early exit', stderr: '' })
+        : new Promise((resolve) => { resolveResultNow = () => resolve({ code: 0, stdout: 'acknowledged', stderr: '' }); });
+      let readCalls = 0;
+      const readDurableSnapshot = async () => {
+        readCalls += 1;
+        return supplier(readCalls, events);
+      };
+      const harness = {
+        launch: async () => ({ result: resultPromise }),
+        waitForGate: () => gatePromise,
+        gatePath: 'unused-gate',
+        captureProcessIdentity: async () => IDENTITY,
+        readProcessIdentity: async () => IDENTITY,
+        waitForProcessExit: async () => {},
+        terminateProcessIdentity: async () => { events.push('terminated'); return { attempted: true, signalled: 'SIGTERM', exited: true, failure: null }; },
+        releaseGate: async () => {},
+        sleep: async (ms) => { sleepRequests.push(ms); },
+        now: (() => { let value = 0; return () => (value += 500); })(),
+        holdMs,
+        budgetMs,
+        readDurableSnapshot,
+        ...(sampling === undefined ? {} : { sampleDurableSnapshots: sampling }),
+        ...overrides,
+      };
+      return { harness, events, sleepRequests, releaseGateNow, resolveResultNow };
+    };
+
+    test('the frozen §23.5 bounds are pinned: interval floor 1000 ms, 600 attempts, 32 summaries, schema version 1', () => {
+      assert.equal(DURABLE_SAMPLING_VERSION, 1, 'the sampling block carries its own schema version (never the observer stamp)');
+      assert.equal(DURABLE_SAMPLING_MIN_INTERVAL_MS, 1000, 'the registered ≥1000-ms between-read-starts floor');
+      assert.equal(DURABLE_SAMPLING_MAX_ATTEMPTS, 600, 'the registered read-attempt ceiling');
+      assert.equal(DURABLE_SAMPLING_MAX_SUMMARIES, 32, 'the registered retained-summary ceiling');
+    });
+
+    test('the sampling schedule is enabled for exactly the interrupt case by the frozen closed map (§20.8 producer precedent)', () => {
+      assert.deepEqual([...DURABLE_SAMPLING_ENABLED_CASES], ['rescue-interrupt'],
+        'the §23.5 schedule is the interrupt case\'s registered schedule — status-wait and every other case keep their exact prior behavior');
+    });
+
+    test('the baseline sample starts at identity establishment — during the held phase, before any boundary (§23.5 clauses 1-2)', async () => {
+      // The §23.5 defect this schedule fixes: the recorded I case sampled the
+      // durable state only AFTER the fake-worker hold ended (the read
+      // completed AT the cleanup boundary — zero settlement credit). The
+      // baseline must instead start as soon as the spawn-acknowledgement
+      // identity is established, while the held phase is still open.
+      const { harness, events, releaseGateNow, resolveResultNow } = samplingHarness({
+        supplier: (call, log) => {
+          if (call === 1) { log.push('identity-probe'); return identityUnobserved(); }
+          if (call === 2) { log.push('baseline-read'); return settledSnapshot(); }
+          return settledSnapshot();
+        },
+        gateMode: 'deferred',
+        sampling: { maxAttempts: 4 },
+      });
+      // Release the gate only after the sampler had its first two attempts;
+      // the Root result follows a tick later so the GATE wins the boundary
+      // race (the live interrupt ordering). Post-baseline interval reads
+      // continue unlogged (the §23.5 cadence) — the load-bearing ordering is
+      // probe → baseline → gate release.
+      setTimeout(() => {
+        events.push('gate-released');
+        releaseGateNow();
+        setTimeout(resolveResultNow, 5);
+      }, 20);
+      const held = await runHeldHostTurn(harness);
+      assert.ok(events.includes('identity-probe') && events.includes('baseline-read'), `the sampler ran its probe and baseline (actual ${JSON.stringify(events)})`);
+      assert.ok(events.indexOf('identity-probe') < events.indexOf('baseline-read'), 'the baseline follows the identity probe');
+      assert.ok(events.indexOf('baseline-read') < events.indexOf('gate-released'),
+        'the baseline happened while the held phase was still open — never at the hold\'s end');
+      const samples = held.childSettlement.durableSamples;
+      assert.ok(samples, 'the sampling block rides the held record beside the settlement layers');
+      assert.equal(samples.version, DURABLE_SAMPLING_VERSION);
+      assert.equal(samples.attemptCount, 4, 'the identity probe and the interval reads are all counted attempts');
+      assert.equal(samples.identityEstablishedAtAttempt, 2, 'identity establishment is its own named fact');
+      assert.ok(samples.baseline && typeof samples.baseline === 'object', 'the baseline is recorded, never omitted');
+      assert.equal(samples.baseline.attemptIndex, 2);
+      assert.equal(typeof samples.baseline.startedAtMs, 'number', 'the baseline keeps its OWN start instant');
+      assert.equal(typeof samples.baseline.completedAtMs, 'number', 'the baseline keeps its OWN completion instant (the fence input)');
+      assert.equal(samples.summaries.length, 3, 'the baseline plus the post-baseline interval reads are the retained samples');
+      assert.equal(samples.summaries[0].baseline, true);
+      assert.equal(samples.summaries[0].aggregate, 'settled');
+      assert.equal(samples.summaries[0].attemptIndex, 2);
+      assert.equal(samples.summaries[0].executorLinkage, 'verified', 'the summary carries the exported linkage fact');
+      assert.equal(samples.summaries[0].snapshotEqual, true, 'the summary carries the fingerprint-equality proof');
+      assert.equal(samples.summaries[0].jobPresence, 'found');
+      // Teardown-only abort: no termination boundary exists on this natural
+      // completion, and the stopped sampler names the shared signal — never a
+      // manufactured boundary (§22 round-3 semantics).
+      assert.equal(held.cleanup.cleanupBoundaryAtMs, null, 'a natural completion records no termination boundary');
+      assert.equal(samples.stoppedReason, 'durable-sampling-stopped-at-shared-signal');
+      assert.equal(held.childSettlement.layers.durableObligations, 'settled', 'the settlement read keeps its fence-passing credit');
+    });
+
+    test('a read still in flight at the budget-initiated termination boundary is abandoned by name — sampling never delays cleanup (§23.5 clause 4)', async () => {
+      // A never-resolving supplier: the in-flight sample is abandoned AT the
+      // boundary (the shared-budget abort source stamps the boundary first),
+      // the abandonment is a NAMED omission on the record, and the held turn
+      // still resolves through the budget cleanup — the file read can never
+      // delay cleanup past the budget.
+      const { harness, events } = samplingHarness({
+        supplier: () => new Promise(() => { /* never resolves */ }),
+        resultMode: 'immediate',
+        gateMode: 'deferred',
+        budgetMs: 50,
+        sampling: {},
+      });
+      const held = await runHeldHostTurn(harness);
+      assert.equal(held.budgetExpired, true, 'the reproduction shape has the budget expired');
+      assert.equal(typeof held.cleanup.cleanupBoundaryAtMs, 'number', 'the budget stamped its boundary at the abort source');
+      const samples = held.childSettlement.durableSamples;
+      assert.ok(samples, 'the sampling block still rides the budget record');
+      assert.equal(samples.stoppedReason, 'durable-sampling-stopped-at-termination-boundary');
+      assert.equal(samples.attemptCount, 1, 'the abandoned attempt is counted');
+      assert.equal(samples.baseline, null, 'an abandoned read is never a completed baseline');
+      assert.ok(samples.omissions.some((omission) => omission.reason === 'durable-read-abandoned-in-flight-at-termination-boundary' && omission.attemptIndex === 1),
+        `the in-flight abandonment is named with its attempt (actual ${JSON.stringify(samples.omissions)})`);
+      assert.equal(samples.summaries.length, 0, 'an abandoned read retains no sample summary');
+      assert.equal(events.includes('terminated'), true, 'cleanup still ran (and was not delayed beyond the budget)');
+    });
+
+    test('a teardown-only abort stops the sampler without manufacturing a termination boundary (§22 round-3 semantics)', async () => {
+      // The supplier resolves SLOWLY (~100 ms real) so the sampler's first
+      // attempt is still IN FLIGHT when the turn completes: the settlement
+      // read (which resolves the same way) joins inside the turn, the
+      // teardown abort stops the sampler mid-read — which must name the
+      // SHARED SIGNAL, never a termination boundary (teardown is not one),
+      // and the settlement read keeps its full credit with no boundary
+      // endpoint.
+      const { harness, events } = samplingHarness({
+        supplier: async (call) => {
+          events.push(`read-start-${call}`);
+          // The FIRST read (the sampler's attempt 1) resolves well after the
+          // turn completes; later reads resolve quickly (the settlement read).
+          await new Promise((resolve) => setTimeout(resolve, call === 1 ? 300 : 50));
+          events.push(`read-end-${call}`);
+          return settledSnapshot();
+        },
+        gateMode: 'immediate',
+        resultMode: 'deferred',
+        sampling: {},
+      });
+      // The deferred result resolves 20 ms in — the gate wins the boundary
+      // race and the turn completes while the first read is still pending.
+      harness.launch = async () => ({
+        result: new Promise((resolve) => { setTimeout(() => resolve({ code: 0, stdout: 'acknowledged', stderr: '' }), 20); }),
+      });
+      const held = await runHeldHostTurn(harness);
+      assert.equal(held.budgetExpired, false);
+      assert.equal(held.cleanup.cleanupBoundaryAtMs, null, 'a teardown-only abort records NO cleanup boundary');
+      const samples = held.childSettlement.durableSamples;
+      assert.ok(samples, 'the sampling block rides the record');
+      assert.equal(samples.stoppedReason, 'durable-sampling-stopped-at-shared-signal',
+        'the teardown stop names the shared signal, never a termination boundary');
+      assert.ok(samples.omissions.some((omission) => omission.reason === 'durable-read-abandoned-at-shared-signal' && omission.attemptIndex === 1),
+        `the abandoned attempt is named (actual ${JSON.stringify(samples.omissions)})`);
+      assert.equal(held.childSettlement.layers.durableObligations, 'settled',
+        'the settlement read keeps full credit — no boundary exists to fence against');
+    });
+
+    test('identity that never establishes omits the baseline by name — never guessed at another job (§23.5 clause 1)', async () => {
+      const { harness } = samplingHarness({
+        supplier: () => identityUnobserved(),
+        resultMode: 'immediate',
+        gateMode: 'deferred',
+        sampling: { maxAttempts: 3 },
+      });
+      const held = await runHeldHostTurn(harness);
+      const samples = held.childSettlement.durableSamples;
+      assert.ok(samples, 'the sampling block rides the record even without identity');
+      assert.equal(samples.baseline, null, 'no baseline is fabricated');
+      assert.equal(samples.baselineOmittedReason, 'durable-identity-unobserved', 'the omission carries the registered named reason');
+      assert.equal(samples.identityEstablishedAtAttempt, null);
+      assert.equal(samples.summaries.length, 0, 'no job sample summary exists without identity');
+      assert.ok(samples.attemptCount >= 1 && samples.attemptCount <= 3, `the probes are counted attempts (actual ${samples.attemptCount})`);
+    });
+
+    test('every inter-attempt delay schedules the registered ≥1000-ms floor, and the floor is not weakenable (§23.5 clause 2)', async () => {
+      const first = samplingHarness({
+        supplier: () => settledSnapshot(),
+        resultMode: 'immediate',
+        gateMode: 'deferred',
+        sampling: { maxAttempts: 3 },
+      });
+      const firstHeld = await runHeldHostTurn(first.harness);
+      // Self-review round 1: the floor is re-checked against the actual clock
+      // — with the injected IMMEDIATELY-resolving sleep each interval
+      // schedules the wait AND the re-check re-wait (two requests per
+      // interval), and the still-short actual spacing is the named
+      // `intervalShortfalls` fact (never a silent compression). With the
+      // production default scheduler (a real setTimeout) the re-check finds
+      // the floor already honored and re-waits nothing.
+      assert.equal(first.sleepRequests.length, 4, `two scheduled waits per interval (actual ${JSON.stringify(first.sleepRequests)})`);
+      for (const requested of first.sleepRequests) {
+        assert.ok(requested >= DURABLE_SAMPLING_MIN_INTERVAL_MS - 5 && requested <= DURABLE_SAMPLING_MIN_INTERVAL_MS,
+          `the scheduled inter-start delay is the registered interval (actual ${String(requested)})`);
+      }
+      assert.equal(firstHeld.childSettlement.durableSamples.intervalShortfalls, 2,
+        'the early-resolving injected scheduler is the named-shortfall case');
+      // A smaller REQUESTED interval is clamped to the frozen floor — the
+      // registration is not weakenable by the caller.
+      const clamped = samplingHarness({
+        supplier: () => settledSnapshot(),
+        resultMode: 'immediate',
+        gateMode: 'deferred',
+        sampling: { intervalMs: 5, maxAttempts: 3 },
+      });
+      const held = await runHeldHostTurn(clamped.harness);
+      assert.equal(held.childSettlement.durableSamples.intervalMs, DURABLE_SAMPLING_MIN_INTERVAL_MS, 'the enforced floor rides the block');
+      for (const requested of clamped.sleepRequests) {
+        assert.ok(requested >= DURABLE_SAMPLING_MIN_INTERVAL_MS - 5, 'the clamp keeps the scheduled delay at the registered floor');
+      }
+    });
+
+    test('smaller injected caps are honored and larger ones clamp to the frozen ceilings (§23.5 clause 4)', async () => {
+      const bounded = samplingHarness({
+        supplier: () => settledSnapshot(),
+        resultMode: 'immediate',
+        gateMode: 'deferred',
+        sampling: { maxAttempts: 2, maxSummaries: 1 },
+      });
+      const held = await runHeldHostTurn(bounded.harness);
+      const samples = held.childSettlement.durableSamples;
+      assert.equal(samples.attemptCap, 2, 'the test-injected smaller cap is honored');
+      assert.equal(samples.summaryCap, 1);
+      assert.equal(samples.attemptCount, 2);
+      assert.ok(samples.omissions.some((omission) => omission.reason === 'durable-sampling-attempt-cap-reached'),
+        'the attempt cap is named when reached');
+      assert.equal(samples.summaries.length, 1, 'the summary cap bounds retention');
+      assert.ok(samples.omissions.some((omission) => omission.reason === 'durable-sampling-summary-cap-reached'),
+        'the dropped summary is named, never silently discarded');
+      assert.equal(samples.summaries[0].baseline, true, 'the baseline summary survives the cap');
+      // Larger requests clamp to the frozen ceilings.
+      const clamped = samplingHarness({
+        supplier: () => settledSnapshot(),
+        resultMode: 'immediate',
+        gateMode: 'deferred',
+        sampling: { maxAttempts: 10_000, maxSummaries: 500 },
+      });
+      const clampedHeld = await runHeldHostTurn(clamped.harness);
+      assert.equal(clampedHeld.childSettlement.durableSamples.attemptCap, DURABLE_SAMPLING_MAX_ATTEMPTS, 'the attempt ceiling is frozen at 600');
+      assert.equal(clampedHeld.childSettlement.durableSamples.summaryCap, DURABLE_SAMPLING_MAX_SUMMARIES, 'the summary ceiling is frozen at 32');
+    });
+
+    test('an unreadable supplier is a named observer reason on the sample — never a business failure (§23.5 clause 4)', async () => {
+      const { harness } = samplingHarness({
+        supplier: () => { throw new Error('the durable partition vanished mid-observation'); },
+        resultMode: 'immediate',
+        gateMode: 'deferred',
+        sampling: { maxAttempts: 2 },
+      });
+      const held = await runHeldHostTurn(harness);
+      const samples = held.childSettlement.durableSamples;
+      assert.ok(samples, 'the sampling block rides the record');
+      assert.equal(samples.attemptCount, 2, 'the failed attempts are counted');
+      assert.equal(samples.summaries.length, 2, 'each failed attempt retains its named summary');
+      assert.equal(samples.summaries[0].baseline, true, 'the baseline is the first non-probe read — even when the observer failed');
+      assert.equal(samples.summaries[0].aggregate, 'unestablished');
+      assert.match(String(samples.summaries[0].reasons[0]), /vanished mid-observation/u,
+        'the error reason rides the summary verbatim-bounded (observer reason)');
+      assert.equal(held.childSettlement.layers.durableObligations, null, 'the settlement join keeps its named-failure behavior (unchanged keeper)');
+      assert.equal(held.cleanup.label, 'early-exit', 'the held turn completed as its own classification — never a business failure');
+    });
+
+    test('a settled sample never settles the layers by itself — samples observe, only the fenced final read joins (§23.5)', async () => {
+      const { harness } = samplingHarness({
+        supplier: (call) => (call === 1 ? settledSnapshot() : { aggregate: 'unestablished', reasons: ['snapshot-unequal'] }),
+        resultMode: 'immediate',
+        gateMode: 'deferred',
+        sampling: { maxAttempts: 1 },
+      });
+      const held = await runHeldHostTurn(harness);
+      const samples = held.childSettlement.durableSamples;
+      assert.equal(samples.summaries.length, 1);
+      assert.equal(samples.summaries[0].aggregate, 'settled', 'the pre-boundary settled fact is retained on the record');
+      assert.equal(held.childSettlement.layers.durableObligations, null,
+        'the settled SAMPLE did not ground the settlement layer — samples never settle, stop, repair or authorize anything');
+      assert.equal(held.childSettlement.durableSnapshot.aggregate, 'unestablished', 'the final read\'s own outcome is the joined one');
+    });
+
+    test('the REAL mapper projects and serializer persists the sampling block, redacted and bounded (persistence pin)', async (t) => {
+      // The codex-round-2 lesson (report §19.9): a hand-supplied field can
+      // mask a missing serializer. The block flows through the REAL
+      // mapShellWaitLiveFacts projection and the REAL runShellWaitCase
+      // serializer and is RELOADED from the retained record.
+      const { runShellWaitCase, mapShellWaitLiveFacts } = await import('../tools/shell-wait-probe/driver.mjs');
+      const heldWithSamples = {
+        endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: true,
+        result: { code: null, stdout: '', stderr: '' },
+        cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: false, codexTerminated: false, nativeInterruptionClaimed: false, errors: [], cleanupBoundaryAtMs: 1792661275722 },
+        timeline: null,
+        childSettlement: {
+          observed: false, basis: null,
+          layers: { remoteTerminal: null, localProcessReaping: null, durableObligations: 'settled' },
+          durableSnapshot: { aggregate: 'settled', reasons: [], executorLinkage: 'verified', completedAtMs: 1792661270000 },
+          durableSamples: {
+            version: DURABLE_SAMPLING_VERSION, intervalMs: 1000, attemptCap: 600, summaryCap: 32,
+            attemptCount: 2, identityEstablishedAtAttempt: 1,
+            baseline: { attemptIndex: 1, startedAtMs: 1792661269000, completedAtMs: 1792661269010 },
+            baselineOmittedReason: null, stoppedReason: 'durable-sampling-stopped-at-shared-signal',
+            summaries: [{
+              attemptIndex: 1, baseline: true, startedAtMs: 1792661269000, completedAtMs: 1792661269010,
+              aggregate: 'settled', executorLinkage: 'verified', jobPresence: 'found',
+              snapshotEqual: true, lockState: 'absent', partitionStatus: 'resolved', layers: null,
+              // A private path in a reason text must NOT survive persistence.
+              reasons: [`the partition at /private/tmp/fixture-home/secret vanished`],
+            }],
+            omissions: [],
+          },
+        },
+      };
+      const evidenceInconclusive = { status: 'inconclusive', inconclusive: { reason: 'unsupported-call-shape', detail: 'diagnostic' }, facts: null, excerpts: [] };
+      const facts = mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', pollMs: 3_600_000, waitPolicy: null, interruptBaselineSelector: null, survivalControlSelector: null },
+        heldWithSamples, evidenceInconclusive, null, null, fixtureStub, [], [], 'node launcher',
+      );
+      assert.deepEqual(facts.child.durableSamples, heldWithSamples.childSettlement.durableSamples,
+        'the mapper projects the sampling block verbatim beside the settlement layers');
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-sampling-persist-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const persistFixture = { ...fixtureStub, dispose: async () => {} };
+      await runShellWaitCase(
+        { case: 'rescue-interrupt', codexBinary: process.execPath, sourceSha: 'a'.repeat(40), workerDurationMs: 420_000, capMs: 3_600_000, pollMs: 3_600_000, budgetMs: 1_200_000, output: root },
+        { createFixture: async () => persistFixture, executeLiveCase: async () => facts },
+      );
+      const recordName = (await readdir(root)).find((name) => name.endsWith('.record.json'));
+      const reloaded = JSON.parse(await readFile(join(root, recordName), 'utf8'));
+      const persisted = reloaded.child.durableSamples;
+      assert.ok(persisted, 'the sampling block persists beside the durable snapshot');
+      assert.equal(persisted.version, DURABLE_SAMPLING_VERSION);
+      assert.equal(persisted.attemptCount, 2);
+      assert.equal(persisted.baseline.attemptIndex, 1);
+      assert.equal(persisted.summaries[0].aggregate, 'settled');
+      assert.equal(persisted.summaries[0].reasons[0].includes('/private/tmp'), false,
+        'private fixture paths are redacted out of the persisted summary reasons');
+      // The joined offline fence still decides from the FINAL read's own
+      // completion instant, not from the samples (the fence input is
+      // unchanged): the snapshot here completes BEFORE the recorded boundary
+      // and keeps its credit; a record whose only evidence were the samples
+      // could not qualify any layer through the join.
+      const gateInput = nativeInterruptionGateDInput(reloaded);
+      assert.equal(gateInput.durableObligations, 'settled');
+      assert.equal(gateInput.durableReadPostCleanupBoundary, false);
+      // Schema stability: a run WITHOUT the schedule (no durableSamples in
+      // the held facts) persists no sampling key.
+      const factsWithout = mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', pollMs: 3_600_000, waitPolicy: null, interruptBaselineSelector: null, survivalControlSelector: null },
+        heldStub, evidenceInconclusive, null, null, fixtureStub, [], [], 'node launcher',
+      );
+      assert.equal(Object.hasOwn(factsWithout.child, 'durableSamples'), false, 'records from runs without the schedule gain no sampling key');
+    });
+
+    test('the sampling block rides the FAILURE-shaped held record too — a rejecting gate never drops the samples (self-review round 1)', async () => {
+      // The non-budget failure answer carries no childSettlement block, and
+      // executeDefaultLiveCase persists exactly that record via heldTurn: the
+      // sampler's baseline/summaries/omissions must still ride it (§23.9's
+      // "every exit path"), with the settlement observation itself staying
+      // unobserved (the turn failed before any settlement observation).
+      const { harness } = samplingHarness({
+        supplier: () => settledSnapshot(),
+        gateMode: 'deferred',
+        sampling: { maxAttempts: 2 },
+      });
+      harness.waitForGate = async () => {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        throw new Error('the completion gate could not be armed');
+      };
+      const failure = await runHeldHostTurn(harness).then(() => null, (error) => error);
+      assert.ok(failure, 'the turn failed');
+      assert.ok(failure.heldTurn, 'the failure carries the structured held record');
+      const samples = failure.heldTurn.childSettlement?.durableSamples;
+      assert.ok(samples, 'the sampling block rides the FAILURE-shaped record — never silently dropped');
+      assert.equal(samples.version, DURABLE_SAMPLING_VERSION);
+      assert.ok(samples.attemptCount >= 1, `the attempts ran before the failure (actual ${samples.attemptCount})`);
+      assert.equal(failure.heldTurn.childSettlement.observed, false, 'the settlement observation stays unobserved on the failure record');
+      assert.equal(failure.heldTurn.cleanup.label, 'failure');
+    });
+
+    test('omissions dropped at the retention bound are themselves named — never silently truncated (self-review round 1)', async () => {
+      // Under the frozen default schedule every completed read after the 32nd
+      // summary names a summary-cap omission (up to 568), so the omission
+      // ledger overflows in real runs: the drops must be a named fact on the
+      // block (§23.5 clause 4 — every omission named), never a silent cut.
+      const { harness, releaseGateNow, resolveResultNow } = samplingHarness({
+        supplier: () => settledSnapshot(),
+        gateMode: 'deferred',
+        sampling: { maxAttempts: 20, maxSummaries: 1 },
+      });
+      setTimeout(() => {
+        releaseGateNow();
+        setTimeout(resolveResultNow, 5);
+      }, 20);
+      const held = await runHeldHostTurn(harness);
+      const samples = held.childSettlement.durableSamples;
+      assert.equal(samples.attemptCount, 20);
+      assert.equal(samples.summaries.length, 1);
+      assert.equal(samples.omissions.length, 16, 'the omission ledger bound holds');
+      assert.equal(samples.omissionsTruncated, true, 'the truncation is a named fact on the block');
+      assert.equal(samples.omissionsDroppedCount, 4,
+        `19 summary-cap omissions + the attempt-cap omission − 16 retained = 4 named drops (actual ${samples.omissionsDroppedCount})`);
+    });
+
+    test('a post-baseline identity-unobserved attempt is a named omission — no anonymous attempt (self-review round 1)', async () => {
+      // A mid-run rollout-load failure yields the identity-unobserved block
+      // with an embedded error. After the baseline such an attempt observes
+      // NO durable state: §23.5 clause 4 requires it to be named (an
+      // omission), never an anonymous attemptCount bump.
+      const { harness, releaseGateNow, resolveResultNow } = samplingHarness({
+        supplier: (call) => (call === 2
+          ? { aggregate: 'unestablished', reasons: ['durable-identity-unobserved: the rollout load failed mid-run'] }
+          : settledSnapshot()),
+        gateMode: 'deferred',
+        sampling: { maxAttempts: 3 },
+      });
+      setTimeout(() => {
+        releaseGateNow();
+        setTimeout(resolveResultNow, 5);
+      }, 20);
+      const held = await runHeldHostTurn(harness);
+      const samples = held.childSettlement.durableSamples;
+      assert.equal(samples.attemptCount, 3);
+      assert.equal(samples.summaries.length, 2, 'the unobserved attempt retains no sample summary');
+      assert.ok(samples.omissions.some((omission) => omission.attemptIndex === 2 && omission.reason === 'durable-read-identity-unobserved'),
+        `the post-baseline unobserved attempt is named (actual ${JSON.stringify(samples.omissions)})`);
+    });
+
+    test('the ≥1000-ms floor is re-checked against the actual clock — an early-resolving scheduler is a named shortfall, never a silent compression (self-review round 1)', async () => {
+      // The floor is delegated to the injected sleep; a scheduler that
+      // resolves EARLIER than requested would silently compress the read
+      // starts while `intervalMs: 1000` still rides the record. The runtime
+      // re-check measures the ACTUAL start spacing, re-waits the remainder
+      // once, and names a still-short start on the block.
+      const { harness, sleepRequests, releaseGateNow, resolveResultNow } = samplingHarness({
+        supplier: () => settledSnapshot(),
+        gateMode: 'deferred',
+        sampling: { maxAttempts: 3 },
+      });
+      setTimeout(() => {
+        releaseGateNow();
+        setTimeout(resolveResultNow, 5);
+      }, 20);
+      const held = await runHeldHostTurn(harness);
+      const samples = held.childSettlement.durableSamples;
+      assert.equal(samples.intervalShortfalls, 2,
+        `each interval whose ACTUAL spacing fell short is named (actual ${String(samples.intervalShortfalls)})`);
+      assert.equal(sleepRequests.length, 4, 'per interval: the scheduled wait plus the re-check re-wait');
+      for (const requested of sleepRequests) {
+        assert.ok(requested >= DURABLE_SAMPLING_MIN_INTERVAL_MS - 5,
+          `every scheduled wait (including the re-wait) still requests the registered floor (actual ${String(requested)})`);
+      }
+      assert.equal(samples.intervalMs, DURABLE_SAMPLING_MIN_INTERVAL_MS);
+    });
+
+    test('the summary ledger never evicts post-delivery observations — baseline and transitions are pinned, the newest survive (codex backfill review)', async () => {
+      // The finding's shape: identity establishes promptly and the §16.4
+      // control clock schedules the interruption only at ~80 s — a flat
+      // 32-slot ledger that DROPS at the cap fills within ~31 s of identity
+      // and would discard every post-delivery observation (settlement
+      // transitions, the last pre-cleanup read), unrecoverable after fixture
+      // disposal. The ledger must ROLL at the cap: the baseline and every
+      // state-transition summary are pinned and the oldest superseded
+      // pre-delivery summary rolls off (a named count), so the newest — the
+      // delivery-window and settlement-window observations — always survive
+      // within the frozen ≤32 bound.
+      const { harness, releaseGateNow, resolveResultNow } = samplingHarness({
+        supplier: (call) => (call <= 38
+          ? settledSnapshot({ aggregate: 'unresolved', job: { presence: 'found', projection: { status: 'running' } } })
+          : settledSnapshot()),
+        gateMode: 'deferred',
+        sampling: { maxAttempts: 40 },
+      });
+      setTimeout(() => {
+        releaseGateNow();
+        setTimeout(resolveResultNow, 5);
+      }, 30);
+      const held = await runHeldHostTurn(harness);
+      const samples = held.childSettlement.durableSamples;
+      assert.ok(samples.summaries.length <= 32, `the frozen retention bound holds (actual ${samples.summaries.length})`);
+      assert.equal(samples.summaries[0].attemptIndex, 1, 'the baseline survives');
+      assert.equal(samples.summaries[0].baseline, true);
+      assert.equal(samples.summaries[0].aggregate, 'unresolved');
+      const last = samples.summaries[samples.summaries.length - 1];
+      assert.equal(last.attemptIndex, 40, 'the LAST observation is never evicted — post-delivery reads survive');
+      assert.equal(last.aggregate, 'settled', 'the settled state survives');
+      const transition = samples.summaries.find((summary) => summary.attemptIndex === 39);
+      assert.ok(transition, 'the first settled transition survives');
+      assert.equal(transition.aggregate, 'settled');
+      assert.equal(transition.transition, true, 'the transition is marked as such on the summary');
+      assert.ok(samples.summariesRolledOff >= 8, `the rolled-off pre-delivery samples are a named count (actual ${samples.summariesRolledOff})`);
+      // The retained pre-delivery run members carry the same unresolved state
+      // — only superseded same-state members roll off, never the transition.
+      assert.ok(samples.summaries.every((summary) => summary.aggregate === 'unresolved' || summary.aggregate === 'settled'));
+    });
+
+    test('no attempt runs past an already-recorded termination — a budget expired during launch skips the sampler by name (codex backfill review)', async () => {
+      // The reproduction: the shared budget expires while input.launch() is
+      // still pending (a 1-ms budget against an 80-ms launch) — the
+      // termination recorder fires while `durableSampling` is still null and
+      // an abort listener attached after the fact would never fire. The
+      // sampler must check the recorded boundary and the aborted signal
+      // BEFORE its first supplier call: the skipped start is a named
+      // omission, no attempt is consumed, and the offline fence sees no
+      // post-boundary sample.
+      const { harness, events } = samplingHarness({
+        supplier: async () => { events.push('supplier-called'); return settledSnapshot(); },
+        gateMode: 'deferred',
+        budgetMs: 1,
+        sampling: { maxAttempts: 3 },
+      });
+      harness.launch = async () => {
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        return { result: Promise.resolve({ code: 0, stdout: 'acknowledged', stderr: '' }) };
+      };
+      const held = await runHeldHostTurn(harness);
+      assert.equal(held.budgetExpired, true, 'the reproduction shape has the budget expired during the launch');
+      assert.equal(typeof held.cleanup.cleanupBoundaryAtMs, 'number', 'the boundary was recorded before the sampler started');
+      assert.equal(events.includes('supplier-called'), false, 'no supplier call may run past the already-recorded termination');
+      const samples = held.childSettlement.durableSamples;
+      assert.ok(samples, 'the sampling block still rides the record');
+      assert.equal(samples.attemptCount, 0, 'no attempt is consumed');
+      assert.equal(samples.baseline, null, 'no baseline is fabricated past the termination');
+      assert.ok(samples.omissions.some((omission) => omission.reason === 'durable-sampling-skipped-termination-already-recorded'),
+        `the skipped start is named (actual ${JSON.stringify(samples.omissions)})`);
+      assert.equal(samples.stoppedReason, 'durable-sampling-stopped-at-termination-boundary');
+    });
+
+    test('sample summaries retain the real reader cancellation provenance — cause and request time from job.projection (codex backfill review)', async (t) => {
+      // The finding: for REAL readDurableObligationSnapshot results the
+      // cancellation cause and request time live on the validated job record
+      // (`job.projection.stopIntent.cause/.requestedAt`, `stopCause`) — the
+      // reader's `layers.stopIntent` carries only applicability/presence/
+      // validity. The summaries must retain those whitelisted cause/timestamp
+      // fields so a retained pre-cleanup sample distinguishes a genuine
+      // SessionEnd from any other cancellation even when the final snapshot
+      // is unavailable or fenced out. The shape is exercised through the REAL
+      // reader against a REAL fixture-owned partition (the §21.2.3 recorded I
+      // shape: the authorized session-end stop path's cancelled winner).
+      const { readDurableObligationSnapshot } = await import('../tools/shell-wait-probe/closure-observation.mjs');
+      const { createStateStore } = await import('../scripts/lib/state.mjs');
+      const { realpath: realPath } = await import('node:fs/promises');
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-sampling-provenance-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const workspace = join(root, 'workspace');
+      await mkdir(workspace, { recursive: true });
+      const workspaceReal = await realPath(workspace);
+      const dataRoot = join(root, 'data-root');
+      const store = createStateStore({ dataRoot });
+      const ownerSession = 'session-provenance';
+      const requestedAt = '2026-10-23T09:23:10.361Z';
+      const { job } = await store.reserveFreshRescueJob({ workspace: workspaceReal,
+        reservation: { workspace: workspaceReal, ownerSessionId: ownerSession, ownerTurnId: 'turn-a', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } },
+        executor: { parentSessionId: ownerSession, parentTurnId: 'turn-a', agentId: 'provenance-child', agentType: 'zcode-rescue', agentPath: '/root/zcode_rescue_task', workspace: workspaceReal, parentPermissionMode: 'workspace-write' },
+        lifecycle: { ownerLifecycleEpoch: 'c'.repeat(64), executionOwner: 'host-child', hostPlacement: 'foreground' } });
+      await store.claimJobWorkerForExecution(workspaceReal, job.id, { childPid: 999_999_999, workerLeaseId: job.id });
+      await store.transitionJob(workspaceReal, job.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-provenance', childPid: 999_999_999, workerLeaseId: job.id });
+      // The REAL authorized stop path's record shape: the intent lands on the
+      // running→cancelling transition, the cancelled winner carries the
+      // matching confirmed cause (stopIntent.cause === stopCause, production
+      // validateJobRecord).
+      await store.transitionJob(workspaceReal, job.id, ['running'], 'cancelling', { stopIntent: { version: 1, cause: 'session-end', requestedAt } });
+      await store.finishJob(workspaceReal, job.id, ['cancelling'], 'cancelled', { stopCause: 'session-end' });
+
+      const { harness, releaseGateNow, resolveResultNow } = samplingHarness({
+        supplier: () => readDurableObligationSnapshot({ dataRoot, workspace: workspaceReal, ownerSessionId: ownerSession, jobId: job.id }),
+        // The REAL reader takes ~100 ms per pass — the gate and the Root
+        // result stay deferred until both sampler attempts have settled, so
+        // the retained summaries are deterministic (never a teardown race).
+        gateMode: 'deferred',
+        sampling: { maxAttempts: 2 },
+      });
+      setTimeout(() => {
+        releaseGateNow();
+        setTimeout(resolveResultNow, 5);
+      }, 500);
+      const held = await runHeldHostTurn(harness);
+      const samples = held.childSettlement.durableSamples;
+      const summary = samples.summaries[0];
+      assert.equal(summary.jobPresence, 'found');
+      assert.equal(summary.jobStatus, 'cancelled', 'the production-published winner status rides the summary');
+      assert.equal(summary.stopIntentCause, 'session-end', 'the REAL reader stop-intent cause is retained (the SessionEnd distinction)');
+      assert.equal(summary.stopIntentRequestedAt, requestedAt, 'the intent request timestamp is retained (its own time, never the read instant)');
+      assert.equal(summary.stopCause, 'session-end', 'the confirmed stop cause is retained');
+      assert.equal(summary.aggregate, 'settled');
     });
   });
 
