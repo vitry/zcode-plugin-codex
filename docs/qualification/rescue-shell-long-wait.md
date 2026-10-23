@@ -12062,7 +12062,8 @@ files).**
   checkbox was ticked. The long-wait mechanism and complete-stdout facts REMAIN established
   research results nowhere downgraded.
 - **Fix-commit battery (gates 1–10 on the fix bytes; every result verbatim; gate 11 in the
-  §22.2 dated entry):** research **ℹ tests 870 / ℹ suites 68 / ℹ pass 870 / ℹ fail 0 /
+  §22.2 dated entry — outcome FAILED, exit 1: the isolated PRE-EXISTING cause recorded in
+  §22.2's dated completion; failed runs stay failed, no waiver):** research **ℹ tests 870 / ℹ suites 68 / ℹ pass 870 / ℹ fail 0 /
   ℹ cancelled 0 / ℹ skipped 0 / ℹ todo 0** (duration_ms 61596.80975), exit 0 — 869 + the one
   net-new regression test; selection **tests 6 / pass 6 / fail 0** (duration_ms 36.855375),
   exit 0; prep/binding/route **tests 417 / pass 417 / fail 0** (duration_ms 26695.425416), exit
@@ -12140,6 +12141,14 @@ re-pin value for ANY future registered run (§20.3/§20.7 dated annotations) —
 > input from the tests file), and every one is byte-identical here, so the future-repin value
 > STANDS at **`57359bff248ab6723ae3cdff7e325ff3c0d7419495730be76a552965c6881431`** — re-verified
 > from the module-init bytes at the fix tree; no supersession.
+>
+> **Dated annotation (2026-10-23, the follow-up records commit):** this commit is DOCS-ONLY — it
+> touches ONLY the two docs files; every implementation byte remains the post-merge-review fix
+> commit's (`47f0b33`), no digest above is superseded, and the executing observer digest STANDS at
+> `57359bff…`. Re-verified at the records commit: the tracked `tests/` and `tools/` per-directory
+> manifest digests are byte-identical at `47f0b33` and here (`f01461aa…` / `acf6af63…` under the
+> verbatim construction recorded in §22.2's dated classification paragraph; full values and the
+> ls-tree identity there), and `git diff 47f0b33..HEAD --stat -- tools/ tests/` is EMPTY.
 
 ### 22.2 Final-source gate battery (the plan's Task-6 command list; every result verbatim)
 
@@ -12161,7 +12170,7 @@ re-pin value for ANY future registered run (§20.3/§20.7 dated annotations) —
 > | 8 | `node scripts/check-line-endings.mjs` | worktree at the fix bytes | *"LF line endings verified in 542 tracked files."*, exit **0** |
 > | 9 | `git diff --check` | worktree at the fix bytes | no output, exit **0** |
 > | 10 | prohibited diff `git diff 0b522b70b0ed72d7d1566de581dc306c70b38fac --stat -- skills/ agents/ scripts/ hooks/ .codex-plugin/ marketplace/ docs/superpowers/specs/ package.json npm-shrinkwrap.json` | worktree at the fix bytes | **EMPTY** (0 bytes), exit **0** |
-> | 11 | `npm test` | verification copy of the fix commit (construction below) | recorded in the closing amend of this same commit — the copy must be cloned from the committed tree |
+> | 11 | `npm test` | verification copy `/tmp/swverify.Vn0rkr` of the fix commit `47f0b33` (construction below) | **FAILED — exit 1**: exactly **2 failing tests**, both `AssertionError: fixture must place target at canonical index 0` (actual: `undefined`) — the fixture-precondition assertions of `tests/codex-rescue-qualification.test.mjs` (test at :449, assertion at :463) and `tests/e2e/codex-skills-e2e.test.mjs` (test at :690, assertion at :705). Full result, root-cause attribution, path-dependence classification and the repair PROPOSAL: the **dated completion below**. The copy WAS cloned from the committed tree, as this row required; the closing record landed as a SEPARATE docs-only records commit rather than an amend (the fix commit is left unamended so the fix and its verification record stay separable — the original "closing amend" expectation here is superseded by that disposition) |
 >
 > Gate-11 copy construction (the §22.2 recipe, followed exactly): `mktemp -d
 > /tmp/swverify.XXXXXX`; `git clone --no-local --no-hardlinks` of the fix commit's tree (a
@@ -12173,6 +12182,86 @@ re-pin value for ANY future registered run (§20.3/§20.7 dated annotations) —
 > verbatim result touches ONLY the two docs files — the implementation bytes the copy verified
 > are the final bytes (the `tools/ tests/` diff between the cloned commit and the final HEAD is
 > EMPTY, recorded with the result).
+>
+> **Dated completion (2026-10-23, the follow-up docs-only records commit — gate 11's deferred row
+> above completed with the HONEST result; failed runs stay failed, no waiver).** The verification
+> copy was built exactly per the recipe above: `mktemp -d /tmp/swverify.XXXXXX` →
+> `/tmp/swverify.Vn0rkr`; `git clone --no-local --no-hardlinks` of the COMMITTED fix tree
+> (`47f0b33`; the three untracked scratch files structurally excluded); a normal copied
+> `node_modules` directory (`cp -R`, real directory, not a symlink); byte-proof by the recorded
+> manifest recipe — SHA-256 manifests of all **542** tracked files identical on both sides, the
+> sorted-manifest digest **`a6c31667…`** equal on both sides (its exact reproducible construction
+> is pinned verbatim in the classification paragraph below). `npm test` then **FAILED, exit 1**,
+> with exactly the two failures named in the row above — both
+> `AssertionError: fixture must place target at canonical index 0` (actual: `undefined`), at
+> `tests/codex-rescue-qualification.test.mjs` :449→:463 and
+> `tests/e2e/codex-skills-e2e.test.mjs` :690→:705. Every other suite in the run passed; the exit
+> is the two-failure exit.
+>
+> **Root cause (analytically reproduced with plain `node` in both cwds; the key construction
+> re-verified for this record).** Both fixtures couple their expected workspace to the invoking
+> directory — `tests/codex-rescue-qualification.test.mjs:34`
+> (`const expectedWorkspace = process.cwd()`) and the e2e capture's
+> `installedPreparedContinuationCapture('named', { workspace: process.cwd() })`
+> (`tests/e2e/codex-skills-e2e.test.mjs:692`) — and that workspace feeds the sha256 of
+> `rescueBindingKey` (`scripts/lib/rescue-binding.mjs:44`, the `'rescue-binding-v1'` tuple over
+> parentSessionId/executorAgentId/workspace). Each fixture then searches 1000 deterministic
+> candidates (`sibling-child-${index}` in the qualification fixture,
+> `captured-sibling-${index}` in the e2e fixture) for one whose binding key sorts on the required
+> side of the target's key, failing the precondition when none qualifies. For THIS clone's cwd the
+> target key hashed to **`ffaf5d5e…`** (near-max hex) → **0 of 1000** candidates qualified → the
+> precondition failed in both suites. In this worktree's cwd the (qualification fixture's) target
+> key is **`78ac81aa…`** — recomputed from the module's own construction for this record — so both
+> fixtures place their siblings and both suites pass there on the SAME bytes (re-run: qualification
+> **162/162, exit 0**; e2e **46 tests / 44 pass / 0 fail, exit 0**; the two named tests also pass
+> individually under a name-pattern filter, re-verified at the records commit).
+>
+> **Byte identity — the defect is NOT this branch's fix.** Both fixture files are byte-identical
+> to the parent commit (`git diff 38e1909 47f0b33 --stat` over the two files is EMPTY; the fix
+> commit's full diff is exactly `tests/shell-wait-probe.test.mjs` plus the two docs files). The
+> precondition is a PRE-EXISTING cwd-hash-coupled fixture lottery: the same recipe passed at
+> `297fdd3`/`9ab0ecd`/`38e1909` only because those clone paths hashed favorably. For the same
+> bytes the worktree runs green (above), and **PR #71's GitHub CI is green** — CI runs on the repo
+> checkout and remains the authoritative gate for identical source, per the campaign's recorded
+> precedent — §15.4's "Honest limits of this campaign", item (4): *"CI remains the authoritative
+> green for the identical plugin source until a PR exists"* — whose trailing clause's condition is
+> now MET: PR #71 exists, and its CI is the green that sentence reserves for identical source.
+>
+> **Classification (this section's standing rules: failed runs stay failed; no gate waiver).** The
+> `47f0b33` gate-11 record stands FAILED; nothing is relabeled. The two historical gate-11 greens
+> (the `297fdd3` battery's row and the closeout commit's refreshed-battery row, both below) are
+> annotated **verification-copy-PATH-DEPENDENT**: their clone paths hashed favorably, so they
+> remain valid records of THEIR bytes AND evidence of the path dependence. The bounded repair is
+> registered as a **PROPOSAL requiring its own authorization** — both fixture files are outside
+> this review-fix's sanctioned change set — and consists of an order-independent sibling search,
+> or a fixed workspace constant, in the two fixtures. **Equality of the verified bytes and the
+> final tree** (every construction below is recorded VERBATIM so each value reproduces when re-run
+> at the repository root; the identity claim rests on the byte-level facts (1)–(3), not on any one
+> digest convention):
+> (1) `git diff 47f0b33..HEAD -- tools/ tests/` is EMPTY at the records commit (also with
+> `--stat`, as the construction paragraph required).
+> (2) `git ls-tree -r 47f0b33 -- tools/ tests/` and the same at `HEAD` are identical — blob-level
+> byte identity, independently of any manifest convention.
+> (3) The per-directory tracked-file manifest digests — construction, verbatim:
+> `git ls-files -z tests/ | xargs -0 shasum -a 256 | shasum -a 256`, and the same for `tools/`
+> (shasum's native line format over git's tree order; no field normalization), each byte-identical
+> at `47f0b33` — recomputed inside a fresh `git clone --no-local --no-hardlinks` checked out at
+> `47f0b33` — and at the records commit: `tests/`
+> **`f01461aa846d4fe32fdbd2d294a452f891045e11ba470d2fdbd0da6fd5cf6c97`**, `tools/`
+> **`acf6af63f3f70ecabf22174b8138389ebd4b22a01fd624f792e59f14a289427f`** (no executable byte
+> changed). Because the docs files are not under `tests/`/`tools/`, these two values are stable
+> across docs-only records commits.
+> (4) The gate-11 clone-side full-tree digest **`a6c31667…`** reproduces under the verbatim
+> construction `git ls-files -z | xargs -0 shasum -a 256 | sort | shasum -a 256` (raw shasum
+> lines, sorted; recomputed at a fresh `47f0b33` clone for this record — the same construction
+> computed with the §22.2 prose's awk normalization `… | awk '{print $1, $2}' | sort |
+> shasum -a 256` yields **`fff6cf6d…`** at the same tree, recorded so both readings of the recipe
+> are pinned; no other convention is implied). At the records commit the same construction's
+> manifest differs from the `a6c31667…` manifest in exactly the two docs files' lines (verified
+> for this record; the `tools/`/`tests/` lines are byte-identical per (2)–(3)) — the reproducible
+> form of the both-commits identity, since a full-tree digest recorded INSIDE a docs commit could
+> not verify itself. The copy, its manifests and its log were disposable `/tmp` state, deleted
+> after the run; nothing from them entered the repository.
 
 > **Dated note (2026-10-22, the overall-review fix — updated in place at the round-4 amend):**
 > the table below is the battery of record for the `297fdd3` verified bytes and stands as
@@ -12184,6 +12273,14 @@ re-pin value for ANY future registered run (§20.3/§20.7 dated annotations) —
 > diff EMPTY — every result in §22's overall-review-fix record). Gate 11 was NOT re-run within
 > the fix commit's rounds per the task procedure; the refresh below is that closing-amend duty
 > discharged.
+
+> **Dated annotation (2026-10-23, the records commit):** "FINAL implementation bytes" in the
+> heading below meant the closeout-era bytes (`9ab0ecd`); the branch's implementation bytes were
+> subsequently changed once more by the post-merge-review fix commit `47f0b33` (the research tests
+> file only — §22-header/§22.1), whose gates 1–10 are in the dated entry above and whose gate 11
+> FAILED with the isolated pre-existing cause (the dated completion above). The results below
+> stand verbatim as the closeout-era record for THEIR bytes; the gate-11 green below is annotated
+> verification-copy-PATH-DEPENDENT after its copy-construction paragraph.
 
 **REFRESHED BATTERY OF RECORD (2026-10-22, the closeout commit — all 11 gates on the FINAL
 implementation bytes `9ab0ecd4f401836cec83a43b3034e3e2dec24151`; every result verbatim, exit
@@ -12214,6 +12311,13 @@ value for the final tree; the historical `8cb3ea2e…` is the same construction'
 `297fdd3` tree — different bytes after the fix commit, as expected); the copy path carries no
 guarded identity word. The copy was deleted after the run; nothing from it entered the
 repository. First attempt, one run, no failures, no retries — no waiver needed.
+
+**Dated annotation (2026-10-23, the records commit — verification-copy-PATH-DEPENDENT):** this
+row's gate-11 green — and the historical `297fdd3` row's green below — remain valid records of
+THEIR bytes, and both are now also evidence of the verification recipe's PATH DEPENDENCE: the
+fixtures' precondition couples to the clone cwd's binding-key hash (§22.2's dated completion
+above), so those clone paths (`/tmp/swverify.eafySu`, `/tmp/swverify.BW3cgb`) hashed favorably
+where `/tmp/swverify.Vn0rkr` did not. No result in either historical row is changed.
 
 All gates ran on 2026-10-22 with unambiguous exit capture (no pipe truncation), twice where the
 first capture method was defective (see the capture note below). "Source" = where the command ran.
@@ -12279,6 +12383,13 @@ failed on the final bytes; the only named failure in the entire battery is attem
 environment-construction failure above, whose corrected rerun passed with zero `✖` lines. No
 spawn-timeout symptom appeared anywhere; nothing needed the "root cause unisolated" language, and
 no failed run was re-labelled.
+
+> **Dated annotation (2026-10-23, the records commit):** the sentence "no gate failed on the final
+> bytes" above stands for the trees this battery was written for (`297fdd3`/`9ab0ecd` — the
+> closeout-era finals). At the branch's post-merge-review-fix bytes (`47f0b33`) gate 11 DID fail on
+> the fresh verification clone — attributed to the pre-existing cwd-hash-coupled fixture
+> precondition, NOT machine load (§22.2's dated completion above); the failed run stays failed, no
+> relabel.
 
 ### 22.3 Evidence carried forward — the record proper (§13–§21 history preserved; nothing reopened)
 
@@ -12495,6 +12606,21 @@ adjudication). This closeout therefore lands as a NEW commit touching ONLY the t
 clean review approved are the bytes this branch ships), with the equality proof recorded in
 §22.1 and the refreshed gate battery in §22.2.
 
+**Post-merge-review fix (2026-10-23) — the independent self-review of the fix commit `47f0b33`
+(recorded by the follow-up records commit).** Verdict: **BOTH contract findings SATISFIED** —
+finding 1's capture-environment isolation (the ambient-identity-free composed environment) and
+finding 2's recommendation unification (the single DO-NOT-ADOPT-YET, §22.7) — with **gates 1–10
+verified to match the §22-header/§22.2 dated-entry record verbatim**. **Gate 11** (the full
+`npm test` on a fresh §22.2-recipe verification clone of `47f0b33`) **FAILED** with the isolated
+PRE-EXISTING cause: a cwd-hash-coupled fixture precondition in two test files byte-identical to
+the parent commit (`git diff 38e1909 47f0b33` over them EMPTY) — a verification-copy
+PATH-DEPENDENT lottery, NOT attributable to the fix bytes; for the same bytes the worktree runs
+green and PR #71's GitHub CI is green (the authoritative gate for identical source, per §15.4's
+recorded precedent — *"CI remains the authoritative green for the identical plugin source until
+a PR exists"*). Full attribution, the PATH-DEPENDENCE classification of the two
+historical gate-11 greens, and the bounded repair PROPOSAL (requiring its own authorization) are
+in §22.2's dated completion; the failed run stays failed, no waiver.
+
 ### 22.6 Plan-completeness audit (Task 6's own exhaustive reconciliation, executed before committing)
 
 Every checkbox across Tasks 1–6 was reconciled against the report and the actual tree; no stale
@@ -12623,3 +12749,12 @@ result are both recorded verbatim above (§22.2) — the failed run stays failed
 nothing was waived. The closeout commit itself adds only docs bytes; its refresh battery produced
 no repository artifacts. No private rollout, preparation, auth or job body entered the
 repository at any point in Tasks 1–6.
+
+**Dated addition (2026-10-23, the records commit):** a fourth verification copy —
+`/tmp/swverify.Vn0rkr`, at the post-merge-review fix commit's tree (`47f0b33`), built per the
+§22.2 recipe for gate 11's dated completion — was likewise disposable `/tmp` state, deleted after
+its run, with its manifest files and gate log under `/tmp`. Its FAILED `npm test` result is
+recorded verbatim in §22.2's dated completion — the failed run stays failed in the record;
+nothing was waived. This records commit itself adds only docs bytes: the tracked `tests/` and
+`tools/` sorted-manifest digests are byte-identical to `47f0b33`'s (§22.2's dated completion), so
+no executable byte — and no raw-data surface — changed.
