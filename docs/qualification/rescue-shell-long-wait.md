@@ -13108,6 +13108,35 @@ stays the driver's existing collection — **NO extra Child tool polls of any ki
    in the production path; an applicable layer the existing supported evidence cannot establish
    stays named-unestablished (the Companion local-reaping limitation class, §19.9/§21.2.3).
 
+> **Dated annotation (2026-10-23, the Task-3 implementation's self-review round 1 — the frozen
+> clauses above stand unchanged; three bound interpretations SETTLED by the implementation, report
+> §23.9):** clause 2's ≥1000-ms floor is enforced by the scheduled wait PLUS one actual-clock
+> re-check (a scheduler that resolved earlier than requested gets the remainder once more; a
+> still-short start is the named `intervalShortfalls` fact on the sampling block — never a silent
+> compression; the primary mechanism remains the scheduler contract, the production default being a
+> real `setTimeout` sleep). Clause 4's "every omission named" extends to the omission ledger
+> itself: at most 16 omission entries are retained per block (an ACCOUNTING bound — the frozen
+> retention ceilings are the 600 attempts and the 32 summaries, not an omission count) and drops at
+> that bound are the named `omissionsTruncated`/`omissionsDroppedCount` facts. A post-baseline
+> attempt returning the identity-unobserved block (a mid-run rollout-load failure) is the named
+> `durable-read-identity-unobserved` omission — never an anonymous attempt-count bump.
+>
+> **Dated annotation (2026-10-23, the codex backfill review — the frozen clauses above stand
+> unchanged; the clause-4 summary-RETENTION mechanism settled, report §23.9):** the ≤32-summary
+> ledger ROLLS at the cap instead of dropping — the baseline and every state-transition summary
+> (a sample whose aggregate differs from the previous sample's observed aggregate; the additive
+> `transition` field) are pinned, a new summary at the cap rolls off the oldest non-baseline
+> non-transition summary (preferring a superseded same-aggregate member), and the roll-off rides
+> the named `summariesRolledOff` count. The mechanism exists because identity establishes
+> promptly while the §16.4 control clock schedules the interruption at ~80 s: a flat
+> drop-at-the-cap ledger would evict every post-delivery observation — the reads this schedule
+> exists to capture — unrecoverably before fixture disposal. Clause 4's cap discipline is
+> unchanged (≤32 retained, cap exhaustion still named); additionally, no attempt may run past an
+> already-recorded termination boundary or an already-aborted shared signal (the named
+> `durable-sampling-skipped-termination-already-recorded` omission), and sample summaries retain
+> the whitelisted cancellation-provenance fields the REAL reader publishes on the validated job
+> record (`stopCause`, `stopIntent.cause`, `stopIntent.requestedAt`) — never the record body.
+
 ### 23.6 Preregistered expected outcomes per layer (checkbox 6)
 
 - **Native turn/cell/poll responsiveness**: the existing `RESPONSIVENESS_BOUND_MS` 60000-ms bound
@@ -13280,3 +13309,435 @@ checkbox ticks — nothing else.
   Gate D, does not qualify the Child call sequence (hidden additional calls, ambiguous IDs, or
   incomplete collection still block the positive conjuncts), and creates no production change.
   The Task-4 live I/F labels stay unspent; the §23.5 schedule implementation is Task 3.
+
+> **Annotation (2026-10-23, codex round-2 review of this task's §23.4 exposure mapping; the fix is
+> folded into this task's commit by `git commit --fixup` + autosquash rebase (pre-rebase
+> identifiers: Task 2 = `27e1e7b`, Task 3 = `c86c912`; final identifiers recorded in the final
+> verification records); the frozen registration above is unchanged — its `:5000-5051`
+> registration cite reads the Task-2-era bytes, the mapping now lives at `driver.mjs:5529-5565`).**
+> Finding, verbatim: "[P2] Keep interrupt absence unknown after an unclassified cell —
+> tools/shell-wait-probe/driver.mjs:5532-5537. When the only interrupt appears in an unsupported
+> wrapper such as `const x = await tools.interrupt_agent({...}); text(x);`, the extractor skips that
+> cell. This branch nevertheless copies `attempted: false` and retains the definitive 'delivery was
+> not attempted' message. Previously, this failure path kept `attempted` null. The new projection
+> therefore turns parser uncertainty into negative evidence, potentially misdiagnosing an actual
+> interruption despite the overall inconclusive verdict. Preserve recognized attempts, but keep
+> absence unknown when unclassified cells could contain interrupt calls." CONFIRMED — in the
+> abort-exposure branch the spread of the extractor's no-call defaults (`attempted: false`,
+> `callCount: 0`, `wrappedInterrupt: false`, the definitive delivery-not-attempted
+> `missingPrerequisite`) projected the skipped cell's unclassifiability as negative evidence. FIXED
+> TEST-FIRST (TDD, the fix belongs to this Task-2 commit): the exposure mapping now splits by
+> recognized attempt — a RECOGNIZED call keeps the Task-2 keeper branch byte-for-byte
+> (`attempted: true`, `callCount`, `family`, `previousStatus`, the §19.4 admission block all
+> preserved), while a SKIPPED cell (no recognized call) keeps absence UNKNOWN: `attempted`,
+> `callCount`, `wrappedInterrupt` and the derived `previousStatusTerminal` stay `null` (never
+> false/0), and the carried message names the uncertainty ("… the whole-case evidence adjudication
+> aborted on an unsupported call shape …: whether an owning-session interrupt was attempted stays
+> unknown — the unclassified cell could hold the interrupt call, so the absence of a recognized
+> interrupt is parser uncertainty, never negative evidence …"), never the definitive
+> delivery-not-attempted claim; the §19.4 admission block still never rides without a recognized
+> call, and `interrupt.partialFacts` still carries the spawn identity, capture-vs-admission facts
+> and source-rollout digest. SIBLING-FIELD SWEEP (same mapping, same uncertainty-to-negative
+> standard): `callCount: 0` and `wrappedInterrupt: false` were the same conversion and are nulled;
+> `previousStatusTerminal: false` (derived from the unknown `previousStatus`) is nulled to the same
+> standard (the interrupt typedef documents it schema-additively as `boolean | null` alongside
+> `wrappedInterrupt?: boolean | null`); `family`, `previousStatus`, `target.kind`,
+> `exactTargetMatch`, `exactTargetMatchBasis`, `settled`, `settledBasis`, `pendingIntervalMs`,
+> `deliveryToSettlementMs` and `timingBasis` were verified ALREADY unknown (null) without a
+> recognized call — no fix needed; `orderingBound` stays as extracted (the Child-observation
+> binding fact — `false` is the unestablished stance, never a call-absence claim);
+> `unreadableContinuationObserved` stays observation-scoped ("no decoded continuation response
+> failed its own decode" — independent of call recognition); `requested: true` is the case label,
+> not evidence. RED (verbatim, on the pre-fix bytes): the focused describe
+> "interrupt-closure task 2 codex round 2: interrupt absence stays unknown after an unclassified
+> cell (report §23.8)" (`tests/shell-wait-probe.test.mjs:25769`, one test, own ambient identity,
+> real `inspectShellWaitEvidence` → real `mapShellWaitLiveFacts` join) failed with
+> `AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:` / `  false !== null` —
+> `facts.interrupt.attempted` was `false`, expected `null`, at the scenario-1 assertion; the same
+> test's scenario-2 keeper control (`interrupt_agent` recognized direct call through the SAME
+> aborted-adjudication mapping) passed GREEN before and after the fix (`attempted === true`,
+> `callCount === 1`, `family === 'v2'` preserved). The pre-existing §23.4 test "a scan that never
+> ran (no attempted call) stays not-measured — never a fabricated absence" had pinned the buggy
+> conversion in the SAME abort path (`attempted === false` + a `/delivery was not attempted/`
+> match) and was updated to the unknown standard in the same fixup (its post-fix RED:
+> `null !== false`); its no-fabricated-admission and spawn-identity assertions are unchanged.
+> Gates on the final rebased bytes (all exit 0): focused describe 1/1; the five gate describes
+> 69/69 (frozen family 13 + host facts 10 + round-2 1 + Task-3 sampling 18 + native delivery
+> wiring 27); `npm run test:shell-research` 915/915 pass, 72 suites (914/914 before this fix);
+> `node --test tests/test-selection.test.mjs` 6/6; `npm run lint` clean; `npm run typecheck`
+> clean; `node scripts/check-line-endings.mjs` (543 tracked files, LF); `git diff --check` clean;
+> the prohibited tracked-path diff against `dba2e8a` EMPTY. Scratch (`findings.md`, `progress.md`,
+> `task_plan.md`) untouched; nothing pushed.
+
+### 23.9 2026-10-23 interrupt-closure Task 3 executed: the §23.5 pre-cleanup passive sampling schedule implemented and the strict settlement fence closed in both joins (offline; zero model turns)
+
+Task 3 of the [2026-10-23 plan](../superpowers/plans/2026-10-23-rescue-shell-wait-interrupt-closure.md),
+executed 2026-10-23 in the same worktree on top of §23.8's Task-2 commit `fc3a09e`, and committed as
+the task's single implementation commit (message: "research: sample passive settlement state
+pre-cleanup and enforce the strict settlement fence (interrupt-closure task 3)"). OFFLINE throughout:
+ZERO model turns, zero live launches, zero labels spent (the §21.3 ledger stays closed; the Task-4
+I/F registrations are untouched). Production `scripts/`, `hooks/`, `skills/`, `agents/`, config,
+snapshots, dependencies, the spec and the Codex source stayed read-only (the prohibited tracked-path
+diff against `dba2e8a` is EMPTY — gate list below); scratch (`findings.md`, `progress.md`,
+`task_plan.md`) preserved untouched and never staged. Changed bytes:
+`tools/shell-wait-probe/driver.mjs`, `tests/shell-wait-probe.test.mjs`, this section, and the plan's
+Task-3 checkbox ticks — nothing else. `fixture.mjs` (`1b7b030d…`),
+`closure-observation.mjs` (`46b7f5e2…`), `release-qualification.mjs` (`5963d65b…`) and
+`evidence.mjs` (`33b0f6ae…`) are BYTE-IDENTICAL to the Task-2 tree (verified by
+`git diff fc3a09e --stat` over those four files + `tests/test-selection.test.mjs`: EMPTY) — the
+schedule reuses the existing passive reader, supplier seam, boundary machinery and fence without a
+single changed byte in them, exactly the §3 file-responsibility table's closure-observation rule
+("extend only a demonstrated missing read fact": no reader change was demonstrated necessary, so
+none was made).
+
+- **The strict fence closed in the OFFLINE replay (plan Task-3 checkbox 3; the online fence needed
+  no change)** — `nativeInterruptionGateDInput` (tools/shell-wait-probe/driver.mjs:2785-2807,
+  :2952-2954): when a cleanup boundary IS recorded, the durable snapshot must now PROVE a finite
+  completion instant strictly before it. The DEMONSTRATED defect: the online fence
+  (`buildDurableSettlementLayer`) already refused an unstamped completion (`completionAtMs === null`
+  arm) and any at/after-boundary completion (`>=`), but the offline replay credited a snapshot with
+  a MISSING or non-finite `completedAtMs` against a recorded boundary (the fence was "established
+  only when both endpoints exist" — an unprovable timing endpoint silently passed as pre-boundary).
+  Now: a missing/non-finite instant (a foreign clock representation is never parsed or normalized)
+  withholds the Companion outcome, the terminal winner and the obligations aggregate with the named
+  `durable-read-timing-unestablished` basis riding the join, and a snapshot whose own fingerprint
+  inequality rode the record (`passive.snapshotEqual === false` — torn, §19.5) is refused through
+  the established executor-linkage gate even under a `settled` aggregate label. Equality and later
+  samples never qualify (the pre-existing `>=` arm — the plan's pinned contract
+  `record.child.durableSnapshot.completedAtMs = record.interrupt.cleanupBoundaryAtMs` ⇒
+  `durableObligations: null` + `companionOutcome: null` was ALREADY code-enforced and stays pinned
+  by the existing overall-review-fix-1 test); a genuinely completed pre-boundary read keeps full
+  credit (unchanged); no recorded boundary keeps the prior behavior (the round-3 natural-completion
+  semantics). Fixture alignment: the `gateDRecord` pipeline factory now builds the PRODUCTION
+  snapshot shape (a credited persisted snapshot always carries its own `completedAtMs` —
+  buildDurableSettlementLayer stamps it; §21.2.3's real record carried it) and its "no comparable
+  boundary" keeper was re-pointed to the TRUE no-boundary shape (the boundary endpoint deleted) —
+  recorded, no guard weakened.
+- **The §23.5 pre-cleanup passive sampling schedule implemented (plan checkboxes 1-2)** —
+  frozen bounds as exported constants (driver.mjs:2229-2262): `DURABLE_SAMPLING_VERSION` 1,
+  `DURABLE_SAMPLING_MIN_INTERVAL_MS` 1000 (the clause-2 ≥1000-ms floor, applied conservatively to
+  EVERY consecutive attempt start — identity probes included), `DURABLE_SAMPLING_MAX_ATTEMPTS` 600,
+  `DURABLE_SAMPLING_MAX_SUMMARIES` 32, and the closed producer map
+  `DURABLE_SAMPLING_ENABLED_CASES` = {rescue-interrupt} (the §20.8 one-definition-site precedent).
+  The loop `startDurableSampling` (driver.mjs:2339-2596): started CONCURRENTLY with the held turn
+  immediately after launch (driver.mjs:1506-1516) — and NEVER past an already-recorded
+  termination: a boundary recorded while `input.launch()` was still pending (or an already-aborted
+  shared signal) skips the sampler before its first supplier call with the named
+  `durable-sampling-skipped-termination-already-recorded` omission (driver.mjs:2414-2427, codex
+  backfill review) — never at the fake-worker hold's end and never
+  after a termination branch has started (the §21.2.3 defect, now fixed); the BASELINE is the first
+  attempt whose result is not the named `durable-identity-unobserved` block (clause 1 —
+  establishment probes are counted attempts, never summaries, never guessed at another job; an
+  identity that never establishes omits the baseline with the registered named reason); interval
+  reads continue at the enforced floor — the scheduled wait RE-CHECKED against the actual clock
+  (self-review round 1: a scheduler that resolved earlier than requested gets the remainder once
+  more, and a still-short start is the named `intervalShortfalls` fact on the block, never a silent
+  compression and never a busy wait; with the production default scheduler the re-check finds the
+  floor honored and re-waits nothing); every read keeps its OWN started/completed instants
+  (clause 5) and a bounded closed-fact summary (aggregate, per-layer §19.5 duty states,
+  `executorLinkage`, job presence, the production-published winner status, the whitelisted
+  cancellation-provenance fields (`stopCause`, `stopIntent.cause`, `stopIntent.requestedAt` —
+  driver.mjs:2444-2462, codex backfill review), fingerprint equality, lock state, partition
+  status, ≤8 named reasons — never a private body). The summary LEDGER itself ROLLS at the frozen
+  cap (codex backfill review, driver.mjs:2546-2580): the BASELINE and every state-TRANSITION
+  summary are pinned, a new summary at the cap rolls off the oldest non-baseline non-transition
+  summary (preferring a superseded same-aggregate member) with the roll-off recorded as the named
+  `summariesRolledOff` count — so the post-delivery observations the §23.5 schedule exists to
+  capture always survive (identity establishes promptly while the §16.4 control clock schedules
+  the interruption at ~80 s; a flat drop-at-the-cap ledger would have discarded them unrecoverably)
+  — and only when every slot is baseline-or-transition does the summary-cap omission fire. A
+  post-baseline attempt that returns the identity-unobserved
+  block (a mid-run rollout-load failure) is a NAMED omission
+  (`durable-read-identity-unobserved`, self-review round 1) — no anonymous attempt-count bump. The
+  loop STOPs at the earliest termination-initiation boundary
+  (the min-maintained recorder hook, driver.mjs:1394) and at the shared budget signal's abort — a
+  read still in flight is abandoned AT the stop with its named omission
+  (`durable-read-abandoned-in-flight-at-termination-boundary` /
+  `durable-read-abandoned-at-shared-signal`, recorded SYNCHRONOUSLY by the stop so the held
+  record's final snapshot always carries it); a teardown-only abort names the SHARED SIGNAL, never
+  a manufactured termination boundary (§22 round-3 semantics preserved). A smaller injected cap is
+  honored; a larger one clamps to the frozen ceilings (bounded instrument tests, never weakened
+  bounds). The omission LEDGER retains at most 16 entries (an accounting bound — §23.5 freezes the
+  32-summary retention, not an omission count, and the summary-cap omissions alone can exceed it
+  under the default schedule); drops at that bound are themselves a named fact on the block
+  (`omissionsTruncated` + `omissionsDroppedCount`, self-review round 1) — never a silent cut.
+  READ-ONLY-NESS (the §19.8 fingerprint-sweep precedent): the loop only CALLS the existing
+  supplier seam (the live wiring is the byte-unchanged
+  `observeSpawnAcknowledgementIdentity` → `interruptDurableSnapshotSupplier` →
+  `readDurableObligationSnapshot` chain, driver.mjs:4297-4313) and derives summaries from its
+  results — it performs no other I/O, settles nothing, stops nothing, repairs nothing, authorizes
+  nothing, and NO path awaits it (cleanup can never be delayed by a read; a never-resolving
+  supplier is abandoned at the stop, an unreadable one is a named observer reason on the attempt's
+  summary — never business failures). Samples never self-settle: the settlement layers join ONLY
+  from the fenced final read (pinned by test); the sampling block is independent
+  transition/timestamp fact. Wiring: the block rides the held record's `childSettlement` on EVERY
+  exit path (the exit `finally`, driver.mjs:2023-2044 — after the abort that stops the sampler):
+  an answer that already carries a settlement block gains `durableSamples` beside it, and the
+  FAILURE-shaped answer (a rejecting gate/host result — which `executeDefaultLiveCase` persists
+  via `heldTurn`) carries the block on a minimal unobserved-settlement carrier
+  (`observed: false`, basis `held-turn-failed-before-settlement-observation`,
+  driver.mjs:2034-2036, self-review round 1) — the settlement observation itself stays honestly
+  unobserved on a failed turn; is projected by the mapper (driver.mjs:4713-4715, schema-additive —
+  runs without the schedule keep the mapping byte-identical), and persists beside the durable
+  snapshot through the SAME bounded redactor (driver.mjs:1145-1147; private fixture paths in
+  reason texts are redacted — pinned by the REAL-serializer persistence test). The
+  `HeldTurnInput` typedef gained the bounded `sampleDurableSnapshots` option (driver.mjs:3111).
+- **Layer obligations preserved (plan checkboxes 4-5; existing machinery, new discriminating
+  pins)** — the durable winner stays a REMOTE result fact through the verified-executor gate
+  (existing codex-round-2/3 tests stay green); terminal + outstanding marked-claim/guard duties
+  stay `durable-obligations-unresolved` (existing negatives test); process cessation is never
+  qualified from a reused PID or the fake peer exit alone (the process-identity discipline and
+  round-9/16 keepers); a layer the supported evidence cannot establish stays named-unestablished
+  (the reader's per-layer states — unchanged). NEW pin (report §23.6, the shape the recorded I case
+  actually produced): a genuine `'session-end'` stop intent keeps its OWN cause on the snapshot's
+  §19.5 layer facts while the join publishes the production-published `cancelled` winner and
+  `terminal-result` Companion outcome WITHOUT attributing either to the interrupt — the
+  interrupt's own settlement stays unobserved (`turnSettled: null`), `cleanupKill: false`,
+  `naturalCompletionObserved: false` (never a natural-completion misclassification, never
+  harness-native proof), and the oracle refuses native qualification on that record alone
+  (tests/shell-wait-probe.test.mjs:10878; GREEN immediately — the behavior was correct, the
+  discriminating test was missing, the §19.9 round-1 precedent).
+- **Gate-D pipeline coverage (plan checkbox 6)** — the §19.4 admission counterexamples, the
+  wrong-target/foreign/stale/duplicate-item matrix, multiple interrupts, explicit terminate,
+  rejected/unsent/unreadable delivery, post-cleanup cancellation, still-live Companion, unresolved
+  obligations, absent control, buffered-before-delivery lines and the emission-tag survival
+  semantics were ALREADY pinned end-to-end (§19.9's coverage map; the survival-control and
+  round-14/25 suites) — this task added the fence-endpoint variations above and re-proved the
+  whole matrix green on the final bytes. Output-v2 preservation (the O1/O2 exact-linkage
+  expectations) and ambient-test isolation (every new test uses the established stub/fixture
+  pattern, spawns nothing, inherits the file's isolation discipline; the sampling harness injects
+  supplier/sleep/gate with NO real fixture, NO launcher, NO stop protocol) stayed green throughout.
+- **Tests** — `tests/shell-wait-probe.test.mjs`: two describes and 21 new tests, plus the fixture
+  alignment noted above. Describe "interrupt-closure task 3: the §23.5 pre-cleanup durable
+  sampling schedule (report §23.5)" (tests/shell-wait-probe.test.mjs:25911, 18 tests): the frozen
+  bounds pin; the enabled-cases freeze; the baseline-at-identity-establishment ordering; the
+  budget-boundary in-flight abandonment; the teardown-only abort; the identity-never-establishes
+  omission; the ≥1000-ms floor and its clamp (with the actual-clock re-check); the smaller-cap/
+  larger-clamp matrix; the unreadable supplier; the samples-never-self-settle pin; and the REAL
+  mapper-projection + serializer persistence pin (reloaded from disk, private paths redacted,
+  schema-additive); plus the four self-review-round-1 regressions (the failure-shaped-record
+  carrier, the named omission truncation, the post-baseline identity-unobserved omission, the
+  floor re-check's named shortfall) and the three codex-backfill-review regressions (the
+  rolling-retention ledger, the already-terminated start, the real-reader cancellation
+  provenance). Describe "native delivery wiring" (27 tests total) gained: `a durable snapshot
+  with an unestablishable completion instant never earns credit against a recorded boundary`
+  (:10816), `a torn durable snapshot (fingerprint inequality) never settles the join` (:10855),
+  and `a genuine session-end stop intent keeps its own cause` (:10878 — its synthetic layer block
+  now carries the REAL reader's `layers.stopIntent` shape (applicability/presence/validity),
+  with the cause/timestamp provenance living where the reader publishes it — the validated job
+  record — and proven against the REAL reader by the provenance test).
+- **RED→GREEN evidence (focused runs; verbatim failure messages)** — fence slice RED (2/2 fail):
+  `a durable snapshot with an unestablishable completion instant…` → `actual: null, expected:
+  'durable-read-timing-unestablished'` (the named basis did not exist — credit flowed by default);
+  `a torn durable snapshot…` → `'settled' !== null` (a torn snapshot grounded the obligations
+  layer). GREEN: 27/27 in the describe after the join fix + the production-shaped factory field.
+  Sampling slice RED (10/10 fail on the pre-implementation bytes): `the frozen §23.5 bounds are
+  pinned…` → `the sampling block carries its own schema version` (DURABLE_SAMPLING_VERSION
+  undefined); `the sampling schedule is enabled…` → `TypeError: DURABLE_SAMPLING_ENABLED_CASES is
+  not iterable`; `the baseline sample starts at identity establishment…` → actual events
+  `["gate-released","identity-probe"]` — THE §23.5 DEFECT ITSELF: the only durable read ran after
+  the hold ended; `a read still in flight at the budget-initiated termination boundary…` /
+  `a teardown-only abort…` / `identity that never establishes…` / `an unreadable supplier…` /
+  `a settled sample never settles…` → `durableSamples` undefined (the sampling block did not
+  exist); `every inter-attempt delay…` → `one scheduled delay between each pair of starts
+  (actual [])`; `smaller injected caps…` → `Cannot read properties of undefined (reading
+  'attemptCap')`. GREEN: 11/11 (including the persistence pin). One aligned test adjustment during
+  GREEN: the teardown-only-abort test's supplier was changed from never-resolving to
+  slow-resolving (~300 ms first call) because with no sampler the SETTLEMENT read is the first
+  call and the pre-implementation turn correctly resolved through the budget race (~5.8 s) — the
+  fix makes the RED failure carry the expected missing-block reason instead of a budget-shape
+  accident; no assertion weakened.
+- **Versioning** — the new sampling block carries `DURABLE_SAMPLING_VERSION` 1 (a LIVE observation
+  block of the held record, provenance-separated from the observer digest and from the offline
+  partial-facts stamp). `DURABLE_SNAPSHOT_VERSION` 1, `INTERRUPT_PARTIAL_FACTS_VERSION` 1,
+  `RELEASE_QUALIFICATION_VERSION` 1, `NATIVE_INTERRUPTION_ORACLE_VERSION` 2 and
+  `RESCUE_EXPECTATION_DERIVATION_VERSION` 2 are UNCHANGED — the frozen oracle needed no change
+  (the fence is join-level; the oracle consumes the join's nulls). Changed-bytes digests (SHA-256,
+  the final Task-3 tree, after the self-review round and the codex backfill review below):
+  `driver.mjs` =
+  `342c664be601f34fe1f7dee91122d983eff64765cdb98d81edb375797a6901a5`;
+  `tests/shell-wait-probe.test.mjs` =
+  `14864cff3a8706dfd3ad9dda23730e761a3923748562359e5a7697022374521e`.
+- **Gates (final implementation bytes, 2026-10-23, verbatim counts; every exit 0)** — focused
+  describes: "native delivery wiring" **27/27**, "interrupt-closure task 3: the §23.5 pre-cleanup
+  durable sampling schedule" **18/18**;
+  `npm run test:shell-research` → **ℹ tests 914 / ℹ suites 71 / ℹ pass 914 / ℹ fail 0 / ℹ skipped
+  0** (893 + 21 new: 2 fence + 18 sampling + 1 session-end; the factory-completion-stamp alignment
+  is assertion-level);
+  `node --test tests/test-selection.test.mjs` → **6/6, fail 0**; `npm run lint` → clean, exit 0;
+  `npm run typecheck` → clean, exit 0; `node scripts/check-line-endings.mjs` → "LF line endings
+  verified in 543 tracked files.", exit 0 (543 = the Task-1 plan-file count; no new tracked file);
+  `git diff --check` → clean, exit 0; the prohibited tracked-path diff against `dba2e8a`
+  (`scripts/ hooks/ skills/ agents/ .codex-plugin/ marketplace/ docs/superpowers/specs/
+  package.json npm-shrinkwrap.json`) → EMPTY, exit 0.
+- **Status** — the instrument now samples passive settlement state pre-cleanup under the frozen
+  §23.5 schedule and enforces the strict settlement fence in both the online join and the offline
+  replay; early sampling can distinguish pre-boundary settlement from cleanup-time observations
+  per read (each read's own completion instant vs the recorded boundary). This does NOT close
+  Gate D: the ≥60000-ms responsiveness bound stays REGISTERED-BUT-NOT-YET-APPLICABLE (§23.6 — no
+  live record has satisfied the §19.4 admission set); the Companion local-reaping layer stays the
+  registered named-unobservable limitation; no new lifecycle behavior, no new stop authority, no
+  Cancel/OS-signal/reconciler calls, no Status substitute, no extra Child poll, no new operation
+  timeout or inactivity detector was implemented (the sampling interval is the §23.5-registered
+  OBSERVATION cadence — sampling never extends the 1200000-ms experiment budget and never delays
+  cleanup; the 100-hour ceiling and the between-polls Child Status sidecar rule are unchanged).
+  A fake-host success remains instrument proof only; the pre-live independent review of these
+  admission/sampling/oracle/privacy changes stays OPEN (plan Task-3 final checkbox) and no
+  registered live launch is authorized by this section. The Task-4 live I/F labels stay unspent.
+
+**Self-review round-1 fixes (2026-10-23; four findings over the pre-round tree, all sampler
+accounting/naming — the fence, read-only-ness, privacy and layer semantics verified CLEAN; each
+test-first with the RED recorded verbatim).** All four fixes are inside
+`tools/shell-wait-probe/driver.mjs` and the task's test file; the amended tree is the digested
+"final Task-3 tree" above and every gate above ran on it.
+
+1. **[P2] The sampling block was silently dropped on the FAILURE path while the registration
+   claimed "every exit path".** The exit `finally` attached `durableSamples` only when the answer
+   carried a `childSettlement` block, but the non-budget failure answer (a rejecting gate/host
+   result — the record `executeDefaultLiveCase` persists via `heldTurn`) has none. TEST FIRST:
+   `the sampling block rides the FAILURE-shaped held record too — a rejecting gate never drops the
+   samples (self-review round 1)` — RED: `the sampling block rides the FAILURE-shaped record` →
+   `actual: undefined`. FIX: the `finally` (driver.mjs:2023-2044) now attaches the final snapshot
+   on the failure-shaped answer too, on a minimal unobserved-settlement carrier (`observed: false`,
+   basis `held-turn-failed-before-settlement-observation`; the settlement observation itself stays
+   honestly unobserved on a failed turn) — it flows through the existing mapper projection and
+   serializer untouched. GREEN.
+2. **[P2] Omissions were silently truncated at the ledger bound (16) with no marker — under the
+   frozen default schedule every completed read after the 32nd summary names a summary-cap
+   omission (up to 568), so the truncation was the DEFAULT path.** TEST FIRST: `omissions dropped
+   at the retention bound are themselves named — never silently truncated (self-review round 1)`
+   (20 attempts / 1 summary) — RED: `the truncation is a named fact on the block` →
+   `actual: undefined`. FIX (driver.mjs:2273-2284, :2376-2392): the bound is a documented
+   accounting constant (`DURABLE_SAMPLING_OMISSION_RETENTION = 16` — §23.5 freezes the 32-summary
+   retention, not an omission count), and a drop at it sets the named
+   `omissionsTruncated: true` + `omissionsDroppedCount: n` facts on the block. GREEN (16 retained
+   + 4 named drops on the 20-attempt shape).
+3. **[P3] Post-baseline identity-unobserved attempts were anonymous, and the
+   `omitBaseline` attempt-cap arm was unreachable dead code.** After the baseline, an attempt
+   returning the identity-unobserved block (a mid-run rollout-load failure yields reasons
+   `['durable-identity-unobserved: <error>']`) only moved `attemptCount` — §23.5 clause 4 requires
+   an unreadable read to be named. TEST FIRST: `a post-baseline identity-unobserved attempt is a
+   named omission — no anonymous attempt (self-review round 1)` — RED: `actual [{"reason":
+   "durable-sampling-attempt-cap-reached"}]` (the attempt was unnamed). FIX
+   (driver.mjs:2528-2536): a post-baseline identity-unobserved attempt records the omission
+   `durable-read-identity-unobserved` with its attempt index (pre-baseline probes keep the
+   registered clause-1 naming); the dead arm in `omitBaseline` is removed (the baseline is null
+   ONLY while identity never established, so the reason is always
+   `durable-identity-unobserved`). GREEN (2 summaries + the named omission).
+4. **[P3] The ≥1000-ms floor was delegated entirely to the injected `sleep` — an
+   early-resolving scheduler would silently compress the starts while `intervalMs: 1000` still
+   rode the record.** TEST FIRST: `the ≥1000-ms floor is re-checked against the actual clock — an
+   early-resolving scheduler is a named shortfall, never a silent compression (self-review round
+   1)` — RED: `each interval whose ACTUAL spacing fell short is named` → `actual: undefined`. FIX
+   (driver.mjs:2490-2508): the scheduled wait is re-checked against the actual clock — a
+   scheduler that resolved early gets the remainder once more, and a still-short start increments
+   the named `intervalShortfalls` count on the block (never a silent compression, never a busy
+   wait; with the production default scheduler the re-check finds the floor honored and re-waits
+   nothing). One aligned test adjustment: the existing floor test's scheduled-wait count is now
+   two per interval under the injected immediate scheduler (the wait plus the re-check re-wait)
+   with the shortfall asserted — no assertion weakened; the registered floor and its clamp
+   assertions are unchanged. The §23.5 registration annotation below records the settled
+   enforcement interpretation. GREEN (2 named shortfalls on the immediate-scheduler shape).
+
+**§23.5 bound interpretations settled by this round (dated annotation; the frozen schedule text
+above stands unchanged):** clause 2's ≥1000-ms floor is enforced by the scheduled wait PLUS one
+actual-clock re-check (re-waiting the remainder once against a scheduler that resolved early); a
+still-short start is the named `intervalShortfalls` block fact — the primary mechanism remains the
+scheduler contract (the production default `(ms) => new Promise((resolve) => setTimeout(resolve,
+ms))` resolves no earlier than the requested delay). Clause 4's "every omission named" extends to
+the omission LEDGER itself: at most 16 omission entries are retained per block (an accounting
+bound, not a lifecycle bound) and drops at that bound are the named
+`omissionsTruncated`/`omissionsDroppedCount` facts; a post-baseline identity-unobserved attempt is
+the named `durable-read-identity-unobserved` omission.
+
+**Codex backfill review fixes (2026-10-23; three findings over the round-1-amended tree, all in
+the sampler; each test-first with the RED recorded verbatim; the fence, read-only-ness, privacy
+and layer semantics re-verified CLEAN).** All three fixes are inside
+`tools/shell-wait-probe/driver.mjs` and the task's test file; the amended tree is the digested
+"final Task-3 tree" above and every gate above ran on it.
+
+1. **[P1] The flat 32-slot summary ledger discarded every post-delivery observation.** Identity
+   establishes promptly while the §16.4 control clock schedules the interruption only at ~80 s —
+   the unconditional one-second cadence filled all 32 slots ~31 s after identity, so every
+   post-delivery summary (settlement transitions, the last pre-cleanup read) hit the cap and was
+   dropped, unrecoverable after fixture disposal. TEST FIRST: `the summary ledger never evicts
+   post-delivery observations — baseline and transitions are pinned, the newest survive (codex
+   backfill review)` (38 pre-delivery samples, then the settled transition at attempts 39-40) —
+   RED: `the LAST observation is never evicted` → `actual: 32`. FIX (driver.mjs:2546-2580): the
+   ledger ROLLS — the baseline and every state-TRANSITION summary (aggregate differing from the
+   previous sample's observed aggregate, the new additive `transition` field) are PINNED, a new
+   summary at the cap rolls off the oldest non-baseline non-transition summary (preferring a
+   superseded same-aggregate member), and the roll-off rides the named `summariesRolledOff` count;
+   only when every slot is baseline-or-transition does the summary-cap omission fire. The frozen
+   ≤32 bound and every other frozen bound are intact; the retained set is baseline + transitions
+   + the newest observations. GREEN (last attempt 40 retained with the pinned transition 39,
+   `summariesRolledOff` 9).
+2. **[P2] The sampler could start past an already-recorded termination.** The shared budget can
+   expire while `input.launch()` is still pending — the termination recorder ran while
+   `durableSampling` was null and the abort listener attached after the fact never fires; a
+   1-ms-budget/80-ms-launch reproduction recorded a completed baseline after the cleanup boundary.
+   TEST FIRST: `no attempt runs past an already-recorded termination — a budget expired during
+   launch skips the sampler by name (codex backfill review)` — RED: `no supplier call may run past
+   the already-recorded termination` → `actual: true`. FIX (driver.mjs:2414-2427 + the
+   `terminatedAlready` input threaded from the held turn, driver.mjs:1520-1523): the sampler
+   checks BOTH the recorded boundary and `signal.aborted` BEFORE its first supplier call — the
+   skipped start is the named `durable-sampling-skipped-termination-already-recorded` (or
+   `-shared-signal-already-aborted`) omission, zero attempts consumed, `stoppedReason` names the
+   termination boundary, and the offline fence correctly sees no post-boundary sample. GREEN
+   (attemptCount 0, no supplier call).
+3. **[P2] Sample summaries discarded the cancellation provenance the REAL reader publishes, and
+   the SessionEnd join test masked it with a synthetic layer field.** For actual reader results
+   the cause and request time live on the validated job record
+   (`job.projection.stopIntent.cause/.requestedAt`, `stopCause`); the reader's `layers.stopIntent`
+   carries only applicability/presence/validity — so a retained pre-cleanup sample could not
+   distinguish a genuine SessionEnd from another cancellation when the final snapshot is
+   unavailable or fenced out. TEST FIRST (the REAL reader shape against a REAL fixture-owned
+   partition — the §21.2.3 recorded I shape through the production stop path):
+   `sample summaries retain the real reader cancellation provenance — cause and request time from
+   job.projection (codex backfill review)` — RED: `the production-published winner status rides
+   the summary` → `actual: undefined`. FIX (driver.mjs:2444-2462): the summaries retain the
+   whitelisted cause/timestamp fields only — `jobStatus`, `stopCause`, `stopIntentCause`,
+   `stopIntentRequestedAt` (a bounded enum + canonical ISO timestamp; never the whole record
+   body). The SessionEnd join test's synthetic `layers.stopIntent.cause` field was REPLACED by the
+   REAL reader shape (applicability/presence/validity; the cause/timestamp now on
+   `job.projection` where the reader publishes it) — the provenance is proven by the new
+   real-reader test, not by a field the reader never emits. GREEN (cause `session-end`, the
+   request timestamp, and the confirmed cause all retained from the real reader). One test-stability
+   fix during GREEN: the provenance test's gate/result were made deferred with a 500-ms release —
+   the real reader takes ~100 ms per pass and an immediate result raced the teardown, flaking
+   `summaries[0]` to undefined (~1 run in 8); no assertion weakened.
+
+**Codex round-2 review fix (2026-10-23; one [P2] finding, this time over Task 2's §23.4
+abort-exposure mapping rather than the sampler; test-first with the RED recorded verbatim; all
+round-1 backfill fixes above re-verified untouched).** **[P2] Keep interrupt absence unknown after
+an unclassified cell** (the full verbatim text is recorded in §23.8's dated annotation, which this
+fix is folded into): in the abort-exposure branch (`driver.mjs:5529-5565` on the final bytes) the
+spread of the extractor's no-call defaults copied `attempted: false` and the definitive
+"delivery was not attempted" message even though the unsupported cell that aborted the adjudication
+could itself hold the interrupt — parser uncertainty projected as negative evidence. TEST FIRST:
+the focused describe "interrupt-closure task 2 codex round 2: interrupt absence stays unknown after
+an unclassified cell (report §23.8)" (`tests/shell-wait-probe.test.mjs:25769`; the only interrupt
+inside `const x = await tools.interrupt_agent({target:…}); text(x);`, an unadmittable cell, through
+the real `inspectShellWaitEvidence` → `mapShellWaitLiveFacts` join) — RED:
+`AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:` / `false !== null` on
+`facts.interrupt.attempted`. FIX (driver.mjs:5529-5565): the exposure branch splits by recognized
+attempt — a RECOGNIZED call keeps Task 2's keeper branch byte-for-byte; a SKIPPED cell keeps
+absence UNKNOWN (`attempted`/`callCount`/`wrappedInterrupt`/`previousStatusTerminal` null, the
+message naming the unsupported-call-shape abort and the stay-unknown semantics, no admission block
+fabricated, `interrupt.partialFacts` unchanged). Sibling-field sweep: `callCount`/`wrappedInterrupt`
+/`previousStatusTerminal` were the same uncertainty-to-negative conversion and are nulled;
+`family`/`previousStatus`/`target`/`exactTargetMatch`/`settled`/timing facts verified already
+unknown (null) without a recognized call; `orderingBound` stays (binding-scoped, unestablished
+≠ negative); `unreadableContinuationObserved` stays observation-scoped. The pre-existing §23.4
+test that pinned the old conversion ("a scan that never ran…") was updated to the same unknown
+standard in the same fixup. GREEN on the final rebased bytes: focused describe 1/1, gate describes
+69/69 (13+10+1+18+27), `npm run test:shell-research` 915/915, test-selection 6/6, lint/typecheck
+clean, line-endings 543 files LF, `git diff --check` clean, prohibited tracked-path diff against
+`dba2e8a` EMPTY. The Task-3 sampler/fence bytes are untouched by the fix (its `driver.mjs` diff is
+two hunks at `:5528+` and `:5663` — the mapping plus the schema-additive typedef line — both after
+every sampler/fence region — all `driver.mjs:` cites in this section
+re-verified resolving on the final bytes: `:1145-1147`, `:1394`, `:1506-1516`, `:1520-1523`,
+`:2023-2044`, `:2034-2036`, `:2229-2262`, `:2273-2284`, `:2339-2596`, `:2414-2427`, `:2444-2462`,
+`:2490-2508`, `:2528-2536`, `:2546-2580`, `:2785-2807`, `:3111`, `:4297-4313`, `:4713-4715`; the
+section's `tests/shell-wait-probe.test.mjs:25750` describe cite drifted +161 lines under the new
+Task-2 describe and is refreshed to `:25911` — `:10878` unchanged and verified).
