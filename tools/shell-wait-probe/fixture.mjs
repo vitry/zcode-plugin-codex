@@ -31,7 +31,7 @@
  * Nothing here launches anything at import time, and a fixture trust bypass is
  * a fixture control — never persisted production-trust qualification.
  */
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { homedir, tmpdir } from 'node:os';
@@ -39,6 +39,15 @@ import { basename, dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { survivalControlShellCommand } from './evidence.mjs';
+import {
+  CAPTURE_DIRECTORY_VARIABLE,
+  CAPTURE_ENTRY_VARIABLE,
+  CAPTURE_MAX_BYTES_VARIABLE,
+  CAPTURE_NONCE_VARIABLE,
+  CLOSURE_PRELOAD_FILE_NAME,
+  STDOUT_CAPTURE_MAX_BYTES,
+  writeClosurePreload,
+} from './closure-observation.mjs';
 import { buildMarketplaceSnapshot } from '../../scripts/build-marketplace-snapshot.mjs';
 import { renderManagedRescueRole } from '../../scripts/lib/managed-agent-role.mjs';
 import { runProcess } from '../../scripts/lib/process.mjs';
@@ -347,7 +356,7 @@ async function assertPrivateEmptyOutput(output) {
 /**
  * Validate and normalize the fixture input before any filesystem side effect.
  * @param {ShellWaitFixtureInput} input
- * @returns {{ sourceRoot: string, sourceSha: string, codexBinary: string, output: string, variant: 'baseline'|'candidate', commandSkillVariant: 'baseline'|'candidate', waitPolicy: string | null, survivalControl: boolean, capMs: number|null, pollMs: number, reserveStatusJob: boolean, statusQueryTimeoutMs: number|null, authSource: string }}
+ * @returns {{ sourceRoot: string, sourceSha: string, codexBinary: string, output: string, variant: 'baseline'|'candidate', commandSkillVariant: 'baseline'|'candidate', waitPolicy: string | null, survivalControl: boolean, stdoutCapture: boolean, capMs: number|null, pollMs: number, reserveStatusJob: boolean, statusQueryTimeoutMs: number|null, authSource: string }}
  */
 function validateFixtureInput(input) {
   if (!input || typeof input !== 'object') throw invalidFixtureInput('the fixture input must be an object.');
@@ -396,6 +405,15 @@ function validateFixtureInput(input) {
   if (input.capMs !== null && input.capMs !== undefined && (!Number.isSafeInteger(input.capMs) || input.capMs <= 0)) {
     throw invalidFixtureInput('capMs must be a positive integer or null (unraised).');
   }
+  // The Task 2 evidence-closure stdout-capture seam (report §19.3): a closed
+  // opt-in flag. When set, the fixture generates the passive capture preload
+  // into its own disposable root, composes the fixture-only capture
+  // environment (including NODE_OPTIONS), and records the bounded provenance
+  // (digests/config only — never private paths). The preload is inert in
+  // every process except the exact declared installed launcher invocation.
+  if (input.stdoutCapture !== undefined && typeof input.stdoutCapture !== 'boolean') {
+    throw invalidFixtureInput('stdoutCapture must be a boolean when present.');
+  }
   // The R3 status-wait setup seam: reserve one actually owned held job through
   // the production command path in the owning session. The explicit query
   // timeout is REQUIRED with the reservation (the rendered Status invocation
@@ -420,6 +438,7 @@ function validateFixtureInput(input) {
     commandSkillVariant,
     waitPolicy: waitPolicy ?? null,
     survivalControl,
+    stdoutCapture: input.stdoutCapture === true,
     capMs: input.capMs ?? null,
     pollMs,
     reserveStatusJob,
@@ -591,6 +610,52 @@ export async function createShellWaitFixture(input, dependencies = {}) {
     const record = await applyVariantArtifacts({ installedRoot, codexHome, prepared, installRecord, credentialsCopied });
     record.ownedCleanSourceWorktree = /** @type {any} */ (cleanSource);
 
+    // The Task 2 evidence-closure stdout-capture seam (report §19.3): the
+    // fixture GENERATES the passive preload into its own disposable root and
+    // composes the fixture-only capture environment. The declared entry is
+    // the exact installed launcher realpath; the preload is inert in every
+    // other process (including this fixture's own setup entries, which run
+    // with the composed environment by reference). The record carries only
+    // the bounded provenance (digests and closed configuration, never
+    // private paths); the handle exposes the private paths for the driver.
+    /** @type {{ preloadPath: string, preloadSha256: string, captureDirectory: string, nonce: string, maxBytes: number, entryRealpath: string } | null} */
+    let stdoutCaptureHandle = null;
+    if (prepared.stdoutCapture === true) {
+      const nonce = randomBytes(32).toString('hex');
+      const captureDirectory = join(temporary, 'stdout-capture');
+      const capturePreload = await writeClosurePreload(temporary);
+      const entryRealpath = await realpath(join(installedRoot, 'skills', 'rescue', 'launcher.mjs'));
+      await mkdir(captureDirectory, { recursive: true, mode: 0o700 });
+      const existingOptions = /** @type {Record<string, unknown>} */ (env).NODE_OPTIONS;
+      const existingNodeOptions = typeof existingOptions === 'string' && existingOptions.length > 0 ? `${existingOptions} ` : '';
+      Object.assign(env, {
+        [CAPTURE_DIRECTORY_VARIABLE]: captureDirectory,
+        [CAPTURE_NONCE_VARIABLE]: nonce,
+        [CAPTURE_ENTRY_VARIABLE]: entryRealpath,
+        [CAPTURE_MAX_BYTES_VARIABLE]: String(STDOUT_CAPTURE_MAX_BYTES),
+        NODE_OPTIONS: `${existingNodeOptions}${capturePreload.nodeOptionsFragment}`,
+      });
+      stdoutCaptureHandle = Object.freeze({
+        preloadPath: capturePreload.path,
+        preloadSha256: capturePreload.sha256,
+        captureDirectory,
+        nonce,
+        maxBytes: STDOUT_CAPTURE_MAX_BYTES,
+        entryRealpath,
+      });
+      /** @type {Record<string, unknown>} */ (record).closureStdoutCapture = {
+        preload: CLOSURE_PRELOAD_FILE_NAME,
+        preloadSha256: capturePreload.sha256,
+        maxBytes: STDOUT_CAPTURE_MAX_BYTES,
+        gate: {
+          argv: ['invoke-prepared', 'rescue'],
+          declaredEntryRealpathSha256: sha256(entryRealpath),
+          selector: 'fixture-only capture environment present AND realpath(argv[1]) equal to the declared installed launcher realpath AND argv exactly [invoke-prepared, rescue]',
+        },
+        environmentVariables: [CAPTURE_DIRECTORY_VARIABLE, CAPTURE_NONCE_VARIABLE, CAPTURE_ENTRY_VARIABLE, CAPTURE_MAX_BYTES_VARIABLE],
+      };
+    }
+
     // The §16.4 I1 survival-control support: the fixture OWNS the control's
     // command bytes and writes its bounded script into the disposable fixture
     // root BEFORE the held turn runs (disposal removes it with the home). The
@@ -669,6 +734,7 @@ export async function createShellWaitFixture(input, dependencies = {}) {
       env,
       ...(statusJob === null ? {} : { statusJob, owningSessionId: /** @type {string} */ (owningSessionId) }),
       ...(survivalControlPath === null ? {} : { survivalControlPath }),
+      ...(stdoutCaptureHandle === null ? {} : { stdoutCapture: stdoutCaptureHandle }),
       dispose: async () => {
         if (disposed) return;
         disposed = true;
@@ -1436,6 +1502,7 @@ export async function releaseCompletionGate(gatePath) {
  *   reserveStatusJob?: boolean,
  *   statusQueryTimeoutMs?: number,
  *   authSource?: string,
+ *   stdoutCapture?: boolean,
  * }} ShellWaitFixtureInput
  * @typedef {{
  *   buildSnapshot?: (context: { cleanSource: string, output: string, sourceSha: string, env: NodeJS.ProcessEnv }) => Promise<unknown>,
@@ -1453,6 +1520,7 @@ export async function releaseCompletionGate(gatePath) {
  *   statusJob?: { jobId: string, status: string, queryTimeoutMs: number },
  *   owningSessionId?: string,
  *   survivalControlPath?: string,
+ *   stdoutCapture?: { preloadPath: string, preloadSha256: string, captureDirectory: string, nonce: string, maxBytes: number, entryRealpath: string },
  *   dispose: () => Promise<void>,
  *   record: Record<string, unknown>,
  * }} ShellWaitFixtureHandle

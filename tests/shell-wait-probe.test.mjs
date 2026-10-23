@@ -8,6 +8,7 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { chmod, cp, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -30,6 +31,71 @@ function escapeRegExp(value) {
 // the guarded marker test and never spawns the CLI again (nesting stays
 // bounded at one level).
 const selfTestGuard = 'ZCODE_SHELL_WAIT_PROBE_SELF_TEST';
+
+// ---------------------------------------------------------------------------
+// Post-merge-review fix 1 (2026-10-23): ambient-identity isolation for every
+// spawned child in this file. The survey of the launcher/store path
+// (skills/rescue/launcher.mjs → scripts/zcode-companion.mjs →
+// scripts/lib/{plugin-data,zcode-discovery,zcode-runtime-config}.mjs) found
+// exactly ONE identity-bearing variable — CODEX_THREAD_ID
+// (zcode-companion.mjs:107/:110/:831, the THREAD_ID_REQUIRED gate; no other
+// session/turn identity variable exists on that path) — and the home/
+// data-root routing variables that would otherwise reach the REAL user Codex
+// home: CODEX_HOME (plugin-data.mjs:37; falls back to homedir()/.codex),
+// ZCODE_DATA_ROOT (plugin-data.mjs:22/:36), PLUGIN_DATA and
+// CLAUDE_PLUGIN_DATA (plugin-data.mjs:44/:50), HOME and USERPROFILE
+// (zcode-discovery.mjs:13, zcode-runtime-config.mjs:58). Every environment
+// composition in this file therefore starts from isolatedBaseEnv(): the
+// identity variable is STRIPPED and every home/data-root variable is
+// redirected into a disposable root, so no spawned launcher/probe can
+// proceed past the intended fast-fail with the ambient identity or touch the
+// real user Codex home. The sanitization lives in THIS test helper only —
+// captureEnvironment's §19.3(b)-frozen contract (baseEnv passthrough) is
+// untouched. The companion's remaining ambient reads (ZCODE_BACKGROUND_WORKER,
+// ZCODE_DEBUG, ZCODE_PATH, CODEX_APP_SERVER_PATH, CODEX_APP_SERVER_ARGS_JSON)
+// are capability/config switches, not identity, and are left to each test's
+// own explicit overrides.
+// ---------------------------------------------------------------------------
+const AMBIENT_IDENTITY_VARIABLES = Object.freeze(['CODEX_THREAD_ID']);
+
+/** Directories the isolated base points the home/data-root variables into. */
+const ISOLATED_ENV_DIRECTORIES = Object.freeze([
+  'isolated-home', 'isolated-codex-home', 'isolated-data-root', 'isolated-plugin-data', 'isolated-claude-plugin-data',
+]);
+
+let sharedIsolatedEnvRoot = null;
+
+/** This file's one disposable isolation root (created lazily, removed at exit). */
+function isolatedEnvRoot() {
+  if (sharedIsolatedEnvRoot === null) {
+    sharedIsolatedEnvRoot = mkdtempSync(join(tmpdir(), 'shell-wait-isolated-env-'));
+    process.once('exit', () => { try { rmSync(sharedIsolatedEnvRoot, { recursive: true, force: true }); } catch { /* best-effort disposal */ } });
+  }
+  return sharedIsolatedEnvRoot;
+}
+
+/**
+ * The isolated base environment every spawn in this file composes over:
+ * process.env minus the ambient identity, with every home/data-root variable
+ * pointed inside the given disposable root (the file's shared root unless a
+ * caller passes its own, as the capture scope does). Callers apply their own
+ * overrides ON TOP, so explicit per-test values always win.
+ * @param {string} [root] @returns {NodeJS.ProcessEnv}
+ */
+function isolatedBaseEnv(root = isolatedEnvRoot()) {
+  const home = join(root, 'isolated-home');
+  const env = {
+    ...process.env,
+    HOME: home,
+    USERPROFILE: home,
+    CODEX_HOME: join(root, 'isolated-codex-home'),
+    ZCODE_DATA_ROOT: join(root, 'isolated-data-root'),
+    PLUGIN_DATA: join(root, 'isolated-plugin-data'),
+    CLAUDE_PLUGIN_DATA: join(root, 'isolated-claude-plugin-data'),
+  };
+  for (const variable of AMBIENT_IDENTITY_VARIABLES) delete env[variable];
+  return env;
+}
 
 /**
  * Split a NODE_OPTIONS value into arguments with the same quoting and
@@ -134,7 +200,7 @@ function withoutTestReporterFlags(nodeOptions) {
  */
 function suiteChildEnv() {
   /** @type {NodeJS.ProcessEnv} */
-  const childEnv = { ...process.env, [selfTestGuard]: '1' };
+  const childEnv = { ...isolatedBaseEnv(), [selfTestGuard]: '1' };
   delete childEnv.NODE_TEST_CONTEXT;
   const preservedOptions = withoutTestReporterFlags(childEnv.NODE_OPTIONS);
   childEnv.NODE_OPTIONS = preservedOptions
@@ -260,7 +326,7 @@ if (process.env[selfTestGuard] === '1') {
   });
 
   test('an unknown suite still fails closed with the existing message', () => {
-    const result = spawnSync(process.execPath, [suiteCliPath, 'not-a-suite'], { encoding: 'utf8' });
+    const result = spawnSync(process.execPath, [suiteCliPath, 'not-a-suite'], { env: isolatedBaseEnv(), encoding: 'utf8' });
     assert.equal(result.status, 1, result.stdout);
     assert.match(result.stderr, /Unknown test suite: not-a-suite/);
   });
@@ -278,12 +344,12 @@ if (process.env[selfTestGuard] === '1') {
   // only in this un-guarded branch so the guarded re-entry child stays pure.
   const suiteCanary = { directory: '', canaryPath: '', created: false, sharedRegistrations: '' };
   before(async () => {
-    const listed = spawnSync('git', ['worktree', 'list', '--porcelain'], { encoding: 'utf8' });
+    const listed = spawnSync('git', ['worktree', 'list', '--porcelain'], { env: isolatedBaseEnv(), encoding: 'utf8' });
     assert.equal(listed.status, 0, listed.stderr);
     suiteCanary.sharedRegistrations = listed.stdout;
     suiteCanary.directory = await mkdtemp(join(tmpdir(), 'shell-wait-suite-canary-'));
     suiteCanary.canaryPath = join(suiteCanary.directory, 'canary-worktree');
-    const added = spawnSync('git', ['worktree', 'add', '--detach', suiteCanary.canaryPath, 'HEAD'], { encoding: 'utf8' });
+    const added = spawnSync('git', ['worktree', 'add', '--detach', suiteCanary.canaryPath, 'HEAD'], { env: isolatedBaseEnv(), encoding: 'utf8' });
     if (added.status !== 0) return;
     await rm(suiteCanary.canaryPath, { recursive: true, force: true });
     suiteCanary.created = true;
@@ -291,14 +357,14 @@ if (process.env[selfTestGuard] === '1') {
   after(async () => {
     try {
       if (suiteCanary.created) {
-        const listed = spawnSync('git', ['worktree', 'list', '--porcelain'], { encoding: 'utf8' }).stdout
+        const listed = spawnSync('git', ['worktree', 'list', '--porcelain'], { env: isolatedBaseEnv(), encoding: 'utf8' }).stdout
           .split('\n').filter((line) => line.startsWith('worktree ')).map((line) => line.slice('worktree '.length))
           .map((value) => value.startsWith('/private/') ? value.slice('/private'.length) : value);
         assert.ok(listed.includes(suiteCanary.canaryPath),
           'the suite destroyed an unrelated worktree registration; every cleanup must stay owned');
       }
     } finally {
-      const commonDir = spawnSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { encoding: 'utf8' }).stdout.trim();
+      const commonDir = spawnSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { env: isolatedBaseEnv(), encoding: 'utf8' }).stdout.trim();
       const adminRoot = join(commonDir, 'worktrees');
       for (const entry of await readdir(adminRoot).catch(() => [])) {
         const pointer = (await readFile(join(adminRoot, entry, 'gitdir'), 'utf8').catch(() => '')).trim();
@@ -308,7 +374,7 @@ if (process.env[selfTestGuard] === '1') {
       }
       await rm(suiteCanary.directory, { recursive: true, force: true });
     }
-    const listed = spawnSync('git', ['worktree', 'list', '--porcelain'], { encoding: 'utf8' });
+    const listed = spawnSync('git', ['worktree', 'list', '--porcelain'], { env: isolatedBaseEnv(), encoding: 'utf8' });
     assert.equal(listed.status, 0, listed.stderr);
     assert.equal(listed.stdout, suiteCanary.sharedRegistrations, 'the entire suite must leave every shared repository registration untouched');
   });
@@ -335,7 +401,7 @@ if (process.env[selfTestGuard] === '1') {
         const cases = driver.SHELL_WAIT_CASES;
         if (!Array.isArray(cases) || Object.isFrozen(cases) !== true) throw new Error('case list must be a frozen array');
         console.log(JSON.stringify({ marker: 'SHELL_WAIT_MODULES_PURE', cases }));
-      `], { encoding: 'utf8', env: { ...process.env, CODEX_BINARY: 'this value must never be launched at import time', ZCODE_SHELL_WAIT_E2E: '1' }, timeout: 30_000 });
+      `], { encoding: 'utf8', env: { ...isolatedBaseEnv(), CODEX_BINARY: 'this value must never be launched at import time', ZCODE_SHELL_WAIT_E2E: '1' }, timeout: 30_000 });
       assert.equal(child.status, 0, `module import was not pure or shape failed:\n${child.stdout}\n${child.stderr}`);
       const payload = JSON.parse(child.stdout);
       assert.equal(payload.marker, 'SHELL_WAIT_MODULES_PURE');
@@ -685,27 +751,30 @@ if (process.env[selfTestGuard] === '1') {
       assert.equal(observer.model, null, 'the model is not observable in this instrument and stays unknown');
       assert.equal(observer.reachableToolFamily, null, 'the runtime-reachable tool family is not established and stays unknown');
       // The digest is derived from the ACTUAL working-tree instrument modules
-      // under the v3 construction (codex review, release-qualification round):
+      // under the v4 construction (2026-10-21 evidence-closure Task 2):
       // evidence.mjs + shape-diagnostic.mjs + release-qualification.mjs +
-      // driver.mjs, NUL-separated under the version tag — the shape-diagnosis
-      // helper and the verdict helper are both part of the adjudicating
-      // instrument (the verdict helper executes whenever an exact terminal
-      // expectation is supplied), so older hashes would misattribute them.
+      // closure-observation.mjs + driver.mjs, NUL-separated under the version
+      // tag — the shape-diagnosis helper, the verdict helper, and the closure
+      // capture admission all execute during live observation, so older
+      // hashes would misattribute them (plan §3 observer-digest duty).
       const evidenceSource = await readFile(fileURLToPath(new URL('../tools/shell-wait-probe/evidence.mjs', import.meta.url)));
       const shapeSource = await readFile(fileURLToPath(new URL('../tools/shell-wait-probe/shape-diagnostic.mjs', import.meta.url)));
       const oracleSource = await readFile(fileURLToPath(new URL('../tools/shell-wait-probe/release-qualification.mjs', import.meta.url)));
+      const closureSource = await readFile(fileURLToPath(new URL('../tools/shell-wait-probe/closure-observation.mjs', import.meta.url)));
       const driverSource = await readFile(fileURLToPath(new URL('../tools/shell-wait-probe/driver.mjs', import.meta.url)));
       const expectedDigest = createHash('sha256')
-        .update('zcode-shell-wait-observer-v3\0')
+        .update('zcode-shell-wait-observer-v5\0')
         .update(evidenceSource)
         .update('\0')
         .update(shapeSource)
         .update('\0')
         .update(oracleSource)
         .update('\0')
+        .update(closureSource)
+        .update('\0')
         .update(driverSource)
         .digest('hex');
-      assert.equal(observer.digest, expectedDigest, 'the digest must hash the actual evidence.mjs + shape-diagnostic.mjs + release-qualification.mjs + driver.mjs working-tree contents');
+      assert.equal(observer.digest, expectedDigest, 'the digest must hash the actual evidence.mjs + shape-diagnostic.mjs + release-qualification.mjs + closure-observation.mjs + driver.mjs working-tree contents');
       // Stability: two records built from the same tree carry the same digest.
       const second = await runShellWaitCase(caseInput({ output: secondOutput }), {
         createFixture: async () => fakeFixture,
@@ -2802,7 +2871,7 @@ if (process.env[selfTestGuard] === '1') {
   describe('root-family candidate-policy delivery seam (R2)', async () => {
     const { createShellWaitFixture } = await import('../tools/shell-wait-probe/fixture.mjs');
     const { runShellWaitCase } = await import('../tools/shell-wait-probe/driver.mjs');
-    const repositorySha = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+    const repositorySha = spawnSync('git', ['rev-parse', 'HEAD'], { env: isolatedBaseEnv(), encoding: 'utf8' }).stdout.trim();
     const realSkills = {
       review: await readFile(join(repositoryRoot, 'skills', 'review', 'SKILL.md'), 'utf8'),
       'adversarial-review': await readFile(join(repositoryRoot, 'skills', 'adversarial-review', 'SKILL.md'), 'utf8'),
@@ -5429,14 +5498,14 @@ if (process.env[selfTestGuard] === '1') {
 
     test('the driver CLI refuses the shape gate without the structural gate before any launch', () => {
       const driverCliPath = fileURLToPath(new URL('../tools/shell-wait-probe/driver.mjs', import.meta.url));
-      const sourceSha = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+      const sourceSha = spawnSync('git', ['rev-parse', 'HEAD'], { env: isolatedBaseEnv(), encoding: 'utf8' }).stdout.trim();
       const result = spawnSync(process.execPath, [driverCliPath, '--case', 'rescue-noise', '--codex', process.execPath,
-        '--source-sha', sourceSha, '--output', '/tmp', '--unclassified-shape-diagnostic', '1'], { encoding: 'utf8', timeout: 30_000 });
+        '--source-sha', sourceSha, '--output', '/tmp', '--unclassified-shape-diagnostic', '1'], { encoding: 'utf8', env: isolatedBaseEnv(), timeout: 30_000 });
       assert.equal(result.status, 1, 'the pair violation must exit 1');
       assert.match(result.stderr, /requires/i);
       const badValue = spawnSync(process.execPath, [driverCliPath, '--case', 'rescue-noise', '--codex', process.execPath,
         '--source-sha', sourceSha, '--output', '/tmp', '--unclassified-structural-diagnostic', '1', '--unclassified-shape-diagnostic', 'true'],
-      { encoding: 'utf8', timeout: 30_000 });
+      { encoding: 'utf8', env: isolatedBaseEnv(), timeout: 30_000 });
       assert.equal(badValue.status, 1, 'a non-literal value must exit 1');
     });
   });
@@ -5819,42 +5888,51 @@ if (process.env[selfTestGuard] === '1') {
     // bytes AND record-time bytes join BOTH constructions under v3 — changing
     // the helper alone must change the digest (and flip
     // sourcesChangedDuringRun), never preserve it.
+    // 2026-10-21 evidence-closure Tasks 2-3 (v4/v5): the closure-observation helper
+    // (capture admission + exact-linkage join) also executes during live
+    // observation, so its module-init bytes join BOTH constructions — plan §3
+    // observer-digest duty for every executing helper.
     const { readFileSync } = await import('node:fs');
     const { EXECUTING_OBSERVER_PROVENANCE, observerProvenance } = await import('../tools/shell-wait-probe/driver.mjs');
     const { EXECUTING_EVIDENCE_SOURCE } = await import('../tools/shell-wait-probe/evidence.mjs');
     const { EXECUTING_SHAPE_DIAGNOSTIC_SOURCE } = await import('../tools/shell-wait-probe/shape-diagnostic.mjs');
     const { EXECUTING_RELEASE_QUALIFICATION_SOURCE } = await import('../tools/shell-wait-probe/release-qualification.mjs');
+    const { EXECUTING_CLOSURE_OBSERVATION_SOURCE } = await import('../tools/shell-wait-probe/closure-observation.mjs');
     const driverPath = fileURLToPath(new URL('../tools/shell-wait-probe/driver.mjs', import.meta.url));
     const oraclePath = fileURLToPath(new URL('../tools/shell-wait-probe/release-qualification.mjs', import.meta.url));
 
-    const digestV3 = (evidenceBytes, shapeBytes, oracleBytes, driverBytes) => createHash('sha256')
-      .update('zcode-shell-wait-observer-v3\0')
+    const digestV5 = (evidenceBytes, shapeBytes, oracleBytes, closureBytes, driverBytes) => createHash('sha256')
+      .update('zcode-shell-wait-observer-v5\0')
       .update(evidenceBytes)
       .update('\0')
       .update(shapeBytes)
       .update('\0')
       .update(oracleBytes)
       .update('\0')
+      .update(closureBytes)
+      .update('\0')
       .update(driverBytes)
       .digest('hex');
 
-    test('the executing digest binds the shape-diagnostic AND release-qualification helper bytes under the versioned v3 construction', () => {
+    test('the executing digest binds the shape-diagnostic, release-qualification AND closure-observation helper bytes under the versioned v5 construction', () => {
       const driverBytes = readFileSync(driverPath);
-      const expected = digestV3(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, EXECUTING_RELEASE_QUALIFICATION_SOURCE, driverBytes);
+      const expected = digestV5(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, EXECUTING_RELEASE_QUALIFICATION_SOURCE, EXECUTING_CLOSURE_OBSERVATION_SOURCE, driverBytes);
       assert.equal(EXECUTING_OBSERVER_PROVENANCE.digest, expected,
-        'the digest must hash the executing evidence + shape-diagnostic + release-qualification + driver module-init bytes');
+        'the digest must hash the executing evidence + shape-diagnostic + release-qualification + closure-observation + driver module-init bytes');
       assert.match(String(EXECUTING_OBSERVER_PROVENANCE.digestInput), /shape-diagnostic\.mjs/u,
         'the digest input description must name the shape helper');
       assert.match(String(EXECUTING_OBSERVER_PROVENANCE.digestInput), /release-qualification\.mjs/u,
         'the digest input description must name the release-qualification verdict helper');
-      assert.match(String(EXECUTING_OBSERVER_PROVENANCE.digestInput), /v3|version/u,
+      assert.match(String(EXECUTING_OBSERVER_PROVENANCE.digestInput), /closure-observation\.mjs/u,
+        'the digest input description must name the closure-observation capture helper');
+      assert.match(String(EXECUTING_OBSERVER_PROVENANCE.digestInput), /v5|version/u,
         'the construction version must be recorded explicitly');
     });
 
-    test('the helper binding is load-bearing: omitting or changing either helper\'s bytes changes the digest', () => {
+    test('the helper binding is load-bearing: omitting or changing any helper\'s bytes changes the digest', () => {
       const driverBytes = readFileSync(driverPath);
       const shapeOnlyConstruction = createHash('sha256')
-        .update('zcode-shell-wait-observer-v3\0')
+        .update('zcode-shell-wait-observer-v5\0')
         .update(EXECUTING_EVIDENCE_SOURCE)
         .update('\0')
         .update(EXECUTING_SHAPE_DIAGNOSTIC_SOURCE)
@@ -5862,16 +5940,22 @@ if (process.env[selfTestGuard] === '1') {
         .update(driverBytes)
         .digest('hex');
       assert.notEqual(EXECUTING_OBSERVER_PROVENANCE.digest, shapeOnlyConstruction,
-        'a construction without the release-qualification bytes must not reproduce the executing digest');
+        'a construction without the release-qualification and closure bytes must not reproduce the executing digest');
       const mutatedOracle = Buffer.concat([EXECUTING_RELEASE_QUALIFICATION_SOURCE, Buffer.from('\n')]);
       assert.notEqual(
-        digestV3(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, mutatedOracle, driverBytes),
+        digestV5(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, mutatedOracle, EXECUTING_CLOSURE_OBSERVATION_SOURCE, driverBytes),
         EXECUTING_OBSERVER_PROVENANCE.digest,
         'a release-qualification-only byte change must change the digest',
       );
+      const mutatedClosure = Buffer.concat([EXECUTING_CLOSURE_OBSERVATION_SOURCE, Buffer.from('\n')]);
       assert.notEqual(
-        digestV3(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, readFileSync(oraclePath), driverBytes),
-        digestV3(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, mutatedOracle, driverBytes),
+        digestV5(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, EXECUTING_RELEASE_QUALIFICATION_SOURCE, mutatedClosure, driverBytes),
+        EXECUTING_OBSERVER_PROVENANCE.digest,
+        'a closure-observation-only byte change must change the digest',
+      );
+      assert.notEqual(
+        digestV5(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, readFileSync(oraclePath), EXECUTING_CLOSURE_OBSERVATION_SOURCE, driverBytes),
+        digestV5(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, mutatedOracle, EXECUTING_CLOSURE_OBSERVATION_SOURCE, driverBytes),
       );
     });
 
@@ -5882,6 +5966,8 @@ if (process.env[selfTestGuard] === '1') {
       assert.match(String(recordTime.digestInput), /shape-diagnostic\.mjs/u);
       assert.match(String(recordTime.digestInput), /release-qualification\.mjs/u,
         'the record-time reader must hash the verdict helper too — a mid-run helper edit flips sourcesChangedDuringRun');
+      assert.match(String(recordTime.digestInput), /closure-observation\.mjs/u,
+        'the record-time reader must hash the closure capture helper too');
       assert.equal(recordTime.model, null, 'the requested/effective model stays unknown in the observer provenance');
     });
   });
@@ -5968,22 +6054,22 @@ if (process.env[selfTestGuard] === '1') {
 
     test('the driver CLI refuses an unsafe model identifier with exit one before any launch', () => {
       const driverCliPath = fileURLToPath(new URL('../tools/shell-wait-probe/driver.mjs', import.meta.url));
-      const sourceSha = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+      const sourceSha = spawnSync('git', ['rev-parse', 'HEAD'], { env: isolatedBaseEnv(), encoding: 'utf8' }).stdout.trim();
       for (const bad of ['bad id', 'semi;colon']) {
         const result = spawnSync(process.execPath, [driverCliPath, '--case', 'rescue-noise', '--codex', process.execPath,
-          '--source-sha', sourceSha, '--output', '/tmp', '--model', bad], { encoding: 'utf8', timeout: 30_000 });
+          '--source-sha', sourceSha, '--output', '/tmp', '--model', bad], { encoding: 'utf8', env: isolatedBaseEnv(), timeout: 30_000 });
         assert.equal(result.status, 1, `model ${JSON.stringify(bad)} must exit 1`);
         assert.match(result.stderr, /bounded safe identifier/i);
       }
       const missing = spawnSync(process.execPath, [driverCliPath, '--case', 'rescue-noise', '--codex', process.execPath,
-        '--source-sha', sourceSha, '--output', '/tmp', '--model'], { encoding: 'utf8', timeout: 30_000 });
+        '--source-sha', sourceSha, '--output', '/tmp', '--model'], { encoding: 'utf8', env: isolatedBaseEnv(), timeout: 30_000 });
       assert.equal(missing.status, 1, 'a missing --model value must exit 1');
     });
   });
 
   describe('createShellWaitFixture validation', async () => {
     const { createShellWaitFixture } = await import('../tools/shell-wait-probe/fixture.mjs');
-    const repositorySha = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+    const repositorySha = spawnSync('git', ['rev-parse', 'HEAD'], { env: isolatedBaseEnv(), encoding: 'utf8' }).stdout.trim();
 
     function fixtureInput(overrides = {}) {
       return {
@@ -6038,7 +6124,7 @@ if (process.env[selfTestGuard] === '1') {
 
   describe('createShellWaitFixture fast path and owned cleanup', async () => {
     const { createShellWaitFixture } = await import('../tools/shell-wait-probe/fixture.mjs');
-    const repositorySha = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+    const repositorySha = spawnSync('git', ['rev-parse', 'HEAD'], { env: isolatedBaseEnv(), encoding: 'utf8' }).stdout.trim();
     const realTemplate = await readFile(join(repositoryRoot, 'agents', 'zcode-rescue.toml.template'), 'utf8');
     const realSkill = await readFile(join(repositoryRoot, 'skills', 'rescue', 'SKILL.md'), 'utf8');
     const ORIGINAL_WAITING_PARAGRAPH = realTemplate.split('\n').find((line) => line.includes('subsequent same-handle observations are 60000'));
@@ -6116,7 +6202,7 @@ if (process.env[selfTestGuard] === '1') {
       const temporary = await mkdtemp(join(tmpdir(), 'shell-wait-git-overrides-'));
       t.after(() => rm(temporary, { recursive: true, force: true }));
       const unrelated = join(temporary, 'unrelated');
-      const cleanEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith('GIT_')));
+      const cleanEnv = Object.fromEntries(Object.entries(isolatedBaseEnv()).filter(([key]) => !key.toUpperCase().startsWith('GIT_')));
       const git = (args) => {
         const result = spawnSync('git', args, { cwd: unrelated, env: cleanEnv, encoding: 'utf8' });
         assert.equal(result.status, 0, result.stderr);
@@ -6328,7 +6414,7 @@ if (process.env[selfTestGuard] === '1') {
       // Count-based canary: the registered path lives under the fixture's own
       // random temporary root, so a name-based assertion cannot see a leak
       // (the first draft of this test was vacuous for exactly that reason).
-      const ownedRegistrations = () => spawnSync('git', ['worktree', 'list', '--porcelain'], { encoding: 'utf8' }).stdout
+      const ownedRegistrations = () => spawnSync('git', ['worktree', 'list', '--porcelain'], { env: isolatedBaseEnv(), encoding: 'utf8' }).stdout
         .split('\n').filter((line) => line.startsWith('worktree ') && line.includes('zcode-shell-wait-fixture-')).length;
       const registrationsBefore = ownedRegistrations();
       let creationError;
@@ -6348,9 +6434,9 @@ if (process.env[selfTestGuard] === '1') {
       const worktreePath = fixture.record.ownedCleanSourceWorktree;
       assert.equal(typeof worktreePath, 'string');
       const sourceClone = join(fixture.codexHome, '..', 'source-repository');
-      const sharedBefore = spawnSync('git', ['worktree', 'list', '--porcelain'], { encoding: 'utf8' }).stdout;
+      const sharedBefore = spawnSync('git', ['worktree', 'list', '--porcelain'], { env: isolatedBaseEnv(), encoding: 'utf8' }).stdout;
       assert.doesNotMatch(sharedBefore, new RegExp(escapeRegExp(worktreePath)), 'the shared repository must never register the fixture source');
-      const listed = spawnSync('git', ['worktree', 'list', '--porcelain'], { cwd: sourceClone, encoding: 'utf8' });
+      const listed = spawnSync('git', ['worktree', 'list', '--porcelain'], { env: isolatedBaseEnv(), cwd: sourceClone, encoding: 'utf8' });
       assert.equal(listed.status, 0, listed.stderr);
       const registrationsBefore = listed.stdout;
       assert.match(registrationsBefore, new RegExp(escapeRegExp(worktreePath)), 'the fixture-owned worktree must be registered before dispose');
@@ -6358,7 +6444,7 @@ if (process.env[selfTestGuard] === '1') {
       const preservedEvidence = join(output, 'kept.record.json');
       await writeFile(preservedEvidence, '{"redacted":true}\n', { mode: 0o600 });
       await fixture.dispose();
-      const registrationsAfter = spawnSync('git', ['worktree', 'list', '--porcelain'], { encoding: 'utf8' }).stdout;
+      const registrationsAfter = spawnSync('git', ['worktree', 'list', '--porcelain'], { env: isolatedBaseEnv(), encoding: 'utf8' }).stdout;
       assert.equal(registrationsAfter, sharedBefore, 'shared registrations must remain untouched');
       assert.equal(await stat(sourceClone).then(() => true, () => false), false, 'the clone root and all its Git metadata must be removed');
       assert.equal(await stat(join(fixture.codexHome, 'auth.json')).then(() => true, () => false), false, 'copied credentials must be removed');
@@ -6369,7 +6455,7 @@ if (process.env[selfTestGuard] === '1') {
     });
 
     test('dispose removes the credential home even when the owned worktree removal fails, surfacing both outcomes', async (t) => {
-      const sharedBefore = spawnSync('git', ['worktree', 'list', '--porcelain'], { encoding: 'utf8' }).stdout;
+      const sharedBefore = spawnSync('git', ['worktree', 'list', '--porcelain'], { env: isolatedBaseEnv(), encoding: 'utf8' }).stdout;
       const { fixture } = await createFastFixture(t, {}, {
         ...fastDependencies(),
         removeOwnedWorktree: async () => { throw new Error('could not remove the owned detached worktree registration'); },
@@ -6384,7 +6470,7 @@ if (process.env[selfTestGuard] === '1') {
       assert.equal(await stat(join(fixture.codexHome, '..')).then(() => true, () => false), false, 'the fixture temporary root must still be removed');
       // The clone metadata is inside the removed root, so even an injected
       // removal failure leaves no shared registration to repair.
-      const registrations = spawnSync('git', ['worktree', 'list', '--porcelain'], { encoding: 'utf8' }).stdout;
+      const registrations = spawnSync('git', ['worktree', 'list', '--porcelain'], { env: isolatedBaseEnv(), encoding: 'utf8' }).stdout;
       assert.equal(registrations, sharedBefore, 'the shared registrations must remain untouched on cleanup failure');
     });
 
@@ -6395,12 +6481,12 @@ if (process.env[selfTestGuard] === '1') {
       const unrelatedBase = await mkdtemp(join(tmpdir(), 'shell-wait-unrelated-'));
       t.after(() => rm(unrelatedBase, { recursive: true, force: true }));
       const sharedSource = join(unrelatedBase, 'shared-source');
-      const cloned = spawnSync('git', ['clone', '--shared', repositoryRoot, sharedSource], { encoding: 'utf8' });
+      const cloned = spawnSync('git', ['clone', '--shared', repositoryRoot, sharedSource], { env: isolatedBaseEnv(), encoding: 'utf8' });
       assert.equal(cloned.status, 0, cloned.stderr);
-      const registeredPaths = () => spawnSync('git', ['worktree', 'list', '--porcelain'], { cwd: sharedSource, encoding: 'utf8' }).stdout
+      const registeredPaths = () => spawnSync('git', ['worktree', 'list', '--porcelain'], { env: isolatedBaseEnv(), cwd: sharedSource, encoding: 'utf8' }).stdout
         .split('\n').filter((line) => line.startsWith('worktree ')).map((line) => canonicalize(line.slice('worktree '.length)));
       const removeRegistration = async (registeredPath) => {
-        const commonDir = spawnSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd: sharedSource, encoding: 'utf8' }).stdout.trim();
+        const commonDir = spawnSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { env: isolatedBaseEnv(), cwd: sharedSource, encoding: 'utf8' }).stdout.trim();
         const adminRoot = join(commonDir, 'worktrees');
         for (const entry of await readdir(adminRoot).catch(() => [])) {
           const pointer = (await readFile(join(adminRoot, entry, 'gitdir'), 'utf8').catch(() => '')).trim();
@@ -6414,13 +6500,13 @@ if (process.env[selfTestGuard] === '1') {
       // An unrelated prunable registration (unlocked, directory missing) that a
       // repository-wide prune would destroy.
       const unrelatedPath = join(unrelatedBase, 'unrelated-worktree');
-      const add = spawnSync('git', ['worktree', 'add', '--detach', unrelatedPath, 'HEAD'], { cwd: sharedSource, encoding: 'utf8' });
+      const add = spawnSync('git', ['worktree', 'add', '--detach', unrelatedPath, 'HEAD'], { env: isolatedBaseEnv(), cwd: sharedSource, encoding: 'utf8' });
       assert.equal(add.status, 0, add.stderr);
       await rm(unrelatedPath, { recursive: true, force: true });
       // A locked owned worktree makes the targeted removal fail deterministically
       // (git refuses to remove a locked working tree) while its registration stays.
       const ownedPath = fixture.record.ownedCleanSourceWorktree;
-      const lock = spawnSync('git', ['worktree', 'lock', ownedPath], { cwd: ownedPath, encoding: 'utf8' });
+      const lock = spawnSync('git', ['worktree', 'lock', ownedPath], { env: isolatedBaseEnv(), cwd: ownedPath, encoding: 'utf8' });
       assert.equal(lock.status, 0, lock.stderr);
       try {
         await assert.rejects(fixture.dispose(), /worktree/i, 'a failed targeted removal must surface a failure instead of pruning');
@@ -6468,22 +6554,22 @@ if (process.env[selfTestGuard] === '1') {
       const log = join(temporary, 'git-cleanup.jsonl');
       await mkdir(output, { mode: 0o700 });
       await mkdir(bin);
-      const realGit = spawnSync('/bin/sh', ['-c', 'command -v git'], { encoding: 'utf8' }).stdout.trim();
+      const realGit = spawnSync('/bin/sh', ['-c', 'command -v git'], { env: isolatedBaseEnv(), encoding: 'utf8' }).stdout.trim();
       // A disposable shared source repository lets RED exercise the destructive
       // prune itself without endangering the caller's existing registrations.
       const sharedSource = join(temporary, 'shared-source');
-      const cloned = spawnSync(realGit, ['clone', '--shared', '--no-checkout', repositoryRoot, sharedSource], { encoding: 'utf8' });
+      const cloned = spawnSync(realGit, ['clone', '--shared', '--no-checkout', repositoryRoot, sharedSource], { env: isolatedBaseEnv(), encoding: 'utf8' });
       assert.equal(cloned.status, 0, cloned.stderr);
-      const checkedOut = spawnSync(realGit, ['checkout', '--detach', repositorySha], { cwd: sharedSource, encoding: 'utf8' });
+      const checkedOut = spawnSync(realGit, ['checkout', '--detach', repositorySha], { env: isolatedBaseEnv(), cwd: sharedSource, encoding: 'utf8' });
       assert.equal(checkedOut.status, 0, checkedOut.stderr);
-      const sharedCommon = spawnSync(realGit, ['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd: sharedSource, encoding: 'utf8' }).stdout.trim();
+      const sharedCommon = spawnSync(realGit, ['rev-parse', '--path-format=absolute', '--git-common-dir'], { env: isolatedBaseEnv(), cwd: sharedSource, encoding: 'utf8' }).stdout.trim();
       const unrelated = join(temporary, 'unrelated-worktree');
-      const added = spawnSync(realGit, ['worktree', 'add', '--detach', unrelated, repositorySha], { cwd: sharedSource, encoding: 'utf8' });
+      const added = spawnSync(realGit, ['worktree', 'add', '--detach', unrelated, repositorySha], { env: isolatedBaseEnv(), cwd: sharedSource, encoding: 'utf8' });
       assert.equal(added.status, 0, added.stderr);
-      const unrelatedAdmin = spawnSync(realGit, ['rev-parse', '--absolute-git-dir'], { cwd: unrelated, encoding: 'utf8' }).stdout.trim();
+      const unrelatedAdmin = spawnSync(realGit, ['rev-parse', '--absolute-git-dir'], { env: isolatedBaseEnv(), cwd: unrelated, encoding: 'utf8' }).stdout.trim();
       t.after(() => rm(unrelatedAdmin, { recursive: true, force: true }));
       await rm(unrelated, { recursive: true, force: true });
-      const sharedList = () => spawnSync(realGit, ['worktree', 'list', '--porcelain'], { cwd: sharedSource, encoding: 'utf8' }).stdout;
+      const sharedList = () => spawnSync(realGit, ['worktree', 'list', '--porcelain'], { env: isolatedBaseEnv(), cwd: sharedSource, encoding: 'utf8' }).stdout;
       const registrationsBefore = sharedList();
       assert.ok(registeredWorktreePaths(registrationsBefore).some((path) => sameRegisteredPath(path, unrelated)));
 
@@ -6529,7 +6615,7 @@ process.exit(result.status ?? 1);
       }
       assert.equal(buildError, undefined, 'the clone-internal prune must recover the injected removal failure');
       assert.equal(sharedList(), registrationsBefore, 'every shared registration, including the unrelated prunable entry, must survive untouched');
-      const cloneList = spawnSync(realGit, ['worktree', 'list', '--porcelain'], { cwd: fixture.record.ownedCleanSourceWorktree, encoding: 'utf8' });
+      const cloneList = spawnSync(realGit, ['worktree', 'list', '--porcelain'], { env: isolatedBaseEnv(), cwd: fixture.record.ownedCleanSourceWorktree, encoding: 'utf8' });
       assert.equal(cloneList.status, 0, cloneList.stderr);
       assert.equal(registeredWorktreePaths(cloneList.stdout).length, 2, 'only the clone and fixture clean source may remain after the builder staging prune');
       assert.ok(registeredWorktreePaths(cloneList.stdout).every((path) => !failedRemovals.some((call) => sameRegisteredPath(path, call.args.at(-1)))), 'the clone-internal prune must remove the builder staging registration');
@@ -6570,7 +6656,7 @@ process.exit(result.status ?? 1);
 
     test('inspectVerifiedProcessIdentity resolves a live exact process and rejects a nonce mismatch', async (t) => {
       const child = spawn(process.execPath, ['--input-type=module', '--eval', 'await new Promise((resolve) => setTimeout(resolve, 10_000));'], {
-        env: { ...process.env, FAKE_ZCODE_PROCESS_NONCE: TEST_NONCE }, stdio: 'ignore',
+        env: { ...isolatedBaseEnv(), FAKE_ZCODE_PROCESS_NONCE: TEST_NONCE }, stdio: 'ignore',
       });
       t.after(() => { try { child.kill('SIGKILL'); } catch { /* already exited */ } });
       await assert.rejects(inspectVerifiedProcessIdentity(child.pid, OTHER_NONCE), /identity/i);
@@ -6587,7 +6673,7 @@ process.exit(result.status ?? 1);
     test('the default capture, re-verification, and termination chain accepts the inspector identity shape', async (t) => {
       const { spawn: spawnNode } = await import('node:child_process');
       const child = spawnNode(process.execPath, ['--input-type=module', '--eval', 'await new Promise((resolve) => setTimeout(resolve, 30_000));'], {
-        env: { ...process.env, FAKE_ZCODE_PROCESS_NONCE: TEST_NONCE }, stdio: 'ignore',
+        env: { ...isolatedBaseEnv(), FAKE_ZCODE_PROCESS_NONCE: TEST_NONCE }, stdio: 'ignore',
       });
       t.after(() => { try { child.kill('SIGKILL'); } catch { /* already exited */ } });
       const temporary = await mkdtemp(join(tmpdir(), 'shell-wait-chain-'));
@@ -6622,7 +6708,7 @@ process.exit(result.status ?? 1);
 
       // Part B: default termination of the same shape under budget expiry.
       const childB = spawnNode(process.execPath, ['--input-type=module', '--eval', 'await new Promise((resolve) => setTimeout(resolve, 30_000));'], {
-        env: { ...process.env, FAKE_ZCODE_PROCESS_NONCE: TEST_NONCE }, stdio: 'ignore',
+        env: { ...isolatedBaseEnv(), FAKE_ZCODE_PROCESS_NONCE: TEST_NONCE }, stdio: 'ignore',
       });
       t.after(() => { try { childB.kill('SIGKILL'); } catch { /* already exited */ } });
       const processPathB = join(temporary, 'process-b.json');
@@ -6787,6 +6873,131 @@ process.exit(result.status ?? 1);
       // keeps full native-settlement credit for such runs.
       assert.equal(held.cleanup.cleanupBoundaryAtMs, null, 'a no-kill natural completion records no cleanup boundary');
       assert.equal(held.processAliveWhileHeld, true);
+    });
+
+    test('the normal-completion teardown abort records NO cleanup boundary — only real termination initiations do (overall review fix, round 3)', async () => {
+      // The production forwarder shape (the default executor's launch closure
+      // installs this listener on the shared budget signal: record the
+      // cleanup boundary, then forward the abort to the turn controller).
+      // On a NATURAL completion the host process has ALREADY exited when the
+      // wrapper's `finally` aborts the budget controller — the forwarder then
+      // fires on pure watcher teardown, and stamping there manufactured a
+      // spurious cleanup boundary that the durable-cleanup fence
+      // (nativeInterruptionGateDInput's pre-boundary check) over-rejected on
+      // naturally completing reads (the reviewer's 20/20 reproduction). The
+      // recorder is INERT during teardown; every REAL initiation keeps its
+      // own source stamp.
+      let resolveResult;
+      const held = await runHeldHostTurn({
+        launch: async (budgetContext) => {
+          budgetContext.signal.addEventListener('abort', () => {
+            if (typeof budgetContext?.recordCleanupBoundary === 'function') budgetContext.recordCleanupBoundary();
+          }, { once: true });
+          return { result: new Promise((resolve) => { resolveResult = resolve; }) };
+        },
+        waitForGate: async () => {},
+        captureProcessIdentity: async () => ({ pid: 66131, ppid: 77, nonce: TEST_NONCE, startIdentity: 'start-a' }),
+        readProcessIdentity: async () => ({ pid: 66131, ppid: 77, nonce: TEST_NONCE, startIdentity: 'start-a' }),
+        waitForProcessExit: async () => {},
+        sleep: async () => {},
+        releaseGate: async () => { resolveResult({ code: 0, stdout: 'sentinel', stderr: '' }); },
+        now: (() => { let value = 0; return () => (value += 1000); })(),
+        holdMs: 0,
+        budgetMs: 60_000,
+      });
+      assert.equal(held.budgetExpired, false);
+      assert.equal(held.endedBeforeGate, false);
+      assert.equal(held.cleanup.label, 'observation');
+      assert.equal(held.cleanup.cleanupBoundaryAtMs, null,
+        'the teardown abort must never manufacture a cleanup boundary on a naturally completing turn');
+      // Part B — a REAL termination-initiation boundary (the launch's own
+      // runner-side kill initiation calling the recorder while the turn is
+      // live) is still recorded, in the same wall-clock millisecond region as
+      // any durable-read completion, so the fence can still fire on it.
+      let resolveResultB;
+      const heldB = await runHeldHostTurn({
+        launch: async (budgetContext) => {
+          return { result: new Promise((resolve) => {
+            resolveResultB = () => {
+              budgetContext.recordCleanupBoundary();
+              resolve({ code: 0, stdout: 'sentinel', stderr: '' });
+            };
+          }) };
+        },
+        waitForGate: async () => {},
+        captureProcessIdentity: async () => ({ pid: 66132, ppid: 78, nonce: TEST_NONCE, startIdentity: 'start-a' }),
+        readProcessIdentity: async () => ({ pid: 66132, ppid: 78, nonce: TEST_NONCE, startIdentity: 'start-a' }),
+        waitForProcessExit: async () => {},
+        sleep: async () => {},
+        releaseGate: async () => { resolveResultB(); },
+        now: (() => { let value = 0; return () => (value += 1000); })(),
+        holdMs: 0,
+        budgetMs: 60_000,
+      });
+      assert.equal(heldB.budgetExpired, false);
+      assert.equal(typeof heldB.cleanup.cleanupBoundaryAtMs, 'number',
+        'a real termination-initiation recording during the run is preserved verbatim');
+      // Part C — budget expiry keeps its AT-SOURCE boundary (the timer stamps
+      // before aborting; never weakened by the teardown distinction).
+      const heldC = await runHeldHostTurn({
+        launch: async () => ({ result: new Promise(() => {}), terminate: async () => {} }),
+        waitForGate: async () => new Promise(() => {}),
+        captureProcessIdentity: async () => ({ pid: 66133, ppid: 79, nonce: TEST_NONCE, startIdentity: 'start-a' }),
+        readProcessIdentity: async () => ({ pid: 66133, ppid: 79, nonce: TEST_NONCE, startIdentity: 'start-a' }),
+        holdMs: 5_000,
+        budgetMs: 50,
+      });
+      assert.equal(heldC.budgetExpired, true);
+      assert.equal(typeof heldC.cleanup.cleanupBoundaryAtMs, 'number', 'the budget-expiry boundary is stamped at the abort source');
+    });
+
+    test('the result-first watcher-less branch samples the durable reader before early-exit cleanup (overall review fix, round 4)', async () => {
+      // The dependency-injected reproduction of the finding: a RESULT-FIRST
+      // boundary (Root finished before the gate) on an interrupt-shaped run —
+      // NO settlement watcher, NO statusDeadlineFlow — previously went
+      // directly to early-exit cleanup without invoking the supplied durable
+      // reader (reads: 0, no snapshot), losing the outstanding job/guard
+      // obligations observation before cleanup changes them. The branch now
+      // STARTS the reader (when supplied) and JOINS it before the early-exit
+      // cleanup under the SAME fence contract as every other join site
+      // (buildDurableSettlementLayer stamps the read's own completion instant
+      // and applies the budget/cleanup-boundary fence); the early-exit
+      // classification itself is unchanged, and the no-reader control keeps
+      // the named null-supplier contract (no childSettlement block).
+      let reads = 0;
+      const held = await runHeldHostTurn({
+        launch: async () => ({ result: Promise.resolve({ code: 0, stdout: 'early root finish', stderr: '' }) }),
+        waitForGate: async () => new Promise(() => {}),
+        readDurableSnapshot: async () => {
+          reads += 1;
+          return { aggregate: 'settled', reasons: [], executorLinkage: 'verified', job: { presence: 'found', projection: { status: 'succeeded' } } };
+        },
+        holdMs: 0,
+        budgetMs: 60_000,
+      });
+      assert.equal(held.endedBeforeGate, true, 'the result-first boundary keeps the early-exit classification');
+      assert.equal(held.cleanup.label, 'early-exit', 'the early-exit label is unchanged');
+      assert.equal(reads, 1, 'the supplied durable reader RAN (was 0 before the fix)');
+      assert.ok(held.childSettlement, 'the joined settlement record rides the held turn');
+      assert.equal(held.childSettlement.observed, false);
+      assert.equal(held.childSettlement.basis, null);
+      assert.equal(held.childSettlement.layers.durableObligations, 'settled', 'the settled obligations join through the layer');
+      assert.equal(held.childSettlement.layers.localProcessReaping, null);
+      assert.ok(held.childSettlement.durableSnapshot, 'the typed durable snapshot joins');
+      assert.equal(held.childSettlement.durableSnapshot.aggregate, 'settled');
+      assert.equal(typeof held.childSettlement.durableSnapshot.completedAtMs, 'number',
+        'the read carries its own completion instant (the fence contract input)');
+      // The no-reader control: the named null-supplier contract (no
+      // childSettlement block) and the unchanged early-exit classification.
+      const control = await runHeldHostTurn({
+        launch: async () => ({ result: Promise.resolve({ code: 0, stdout: 'early root finish', stderr: '' }) }),
+        waitForGate: async () => new Promise(() => {}),
+        holdMs: 0,
+        budgetMs: 60_000,
+      });
+      assert.equal(control.endedBeforeGate, true);
+      assert.equal(control.cleanup.label, 'early-exit');
+      assert.equal('childSettlement' in control, false, 'no reader supplied → no settlement block (the null-supplier contract)');
     });
 
     test('the held turn records its actual timeline on a documented monotonic clock, including a late poll start', async () => {
@@ -7521,7 +7732,7 @@ process.exit(result.status ?? 1);
       statusWaitInvocation, validateStatusWaitFlow,
     } = await import('../tools/shell-wait-probe/driver.mjs');
 
-    const repositorySha = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+    const repositorySha = spawnSync('git', ['rev-parse', 'HEAD'], { env: isolatedBaseEnv(), encoding: 'utf8' }).stdout.trim();
     const companionEntry = join(repositoryRoot, 'scripts', 'zcode-companion.mjs');
     const identityModule = join(repositoryRoot, 'scripts', 'lib', 'identity.mjs');
     const QUERY_TIMEOUT_MS = 240_000; // the real Status command contract default (parseStatus)
@@ -7576,7 +7787,7 @@ process.exit(result.status ?? 1);
       await mkdir(dataRoot, { mode: 0o700 });
       await mkdir(workspace, { recursive: true });
       const canonicalWorkspace = realpathSync.native(workspace);
-      const env = { ...process.env, ZCODE_DATA_ROOT: dataRoot };
+      const env = { ...isolatedBaseEnv(), ZCODE_DATA_ROOT: dataRoot };
       const sessionId = randomUUID();
       if (runHooks) {
         const hookInput = (extra) => ({ session_id: sessionId, cwd: workspace, transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', ...extra });
@@ -9467,7 +9678,7 @@ process.exit(result.status ?? 1);
         const workspace = join(temporary, `workspace-${label}`);
         await mkdir(workspace, { recursive: true });
         const canonicalWorkspace = realpathSync.native(workspace);
-        const env = { ...process.env, ZCODE_DATA_ROOT: dataRoot };
+        const env = { ...isolatedBaseEnv(), ZCODE_DATA_ROOT: dataRoot };
         const sessionId = randomUUID();
         const turnId = `r4-status-cancel-turn-${label}`;
         const hookInput = (extra) => ({ session_id: sessionId, cwd: workspace, transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', ...extra });
@@ -9520,6 +9731,1820 @@ process.exit(result.status ?? 1);
       assert.equal(unrelatedAfter.status, 'queued', 'the unrelated harmless job must survive untouched');
       assert.equal(unrelatedAfter.stopIntent ?? undefined, undefined, 'the unrelated job must carry no stop intent either');
     });
+  });
+
+  describe('native delivery admission: the registered host activity item (2026-10-21 evidence-closure task 3, report §19.4)', async () => {
+    // The §19.4 registration: the host-generated
+    // `event_msg`/`item_completed`/`SubAgentActivity(kind=interrupted)` item
+    // (interrupt_agent.rs:62-74 → emit_sub_agent_activity → ItemCompleted,
+    // persisted in Paginated rollouts) is the missing finite shape the
+    // current reader never admits. The admission set (every conjunct
+    // required, registered BEFORE any live trial):
+    //   (1) exactly ONE interrupt_agent call (the existing callCount
+    //       contract); (2) exactly ONE matching interrupted-kind item whose
+    //       id equals that call's id (direct call-id join — never alias
+    //       text); (3) the item's agent_thread_id equals the pending Child's
+    //       exact spawn-acknowledgement id; (4) the item occurs in the
+    //       OWNING ROOT's rollout (its thread_id is the Root's), ordered
+    //       strictly inside the confirmed pending window and before natural
+    //       completion; (5) the item is timed (completed_at_ms finite and
+    //       positive; untimed stays unestablished, never zero); (6)
+    //       previous_status remains a pre-dispatch snapshot only, never
+    //       settlement.
+    const { extractInterruptInteraction, admitInterruptHostDelivery } = await import('../tools/shell-wait-probe/evidence.mjs');
+
+    const CHILD_THREAD = 'a445b927-1e4d-4f11-9a34-2b6ac19b7d51';
+    const ROOT_THREAD = 'root-thread-1';
+    const SIBLING_THREAD = 'ffffffff-ffff-4fff-8fff-fffffffffff0';
+    // A 23-character alias target (the §19.2 suppressed-bytes shape): not an
+    // id, not the fixture task name, so the sanitizer withholds its value.
+    const ALIAS_TARGET = 'zcode-rescue-agent-tas';
+
+    /** The registered durable wire shape (rollout_payload.rs:33 EventMsg,
+     * protocol.rs ItemCompletedEvent, items.rs SubAgentActivityItem,
+     * protocol.rs:4502-4509 snake_case kind). Timestamps are epoch ms. */
+    const activityItem = ({ id, kind = 'interrupted', agentThreadId = CHILD_THREAD, threadId = ROOT_THREAD, completedAtMs, path = '/root/zcode_rescue_task_1' }) => ({
+      type: 'event_msg',
+      payload: {
+        type: 'item_completed',
+        thread_id: threadId,
+        turn_id: 'root-turn-1',
+        item: { type: 'SubAgentActivity', model: null, reasoning_effort: null, id, kind, agent_thread_id: agentThreadId, agent_path: path },
+        completed_at_ms: completedAtMs,
+      },
+    });
+    const stamped = (timestamp, event) => ({ timestamp, ...event });
+    const fnCall = (name, callId, args, timestamp = null) => ({
+      ...(timestamp ? stamped(timestamp, {}) : {}),
+      type: 'response_item', payload: { type: 'function_call', name, call_id: callId, arguments: JSON.stringify(args) },
+    });
+    const fnOutput = (callId, output, timestamp = null) => ({
+      ...(timestamp ? stamped(timestamp, {}) : {}),
+      type: 'response_item', payload: { type: 'function_call_output', call_id: callId, output },
+    });
+    const interruptCall = (callId, target, timestamp = null) => fnCall('interrupt_agent', callId, { target }, timestamp);
+    const interruptSuccess = (callId, previousStatus, timestamp = null) => fnOutput(callId, JSON.stringify({ previous_status: previousStatus }), timestamp);
+    const interruptError = (callId, message, timestamp = null) => fnOutput(callId, JSON.stringify({ error: message }), timestamp);
+    const completedOutputBody = (result) => [
+      { type: 'input_text', text: 'Script completed\n' },
+      { type: 'input_text', text: JSON.stringify(result) },
+    ];
+    const pendingOutputBody = (cellId) => [{ type: 'input_text', text: `Script running with cell ID ${cellId}\n` }];
+    const markerOutput = [
+      { type: 'input_text', text: 'Script terminated\nWall time 0.1 seconds\nOutput:\n' },
+      { type: 'input_text', text: 'killed\n' },
+    ];
+    const POLL_START_MS = Date.parse('2026-10-06T00:00:02.000Z');
+    const EMISSION_MS = Date.parse('2026-10-06T00:00:07.200Z');
+
+    /** The full pending → delivery → host item → native-settlement shape with
+     * every §19.4 conjunct satisfiable; each test mutates one dimension. */
+    function admissionRollouts({
+      callId = 'int-1', target = CHILD_THREAD, hostItem = true, hostItemKind = 'interrupted',
+      hostItemId = callId, hostAgentThreadId = CHILD_THREAD, hostThreadId = ROOT_THREAD,
+      hostRollout = 'root', completedAtMs = EMISSION_MS, withPendingPoll = true,
+      childTerminal = false, delivered = 'success', secondCall = false,
+    } = {}) {
+      const childEvents = [
+        { type: 'session_meta', payload: { id: CHILD_THREAD } },
+        fnCall('exec_command', 'launch-1', { cmd: 'node launcher' }, '2026-10-06T00:00:00.000Z'),
+        fnOutput('launch-1', completedOutputBody({ output: '', exit_code: 0, session_id: 5 }), '2026-10-06T00:00:01.000Z'),
+        ...(withPendingPoll ? [
+          fnCall('write_stdin', 'poll-1', { session_id: 5, chars: '', yield_time_ms: 60_000 }, '2026-10-06T00:00:02.000Z'),
+          fnOutput('poll-1', pendingOutputBody('cell-1'), '2026-10-06T00:00:02.500Z'),
+        ] : []),
+        ...(childTerminal ? [
+          fnCall('wait', 'outer-1', { cell_id: 'cell-1' }, '2026-10-06T00:00:03.000Z'),
+          fnOutput('outer-1', completedOutputBody({ output: 'done', exit_code: 0 }), '2026-10-06T00:00:04.000Z'),
+        ] : []),
+      ];
+      const rootEvents = [
+        { type: 'session_meta', payload: { id: ROOT_THREAD } },
+        ...(secondCall ? [interruptCall('int-0', target, '2026-10-06T00:00:06.000Z'), interruptSuccess('int-0', 'running', '2026-10-06T00:00:06.100Z')] : []),
+        interruptCall(callId, target, '2026-10-06T00:00:07.000Z'),
+        ...(delivered === 'success'
+          ? [interruptSuccess(callId, 'running', '2026-10-06T00:00:07.100Z')]
+          : delivered === 'rejected'
+            ? [interruptError(callId, 'unknown agent: no such thread', '2026-10-06T00:00:07.100Z')]
+            : []),
+        // The host item lives in the DECLARED rollout: 'root' (the real
+        // emission site) or — for the foreign-shape counterexamples — a
+        // same-shaped copy that the owning Root's rollout lacks.
+        ...(hostItem && hostRollout === 'root' ? [activityItem({ id: hostItemId, kind: hostItemKind, agentThreadId: hostAgentThreadId, threadId: hostThreadId, completedAtMs })] : []),
+      ];
+      const childHostCopy = hostRollout === 'child' ? [activityItem({ id: hostItemId, kind: 'interrupted', agentThreadId: hostAgentThreadId, threadId: CHILD_THREAD, completedAtMs })] : [];
+      const thirdRollout = hostRollout === 'foreign' ? [
+        { type: 'session_meta', payload: { id: SIBLING_THREAD } },
+        activityItem({ id: hostItemId, kind: 'interrupted', agentThreadId: hostAgentThreadId, threadId: SIBLING_THREAD, completedAtMs }),
+      ] : [];
+      return [
+        rootEvents,
+        [...childEvents, ...childHostCopy],
+        ...(thirdRollout.length > 0 ? [thirdRollout] : []),
+      ];
+    }
+    const binding = { childThreadId: CHILD_THREAD, rootThreadId: ROOT_THREAD };
+    const admit = (rollouts, options = binding) => {
+      const interaction = extractInterruptInteraction(rollouts, [], { childThreadId: options.childThreadId, command: 'node launcher' });
+      return { interaction, admission: admitInterruptHostDelivery(rollouts, interaction, options) };
+    };
+
+    test('the exact spawn/call/Child/Root identity match admits the host item end to end', () => {
+      // Conjuncts 1-5 all hold: one call, one interrupted-kind item whose id
+      // equals the call id, agent_thread_id equal to the exact
+      // spawn-acknowledgement Child id, the item inside the OWNING ROOT's
+      // rollout with the Root's thread_id, emitted strictly inside the
+      // confirmed pending window (after the attributable poll start, before
+      // the native settlement), timed with a finite positive emission stamp.
+      const { interaction, admission } = admit(admissionRollouts());
+      assert.equal(interaction.attempted, true);
+      assert.equal(interaction.callCount, 1);
+      assert.equal(interaction.callId, 'int-1', 'the interaction exposes the delivery call id the host item joins');
+      assert.equal(interaction.pendingBeforeCall.observed, true);
+      assert.deepEqual(admission, {
+        checked: true,
+        attemptedCall: true,
+        callId: 'int-1',
+        itemPresent: true,
+        interruptedItemCount: 1,
+        joinedItemCount: 1,
+        foreignItemCount: 0,
+        idJoin: true,
+        idJoinBasis: 'outer-call-id',
+        agentThreadIdMatch: true,
+        rootRolloutOwned: true,
+        insidePendingWindow: true,
+        timed: true,
+        completedAtMs: EMISSION_MS,
+        admitted: true,
+        reasons: [],
+      });
+    });
+
+    test('alias target text stays hidden while the host identity matches (never relabeled authoritative)', () => {
+      // The caller supplied an alias (23 chars, withheld by the sanitizer);
+      // the HOST resolved it and emitted the exact resolved agent id. The
+      // admission joins on the host identity — the alias text itself is
+      // never persisted, never compared, never relabeled authoritative.
+      const { interaction, admission } = admit(admissionRollouts({ target: ALIAS_TARGET }));
+      assert.deepEqual(interaction.target, { kind: 'unknown', value: null, suppressed: true, chars: ALIAS_TARGET.length },
+        'the caller-supplied alias stays suppressed structural chars only');
+      assert.equal(admission.admitted, true, 'the admission binds through the host-emitted identity, not the alias text');
+      assert.equal(admission.agentThreadIdMatch, true);
+      assert.equal(admission.reasons.length, 0);
+    });
+
+    test('an absent activity item leaves the delivery identity unestablished (Legacy-mode/older-binary counterexample)', () => {
+      const { admission } = admit(admissionRollouts({ hostItem: false }));
+      assert.equal(admission.admitted, false);
+      assert.equal(admission.itemPresent, false);
+      assert.deepEqual(admission.reasons, ['host-activity-item-absent']);
+    });
+
+    test('a started/completed activity item with the call id is never the interrupted admission shape', () => {
+      // multi_agents_v2.rs:44-52 emits Started/Completed items through the
+      // SAME family: only kind == "interrupted" is the registered delivery
+      // shape (protocol.rs:4502-4509).
+      for (const kind of ['started', 'completed', 'interacted', 'something-else']) {
+        const { admission } = admit(admissionRollouts({ hostItemKind: kind }));
+        assert.equal(admission.admitted, false, `kind ${kind} must fail the admission`);
+        assert.deepEqual(admission.reasons, ['host-activity-kind-not-interrupted']);
+        assert.equal(admission.itemPresent, false, `kind ${kind} is not an interrupted-kind item`);
+      }
+    });
+
+    test('an agent_thread_id matching a sibling, unrelated, or the Root itself fails the identity conjunct', () => {
+      for (const hostAgentThreadId of [SIBLING_THREAD, ROOT_THREAD]) {
+        const { admission } = admit(admissionRollouts({ hostAgentThreadId }));
+        assert.equal(admission.admitted, false);
+        assert.equal(admission.agentThreadIdMatch, false);
+        assert.ok(admission.reasons.includes('host-activity-agent-thread-mismatch'), hostAgentThreadId);
+      }
+    });
+
+    test('duplicate activity items for one call id fail closed (no fallback interaction)', () => {
+      const rollouts = admissionRollouts();
+      rollouts[0].push(activityItem({ id: 'int-1', kind: 'interrupted', agentThreadId: CHILD_THREAD, threadId: ROOT_THREAD, completedAtMs: EMISSION_MS + 5 }));
+      const { admission } = admit(rollouts);
+      assert.equal(admission.admitted, false);
+      assert.equal(admission.joinedItemCount, 2);
+      assert.ok(admission.reasons.includes('host-activity-duplicate-item'));
+    });
+
+    test('an interrupted item whose id does not join the call keeps the id join missing', () => {
+      const { admission } = admit(admissionRollouts({ hostItemId: 'other-call-1' }));
+      assert.equal(admission.admitted, false);
+      assert.equal(admission.itemPresent, true, 'an interrupted item exists, but it does not join THIS call');
+      assert.equal(admission.joinedItemCount, 0);
+      assert.deepEqual(admission.reasons, ['host-activity-id-join-missing']);
+    });
+
+    test('an item outside the owning Root rollout (child copy or foreign session) is a foreign shape, never the join', () => {
+      // The host emits the item into the ROOT's rollout; a copy inside the
+      // Child's rollout (or any third session) is not conjunct 4's item —
+      // even when every other dimension matches exactly.
+      for (const hostRollout of ['child', 'foreign']) {
+        const { admission } = admit(admissionRollouts({ hostRollout }));
+        assert.equal(admission.admitted, false, hostRollout);
+        assert.equal(admission.rootRolloutOwned, false, hostRollout);
+        assert.ok(admission.reasons.includes('host-activity-foreign-rollout'), hostRollout);
+        assert.equal(admission.joinedItemCount, 0, hostRollout);
+      }
+    });
+
+    test('a rejected dispatch (error output) never admits a host delivery identity', () => {
+      // interrupt_agent.rs:49-55 rejects BEFORE the emit (:62-74): a rollout
+      // pairing a rejection output with a present host item is contradictory
+      // evidence and fails closed.
+      const { interaction, admission } = admit(admissionRollouts({ delivered: 'rejected' }));
+      assert.equal(interaction.delivered, false);
+      assert.equal(admission.admitted, false);
+      assert.ok(admission.reasons.includes('host-activity-delivery-rejected'));
+    });
+
+    test('an unobserved delivery outcome keeps the admission unestablished', () => {
+      // No parseable tool output: the delivery outcome is unknown — the host
+      // item alone proves dispatch identity, never the delivery.
+      const { interaction, admission } = admit(admissionRollouts({ delivered: 'unobserved' }));
+      assert.equal(interaction.delivered, null);
+      assert.equal(admission.admitted, false);
+      assert.ok(admission.reasons.includes('host-activity-delivery-unobserved'));
+    });
+
+    test('a terminal-before-delivery child leaves no pending window to admit into', () => {
+      // The Child completed before the call (same-rollout event order): the
+      // confirmed pending window does not exist, so the emission cannot be
+      // ordered inside it.
+      const { interaction, admission } = admit(admissionRollouts({ childTerminal: true }));
+      assert.equal(interaction.pendingBeforeCall.observed, false);
+      assert.equal(admission.admitted, false);
+      assert.ok(admission.reasons.includes('host-activity-without-pending-observation'));
+    });
+
+    test('an emission without any pending observation proves dispatch identity only', () => {
+      // No poll at all: the host item may exist, but "activity item without
+      // pending observation" is a registered counterexample — emission alone
+      // proves nothing about the pending window.
+      const { admission } = admit(admissionRollouts({ withPendingPoll: false }));
+      assert.equal(admission.admitted, false);
+      assert.ok(admission.reasons.includes('host-activity-without-pending-observation'));
+    });
+
+    test('an emission ordered outside the pending window or after settlement fails the ordering conjunct', () => {
+      const before = admit(admissionRollouts({ completedAtMs: POLL_START_MS - 1 }));
+      assert.equal(before.admission.admitted, false);
+      assert.equal(before.admission.insidePendingWindow, false);
+      // Codex round 5: that shape is ALSO before the call (07.0) — the more
+      // specific contradictory-timing reason fires (still fail-closed).
+      assert.ok(before.admission.reasons.includes('host-activity-pre-call-timing'), JSON.stringify(before.admission.reasons));
+      // Settlement order: the same rollouts with an accepted same-cell
+      // continuation issued BEFORE the delivery whose native marker resolves
+      // the pending window BEFORE the emission — the item landed after the
+      // window's resolution (poll 02.0 → call 07.0 → marker 09.0 → emission
+      // 09.5).
+      const rollouts = admissionRollouts({ completedAtMs: Date.parse('2026-10-06T00:00:09.500Z') });
+      rollouts[1].push(
+        fnCall('wait', 'outer-2', { cell_id: 'cell-1' }, '2026-10-06T00:00:06.000Z'),
+        fnOutput('outer-2', markerOutput, '2026-10-06T00:00:09.000Z'),
+      );
+      const after = admit(rollouts);
+      assert.equal(after.interaction.pendingBeforeCall.observed, true);
+      assert.equal(after.interaction.settledAfterCall.atMs, Date.parse('2026-10-06T00:00:09.000Z'));
+      assert.equal(after.admission.admitted, false);
+      assert.equal(after.admission.insidePendingWindow, false);
+      assert.ok(after.admission.reasons.includes('host-activity-after-settlement'));
+    });
+
+    test('a nonterminal poll resolution closes the pending window exactly like a terminal one (codex round 1)', () => {
+      // The registered window is [attributable poll start, RESOLUTION) —
+      // whatever the resolution's terminality. A live-handle completed
+      // response (no exit code) that resolves the interrupted poll AFTER the
+      // delivery closes the window: an emission at/after it is named
+      // outside, never admitted through the resolution's nonterminality.
+      // Ordering: poll 02.0 → interrupt 07.0 → nonterminal resolution 09.0 →
+      // emission 09.5.
+      const rollouts = admissionRollouts({ completedAtMs: Date.parse('2026-10-06T00:00:09.500Z') });
+      rollouts[1].push(
+        fnCall('wait', 'outer-live', { cell_id: 'cell-1' }, '2026-10-06T00:00:08.000Z'),
+        fnOutput('outer-live', completedOutputBody({ output: 'still running', session_id: 9 }), '2026-10-06T00:00:09.000Z'),
+      );
+      const { interaction, admission } = admit(rollouts);
+      assert.equal(interaction.pendingBeforeCall.observed, true, 'the post-delivery resolution CONFIRMS the window');
+      assert.equal(interaction.settledAfterCall.atMs, null, 'a nonterminal resolution is not a settlement');
+      assert.equal(interaction.completedAfterCall.atMs, null, 'a nonterminal resolution is not an exit-code completion');
+      assert.notEqual(interaction.resolvedNonterminalAfterCall.atMs, null,
+        'the nonterminal resolution is recorded as the window-closing fact');
+      assert.equal(admission.admitted, false);
+      assert.equal(admission.insidePendingWindow, false);
+      assert.ok(admission.reasons.includes('host-activity-after-resolution'), JSON.stringify(admission.reasons));
+      // Controls unchanged: an emission STRICTLY inside the window admits,
+      // and a TERMINAL resolution keeps the named after-settlement bound.
+      const inside = admit(admissionRollouts());
+      assert.equal(inside.admission.admitted, true);
+      const terminalRollouts = admissionRollouts({ completedAtMs: Date.parse('2026-10-06T00:00:12.500Z') });
+      terminalRollouts[1].push(
+        fnCall('wait', 'outer-native', { cell_id: 'cell-1' }, '2026-10-06T00:00:09.000Z'),
+        fnOutput('outer-native', markerOutput, Date.parse('2026-10-06T00:00:12.000Z')),
+      );
+      const afterTerminal = admit(terminalRollouts);
+      assert.equal(afterTerminal.admission.admitted, false);
+      assert.ok(afterTerminal.admission.reasons.includes('host-activity-after-settlement'), JSON.stringify(afterTerminal.admission.reasons));
+    });
+
+    test('an untimed event keeps timing unestablished and is never treated as timed — zero stays untimed', () => {
+      // The pinned ItemCompletedEvent deserializes a MISSING completed_at_ms
+      // as 0 (protocol.rs default_item_completed_at_ms — old rollouts): both
+      // the absent and the 0 shapes are UNTIMED (never zero).
+      for (const raw of ['absent', 0]) {
+        const rollouts = admissionRollouts();
+        const itemEvent = /** @type {any} */ (rollouts[0].find((event) => /** @type {any} */ (event)?.payload?.item?.type === 'SubAgentActivity'));
+        if (raw === 'absent') delete itemEvent.payload.completed_at_ms;
+        else itemEvent.payload.completed_at_ms = raw;
+        const { admission } = admit(rollouts);
+        assert.equal(admission.admitted, false, String(raw));
+        assert.equal(admission.timed, false, String(raw));
+        assert.equal(admission.completedAtMs, null, `untimed stays null, never zero (${String(raw)})`);
+        assert.ok(admission.reasons.includes('host-activity-untimed'), String(raw));
+      }
+      // A negative stamp is not a finite positive timing either.
+      const negativeRollouts = admissionRollouts();
+      /** @type {any} */ (negativeRollouts[0].find((event) => /** @type {any} */ (event)?.payload?.item?.type === 'SubAgentActivity')).payload.completed_at_ms = -5;
+      const negative = admit(negativeRollouts);
+      assert.equal(negative.admission.timed, false);
+      assert.ok(negative.admission.reasons.includes('host-activity-untimed'));
+    });
+
+    test('an explicit cell termination closes the admission window without native credit (codex round 4)', () => {
+      // The codex ordering: interrupt 07.0, explicit `wait({terminate:true})`
+      // resolution 09.0, activity emission 10.0 — the emission lands AFTER an
+      // attributable resolution of the interrupted observation and must be
+      // named outside (the explicit stop NEVER grants native settlement —
+      // the round-10 alternate-ender guard stays).
+      const rollouts = admissionRollouts({ completedAtMs: Date.parse('2026-10-06T00:00:10.000Z') });
+      rollouts[1].push(
+        fnCall('wait', 'term-1', { session_id: 5, cell_id: 'cell-1', terminate: true }, '2026-10-06T00:00:08.000Z'),
+        fnOutput('term-1', [
+          { type: 'input_text', text: 'Script terminated\nWall time 0.1 seconds\nOutput:\n' },
+          { type: 'input_text', text: 'terminated\n' },
+        ], '2026-10-06T00:00:09.000Z'),
+      );
+      const { interaction, admission } = admit(rollouts);
+      assert.equal(interaction.pendingBeforeCall.observed, true);
+      assert.equal(interaction.settledAfterCall.atMs, null, 'an explicit stop is never a settlement');
+      assert.equal(interaction.resolvedExplicitStopAfterCall.atMs, Date.parse('2026-10-06T00:00:09.000Z'),
+        'the attributable explicit-stop resolution is recorded as the window-closing fact');
+      assert.equal(admission.admitted, false);
+      assert.equal(admission.insidePendingWindow, false);
+      assert.ok(admission.reasons.includes('host-activity-after-explicit-stop'), JSON.stringify(admission.reasons));
+      // An emission STRICTLY before the explicit stop stays inside the window.
+      const beforeRollouts = admissionRollouts();
+      beforeRollouts[1].push(
+        fnCall('wait', 'term-2', { session_id: 5, cell_id: 'cell-1', terminate: true }, '2026-10-06T00:00:08.000Z'),
+        fnOutput('term-2', [
+          { type: 'input_text', text: 'Script terminated\nWall time 0.1 seconds\nOutput:\n' },
+          { type: 'input_text', text: 'terminated\n' },
+        ], '2026-10-06T00:00:09.000Z'),
+      );
+      const before = admit(beforeRollouts);
+      assert.equal(before.admission.admitted, true, 'an emission before the explicit stop stays inside');
+      assert.equal(before.interaction.explicitTerminateAfterCall.atMs, Date.parse('2026-10-06T00:00:09.000Z'),
+        'the explicit ender stays separately classified (never native credit)');
+    });
+
+    test('an emission timestamped BEFORE its interrupt call is contradictory and named-unestablished (codex round 5)', () => {
+      // The codex ordering: poll 02.0, call 07.0, emission 03.0 — the
+      // emission is INSIDE [poll start, resolution) but BEFORE its own
+      // dispatch (completed_at_ms bounds the dispatch from above per §19.4/
+      // §19.6, so an emission strictly earlier than the call is contradictory
+      // evidence). Named `host-activity-pre-call-timing`, never admitted.
+      const contradictory = admit(admissionRollouts({ completedAtMs: Date.parse('2026-10-06T00:00:03.000Z') }));
+      assert.equal(contradictory.admission.admitted, false);
+      assert.equal(contradictory.admission.insidePendingWindow, false);
+      assert.ok(contradictory.admission.reasons.includes('host-activity-pre-call-timing'), JSON.stringify(contradictory.admission.reasons));
+      // Controls: inside [call, resolution) admits; an emission after an
+      // attributable resolution keeps its existing named bound.
+      const inside = admit(admissionRollouts());
+      assert.equal(inside.admission.admitted, true);
+      const afterRollouts = admissionRollouts({ completedAtMs: Date.parse('2026-10-06T00:00:09.500Z') });
+      afterRollouts[1].push(
+        fnCall('wait', 'term-3', { session_id: 5, cell_id: 'cell-1', terminate: true }, '2026-10-06T00:00:08.000Z'),
+        fnOutput('term-3', [
+          { type: 'input_text', text: 'Script terminated\nWall time 0.1 seconds\nOutput:\n' },
+          { type: 'input_text', text: 'terminated\n' },
+        ], '2026-10-06T00:00:09.000Z'),
+      );
+      const after = admit(afterRollouts);
+      assert.equal(after.admission.admitted, false);
+      assert.ok(after.admission.reasons.includes('host-activity-after-explicit-stop'), JSON.stringify(after.admission.reasons));
+    });
+
+    test('previous_status remains a pre-dispatch snapshot only: it never grounds the admission window or settlement', () => {
+      // The ONLY post-call evidence is previous_status (interrupt_agent.rs:61
+      // snapshots BEFORE dispatch, returned as the tool result :76): the
+      // admission may hold (identity) while the settlement layer stays
+      // unattributed — the snapshot is never a window bound, never a
+      // resolution.
+      const rollouts = admissionRollouts();
+      const { interaction, admission } = admit(rollouts);
+      assert.equal(interaction.previousStatus, 'running');
+      assert.equal(admission.admitted, true, 'the identity admission is independent of the snapshot');
+      assert.equal(interaction.settledAfterCall.atMs, null, 'the snapshot never resolves the window');
+      assert.equal(interaction.cancelledAfterCall.atMs, null);
+      assert.equal(interaction.completedAfterCall.atMs, null);
+      assert.equal(interaction.pendingBeforeCall.observed, true);
+    });
+
+    test('multiple delivery attempts fail the exactly-one conjunct', () => {
+      const { interaction, admission } = admit(admissionRollouts({ secondCall: true }));
+      assert.equal(interaction.callCount, 2);
+      assert.equal(admission.admitted, false);
+      assert.ok(admission.reasons.includes('host-activity-call-count-not-one'));
+    });
+
+    test('a root final message or cleanup fact is never admitted as the activity item', () => {
+      // A final agent_message and a gate-release control output are not
+      // SubAgentActivity item_completed payloads: the bounded shape gate
+      // ignores them structurally (and their text never enters the facts).
+      const rollouts = admissionRollouts({ hostItem: false });
+      rollouts[0].push(
+        { type: 'event_msg', payload: { type: 'agent_message', message: `interrupt done for ${CHILD_THREAD}` } },
+        { type: 'event_msg', payload: { type: 'task_complete', last_agent_message: 'gate released' } },
+      );
+      const { admission } = admit(rollouts);
+      assert.equal(admission.admitted, false);
+      assert.deepEqual(admission.reasons, ['host-activity-item-absent'], 'only the registered SubAgentActivity shape is admissible');
+    });
+
+    test('a code-mode-wrapped interrupt is NAMED unjoinable on this pin (codex round 4 — the registered supported-path limitation)', () => {
+      // The round-4 bounded persistence investigation FALSIFIED the round-3
+      // interval correlation: the pinned host does NOT persist nested
+      // function_call records for code-mode cells (submit_nested_tool ->
+      // handle_tool_call_with_source buffers executed-call METADATA only —
+      // executed_tool_calls.rs:498-569 — and the only serialized form,
+      // ExecutedToolCall at protocol/src/models/executed_tool_calls.rs:408,
+      // carries NO call_id). This test uses the REAL persisted bytes: the
+      // code-mode cell + its output, NO nested function_call record, and the
+      // activity item carrying the host-emitted exec-<uuid>. The admission
+      // names the wrapped-interrupt limitation and fails closed — never a
+      // guessed join; direct-mode (a top-level interrupt_agent invocation)
+      // remains the only qualified interruption path for I.
+      const NESTED_CALL_ID = 'exec-3f9a1c2d-0000-4000-8000-000000000001';
+      const sharedCellBody = [
+        'const r = await tools.exec_command({"cmd":"node launcher","yield_time_ms":1000}); text(JSON.stringify(r));',
+        `text(await tools.interrupt_agent(${JSON.stringify({ target: CHILD_THREAD })}));`,
+        'text(await tools.write_stdin({"session_id":5,"chars":"","yield_time_ms":1000}));',
+      ].join('\n');
+      const rollouts = admissionRollouts();
+      rollouts[0] = [
+        { type: 'session_meta', payload: { id: ROOT_THREAD } },
+        stamped('2026-10-06T00:00:06.500Z', { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'cell-int-1', input: sharedCellBody } }),
+        fnOutput('cell-int-1', [
+          { type: 'input_text', text: JSON.stringify({ ok: 1 }) },
+          { type: 'input_text', text: JSON.stringify({ previous_status: 'running' }) },
+          { type: 'input_text', text: JSON.stringify({ ok: 2 }) },
+        ], '2026-10-06T00:00:08.000Z'),
+        activityItem({ id: NESTED_CALL_ID, kind: 'interrupted', agentThreadId: CHILD_THREAD, threadId: ROOT_THREAD, completedAtMs: EMISSION_MS }),
+      ];
+      const interaction = extractInterruptInteraction(rollouts, [], { childThreadId: CHILD_THREAD, command: 'node launcher' });
+      assert.equal(interaction.attempted, true, 'the raw directive stays extracted from the shared cell');
+      assert.equal(interaction.wrappedInterrupt, true, 'the code-mode-wrapped shape is recorded');
+      const admission = admitInterruptHostDelivery(rollouts, interaction, binding);
+      assert.equal(admission.admitted, false, 'the wrapped interrupt never admits on this pin');
+      assert.ok(admission.reasons.includes('host-activity-wrapped-interrupt-unjoinable'), JSON.stringify(admission.reasons));
+      assert.equal(admission.idJoin, false);
+      assert.equal(admission.idJoinBasis, null);
+      assert.equal(admission.agentThreadIdMatch, null, 'the identity conjuncts stay unestablished without a joinable id');
+      // Direct-mode unchanged: a top-level interrupt_agent invocation with
+      // the model-visible id remains the qualified path.
+      const direct = admit(admissionRollouts());
+      assert.equal(direct.admission.admitted, true);
+      assert.equal(direct.admission.idJoinBasis, 'outer-call-id');
+    });
+
+    test('explicit terminate mixed with native cancellation never disturbs the admission or the settlement classes', () => {
+      // The interrupted observation's NATIVE cancellation and a LATER NEW
+      // observation's EXPLICIT terminate coexist (sequential observations —
+      // never overlapping inner polls): the admission is a delivery-identity
+      // fact and admits; the settlement classification keeps crediting only
+      // the native cancellation resolution of the interrupted observation and
+      // classifies the explicit ender separately (round-10 semantics, now
+      // under the admission).
+      const rollouts = admissionRollouts();
+      rollouts[1].push(
+        fnCall('wait', 'outer-native', { cell_id: 'cell-1' }, '2026-10-06T00:00:08.000Z'),
+        fnOutput('outer-native', markerOutput, '2026-10-06T00:00:09.000Z'),
+        fnCall('write_stdin', 'poll-2', { session_id: 5, chars: '', yield_time_ms: 60_000 }, '2026-10-06T00:00:10.000Z'),
+        fnOutput('poll-2', pendingOutputBody('cell-2'), '2026-10-06T00:00:10.500Z'),
+        fnCall('wait', 'term-1', { session_id: 5, cell_id: 'cell-2', terminate: true }, '2026-10-06T00:00:11.000Z'),
+        fnOutput('term-1', [
+          { type: 'input_text', text: 'Script terminated\nWall time 0.1 seconds\nOutput:\n' },
+          { type: 'input_text', text: 'terminated\n' },
+        ], '2026-10-06T00:00:11.500Z'),
+      );
+      const { interaction, admission } = admit(rollouts);
+      assert.equal(admission.admitted, true, 'the delivery admission is independent of the cell-resolution classes');
+      assert.equal(interaction.pendingBeforeCall.observed, true);
+      assert.equal(interaction.cancelledAfterCall.atMs, Date.parse('2026-10-06T00:00:09.000Z'),
+        'the native cancellation of the interrupted observation stays credited');
+      assert.equal(interaction.explicitTerminateAfterCall.atMs, Date.parse('2026-10-06T00:00:11.500Z'),
+        'the explicit terminate of the later observation stays separately classified');
+      assert.ok(interaction.cancelledAfterCall.atMs !== interaction.explicitTerminateAfterCall.atMs);
+    });
+
+    test('resolved-cell reuse and cross-session identical call ids never leak into the admission join', () => {
+      // A foreign session whose rollout carries the SAME call id text and an
+      // identical host item: the join is scoped to the owning ROOT's rollout
+      // and the exact call id — the foreign copy is the named foreign shape,
+      // and the (resolved and reused) child cell ids stay irrelevant to it.
+      const rollouts = admissionRollouts();
+      rollouts.push([
+        { type: 'session_meta', payload: { id: SIBLING_THREAD } },
+        { type: 'response_item', payload: { type: 'function_call', name: 'interrupt_agent', call_id: 'int-1', arguments: JSON.stringify({ target: SIBLING_THREAD }) } },
+        fnOutput('int-1', JSON.stringify({ previous_status: 'running' })),
+        activityItem({ id: 'int-1', kind: 'interrupted', agentThreadId: SIBLING_THREAD, threadId: SIBLING_THREAD, completedAtMs: EMISSION_MS }),
+      ]);
+      const { admission } = admit(rollouts);
+      assert.equal(admission.admitted, false);
+      assert.equal(admission.joinedItemCount, 1, 'the owning ROOT item still joins uniquely');
+      assert.equal(admission.foreignItemCount, 1, 'the cross-session identical id is counted as foreign');
+      assert.ok(admission.reasons.includes('host-activity-foreign-rollout'));
+    });
+
+    test('a non-attempted delivery admits nothing (null, never a fabricated negative)', () => {
+      const rollouts = admissionRollouts({ withPendingPoll: true });
+      const stripped = rollouts.map((events, index) => index === 0
+        ? events.filter((event) => event?.payload?.type !== 'function_call' || event.payload?.name !== 'interrupt_agent')
+        : events);
+      const interaction = extractInterruptInteraction(stripped, [], { childThreadId: CHILD_THREAD, command: 'node launcher' });
+      assert.equal(interaction.attempted, false);
+      const admission = admitInterruptHostDelivery(stripped, interaction, binding);
+      assert.equal(admission.checked, true);
+      assert.equal(admission.admitted, null, 'nothing to admit stays null');
+      assert.deepEqual(admission.reasons, ['host-activity-no-attempted-call']);
+    });
+
+    test('an unresolvable owning-Root identity names the owning-root conjunct unestablished (never foreign)', () => {
+      // The self-review round-1 finding: with NO rootThreadId binding the
+      // genuine Root-rollout item is neither joinable nor classifiable — the
+      // registered conjunct-4a name (`host-activity-owning-root-unestablished`)
+      // must fire for the REAL case, and the Root's own item must never be
+      // misnamed foreign.
+      const { admission } = admit(admissionRollouts(), { childThreadId: CHILD_THREAD, rootThreadId: null });
+      assert.equal(admission.admitted, false);
+      assert.deepEqual(admission.reasons, ['host-activity-owning-root-unestablished'],
+        'the null-Root case classifies under the registered conjunct-4a name alone');
+      assert.equal(admission.rootRolloutOwned, null, 'unestablishable, never false-by-misclassification');
+      assert.equal(admission.foreignItemCount, 0, 'the Root-own item is never counted foreign');
+      assert.equal(admission.joinedItemCount, 0);
+    });
+
+    test('an observed window with an unestablishable attributable start stays named-unestablished (never approximated)', () => {
+      // The window rule (self-review round 1 discriminating test): an
+      // observed pending window whose attributable start is unestablishable
+      // (atMs null — e.g. the unstamped same-rollout ordering the extractor
+      // produces) with a TIMED host item can never order the emission inside
+      // the window — the registered §19.6 never-approximated rule, named
+      // `host-activity-window-unestablished`, admission false, ordering null.
+      const interaction = {
+        attempted: true, callCount: 1, delivered: true, rejection: null, callId: 'int-1',
+        callRolloutSessionId: ROOT_THREAD,
+        wrappedInterrupt: false,
+        nestedInterruptCallIds: [],
+        pendingBeforeCall: { observed: true, at: null, atMs: null },
+        settledAfterCall: { at: null, atMs: null },
+        completedAfterCall: { at: null, atMs: null },
+      };
+      const rollouts = [[
+        { type: 'session_meta', payload: { id: ROOT_THREAD } },
+        activityItem({ id: 'int-1', completedAtMs: EMISSION_MS }),
+      ]];
+      const admission = admitInterruptHostDelivery(rollouts, interaction, binding);
+      assert.equal(admission.idJoin, true);
+      assert.equal(admission.timed, true, 'the item itself is timed');
+      assert.equal(admission.insidePendingWindow, null, 'the ordering stays unestablished, never approximated');
+      assert.equal(admission.admitted, false);
+      assert.deepEqual(admission.reasons, ['host-activity-window-unestablished']);
+    });
+
+    test('the interrupt call itself must live in the owning Root rollout (codex round 7)', () => {
+      // The codex shape: the call/output pair in a SIBLING session's rollout
+      // while the host item sits in the OWNING ROOT's rollout. The id join
+      // checks the ITEM's session only — moving the call out of the Root
+      // let another session supply delivery and timing evidence. The
+      // extraction now preserves the call pair's OWN rollout session id and
+      // the admission requires it to match the owning Root.
+      const SIBLING_SESSION = 'sibling-thread-1';
+      const callInSibling = admissionRollouts();
+      callInSibling[0] = [
+        { type: 'session_meta', payload: { id: ROOT_THREAD } },
+        activityItem({ id: 'int-1', completedAtMs: EMISSION_MS }),
+      ];
+      callInSibling.push([
+        { type: 'session_meta', payload: { id: SIBLING_SESSION } },
+        interruptCall('int-1', CHILD_THREAD, '2026-10-06T00:00:07.000Z'),
+        interruptSuccess('int-1', 'running', '2026-10-06T00:00:07.100Z'),
+      ]);
+      const siblingInteraction = extractInterruptInteraction(callInSibling, [], { childThreadId: CHILD_THREAD, command: 'node launcher' });
+      assert.equal(siblingInteraction.callRolloutSessionId, SIBLING_SESSION,
+        'the extraction preserves the call pair\'s own rollout session identity');
+      const siblingAdmission = admitInterruptHostDelivery(callInSibling, siblingInteraction, binding);
+      assert.equal(siblingAdmission.admitted, false, 'a sibling-session call never joins the Root item');
+      assert.ok(siblingAdmission.reasons.includes('host-activity-foreign-call-rollout'), JSON.stringify(siblingAdmission.reasons));
+      // Control: call+item both in the Root rollout admit (the round-1
+      // positive shape).
+      const control = admit(admissionRollouts());
+      assert.equal(control.admission.admitted, true);
+      // An unresolvable CALL rollout session is fail-closed named too.
+      const unresolvable = admissionRollouts();
+      unresolvable[0] = unresolvable[0].filter((event) => event?.type !== 'session_meta');
+      const unresolvableInteraction = extractInterruptInteraction(unresolvable, [], { childThreadId: CHILD_THREAD, command: 'node launcher' });
+      const unresolvableAdmission = admitInterruptHostDelivery(unresolvable, unresolvableInteraction, binding);
+      assert.equal(unresolvableAdmission.admitted, false);
+      assert.ok(unresolvableAdmission.reasons.includes('host-activity-call-rollout-unestablished'), JSON.stringify(unresolvableAdmission.reasons));
+    });
+
+    test('the admission validates its inputs before scanning (contract errors, not silent facts)', () => {
+      assert.throws(() => admitInterruptHostDelivery([], null, binding), /interruptInteraction/i);
+      assert.throws(() => admitInterruptHostDelivery([], { attempted: true }, binding), /interruptInteraction/i);
+      // A minimal SHAPE-VALID interaction stub (the extractor's contract
+      // surface) so the OPTIONS validation is what each assert exercises.
+      const stub = {
+        attempted: false, callCount: 0, delivered: null, callId: null,
+        pendingBeforeCall: { observed: false, at: null, atMs: null },
+        settledAfterCall: { at: null, atMs: null },
+        completedAfterCall: { at: null, atMs: null },
+      };
+      assert.throws(() => admitInterruptHostDelivery([], stub, { childThreadId: 42 }), /childThreadId/i);
+      assert.throws(() => admitInterruptHostDelivery([], stub, { rootThreadId: 'x'.repeat(300) }), /rootThreadId/i);
+    });
+  });
+
+  describe('native delivery wiring: Gate D layers, settlement readers and the live preflight (2026-10-21 evidence-closure task 3)', async () => {
+    const { mapShellWaitLiveFacts, nativeInterruptionGateDInput, interruptDurableSnapshotSupplier, evaluateLiveLaunchPreflight, STDOUT_CAPTURE_REQUIRED_CASES, WRAPPED_INTERRUPT_REQUIRED_CASES } = await import('../tools/shell-wait-probe/driver.mjs');
+    const { observeSpawnAcknowledgementIdentity } = await import('../tools/shell-wait-probe/evidence.mjs');
+    const { evaluateNativeInterruptionSettlement, NATIVE_INTERRUPTION_ORACLE_VERSION, RELEASE_QUALIFICATION_VERSION } = await import('../tools/shell-wait-probe/release-qualification.mjs');
+    const { readDurableObligationSnapshot } = await import('../tools/shell-wait-probe/closure-observation.mjs');
+    const { createStateStore } = await import('../scripts/lib/state.mjs');
+    const { realpath: realPath } = await import('node:fs/promises');
+
+    const CHILD_THREAD = 'a445b927-1e4d-4f11-9a34-2b6ac19b7d51';
+    const ROOT_THREAD = 'root-thread-1';
+    const ALIAS_TARGET = 'zcode-rescue-agent-tas';
+    const EMISSION_MS = Date.parse('2026-10-06T00:00:07.200Z');
+    const SETTLEMENT_MS = Date.parse('2026-10-06T00:00:12.000Z');
+
+    const stamped = (timestamp, event) => ({ timestamp, ...event });
+    const fnCall = (name, callId, args, timestamp = null) => ({
+      ...(timestamp ? stamped(timestamp, {}) : {}),
+      type: 'response_item', payload: { type: 'function_call', name, call_id: callId, arguments: JSON.stringify(args) },
+    });
+    const fnOutput = (callId, output, timestamp = null) => ({
+      ...(timestamp ? stamped(timestamp, {}) : {}),
+      type: 'response_item', payload: { type: 'function_call_output', call_id: callId, output },
+    });
+    const interruptCall = (callId, target, timestamp = null) => fnCall('interrupt_agent', callId, { target }, timestamp);
+    const interruptSuccess = (callId, previousStatus, timestamp = null) => fnOutput(callId, JSON.stringify({ previous_status: previousStatus }), timestamp);
+    const activityItem = ({ id, kind = 'interrupted', agentThreadId = CHILD_THREAD, threadId = ROOT_THREAD, completedAtMs = EMISSION_MS }) => ({
+      type: 'event_msg',
+      payload: {
+        type: 'item_completed',
+        thread_id: threadId,
+        turn_id: 'root-turn-1',
+        item: { type: 'SubAgentActivity', model: null, reasoning_effort: null, id, kind, agent_thread_id: agentThreadId, agent_path: '/root/zcode_rescue_task_1' },
+        completed_at_ms: completedAtMs,
+      },
+    });
+    const completedOutputBody = (result) => [
+      { type: 'input_text', text: 'Script completed\n' },
+      { type: 'input_text', text: JSON.stringify(result) },
+    ];
+    const pendingOutputBody = (cellId) => [{ type: 'input_text', text: `Script running with cell ID ${cellId}\n` }];
+    const markerOutput = [
+      { type: 'input_text', text: 'Script terminated\nWall time 0.1 seconds\nOutput:\n' },
+      { type: 'input_text', text: 'killed\n' },
+    ];
+
+    /** The full §19.4-admitting interrupt rollout shape (root session
+     * 'root-thread-1' so the mapper's linkage parent binding joins). */
+    function wiringRollouts({ hostItem = true, target = CHILD_THREAD, childTerminal = false, withNativeSettlement = true } = {}) {
+      const childEvents = [
+        { type: 'session_meta', payload: { id: CHILD_THREAD } },
+        fnCall('exec_command', 'launch-1', { cmd: 'node launcher' }, '2026-10-06T00:00:00.000Z'),
+        fnOutput('launch-1', completedOutputBody({ output: '', exit_code: 0, session_id: 5 }), '2026-10-06T00:00:01.000Z'),
+        fnCall('write_stdin', 'poll-1', { session_id: 5, chars: '', yield_time_ms: 60_000 }, '2026-10-06T00:00:02.000Z'),
+        fnOutput('poll-1', pendingOutputBody('cell-1'), '2026-10-06T00:00:02.500Z'),
+        ...(childTerminal ? [
+          fnCall('wait', 'outer-1', { cell_id: 'cell-1' }, '2026-10-06T00:00:03.000Z'),
+          fnOutput('outer-1', completedOutputBody({ output: 'done', exit_code: 0 }), '2026-10-06T00:00:04.000Z'),
+        ] : []),
+        ...(withNativeSettlement && !childTerminal ? [
+          fnCall('wait', 'outer-native', { cell_id: 'cell-1' }, '2026-10-06T00:00:09.000Z'),
+          fnOutput('outer-native', markerOutput, SETTLEMENT_MS),
+        ] : []),
+      ];
+      const rootEvents = [
+        { type: 'session_meta', payload: { id: ROOT_THREAD } },
+        interruptCall('int-1', target, '2026-10-06T00:00:07.000Z'),
+        interruptSuccess('int-1', 'running', '2026-10-06T00:00:07.100Z'),
+        ...(hostItem ? [activityItem({ id: 'int-1' })] : []),
+      ];
+      return [rootEvents, childEvents];
+    }
+    const wiringEvidence = ({ qualified = false, pendingInnerAtEnd = false, companionOverrides = {} } = {}) => ({
+      status: 'supported',
+      facts: {
+        completion: { qualified, processExit: qualified ? 0 : null, publicResultMatched: qualified ? true : null, decisiveEnd: qualified ? 'process-exit' : null, structuralViolationCount: 0 },
+        linkage: { checked: true, exact: true, agentType: 'zcode-rescue', childThreadId: CHILD_THREAD, parentThreadId: ROOT_THREAD },
+        collection: { rolloutCount: 2, childToolCallCount: 4, truncated: false, excerpts: [] },
+        companion: { launchCount: 1, sendCount: 1, sendCountKnown: true, duplicateLaunch: false, preLaunchDiagnostics: { excerpts: [], truncated: false }, ...companionOverrides },
+        handle: { originalHandleChecked: true },
+        observations: { outerReturns: 1, modelCalls: 2, rootJoins: 1, decisiveWallMs: 5, pendingInnerAtEnd },
+      },
+    });
+    const wiringFixture = {
+      workspace: '/private/tmp/t3-ws', codexHome: '/private/tmp/t3-home',
+      installedRoot: '/private/tmp/t3-installed', env: { HOME: '/private/tmp/t3-home' },
+      record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
+    };
+    const mapFacts = (rollouts, evidence = wiringEvidence()) => mapShellWaitLiveFacts(
+      { case: 'rescue-interrupt', pollMs: 3_600_000, waitPolicy: null, interruptBaselineSelector: null, survivalControlSelector: null },
+      { endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: true, result: { code: null, stdout: '', stderr: '' }, cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: false, codexTerminated: false, nativeInterruptionClaimed: false, errors: [] }, timeline: null },
+      evidence,
+      null, null, wiringFixture, rollouts, [], 'node launcher',
+    );
+
+    test('the Gate D delivery layer requires the registered host-activity admission (§19.4, every conjunct)', () => {
+      // The frozen strict-conjunct input: all layers positive EXCEPT the new
+      // admission conjunct — the qualification must fail with ONLY the named
+      // reason until the host item is admitted.
+      const base = {
+        delivery: {
+          delivered: true, exactTargetMatch: true, aliasResolved: true, terminalBeforeInterrupt: false,
+          deliverySent: true, previousStatusOnly: false, unreadableContinuation: false, pendingWindowConfirmed: true,
+        },
+        turnSettled: true, deliveryToSettlementMs: 5000, companionOutcome: 'terminal-result',
+        durableObligations: 'settled', cleanupKill: false, survivalControl: { noCollateralQualified: true },
+        terminalWinner: 'succeeded', naturalCompletionObserved: false, statusObservationTimeoutOnly: false,
+      };
+      const withoutAdmission = evaluateNativeInterruptionSettlement(base);
+      assert.equal(withoutAdmission.qualified, false, 'the admission conjunct is REQUIRED (defaults are never a pass)');
+      assert.ok(withoutAdmission.reasons.includes('host-activity-unadmitted'));
+      assert.equal(withoutAdmission.layers.delivery, false, 'the delivery layer stays failed while the host identity is unadmitted');
+      const admitted = evaluateNativeInterruptionSettlement({
+        ...base,
+        delivery: { ...base.delivery, hostActivityAdmitted: true },
+      });
+      assert.deepEqual(admitted.reasons.filter((reason) => reason !== 'host-activity-unadmitted'), []);
+      assert.equal(admitted.qualified, true, 'every registered conjunct positively established qualifies');
+      assert.equal(admitted.layers.delivery, true);
+      const explicitlyRefused = evaluateNativeInterruptionSettlement({
+        ...base,
+        delivery: { ...base.delivery, hostActivityAdmitted: false },
+      });
+      assert.ok(explicitlyRefused.reasons.includes('host-activity-unadmitted'));
+    });
+
+    test('the interruption oracle carries its own version beside the unchanged family stamp', () => {
+      assert.equal(NATIVE_INTERRUPTION_ORACLE_VERSION, 2, 'v2 = the §19.4 admission conjunct (2026-10-21 evidence-closure task 3)');
+      assert.equal(RELEASE_QUALIFICATION_VERSION, 1, 'the shared exact-terminal/layer family stamp stays unchanged');
+      const verdict = evaluateNativeInterruptionSettlement({
+        delivery: {
+          delivered: true, exactTargetMatch: true, aliasResolved: true, terminalBeforeInterrupt: false,
+          deliverySent: true, previousStatusOnly: false, unreadableContinuation: false, pendingWindowConfirmed: true,
+          hostActivityAdmitted: true,
+        },
+        turnSettled: true, deliveryToSettlementMs: 5000, companionOutcome: 'terminal-result',
+        durableObligations: 'settled', cleanupKill: false, survivalControl: { noCollateralQualified: true },
+        terminalWinner: 'succeeded', naturalCompletionObserved: false, statusObservationTimeoutOnly: false,
+      });
+      assert.equal(verdict.nativeInterruptionOracleVersion, NATIVE_INTERRUPTION_ORACLE_VERSION);
+    });
+
+    test('the REAL serializer persists the unreadable-continuation fact the Gate D join consumes (codex round 2)', async (t) => {
+      // A mapped run WITH an unreadable continuation (a linked wait whose
+      // response arrives but fails its statement decode — the round-27
+      // shape, while the interrupted observation is still pending): the
+      // mapper flags it; the record must carry it so the offline join keeps
+      // the rejection after fixture disposal.
+      const { runShellWaitCase } = await import('../tools/shell-wait-probe/driver.mjs');
+      const { evaluateNativeInterruptionSettlement } = await import('../tools/shell-wait-probe/release-qualification.mjs');
+      const rollouts = wiringRollouts({ withNativeSettlement: false });
+      rollouts[1].push(
+        fnCall('wait', 'outer-unreadable', { cell_id: 'cell-1' }, '2026-10-06T00:00:09.000Z'),
+        fnOutput('outer-unreadable', 'unrelated failure text', '2026-10-06T00:00:10.000Z'),
+      );
+      const facts = mapFacts(rollouts);
+      assert.equal(facts.interrupt.unreadableContinuationObserved, true, 'the mapped facts flag the unreadable continuation');
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-unreadable-persist-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const persistFixture = {
+        workspace: '/private/tmp/t3-unreadable-ws', codexHome: '/private/tmp/t3-unreadable-home',
+        installedRoot: '/private/tmp/t3-unreadable-installed', env: { HOME: '/private/tmp/t3-unreadable-home' },
+        record: { variant: 'candidate', appliedArtifacts: [] },
+        dispose: async () => {},
+      };
+      const persisted = await runShellWaitCase(
+        { case: 'rescue-interrupt', codexBinary: process.execPath, sourceSha: 'a'.repeat(40), workerDurationMs: 420_000, capMs: 3_600_000, pollMs: 3_600_000, budgetMs: 1_200_000, output: root },
+        { createFixture: async () => persistFixture, executeLiveCase: async () => facts },
+      );
+      assert.equal(persisted.interrupt.unreadableContinuationObserved, true,
+        'the REAL serializer persists the flag (codex round 2: the negative test previously supplied it by hand)');
+      // Reload the RETAINED record from disk (post-disposal offline join).
+      const { readdir: listDir, readFile: readBytes } = await import('node:fs/promises');
+      const recordName = (await listDir(root)).find((name) => name.endsWith('.record.json'));
+      const reloaded = JSON.parse(await readBytes(join(root, recordName), 'utf8'));
+      const input = nativeInterruptionGateDInput(reloaded);
+      assert.equal(input.delivery.unreadableContinuation, true);
+      const verdict = evaluateNativeInterruptionSettlement(input);
+      assert.ok(verdict.reasons.includes('unreadable-continuation'), JSON.stringify(verdict.reasons));
+    });
+
+    test('the retained record mirrors the host-delivery admission and the closed ordering facts', async (t) => {
+      // The Gate D join runs on the PERSISTED record after fixture disposal:
+      // the schema-additive Task 3 block must survive buildCaseRecord —
+      // statuses/closed facts only, never the call text or the alias.
+      const { runShellWaitCase } = await import('../tools/shell-wait-probe/driver.mjs');
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-hostdelivery-persist-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const facts = mapFacts(wiringRollouts());
+      const persistFixture = {
+        workspace: '/private/tmp/t3-persist-ws', codexHome: '/private/tmp/t3-persist-home',
+        installedRoot: '/private/tmp/t3-persist-installed', env: { HOME: '/private/tmp/t3-persist-home' },
+        record: { variant: 'candidate', appliedArtifacts: [] },
+        dispose: async () => {},
+      };
+      const persisted = await runShellWaitCase(
+        { case: 'rescue-interrupt', codexBinary: process.execPath, sourceSha: 'a'.repeat(40), workerDurationMs: 420_000, capMs: 3_600_000, pollMs: 3_600_000, budgetMs: 1_200_000, output: root },
+        { createFixture: async () => persistFixture, executeLiveCase: async () => facts },
+      );
+      assert.equal(persisted.interrupt.hostDelivery.admitted, true, 'the admission verdict rides the record');
+      assert.equal(persisted.interrupt.hostDelivery.agentThreadIdMatch, true);
+      assert.equal(persisted.interrupt.pendingWindowObserved, true);
+      assert.equal(persisted.interrupt.settlementCleanupGenerated, false);
+      assert.equal('completedBeforeCallMs' in persisted.interrupt, false, 'a null completed-before fact does not ride');
+      // The record carries NO target text beyond the sanitized projection:
+      // the admission block is closed facts (booleans/counts/timestamp/reasons).
+      const serialized = JSON.stringify(persisted.interrupt.hostDelivery);
+      assert.ok(!serialized.includes(ALIAS_TARGET), 'no alias text persists');
+    });
+
+    test('the persisted case record carries the bounded stdout-tap declaration and survives a reload (overall review fix, round 2)', async (t) => {
+      // Mirror of the survivalControlDeclaration pattern (codex overall
+      // review, round 2): the capture-enabled fixture records a BOUNDED
+      // closureStdoutCapture block (preload name + SHA-256, maxBytes, the
+      // invocation gate selector, the nonce-binding environment-variable
+      // seams — digests and closed configuration, never the private paths).
+      // buildCaseRecord must persist it, because fixture disposal deletes the
+      // preload and the retained record would otherwise lose the separately
+      // recorded tap provenance (the admission projection carries only the
+      // captured-output digest, never the tap digest). A capture-less record
+      // carries NO declaration key (schema stability).
+      const { runShellWaitCase } = await import('../tools/shell-wait-probe/driver.mjs');
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-tapdecl-persist-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const facts = mapFacts(wiringRollouts());
+      const tapDeclaration = {
+        preload: 'closure-stdout-preload.cjs',
+        preloadSha256: 'a'.repeat(64),
+        maxBytes: 65536,
+        gate: {
+          argv: ['invoke-prepared', 'rescue'],
+          declaredEntryRealpathSha256: 'b'.repeat(64),
+          selector: 'fixture-only capture environment present AND realpath(argv[1]) equal to the declared installed launcher realpath AND argv exactly [invoke-prepared, rescue]',
+        },
+        environmentVariables: ['ZCODE_SHELL_WAIT_CAPTURE_DIR', 'ZCODE_SHELL_WAIT_CAPTURE_NONCE', 'ZCODE_SHELL_WAIT_CAPTURE_ENTRY', 'ZCODE_SHELL_WAIT_CAPTURE_MAX_BYTES'],
+      };
+      const persistFixture = {
+        workspace: '/private/tmp/t3-tapdecl-ws', codexHome: '/private/tmp/t3-tapdecl-home',
+        installedRoot: '/private/tmp/t3-tapdecl-installed', env: { HOME: '/private/tmp/t3-tapdecl-home' },
+        record: { variant: 'candidate', appliedArtifacts: [], closureStdoutCapture: tapDeclaration },
+        stdoutCapture: { captureDirectory: '/private/tmp/t3-tapdecl/capture', nonce: 'c'.repeat(64), preloadPath: '/private/tmp/t3-tapdecl/closure-stdout-preload.cjs', entryRealpath: '/private/tmp/t3-tapdecl/launcher.mjs', maxBytes: 65536 },
+        dispose: async () => {},
+      };
+      const persisted = await runShellWaitCase(
+        { case: 'rescue-interrupt', codexBinary: process.execPath, sourceSha: 'a'.repeat(40), workerDurationMs: 420_000, capMs: 3_600_000, pollMs: 3_600_000, budgetMs: 1_200_000, output: root },
+        { createFixture: async () => persistFixture, executeLiveCase: async () => facts },
+      );
+      assert.deepEqual(persisted.stdoutCaptureDeclaration, tapDeclaration,
+        'the bounded tap declaration persists beside the capture provenance');
+      // Reload the RETAINED record from disk (post-disposal): the declaration
+      // survives (the tap digest outlives the deleted preload).
+      const { readdir: listDir, readFile: readBytes } = await import('node:fs/promises');
+      const recordName = (await listDir(root)).find((name) => name.endsWith('.record.json'));
+      const reloaded = JSON.parse(await readBytes(join(root, recordName), 'utf8'));
+      assert.deepEqual(reloaded.stdoutCaptureDeclaration, tapDeclaration);
+      // Schema stability: a capture-less fixture (no closureStdoutCapture
+      // block) produces a record with NO declaration key.
+      const plainRoot = await mkdtemp(join(tmpdir(), 'shell-wait-tapdecl-plain-'));
+      t.after(() => rm(plainRoot, { recursive: true, force: true }));
+      const plainFixture = {
+        workspace: '/private/tmp/t3-tapdecl-plain-ws', codexHome: '/private/tmp/t3-tapdecl-plain-home',
+        installedRoot: '/private/tmp/t3-tapdecl-plain-installed', env: { HOME: '/private/tmp/t3-tapdecl-plain-home' },
+        record: { variant: 'candidate', appliedArtifacts: [] },
+        dispose: async () => {},
+      };
+      const plain = await runShellWaitCase(
+        { case: 'rescue-long', codexBinary: process.execPath, sourceSha: 'a'.repeat(40), workerDurationMs: 420_000, capMs: 3_600_000, pollMs: 3_600_000, budgetMs: 1_200_000, output: plainRoot },
+        { createFixture: async () => plainFixture, executeLiveCase: async () => facts },
+      );
+      assert.equal('stdoutCaptureDeclaration' in plain, false, 'a capture-less record carries no declaration key');
+    });
+
+    test('the mapper computes and persists the host-delivery admission and the closed ordering facts', () => {
+      const facts = mapFacts(wiringRollouts());
+      assert.deepEqual(facts.interrupt.hostDelivery, {
+        checked: true,
+        attemptedCall: true,
+        callId: 'int-1',
+        itemPresent: true,
+        interruptedItemCount: 1,
+        joinedItemCount: 1,
+        foreignItemCount: 0,
+        idJoin: true,
+        idJoinBasis: 'outer-call-id',
+        agentThreadIdMatch: true,
+        rootRolloutOwned: true,
+        insidePendingWindow: true,
+        timed: true,
+        completedAtMs: EMISSION_MS,
+        admitted: true,
+        reasons: [],
+      });
+      assert.equal(facts.interrupt.exactTargetMatch, true);
+      assert.equal(facts.interrupt.pendingWindowObserved, true, 'the confirmed pending window persists as its own closed fact');
+      assert.equal('completedBeforeCallMs' in facts.interrupt, false, 'a null completed-before fact does not ride (schema-additive)');
+      assert.equal(facts.interrupt.settlementCleanupGenerated, false, 'the pre-cleanup native settlement is NOT cleanup-generated');
+      assert.equal(facts.inconclusive, null, 'the admitted delivery satisfies the interrupt contract');
+    });
+
+    test('an absent host item persists its unadmitted admission block with the named counterexample', () => {
+      // The §19.4 counterexample (Legacy-mode rollout, older binary, or
+      // truncated rollout): the delivery identity layer is unestablished.
+      // The mapper's frozen §16.3 case contract and settlement chain are
+      // deliberately NOT re-decided — the admission rides the record as the
+      // closed block the offline Gate D join enforces
+      // ('host-activity-unadmitted', proven in the join tests below).
+      const facts = mapFacts(wiringRollouts({ hostItem: false }));
+      assert.equal(facts.interrupt.hostDelivery.admitted, false);
+      assert.deepEqual(facts.interrupt.hostDelivery.reasons, ['host-activity-item-absent']);
+      assert.equal(facts.interrupt.hostDelivery.itemPresent, false);
+      assert.equal(facts.interrupt.hostDelivery.joinedItemCount, 0);
+    });
+
+    test('the alias target resolves through the host identity without relabeling caller text', () => {
+      const facts = mapFacts(wiringRollouts({ target: ALIAS_TARGET }));
+      assert.deepEqual(facts.interrupt.target, { kind: 'unknown', value: null, suppressed: true, chars: ALIAS_TARGET.length },
+        'the caller-supplied alias stays suppressed');
+      assert.equal(facts.interrupt.exactTargetMatch, true, 'the delivery is exact through the host-resolved identity');
+      assert.equal(facts.interrupt.hostDelivery.admitted, true);
+      assert.equal(facts.inconclusive, null);
+    });
+
+    test('the post-completion delivery is still refused under an unadmissible item', () => {
+      // The Child completed BEFORE the call: the pending window never
+      // existed, so the item cannot be ordered inside it and the delivery
+      // contract fails on the post-completion classification first.
+      const facts = mapFacts(wiringRollouts({ childTerminal: true, withNativeSettlement: false }));
+      assert.equal(facts.interrupt.hostDelivery.admitted, false);
+      assert.ok(facts.interrupt.hostDelivery.reasons.includes('host-activity-without-pending-observation'));
+      assert.equal(facts.interrupt.completedBeforeCallMs, Date.parse('2026-10-06T00:00:04.000Z'),
+        'the pre-call completion persists as its own closed fact');
+      assert.match(String(facts.inconclusive?.reason ?? ''), /completion/u);
+    });
+
+    test('the Gate D join feeds every layer from the persisted record through the exact identity', () => {
+      const record = gateDRecord();
+      const input = nativeInterruptionGateDInput(record);
+      assert.deepEqual(input.delivery, {
+        delivered: true,
+        exactTargetMatch: true,
+        aliasResolved: true,
+        terminalBeforeInterrupt: false,
+        deliverySent: true,
+        previousStatusOnly: false,
+        unreadableContinuation: false,
+        pendingWindowConfirmed: true,
+        hostActivityAdmitted: true,
+        terminalBeforeInterruptBasis: 'admitted-open-pending-window',
+      });
+      assert.equal(input.turnSettled, true);
+      assert.equal(input.deliveryToSettlementMs, 5000);
+      assert.equal(input.companionOutcome, 'terminal-result',
+        'the Companion remote outcome derives from the durable job production-published terminal winner — never null-by-omission');
+      assert.equal(input.durableObligations, 'settled');
+      assert.equal(input.cleanupKill, false);
+      assert.equal(input.terminalWinner, 'succeeded');
+      assert.deepEqual(input.survivalControl, { noCollateralQualified: true, reason: null, postDelivery: 'alive', releaseQualificationVersion: 1 },
+        'the adjudicated control verdict passes through verbatim');
+      const verdict = evaluateNativeInterruptionSettlement(input);
+      assert.equal(verdict.qualified, true, 'a fully-established record qualifies through the join');
+      // The exact identity is load-bearing: a record whose linkage lost the
+      // Child id cannot claim the delivery layer.
+      const anonymous = nativeInterruptionGateDInput(gateDRecord({ linkage: { childThreadId: null, parentThreadId: ROOT_THREAD } }));
+      assert.equal(anonymous.delivery.exactTargetMatch, null);
+      assert.equal(anonymous.delivery.hostActivityAdmitted, true, 'the admission fact still rides (it was established during the run)');
+      const anonymousVerdict = evaluateNativeInterruptionSettlement(anonymous);
+      assert.equal(anonymousVerdict.qualified, false);
+      assert.ok(anonymousVerdict.reasons.includes('delivery-target-unmatched'));
+    });
+
+    test('a durable read completing at/after the cleanup boundary earns NO Gate D qualification credit (overall review fix 1)', () => {
+      // The RECORDED I shape (report §21.2.3): the passive reader completed in
+      // the SAME millisecond the observation cleanup boundary was recorded
+      // (completedAtMs == cleanupBoundaryAtMs == 1792661275722) — the manual
+      // qualification overlay classified the settled aggregate as a
+      // cleanup-time observation. The fence is now CODE-ENFORCED in the join:
+      // on at/after-boundary durable evidence the Companion outcome, the
+      // terminal winner and the obligations aggregate stay UNPUBLISHED with
+      // the established round-19 cleanup-attribution basis riding the join
+      // (never silently dropped), so `qualified` can never be true on that
+      // evidence alone — NO manual overlay involved.
+      const atBoundary = 1792661275722;
+      const atBoundaryInput = nativeInterruptionGateDInput(gateDRecord((record) => {
+        record.interrupt.cleanupBoundaryAtMs = atBoundary;
+        record.child.durableSnapshot.completedAtMs = atBoundary;
+      }));
+      assert.equal(atBoundaryInput.durableReadPostCleanupBoundary, true, 'the named after-boundary fact rides the join');
+      assert.equal(atBoundaryInput.durableReadBoundaryBasis, 'budget-cleanup-termination-not-attributed',
+        'the established cleanup-attribution basis names the withholding');
+      assert.equal(atBoundaryInput.companionOutcome, null, 'cleanup-time Companion evidence is not credited');
+      assert.equal(atBoundaryInput.terminalWinner, null, 'cleanup-time winner evidence is not credited');
+      assert.equal(atBoundaryInput.durableObligations, null, 'cleanup-time obligation evidence is not credited');
+      const atBoundaryVerdict = evaluateNativeInterruptionSettlement(atBoundaryInput);
+      assert.equal(atBoundaryVerdict.qualified, false, 'the oracle can never qualify on at/after-boundary durable evidence alone');
+      // The PRE-boundary control (strictly before the final boundary): the
+      // credit flows exactly as before — Companion outcome, winner and
+      // obligations aggregate all publish.
+      const preBoundaryInput = nativeInterruptionGateDInput(gateDRecord((record) => {
+        record.interrupt.cleanupBoundaryAtMs = SETTLEMENT_MS + 60_000;
+        record.child.durableSnapshot.completedAtMs = SETTLEMENT_MS;
+      }));
+      assert.equal(preBoundaryInput.durableReadPostCleanupBoundary, false);
+      assert.equal(preBoundaryInput.durableReadBoundaryBasis, null);
+      assert.equal(preBoundaryInput.companionOutcome, 'terminal-result');
+      assert.equal(preBoundaryInput.terminalWinner, 'succeeded');
+      assert.equal(preBoundaryInput.durableObligations, 'settled');
+      // A durable read with NO comparable boundary (either timestamp absent)
+      // keeps the prior behavior — the fence is established only when BOTH
+      // endpoints exist.
+      const unboundedInput = nativeInterruptionGateDInput(gateDRecord());
+      assert.equal(unboundedInput.durableReadPostCleanupBoundary, false);
+      assert.equal(unboundedInput.companionOutcome, 'terminal-result');
+      // The NATURAL-COMPLETION shape (overall review round 3): the turn's
+      // teardown abort records NO boundary at all (the recorder is inert
+      // during teardown — runHeldHostTurn's round-3 regression), so the
+      // record carries NO boundary endpoint while the durable read DID
+      // complete: the fence stays unestablishable and the settled
+      // obligations, Companion outcome and terminal winner KEEP their credit.
+      const naturalRecord = gateDRecord((record) => {
+        delete record.interrupt.cleanupBoundaryAtMs;
+        record.child.durableSnapshot.completedAtMs = 1792661275722;
+      });
+      assert.equal('cleanupBoundaryAtMs' in naturalRecord.interrupt, false, 'premise: no boundary endpoint rides the record');
+      const naturalInput = nativeInterruptionGateDInput(naturalRecord);
+      assert.equal(naturalInput.durableReadPostCleanupBoundary, false, 'the fence is unestablishable without the boundary endpoint');
+      assert.equal(naturalInput.companionOutcome, 'terminal-result', 'credit KEEPS on a naturally completing turn');
+      assert.equal(naturalInput.terminalWinner, 'succeeded');
+      assert.equal(naturalInput.durableObligations, 'settled');
+    });
+
+    test('the plan pipeline negatives stay named through the join (adjudication inputs, never silently dropped)', () => {
+      const evaluate = (mutate) => evaluateNativeInterruptionSettlement(nativeInterruptionGateDInput(gateDRecord(mutate)));
+      // Unreadable continuation.
+      const unreadable = evaluate((record) => {
+        record.interrupt.unreadableContinuationObserved = true;
+      });
+      assert.ok(unreadable.reasons.includes('unreadable-continuation'));
+      // Explicit cell termination (an alternate ender, never native credit).
+      const explicit = evaluate((record) => {
+        record.interrupt.settled = null;
+        record.interrupt.settledBasis = 'explicit-cell-termination-not-attributed';
+      });
+      assert.ok(explicit.reasons.includes('turn-settlement-unobserved'));
+      assert.equal(explicit.layers.turnSettlement, false);
+      // Cleanup-generated cancellation at/after the earliest cleanup boundary.
+      const cleanupGenerated = evaluate((record) => {
+        record.interrupt.settled = null;
+        record.interrupt.settledBasis = 'budget-cleanup-termination-not-attributed';
+        record.interrupt.settlementCleanupGenerated = true;
+      });
+      assert.ok(cleanupGenerated.reasons.includes('cleanup-termination-is-not-native-settlement'));
+      // A genuine PRE-cleanup native settlement keeps its credit (the fence
+      // contract: later harness cleanup never retroactively taints it).
+      const preCleanup = evaluate((record) => {
+        record.interrupt.settlementCleanupGenerated = false;
+      });
+      assert.ok(!preCleanup.reasons.includes('cleanup-termination-is-not-native-settlement'));
+      // Negative / unknown / over-bound latency.
+      const negative = evaluate((record) => { record.interrupt.deliveryToSettlementMs = -1; });
+      assert.ok(negative.reasons.includes('settlement-latency-contradictory'));
+      const unknown = evaluate((record) => {
+        record.interrupt.deliveryToSettlementMs = null;
+        record.interrupt.timingBasis = 'unavailable';
+      });
+      assert.ok(unknown.reasons.includes('settlement-latency-unestablished'));
+      const overBound = evaluate((record) => { record.interrupt.deliveryToSettlementMs = 61_000; });
+      assert.ok(overBound.reasons.includes('settlement-latency-over-bound'));
+      // Still-live Companion (the durable work observed alive-unsettled):
+      // the join classifies the Companion outcome from the joined layers.
+      const stillLiveInput = nativeInterruptionGateDInput(gateDRecord((record) => {
+        record.child.settlementLayers.remoteTerminal = null;
+        record.child.durableSnapshot.aggregate = 'unresolved';
+        record.child.durableSnapshot.job.projection.status = 'running';
+      }));
+      assert.equal(stillLiveInput.companionOutcome, 'survived-unsettled');
+      const stillLive = evaluateNativeInterruptionSettlement(stillLiveInput);
+      assert.ok(stillLive.reasons.includes('companion-still-live-unsettled'));
+      // Terminal status with OUTSTANDING duties (the marked-claim rule):
+      // the winner passes through while the durable layer refuses settlement.
+      const outstanding = evaluate((record) => {
+        record.child.settlementLayers.remoteTerminal = null;
+        record.child.settlementLayers.localProcessReaping = 'natural-exit-observed';
+        record.child.durableSnapshot.aggregate = 'unresolved';
+        record.child.durableSnapshot.job.projection.status = 'succeeded';
+      });
+      assert.equal(outstanding.terminalWinner, 'succeeded');
+      assert.ok(outstanding.reasons.includes('durable-obligations-unresolved'),
+        'a terminal status alone never discharges the durable duties');
+      // An already-completed / unknown-at-delivery survival control and a
+      // missing control both stay named through the pass-through.
+      const lostControl = evaluate((record) => {
+        record.survivalControlSelector = 'progress-terminal';
+        record.survivalControl = { noCollateralQualified: false, reason: 'delivery-bound-unestablished' };
+      });
+      assert.ok(lostControl.reasons.includes('collateral-control-not-qualified'));
+      // Codex round 3: Child-attributed outcomes (Companion terminal-result,
+      // terminal winner) are consumed ONLY from a POSITIVELY verified
+      // executor linkage — an `unresolved` aggregate (terminal + marked
+      // claim) with an unverified/mismatched executor never publishes them;
+      // the durable obligations layer keeps its own per-fact report.
+      for (const linkage of ['binding-executor-mismatch', 'binding-executor-linkage-unverified']) {
+        const unverifiedInput = nativeInterruptionGateDInput(gateDRecord((record) => {
+          record.child.durableSnapshot.aggregate = 'unresolved';
+          record.child.durableSnapshot.executorLinkage = linkage;
+          record.child.durableSnapshot.job.projection.status = 'succeeded';
+        }));
+        assert.equal(unverifiedInput.companionOutcome, null, `${linkage}: the Companion outcome stays unestablished`);
+        assert.equal(unverifiedInput.terminalWinner, null, `${linkage}: the terminal winner is not consumed`);
+        const unverified = evaluateNativeInterruptionSettlement(unverifiedInput);
+        assert.ok(unverified.reasons.includes('companion-outcome-unobserved'), `${linkage}: ${JSON.stringify(unverified.reasons)}`);
+        assert.ok(unverified.reasons.includes('terminal-winner-unobserved'), `${linkage}: ${JSON.stringify(unverified.reasons)}`);
+      }
+      // Codex round 5: an EXPLICIT pendingWindowObserved:false is a real
+      // negative observation — the poll may have started and RESOLVED before
+      // the interrupt (historical poll start never establishes
+      // pending-at-delivery), so the legacy poll-start fallback must apply
+      // ONLY when the explicit field is ABSENT.
+      for (const [label, expected] of [
+        ['explicit false', false],
+        ['explicit true', true],
+      ]) {
+        const shaped = nativeInterruptionGateDInput(gateDRecord((record) => {
+          record.observations.pollStartedAtElapsedMs = 1000;
+          record.interrupt.orderingBound = true;
+          record.interrupt.pendingWindowObserved = expected;
+        }));
+        assert.equal(shaped.delivery.pendingWindowConfirmed, expected,
+          `${label} is never overridden by the legacy poll-start fallback`);
+      }
+      // Codex round 6 — the THREE-VALUED terminalBeforeInterrupt matrix.
+      // The root-specified semantics: true ONLY on positive terminal evidence
+      // (persisted terminal previous status, or a demonstrably pre-call
+      // completion); false ONLY on an ADMITTED host item inside a confirmed
+      // pending window with no contradicting terminal evidence; contradiction
+      // (both) → UNKNOWN with the named basis; neither → UNKNOWN, named
+      // nothing-to-conclude. Missing identity evidence never becomes a
+      // completion diagnosis.
+      // (a) Item-absent: the pre-call-completion inference is DEAD — the
+      // native-cancellation mapping stays, the value is null.
+      const itemAbsentRecord = gateDRecord((record) => {
+        delete record.interrupt.hostDelivery;
+      });
+      const itemAbsent = nativeInterruptionGateDInput(itemAbsentRecord);
+      assert.equal(itemAbsent.delivery.terminalBeforeInterrupt, null,
+        'a missing host item is NOT a completion diagnosis');
+      assert.equal(itemAbsent.delivery.terminalBeforeInterruptBasis, 'no-terminal-state-evidence');
+      assert.equal(itemAbsentRecord.interrupt.settledBasis, 'native-cancellation-settlement-after-delivery', 'the settlement mapping stays intact');
+      // (b) Admitted in-window + no terminal evidence → false; delivery qualifies.
+      const admitted = nativeInterruptionGateDInput(gateDRecord());
+      assert.equal(admitted.delivery.terminalBeforeInterrupt, false);
+      assert.equal(admitted.delivery.terminalBeforeInterruptBasis, 'admitted-open-pending-window');
+      // (c) Terminal previous status + admitted in-window → CONTRADICTION,
+      // named; the oracle rejects the delivery layer.
+      const contradiction = nativeInterruptionGateDInput(gateDRecord((record) => {
+        record.interrupt.previousStatus = 'interrupted';
+      }));
+      assert.equal(contradiction.delivery.terminalBeforeInterrupt, null, 'contradictory evidence is UNKNOWN, never a boolean guess');
+      assert.equal(contradiction.delivery.terminalBeforeInterruptBasis, 'contradiction-terminal-status-vs-open-window');
+      const contradictionVerdict = evaluateNativeInterruptionSettlement(contradiction);
+      assert.equal(contradictionVerdict.layers.delivery, false, 'an already-terminal target never reports delivery true');
+      assert.ok(contradictionVerdict.reasons.includes('terminal-state-unestablished'), JSON.stringify(contradictionVerdict.reasons));
+      // (d) Terminal previous status WITHOUT the item → true via the
+      // persisted evidence.
+      const terminalNoItem = nativeInterruptionGateDInput(gateDRecord((record) => {
+        record.interrupt.previousStatus = 'interrupted';
+        delete record.interrupt.hostDelivery;
+      }));
+      assert.equal(terminalNoItem.delivery.terminalBeforeInterrupt, true);
+      assert.equal(terminalNoItem.delivery.terminalBeforeInterruptBasis, 'terminal-previous-status-evidence');
+      const terminalNoItemVerdict = evaluateNativeInterruptionSettlement(terminalNoItem);
+      assert.ok(terminalNoItemVerdict.reasons.includes('terminal-before-interrupt'), JSON.stringify(terminalNoItemVerdict.reasons));
+      // (e) Pre-call completion evidence → true (WITHOUT an admitted item —
+      // an admitted in-window item + completion evidence is the (c)
+      // contradiction case).
+      const preCall = nativeInterruptionGateDInput(gateDRecord((record) => {
+        record.interrupt.completedBeforeCallMs = Date.parse('2026-10-06T00:00:04.000Z');
+        delete record.interrupt.hostDelivery;
+      }));
+      assert.equal(preCall.delivery.terminalBeforeInterrupt, true);
+      assert.equal(preCall.delivery.terminalBeforeInterruptBasis, 'pre-call-completion-evidence');
+      // A legacy snapshot without the linkage fact is unverified too.
+      const noFactInput = nativeInterruptionGateDInput(gateDRecord((record) => {
+        delete record.child.durableSnapshot.executorLinkage;
+      }));
+      assert.equal(noFactInput.companionOutcome, null);
+      assert.equal(noFactInput.terminalWinner, null);
+      // The durable obligations layer keeps its own per-fact report even
+      // when the Child-attributed outcomes are refused (layer separation).
+      const layeredInput = nativeInterruptionGateDInput(gateDRecord((record) => {
+        record.child.durableSnapshot.aggregate = 'unresolved';
+        record.child.durableSnapshot.executorLinkage = 'binding-executor-mismatch';
+        record.child.durableSnapshot.job.projection.status = 'succeeded';
+      }));
+      assert.equal(layeredInput.durableObligations, 'unresolved');
+      // Codex round 5: missing settlement never downgrades a PROVEN
+      // delivery — an admitted delivery inside a confirmed window with the
+      // observation still unsettled ('settlement-unavailable') keeps its
+      // earned delivery facts (previousStatusOnly false; the pre-dispatch
+      // snapshot was corroborated by the admitted host item and the
+      // confirmed window), and settlement unavailability rejects ONLY the
+      // settlement layer.
+      const provenInput = nativeInterruptionGateDInput(gateDRecord((record) => {
+        record.interrupt.settled = null;
+        record.interrupt.settledBasis = 'settlement-unavailable';
+      }));
+      assert.equal(provenInput.delivery.previousStatusOnly, false,
+        'an admitted delivery inside a confirmed window is never a snapshot-only fact');
+      assert.equal(provenInput.delivery.terminalBeforeInterrupt, false,
+        'a live confirmed window with an open observation is positively NOT post-completion');
+      assert.equal(provenInput.turnSettled, null);
+      const provenVerdict = evaluateNativeInterruptionSettlement(provenInput);
+      assert.ok(!provenVerdict.reasons.includes('previous-status-snapshot-only'),
+        JSON.stringify(provenVerdict.reasons));
+      assert.ok(!provenVerdict.reasons.includes('terminal-state-unestablished'),
+        'the delivery layer is not blocked by the unobserved settlement');
+      assert.ok(provenVerdict.reasons.includes('turn-settlement-unobserved'),
+        'settlement unavailability rejects ONLY the settlement layer');
+      assert.equal(provenVerdict.layers.delivery, true, 'the delivery layer keeps its earned facts');
+      // A record whose interrupt block lacks the admission block entirely
+      // (a legacy shape) fails the delivery layer closed.
+      const legacyInput = nativeInterruptionGateDInput(gateDRecord((record) => { delete record.interrupt.hostDelivery; }));
+      assert.equal(legacyInput.delivery.hostActivityAdmitted, null);
+      const legacy = evaluateNativeInterruptionSettlement(legacyInput);
+      assert.ok(legacy.reasons.includes('host-activity-unadmitted'));
+    });
+
+    test('previous_status stays a pre-dispatch snapshot through the join (never settlement)', () => {
+      // Codex round 5: the snapshot-only convention applies when NO admitted
+      // host item corroborates a confirmed pending window (here: the window
+      // explicitly unobserved) — a proven delivery is never downgraded (the
+      // proven-delivery test above pins that side).
+      const record = gateDRecord((draft) => {
+        draft.interrupt.pendingWindowObserved = false;
+      });
+      record.interrupt.settled = null;
+      const input = nativeInterruptionGateDInput(record);
+      assert.equal(input.delivery.previousStatusOnly, true, 'the snapshot-only derivation follows the §19.2 convention');
+      assert.equal(input.turnSettled, null);
+      const verdict = evaluateNativeInterruptionSettlement(input);
+      assert.ok(verdict.reasons.includes('previous-status-snapshot-only'));
+      assert.ok(verdict.reasons.includes('turn-settlement-unobserved'));
+    });
+
+    test('the durable ownership is the OBSERVED PARENT (Root) session, with the executor verified against the observed Child (codex round 1)', async (t) => {
+      // The PRODUCTION ownership shape (scripts/zcode-companion.mjs:862 the
+      // caller is the executor's PARENT session; :1464 the reservation is
+      // `ownerSessionId: caller.sessionId`; :1530 reserve): the durable job
+      // belongs to the ROOT, and the CHILD runs the launcher. The previous
+      // test masked the defect by reserving under the Child's own id — the
+      // supplier queried the Child's owner index and could never find a real
+      // Root-owned job. This test reserves exactly as production does.
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-interrupt-durable-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const workspace = join(root, 'workspace');
+      await mkdir(workspace, { recursive: true });
+      const workspaceReal = await realPath(workspace);
+      const dataRoot = join(root, 'data-root');
+      const store = createStateStore({ dataRoot });
+      const { job } = await store.reserveFreshRescueJob({ workspace: workspaceReal,
+        reservation: { workspace: workspaceReal, ownerSessionId: ROOT_THREAD, ownerTurnId: 'root-turn-i', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } },
+        executor: { parentSessionId: ROOT_THREAD, parentTurnId: 'root-turn-i', agentId: CHILD_THREAD, agentType: 'zcode-rescue', agentPath: '/root/zcode_rescue_task', workspace: workspaceReal, parentPermissionMode: 'workspace-write' },
+        lifecycle: { ownerLifecycleEpoch: 'c'.repeat(64), executionOwner: 'host-child', hostPlacement: 'foreground' } });
+      await store.claimJobWorkerForExecution(workspaceReal, job.id, { childPid: 999_999_999, workerLeaseId: job.id });
+      await store.transitionJob(workspaceReal, job.id, ['queued'], 'running',
+        { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-int', childPid: 999_999_999, workerLeaseId: job.id });
+      await store.finishJob(workspaceReal, job.id, ['running'], 'succeeded', { exitCode: 0, resultArtifact: 'results/int.md' });
+      const fixture = { workspace: workspaceReal, env: { ZCODE_DATA_ROOT: dataRoot } };
+      const fixture2 = (dataRootArgument, workspaceArgument) => ({ workspace: workspaceArgument, env: { ZCODE_DATA_ROOT: dataRootArgument } });
+      const identity = observeSpawnAcknowledgementIdentity([[{ type: 'session_meta', payload: { id: CHILD_THREAD } }]]);
+      assert.equal(identity.exact, false, 'a bare meta without the spawn join is not an exact identity');
+      // The spawn acknowledgement carries BOTH identities (Root parent +
+      // Child); the supplier owns by the PARENT and verifies the executor
+      // against the Child.
+      const observed = { exact: true, childThreadId: CHILD_THREAD, parentThreadId: ROOT_THREAD };
+      const supplier = interruptDurableSnapshotSupplier(fixture, observed);
+      assert.ok(supplier, 'both observed identities arm the interrupt-case durable supplier');
+      const snapshot = await supplier();
+      assert.equal(snapshot.partition.status, 'resolved', 'the ROOT-owned partition resolves via the parent identity');
+      assert.equal(snapshot.job.presence, 'found', 'the Root-owned exact job is FOUND via the parent identity — never latest-job guessing');
+      assert.equal(snapshot.job.projection.id, job.id);
+      assert.equal(snapshot.job.projection.ownerSessionId, ROOT_THREAD, 'the job is Root-owned, exactly as production reserves it');
+      assert.equal(snapshot.aggregate, 'settled', 'the fully-discharged production job settles through the exported predicates');
+      // A job whose EXECUTOR binding disagrees with the observed Child is a
+      // named mismatch — never settled.
+      const mismatched = await interruptDurableSnapshotSupplier(fixture, { exact: true, childThreadId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', parentThreadId: ROOT_THREAD })();
+      assert.equal(mismatched.aggregate, 'unestablished', 'an executor-vs-Child mismatch never settles');
+      assert.ok(mismatched.reasons.includes('binding-executor-mismatch'), JSON.stringify(mismatched.reasons));
+      // The old wrong shape — ownership keyed by the Child identity — is no
+      // longer used: without the observed PARENT id there is no supplier.
+      assert.equal(interruptDurableSnapshotSupplier(fixture, { exact: true, childThreadId: CHILD_THREAD, parentThreadId: null }), null,
+        'the Child-identity lookup shape is gone: ownership requires the observed parent');
+      // Codex round 2: with an EXPECTED executor, settlement credit requires
+      // a POSITIVELY MATCHING executor binding — a terminal job whose
+      // binding pair is ABSENT has no executor linkage and stays named
+      // unestablished (never settled, never consumed as Gate D evidence).
+      const root2 = await mkdtemp(join(tmpdir(), 'shell-wait-executor-unlinked-'));
+      t.after(() => rm(root2, { recursive: true, force: true }));
+      const workspace2 = join(root2, 'workspace');
+      await mkdir(workspace2, { recursive: true });
+      const workspaceReal2 = await realPath(workspace2);
+      const dataRoot2 = join(root2, 'data-root');
+      const store2 = createStateStore({ dataRoot: dataRoot2 });
+      const unlinked = await store2.reserveFreshRescueJob({ workspace: workspaceReal2,
+        reservation: { workspace: workspaceReal2, ownerSessionId: ROOT_THREAD, ownerTurnId: 'root-turn-u', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } },
+        executor: { parentSessionId: ROOT_THREAD, parentTurnId: 'root-turn-u', agentId: CHILD_THREAD, agentType: 'zcode-rescue', agentPath: '/root/zcode_rescue_task', workspace: workspaceReal2, parentPermissionMode: 'workspace-write' },
+        lifecycle: { ownerLifecycleEpoch: 'f'.repeat(64), executionOwner: 'host-child', hostPlacement: 'foreground' } });
+      await store2.claimJobWorkerForExecution(workspaceReal2, unlinked.job.id, { childPid: 999_999_999, workerLeaseId: unlinked.job.id });
+      await store2.transitionJob(workspaceReal2, unlinked.job.id, ['queued'], 'running',
+        { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-u', childPid: 999_999_999, workerLeaseId: unlinked.job.id });
+      await store2.finishJob(workspaceReal2, unlinked.job.id, ['running'], 'succeeded', { exitCode: 0, resultArtifact: 'results/u.md' });
+      const { readdir: listDir } = await import('node:fs/promises');
+      const partitionKey2 = createHash('sha256').update(workspaceReal2, 'utf8').digest('hex');
+      const partitionDir2 = join(dataRoot2, 'workspaces', partitionKey2);
+      for (const entry of await listDir(partitionDir2)) {
+        if (entry.startsWith('rescue-binding-')) await rm(join(partitionDir2, entry));
+      }
+      const unlinkedSnapshot = await interruptDurableSnapshotSupplier(fixture2(dataRoot2, workspaceReal2), observed)();
+      assert.equal(unlinkedSnapshot.aggregate, 'unestablished',
+        'a terminal job without its executor binding pair is never settled');
+      assert.ok(unlinkedSnapshot.reasons.includes('binding-executor-linkage-unverified'), JSON.stringify(unlinkedSnapshot.reasons));
+      assert.notEqual(unlinkedSnapshot.job.presence, 'missing');
+      // Codex round 3: the reader EXPORTS the linkage-verification fact so
+      // the Gate D join can refuse Child-attributed outcomes without
+      // re-deriving it from the aggregate (an `unresolved` aggregate — e.g.
+      // a terminal job retaining a marked claim — may coexist with an
+      // unverified or mismatched executor).
+      assert.equal(unlinkedSnapshot.executorLinkage, 'binding-executor-linkage-unverified');
+      const verifiedSnapshot = await interruptDurableSnapshotSupplier(fixture, observed)();
+      assert.equal(verifiedSnapshot.executorLinkage, 'verified',
+        'the positively matching binding reports the verified linkage');
+    });
+
+    test('an ambiguous owner index and a missing one stay named unestablished/missing, never guessed', async (t) => {
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-interrupt-amb-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const workspace = join(root, 'workspace');
+      await mkdir(workspace, { recursive: true });
+      const workspaceReal = await realPath(workspace);
+      const dataRoot = join(root, 'data-root');
+      const store = createStateStore({ dataRoot });
+      const { createJobController } = await import('../scripts/lib/job-control.mjs');
+      // The production ownership shape (codex round 1): ROOT-owned jobs, the
+      // Child as executor.
+      const reservation = { workspace: workspaceReal, ownerSessionId: ROOT_THREAD, ownerTurnId: 'root-turn-a', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } };
+      const mkExecutor = (agentId) => ({ parentSessionId: ROOT_THREAD, parentTurnId: 'root-turn-a', agentId, agentType: 'zcode-rescue', agentPath: '/root/zcode_rescue_task', workspace: workspaceReal, parentPermissionMode: 'workspace-write' });
+      // The production multi-candidate partition shape (the Task 2
+      // precedent): the first job is cancelled through its own production
+      // stop path, then a second executor (a NEW operation generation) under
+      // the SAME owner adds the second binding record and owner-index entry.
+      const first = await store.reserveFreshRescueJob({ workspace: workspaceReal, reservation, executor: mkExecutor('child-a'), lifecycle: { ownerLifecycleEpoch: 'd'.repeat(64), executionOwner: 'host-child', hostPlacement: 'foreground' } });
+      const controller = createJobController({ store });
+      await controller.cancel(workspaceReal, first.job.id, ROOT_THREAD);
+      await store.reserveFreshRescueJob({ workspace: workspaceReal, reservation, executor: mkExecutor('child-b'), lifecycle: { ownerLifecycleEpoch: 'd'.repeat(64), executionOwner: 'host-child', hostPlacement: 'foreground' } });
+      const ambiguous = await readDurableObligationSnapshot({
+        dataRoot, workspace: workspaceReal, ownerSessionId: ROOT_THREAD, resolveJobFromOwnerIndex: true,
+      });
+      assert.equal(ambiguous.aggregate, 'unestablished', 'multiple possible jobs remain unknown (§19.5)');
+      assert.ok(ambiguous.reasons.includes('owned-job-ambiguous'));
+      const fixture = { workspace: workspaceReal, env: { ZCODE_DATA_ROOT: dataRoot } };
+      const supplier = interruptDurableSnapshotSupplier(fixture, { exact: true, childThreadId: CHILD_THREAD, parentThreadId: ROOT_THREAD });
+      const ambiguousSnapshot = await supplier();
+      assert.equal(ambiguousSnapshot.aggregate, 'unestablished');
+      assert.ok(ambiguousSnapshot.reasons.includes('owned-job-ambiguous'));
+      const missing = await readDurableObligationSnapshot({
+        dataRoot, workspace: workspaceReal, ownerSessionId: 'ffffffff-ffff-4fff-8fff-fffffffffff0', resolveJobFromOwnerIndex: true,
+      });
+      assert.equal(missing.aggregate, 'unestablished');
+      assert.ok(missing.reasons.includes('owner-binding-missing'), 'a missing owner index is MISSING, never successful cleanup');
+    });
+
+    test('unreadable owner entries are named unestablished — never a confirmed absence or an invisible sibling (self-review round 1)', async (t) => {
+      // The §19.5 partition model: an unreadable/invalid entry is a POSSIBLE
+      // job (unknown), never skippable evidence of absence. The owner-index
+      // resolution must (a) never report `owner-binding-missing` over
+      // unreadable entries and (b) never resolve past an unreadable sibling.
+      const { createHash } = await import('node:crypto');
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-owner-unreadable-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const workspace = join(root, 'workspace');
+      await mkdir(workspace, { recursive: true });
+      const workspaceReal = await realPath(workspace);
+      const dataRoot = join(root, 'data-root');
+      const store = createStateStore({ dataRoot });
+      const { job } = await store.reserveFreshRescueJob({ workspace: workspaceReal,
+        reservation: { workspace: workspaceReal, ownerSessionId: CHILD_THREAD, ownerTurnId: 'turn-u', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } },
+        executor: { parentSessionId: CHILD_THREAD, parentTurnId: 'turn-u', agentId: 'unreadable-child', agentType: 'zcode-rescue', agentPath: '/root/zcode_rescue_task', workspace: workspaceReal, parentPermissionMode: 'workspace-write' },
+        lifecycle: { ownerLifecycleEpoch: 'e'.repeat(64), executionOwner: 'host-child', hostPlacement: 'foreground' } });
+      const partitionKey = createHash('sha256').update(workspaceReal, 'utf8').digest('hex');
+      const ownerRoot = join(dataRoot, 'workspaces', partitionKey, 'job-owners');
+      const ownerDirs = await readdir(ownerRoot);
+      const ownerDir = join(ownerRoot, ownerDirs[0]);
+      const resolveOwnerScoped = () => readDurableObligationSnapshot({
+        dataRoot, workspace: workspaceReal, ownerSessionId: CHILD_THREAD, resolveJobFromOwnerIndex: true,
+      });
+      // (a) ALL enumerated entries unreadable: the named unestablished
+      // condition — never the confirmed-absence claim.
+      await writeFile(join(ownerDir, `${job.id}.json`), 'not json at all', 'utf8');
+      const allCorrupt = await resolveOwnerScoped();
+      assert.equal(allCorrupt.aggregate, 'unestablished');
+      assert.ok(allCorrupt.reasons.includes('owner-binding-entry-unreadable'),
+        'an all-corrupt partition is the named unreadable state, never owner-binding-missing');
+      assert.notEqual(allCorrupt.job.presence, 'missing', 'unreadable entries never claim confirmed absence');
+      // (b) A corrupt sibling beside the exact job: a possible second job —
+      // the exact job can never resolve past it.
+      await writeFile(join(ownerDir, `${job.id}.json`), JSON.stringify({ jobId: job.id, ownerSessionId: CHILD_THREAD, version: 1 }), 'utf8');
+      await writeFile(join(ownerDir, `${'f'.repeat(64)}.json`), 'garbage sibling', 'utf8');
+      const withSibling = await resolveOwnerScoped();
+      assert.equal(withSibling.aggregate, 'unestablished', 'an unreadable sibling forces unestablished (a possible job)');
+      assert.ok(withSibling.reasons.includes('owned-job-ambiguous') || withSibling.reasons.includes('owner-binding-entry-unreadable'),
+        JSON.stringify(withSibling.reasons));
+      assert.notEqual(withSibling.job.presence, 'found', 'the exact job never resolves past an unreadable sibling');
+    });
+
+    test('the spawn acknowledgement identity selector reuses the exact spawn id', () => {
+      const agentPath = '/root/zcode_rescue_task_1';
+      const rollouts = [[
+        { type: 'session_meta', payload: { id: ROOT_THREAD } },
+        fnCall('spawn_agent', 'spawn-1', { agent_type: 'zcode-rescue' }),
+        { type: 'event_msg', payload: { type: 'item_completed', item: { type: 'SubAgentActivity', kind: 'started', agent_thread_id: CHILD_THREAD, agent_path: agentPath } } },
+      ], [
+        { type: 'session_meta', payload: { id: CHILD_THREAD, parent_thread_id: ROOT_THREAD, source: { subagent: { thread_spawn: { agent_path: agentPath } } } } },
+      ]];
+      const identity = observeSpawnAcknowledgementIdentity(rollouts);
+      assert.equal(identity.exact, true);
+      assert.equal(identity.childThreadId, CHILD_THREAD, 'the EXACT spawn-acknowledgement id is the only permitted interrupt target');
+      assert.equal(identity.parentThreadId, ROOT_THREAD);
+      assert.equal(identity.reason, null);
+      // An ambiguous spawn (two calls) stays inexact with its reason — never
+      // a guessed target.
+      const ambiguousParent = [...rollouts[0],
+        { type: 'response_item', payload: { type: 'function_call', name: 'spawn_agent', call_id: 'spawn-2', arguments: JSON.stringify({ agent_type: 'zcode-rescue' }) } }];
+      const ambiguous = observeSpawnAcknowledgementIdentity([ambiguousParent, rollouts[1]]);
+      assert.equal(ambiguous.exact, false);
+      assert.equal(ambiguous.childThreadId, null);
+      assert.match(String(ambiguous.reason ?? ''), /spawn_agent/u);
+    });
+
+    test('runShellWaitCase arms the registered stdout-capture seam for required cases (codex round 2)', async (t) => {
+      // The preflight REQUIRES the seam for rescue-interrupt
+      // (STDOUT_CAPTURE_REQUIRED_CASES), but nothing armed it: the fixture
+      // default is false and no CLI option exists — every default interrupt
+      // invocation would have been refused pre-launch. The registered
+      // requirement threads into fixture PREPARATION (Task 4's ledger freeze
+      // extends the closed set at the same site).
+      const { runShellWaitCase } = await import('../tools/shell-wait-probe/driver.mjs');
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-capture-arming-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const fakeFixture = {
+        workspace: '/private/tmp/t3-arm-ws', codexHome: '/private/tmp/t3-arm-home',
+        installedRoot: '/private/tmp/t3-arm-installed', env: { HOME: '/private/tmp/t3-arm-home' },
+        record: { variant: 'candidate', appliedArtifacts: [] },
+        dispose: async () => {},
+      };
+      const capturedOptions = [];
+      const persistCase = (caseLabel) => ({
+        case: caseLabel, codexBinary: process.execPath, sourceSha: 'a'.repeat(40),
+        workerDurationMs: 420_000,
+        ...(caseLabel === 'rescue-baseline'
+          ? { capMs: null, pollMs: 60_000, budgetMs: 1_200_000 }
+          : { capMs: 3_600_000, pollMs: 3_600_000, budgetMs: 1_200_000 }),
+        output: root,
+      });
+      for (const caseLabel of ['rescue-interrupt', 'rescue-long', 'rescue-repeat', 'rescue-baseline']) {
+        await runShellWaitCase(persistCase(caseLabel), {
+          createFixture: async (options) => {
+            capturedOptions.push({ case: caseLabel, options });
+            return fakeFixture;
+          },
+          executeLiveCase: async () => mapFacts(wiringRollouts()),
+        });
+      }
+      const interruptOptions = capturedOptions.find((entry) => entry.case === 'rescue-interrupt').options;
+      assert.equal(interruptOptions.stdoutCapture, true, 'the registered requirement arms the seam at preparation');
+      const longOptions = capturedOptions.find((entry) => entry.case === 'rescue-long').options;
+      assert.equal(longOptions.stdoutCapture, true, 'the Task 4 ledger freeze registers the O1 long case\'s capture requirement');
+      const repeatOptions = capturedOptions.find((entry) => entry.case === 'rescue-repeat').options;
+      assert.equal(repeatOptions.stdoutCapture, true, 'the Task 4 ledger freeze registers the O2 fresh-repeat case\'s capture requirement');
+      const baselineOptions = capturedOptions.find((entry) => entry.case === 'rescue-baseline').options;
+      assert.notEqual(baselineOptions.stdoutCapture, true, 'a case with no registered capture requirement stays unarmed');
+    });
+
+    test('a REAL prepared rescue-interrupt fixture carries the armed seam and passes the preflight (codex round 2)', async (t) => {
+      const { createShellWaitFixture } = await import('../tools/shell-wait-probe/fixture.mjs');
+      const repositorySha = spawnSync('git', ['rev-parse', 'HEAD'], { env: isolatedBaseEnv(), encoding: 'utf8' }).stdout.trim();
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-capture-real-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const output = join(root, 'output');
+      await mkdir(output, { mode: 0o700 });
+      // The fast seam-injected installer (the fixture describe's pattern),
+      // materializing the launcher file the capture gate realpaths — inside
+      // the fixture's OWN isolated home.
+      let materializedInstalledRoot = null;
+      const fixture = await createShellWaitFixture({
+        sourceRoot: repositoryRoot, sourceSha: repositorySha, codexBinary: process.execPath,
+        output, variant: 'candidate', capMs: null, stdoutCapture: true,
+      }, {
+        buildSnapshot: async ({ output: snapshotOutput, sourceSha }) => {
+          await mkdir(join(snapshotOutput, '.agents', 'plugins'), { recursive: true });
+          await writeFile(join(snapshotOutput, '.agents', 'plugins', 'provenance.json'), JSON.stringify({ sourceSha }), 'utf8');
+        },
+        installPlugin: async ({ codexHome, cleanSource }) => {
+          const installed = join(codexHome, 'plugins', 'cache', 'vitry', 'zcode', '0.1.0');
+          await mkdir(join(installed, 'agents'), { recursive: true });
+          for (const skill of ['rescue', 'review', 'adversarial-review', 'status']) {
+            await mkdir(join(installed, 'skills', skill), { recursive: true });
+            await cp(join(cleanSource, 'skills', skill, 'SKILL.md'), join(installed, 'skills', skill, 'SKILL.md'));
+          }
+          await cp(join(cleanSource, 'agents', 'zcode-rescue.toml.template'), join(installed, 'agents', 'zcode-rescue.toml.template'));
+          await writeFile(join(installed, 'skills', 'rescue', 'launcher.mjs'), 'process.exit(0);\n', 'utf8');
+          await writeFile(join(codexHome, 'config.toml'), '[plugins."zcode@vitry"]\nenabled = true\n', 'utf8');
+          materializedInstalledRoot = installed;
+          return { pluginVersion: '0.1.0' };
+        },
+        runSetup: async () => ({ sessionEstablished: true, launcherDescriptorPublished: true, setupAttempts: 1, roleStatus: 'ready', capVerified: true }),
+      });
+      t.after(() => fixture.dispose());
+      const handle = /** @type {any} */ (fixture).stdoutCapture;
+      assert.ok(handle, 'the prepared fixture carries the armed capture handle');
+      const preloadStats = await stat(handle.preloadPath);
+      assert.ok(preloadStats.isFile(), 'the generated preload exists on disk');
+      assert.equal(handle.entryRealpath, await realPath(join(materializedInstalledRoot, 'skills', 'rescue', 'launcher.mjs')),
+        'the capture gate declares the REAL materialized launcher realpath');
+      const preflight = await evaluateLiveLaunchPreflight({
+        case: 'rescue-interrupt', survivalControlSelector: null, fixture,
+      });
+      assert.deepEqual(preflight, { ok: true, reason: null }, 'the REALLY prepared fixture passes the registered requirement');
+    });
+
+    test('noncanonical UUID target representations settle through identity normalization (codex round 7)', () => {
+      // Production accepts the uuid crate's parse forms for ThreadId
+      // targets (protocol/src/thread_id.rs ThreadId::from_string =
+      // Uuid::parse_str: case-insensitive; hyphenated, simple/urn/braced;
+      // Display emits the canonical lowercase-hyphenated form). An
+      // uppercase or unhyphenated target resolves to the SAME Child — the
+      // host item's admitted agent_thread_id IS the authority — so the
+      // exact-target comparison must normalize supported representations
+      // (never equating a genuinely different uuid; caller text is never
+      // relabeled: the record carries the normalization basis).
+      const UPPER = CHILD_THREAD.toUpperCase();
+      const upperFacts = mapFacts(wiringRollouts({ target: UPPER }));
+      assert.equal(upperFacts.interrupt.exactTargetMatch, true, 'uppercase representation matches after normalization');
+      assert.equal(upperFacts.interrupt.exactTargetMatchBasis, 'uuid-normalized', 'the normalization basis is recorded');
+      assert.equal(upperFacts.interrupt.settled, true, 'a successfully resolved interrupt stays settled');
+      assert.equal(upperFacts.interrupt.settledBasis, 'native-cancellation-settlement-after-delivery');
+      const UNHYPHENATED = CHILD_THREAD.replaceAll('-', '');
+      const unhyphenatedFacts = mapFacts(wiringRollouts({ target: UNHYPHENATED }));
+      assert.equal(unhyphenatedFacts.interrupt.exactTargetMatch, true, 'unhyphenated representation matches after normalization');
+      assert.equal(unhyphenatedFacts.interrupt.exactTargetMatchBasis, 'uuid-normalized');
+      assert.equal(unhyphenatedFacts.interrupt.settled, true);
+      // A genuinely DIFFERENT uuid stays rejected.
+      const foreignFacts = mapFacts(wiringRollouts({ target: 'ffffffff-ffff-4fff-8fff-fffffffffff0' }));
+      assert.equal(foreignFacts.interrupt.exactTargetMatch, false, 'a different uuid never normalizes into the Child');
+      assert.equal(foreignFacts.interrupt.settled, null);
+      // Lowercase canonical control: LEXICAL equality, unchanged basis.
+      const canonical = mapFacts(wiringRollouts());
+      assert.equal(canonical.interrupt.exactTargetMatch, true);
+      assert.equal(canonical.interrupt.exactTargetMatchBasis, 'lexical');
+    });
+
+    test('a sibling-session interrupt call never settles the owning Root item (codex round 7)', () => {
+      // The mapper-level shape: the call/output pair moved into a sibling
+      // session's rollout while the Root rollout carries the host item. The
+      // §19.4 conjunct-1 contract is the OWNING ROOT's rollout — another
+      // session must never supply delivery and timing evidence.
+      const SIBLING_SESSION = 'sibling-thread-1';
+      const rollouts = wiringRollouts();
+      rollouts[0] = [
+        { type: 'session_meta', payload: { id: ROOT_THREAD } },
+        activityItem({ id: 'int-1' }),
+      ];
+      rollouts.push([
+        { type: 'session_meta', payload: { id: SIBLING_SESSION } },
+        interruptCall('int-1', CHILD_THREAD, '2026-10-06T00:00:07.000Z'),
+        interruptSuccess('int-1', 'running', '2026-10-06T00:00:07.100Z'),
+      ]);
+      const facts = mapFacts(rollouts);
+      assert.equal(facts.interrupt.hostDelivery.admitted, false, 'the sibling-call shape is never admitted');
+      assert.ok(facts.interrupt.hostDelivery.reasons.includes('host-activity-foreign-call-rollout'), JSON.stringify(facts.interrupt.hostDelivery.reasons));
+      assert.equal(facts.interrupt.settled, null, 'another session never settles the Root item');
+      assert.equal(facts.interrupt.settledBasis, 'foreign-call-rollout-no-settlement-claim');
+      assert.equal(facts.interrupt.exactTargetMatch, true, 'the target identity matches — the ROLLOUT ownership is the failing conjunct');
+    });
+
+    test('the live preflight rejects a launch whose required observers are known absent', async (t) => {
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-preflight-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const workspace = join(root, 'workspace');
+      await mkdir(workspace, { recursive: true });
+      const dataRoot = join(root, 'data-root');
+      // (1) A declared survival control whose fixture-owned script file is
+      // absent: the observer cannot observe what does not exist.
+      const missingControl = await evaluateLiveLaunchPreflight({
+        case: 'rescue-interrupt', survivalControlSelector: 'progress-terminal',
+        fixture: { workspace, env: { ZCODE_DATA_ROOT: dataRoot }, survivalControlPath: join(root, 'gone', 'survival-control.mjs') },
+      });
+      assert.equal(missingControl.ok, false);
+      assert.match(String(missingControl.reason ?? ''), /survival-control/i);
+      // (2) The durable settlement reader's partition basis (the fixture
+      // data roots) is absent: the durable layer could never be observed.
+      const missingDurable = await evaluateLiveLaunchPreflight({
+        case: 'rescue-interrupt', survivalControlSelector: null,
+        fixture: { workspace, env: {} },
+      });
+      assert.equal(missingDurable.ok, false);
+      assert.match(String(missingDurable.reason ?? ''), /durable/i);
+      // (3) Self-review round 1: the registered capture requirement is a
+      // DRIVER-level case fact (STDOUT_CAPTURE_REQUIRED_CASES — the §19.3(e)
+      // O1/I duty), so a rescue-interrupt fixture prepared WITHOUT the
+      // stdout-capture seam is a known-absent observer — rejected named,
+      // with a real producer, not a test-only fixture flag.
+      assert.ok(STDOUT_CAPTURE_REQUIRED_CASES.has('rescue-interrupt'),
+        'the registered §19.3(e) O1/I capture-preflight duty covers the interrupt case');
+      await mkdir(dataRoot, { recursive: true });
+      const missingCapture = await evaluateLiveLaunchPreflight({
+        case: 'rescue-interrupt', survivalControlSelector: null,
+        fixture: { workspace, env: { ZCODE_DATA_ROOT: dataRoot } },
+      });
+      assert.equal(missingCapture.ok, false);
+      assert.match(String(missingCapture.reason ?? ''), /stdout capture/i);
+      // (3b) A handle that does not name an EXISTING preload file is just as
+      // known-absent.
+      const missingPreload = await evaluateLiveLaunchPreflight({
+        case: 'rescue-interrupt', survivalControlSelector: null,
+        fixture: { workspace, env: { ZCODE_DATA_ROOT: dataRoot }, stdoutCapture: { preloadPath: join(root, 'gone.cjs') } },
+      });
+      assert.equal(missingPreload.ok, false);
+      assert.match(String(missingPreload.reason ?? ''), /stdout capture/i);
+      // (4) Codex round 4: a registered design that RELIES on the wrapped
+      // (code-mode) interrupt path is rejected pre-launch — the wrapped path
+      // is NOT exact-target attributable on this pin (the named limitation).
+      const preloadPath = join(root, 'armed-preload.cjs');
+      await writeFile(preloadPath, '// armed preload\n', 'utf8');
+      const wrappedDesign = await evaluateLiveLaunchPreflight({
+        case: 'rescue-interrupt', survivalControlSelector: null,
+        fixture: { workspace, env: { ZCODE_DATA_ROOT: dataRoot }, stdoutCapture: { preloadPath } },
+      }, { wrappedInterruptRequiredCases: ['rescue-interrupt'] });
+      assert.equal(wrappedDesign.ok, false);
+      assert.match(String(wrappedDesign.reason ?? ''), /wrapped/i);
+      // The REGISTERED design (the closed default map) does NOT rely on the
+      // wrapped path: direct-mode interrupt_agent is the only qualified path
+      // for I, so the default preflight stays neutral here.
+      assert.equal(WRAPPED_INTERRUPT_REQUIRED_CASES.size, 0, 'the registered I design is direct-mode only (the closed default map is empty)');
+      assert.equal(Object.isFrozen(WRAPPED_INTERRUPT_REQUIRED_CASES), true, 'the closed map is frozen');
+      const directDesign = await evaluateLiveLaunchPreflight({
+        case: 'rescue-interrupt', survivalControlSelector: null,
+        fixture: { workspace, env: { ZCODE_DATA_ROOT: dataRoot }, stdoutCapture: { preloadPath } },
+      });
+      assert.equal(directDesign.ok, true);
+    });
+
+    test('the live preflight passes an armed fixture and stays neutral for unregistered cases', async (t) => {
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-preflight-ok-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const workspace = join(root, 'workspace');
+      await mkdir(workspace, { recursive: true });
+      const dataRoot = join(root, 'data-root');
+      await mkdir(dataRoot, { recursive: true });
+      const controlPath = join(root, 'survival-control.mjs');
+      await writeFile(controlPath, '#!/usr/bin/env node\n', { mode: 0o700 });
+      const armed = await evaluateLiveLaunchPreflight({
+        case: 'rescue-interrupt', survivalControlSelector: 'progress-terminal',
+        fixture: { workspace, env: { ZCODE_DATA_ROOT: dataRoot }, survivalControlPath: controlPath, stdoutCapture: { preloadPath: controlPath } },
+      });
+      assert.deepEqual(armed, { ok: true, reason: null });
+      // A case with no registered Task-3 observers (and no registered
+      // capture requirement) is not blocked by them.
+      const other = await evaluateLiveLaunchPreflight({
+        case: 'rescue-baseline', survivalControlSelector: null,
+        fixture: { workspace, env: {} },
+      });
+      assert.equal(other.ok, true);
+      // The 2026-10-21 evidence-closure Task 4 ledger freeze: O1 (rescue-long)
+      // and O2 (rescue-repeat) require the attributable stdout capture, so the
+      // closed map registers both; a genuinely unlisted case carries no
+      // registered requirement.
+      assert.equal(STDOUT_CAPTURE_REQUIRED_CASES.has('rescue-long'), true,
+        'the Task 4 ledger freeze registers the O1 long case\'s capture requirement');
+      assert.equal(STDOUT_CAPTURE_REQUIRED_CASES.has('rescue-repeat'), true,
+        'the Task 4 ledger freeze registers the O2 fresh-repeat case\'s capture requirement');
+      assert.equal(STDOUT_CAPTURE_REQUIRED_CASES.has('rescue-baseline'), false,
+        'the capture requirement set is CLOSED: unlisted cases carry no registered requirement');
+    });
+
+    test('the Task 4 ledger freeze pins the closed observer maps and the preflight scope (2026-10-21)', async (t) => {
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-ledger-freeze-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const workspace = join(root, 'workspace');
+      await mkdir(workspace, { recursive: true });
+      const dataRoot = join(root, 'data-root');
+      await mkdir(dataRoot, { recursive: true });
+      // §20.8's frozen per-case observer requirement: O1 (rescue-long) and O2
+      // (rescue-repeat) exercise the SAME §19.3 capture seam the interrupt
+      // case already registers (their designs require attributable stdout/exit
+      // and fresh exact-output corroboration). The set is CLOSED and frozen;
+      // its membership IS the registered requirement.
+      assert.deepEqual([...STDOUT_CAPTURE_REQUIRED_CASES].sort(),
+        ['rescue-interrupt', 'rescue-long', 'rescue-repeat'],
+        'the closed capture map covers exactly the registered I/O1/O2 case designs');
+      assert.equal(Object.isFrozen(STDOUT_CAPTURE_REQUIRED_CASES), true, 'the closed map is frozen');
+      // The registered I design stays DIRECT-mode only: the wrapped-reliance
+      // map stays EMPTY and frozen (§19.9 codex round 4). A wrapped-reliant
+      // design would have to be registered here and would then be
+      // preflight-rejected before any host launch — it is never run.
+      assert.equal(WRAPPED_INTERRUPT_REQUIRED_CASES.size, 0, 'no registered case relies on the wrapped interrupt path');
+      assert.equal(Object.isFrozen(WRAPPED_INTERRUPT_REQUIRED_CASES), true, 'the wrapped-reliance map is frozen');
+      // The implemented preflight scope, recorded not re-decided: the named
+      // capture-rejection arm is exercised for the interrupt case (checks 1-3
+      // above); the O1/O2 requirement is enforced through ARMING at fixture
+      // preparation (the producer threading) plus the fail-closed capture
+      // admission — so a capture-less rescue-long fixture still passes the
+      // preflight's early return, and a capture-less O1 run can never produce
+      // a passing exact-output verdict (the named admission failure rides the
+      // record instead).
+      const unArmedLong = await evaluateLiveLaunchPreflight({
+        case: 'rescue-long', survivalControlSelector: null, fixture: { workspace, env: {} },
+      });
+      assert.equal(unArmedLong.ok, true,
+        'the preflight stays scoped to the registered interrupt-case observers (the O1/O2 seam is enforced by arming plus the fail-closed admission, §20.8)');
+    });
+
+    /** A synthetic PERSISTED record in the exact buildCaseRecord schema, fully
+     * established on every Gate D layer (each test mutates one dimension;
+     * top-level overrides merge shallowly). */
+    function gateDRecord(overrides = {}) {
+      const record = {
+        status: 'executed',
+        case: 'rescue-interrupt',
+        linkage: { childLinkageChecked: true, mode: 'rescue', rootThreadId: null, childThreadId: CHILD_THREAD, parentThreadId: ROOT_THREAD, companionLaunchCount: 1, companionSendCount: 1, originalHandleChecked: true },
+        observations: { pollStartedAtElapsedMs: 1000, pendingInnerAtEnd: false },
+        interrupt: {
+          requested: true, attempted: true, family: 'v2', delivered: true, rejection: null,
+          previousStatus: 'running', previousStatusTerminal: false, unreadableContinuationObserved: false,
+          callCount: 1, orderingBound: true,
+          target: { kind: 'agent-id', value: CHILD_THREAD, suppressed: false, chars: CHILD_THREAD.length },
+          exactTargetMatch: true, settled: true, settledBasis: 'native-cancellation-settlement-after-delivery',
+          pendingIntervalMs: 5000, deliveryToSettlementMs: 5000, timingBasis: 'rollout-event-timestamps',
+          missingPrerequisite: null,
+          pendingWindowObserved: true, completedBeforeCallMs: null, completedAfterCallMs: null,
+          settlementCleanupGenerated: false,
+          hostDelivery: {
+            checked: true, attemptedCall: true, callId: 'int-1', itemPresent: true,
+            interruptedItemCount: 1, joinedItemCount: 1, foreignItemCount: 0,
+            idJoin: true, agentThreadIdMatch: true, rootRolloutOwned: true,
+            insidePendingWindow: true, timed: true, completedAtMs: EMISSION_MS, admitted: true, reasons: [],
+          },
+          cleanupBoundaryAtMs: SETTLEMENT_MS + 60_000, cancelledAtMs: SETTLEMENT_MS,
+        },
+        child: {
+          settlement: { observed: false, basis: null },
+          // The REAL cancelled-poll shape (codex round 1): no completion-shaped
+          // watch ran, so the local layers stay null — the Companion's remote
+          // outcome is observed through the durable job's production-published
+          // terminal winner, never hand-set here.
+          settlementLayers: { remoteTerminal: null, localProcessReaping: null, durableObligations: 'settled' },
+          durableSnapshot: { aggregate: 'settled', reasons: [], executorLinkage: 'verified', layers: { winner: { terminalStatus: 'succeeded' } }, job: { presence: 'found', projection: { status: 'succeeded' } } },
+        },
+        held: { processTermination: { verifiedTerminated: false, codexTerminated: false }, cleanupLabel: 'observation' },
+        // The declared and QUALIFIED control verdict (the I1 shape): the
+        // survival layer is a REQUIRED Gate D conjunct, so a fully-qualifying
+        // record carries an adjudicated control.
+        survivalControlSelector: 'progress-terminal',
+        survivalControl: { noCollateralQualified: true, reason: null, postDelivery: 'alive', releaseQualificationVersion: 1 },
+      };
+      if (typeof overrides === 'function') overrides(record);
+      else if (overrides !== null && typeof overrides === 'object') Object.assign(record, overrides);
+      return record;
+    }
   });
 
   describe('review adjudication fixes: interrupt ordering binding, exemption narrowing, Root identification and root-control calls', async () => {
@@ -11374,7 +13399,7 @@ process.exit(result.status ?? 1);
         command: process.execPath,
         args: ['-e', childScript, envelopeHead, String(payloadBytes)],
         cwd: process.cwd(),
-        env: process.env,
+        env: isolatedBaseEnv(),
         callerEnvelope: { callerContext: 'test' },
         timeoutMs: 30_000,
       });
@@ -11506,7 +13531,7 @@ process.exit(result.status ?? 1);
         command: process.execPath,
         args: ['-e', childScript, part],
         cwd: process.cwd(),
-        env: process.env,
+        env: isolatedBaseEnv(),
         callerEnvelope: { callerContext: 'test' },
         timeoutMs: 30_000,
       });
@@ -11661,7 +13686,7 @@ process.exit(result.status ?? 1);
             'process.exit(0);',
           ].join('\n'), '{"type":"background","job":{"id":"f"}}'],
           cwd: process.cwd(),
-          env: process.env,
+          env: isolatedBaseEnv(),
           callerEnvelope: { callerContext: 'test' },
           timeoutMs: 30_000,
         });
@@ -13867,7 +15892,7 @@ process.exit(result.status ?? 1);
           '{"type":"background","job":{"id":"g"}}',
         ],
           cwd: process.cwd(),
-          env: process.env,
+          env: isolatedBaseEnv(),
           callerEnvelope: { callerContext: 'test' },
           timeoutMs: 30_000,
         });
@@ -14341,7 +16366,7 @@ process.exit(result.status ?? 1);
       // never-ending pipe this blocks forever (the live Case 0 failure); the
       // wrapper must hand the child an already-at-EOF stdin.
       const reader = 'let n=0;for(;;){const c=require("fs").readSync(0,Buffer.alloc(4096));if(!c.length)break;n+=c.length;}process.stdout.write(`bytes:${n}`)';
-      const unwrapped = spawn(process.execPath, ['-e', reader], { stdio: ['pipe', 'pipe', 'pipe'] });
+      const unwrapped = spawn(process.execPath, ['-e', reader], { env: isolatedBaseEnv(), stdio: ['pipe', 'pipe', 'pipe'] });
       const unwrappedOutcome = await Promise.race([
         new Promise((resolve) => unwrapped.once('exit', () => resolve('exited'))),
         new Promise((resolve) => setTimeout(() => resolve('running'), 1_200)),
@@ -14349,7 +16374,7 @@ process.exit(result.status ?? 1);
       unwrapped.kill('SIGKILL');
       assert.equal(unwrappedOutcome, 'running', 'the open-pipe shape must still block (regression premise)');
       const wrapped = closeStdinLaunch({ command: process.execPath, args: ['-e', reader] });
-      const child = spawn(wrapped.command, wrapped.args, { stdio: ['pipe', 'pipe', 'pipe'] });
+      const child = spawn(wrapped.command, wrapped.args, { env: isolatedBaseEnv(), stdio: ['pipe', 'pipe', 'pipe'] });
       const output = await new Promise((resolve, reject) => {
         let text = '';
         const timer = setTimeout(() => reject(new Error('the wrapped reader still blocked on the open parent pipe')), 5_000);
@@ -14443,7 +16468,7 @@ process.exit(result.status ?? 1);
         const { join } = await import('node:path');
         const { runShellWaitCase } = await import(${JSON.stringify(pathToFileURL(driverCli).href)});
         const record = await runShellWaitCase({
-          case: 'rescue-baseline', codexBinary: process.execPath, sourceSha: ${JSON.stringify(spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim())},
+          case: 'rescue-baseline', codexBinary: process.execPath, sourceSha: ${JSON.stringify(spawnSync('git', ['rev-parse', 'HEAD'], { env: isolatedBaseEnv(), encoding: 'utf8' }).stdout.trim())},
           output: ${JSON.stringify(output)}, workerDurationMs: 1000, capMs: null, pollMs: 60000, budgetMs: 2000,
         }, {
           createFixture: async () => {
@@ -14461,7 +16486,7 @@ process.exit(result.status ?? 1);
         console.log('DISPATCH:' + record.status);
       `;
       const child = spawnSync(process.execPath, ['--input-type=module', '--eval', script], {
-        encoding: 'utf8', env: { ...process.env, ZCODE_SHELL_WAIT_E2E: '1' }, timeout: 60_000,
+        encoding: 'utf8', env: { ...isolatedBaseEnv(), ZCODE_SHELL_WAIT_E2E: '1' }, timeout: 60_000,
       });
       assert.equal(child.status, 0, `gated dispatch failed:\n${child.stdout}\n${child.stderr}`);
       assert.match(child.stdout, /DISPATCH:executed/);
@@ -14471,7 +16496,7 @@ process.exit(result.status ?? 1);
     test('--help prints usage, exits zero, and never launches a host', () => {
       const result = spawnSync(process.execPath, [driverCli, '--help'], {
         encoding: 'utf8',
-        env: { ...process.env, CODEX_BINARY: 'never-launched', ZCODE_SHELL_WAIT_E2E: '1' },
+        env: { ...isolatedBaseEnv(), CODEX_BINARY: 'never-launched', ZCODE_SHELL_WAIT_E2E: '1' },
         timeout: 30_000,
       });
       assert.equal(result.status, 0, result.stderr);
@@ -14480,14 +16505,14 @@ process.exit(result.status ?? 1);
     });
 
     test('an unknown case, unknown option, or relative executable fails closed with exit one', () => {
-      const sourceSha = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+      const sourceSha = spawnSync('git', ['rev-parse', 'HEAD'], { env: isolatedBaseEnv(), encoding: 'utf8' }).stdout.trim();
       const invalidArgumentSets = [
         ['--case', 'not-a-case', '--codex', process.execPath, '--source-sha', sourceSha, '--output', '/tmp'],
         ['--case', 'rescue-long', '--codex', process.execPath, '--source-sha', sourceSha, '--output', '/tmp', '--worker', '1'],
         ['--case', 'rescue-long', '--codex', 'relative/codex', '--source-sha', sourceSha, '--output', '/tmp'],
       ];
       for (const arguments_ of invalidArgumentSets) {
-        const result = spawnSync(process.execPath, [driverCli, ...arguments_], { encoding: 'utf8', timeout: 30_000 });
+        const result = spawnSync(process.execPath, [driverCli, ...arguments_], { encoding: 'utf8', env: isolatedBaseEnv(), timeout: 30_000 });
         assert.equal(result.status, 1, `expected exit 1 for ${arguments_.join(' ')}`);
         assert.match(result.stderr, /Invalid shell wait case input|usage:/);
       }
@@ -14643,7 +16668,7 @@ process.exit(result.status ?? 1);
 
     test('the driver CLI refuses a split pair or malformed exec default with exit one before any launch', () => {
       const driverCliPath = fileURLToPath(new URL('../tools/shell-wait-probe/driver.mjs', import.meta.url));
-      const sourceSha = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+      const sourceSha = spawnSync('git', ['rev-parse', 'HEAD'], { env: isolatedBaseEnv(), encoding: 'utf8' }).stdout.trim();
       const negatives = [
         ['--case', 'rescue-long', '--codex', process.execPath, '--source-sha', sourceSha, '--output', '/tmp', '--wait-policy', 'config-default'],
         ['--case', 'rescue-long', '--codex', process.execPath, '--source-sha', sourceSha, '--output', '/tmp', '--exec-default-ms', '240000'],
@@ -14651,7 +16676,7 @@ process.exit(result.status ?? 1);
         ['--case', 'rescue-long', '--codex', process.execPath, '--source-sha', sourceSha, '--output', '/tmp', '--wait-policy', 'config-default', '--exec-default-ms', '3600001'],
       ];
       for (const negative of negatives) {
-        const result = spawnSync(process.execPath, [driverCliPath, ...negative], { encoding: 'utf8', timeout: 30_000 });
+        const result = spawnSync(process.execPath, [driverCliPath, ...negative], { encoding: 'utf8', env: isolatedBaseEnv(), timeout: 30_000 });
         assert.equal(result.status, 1, `expected exit 1 for ${negative.join(' ')}`);
         assert.match(result.stderr, /Invalid shell wait case input/);
       }
@@ -14722,7 +16747,7 @@ process.exit(result.status ?? 1);
     // expected cross-run and must not read as cross-arm incompatibility.
     const { createShellWaitFixture, configDefaultWaitingParagraph, normalizeFixtureInstructionText } = await import('../tools/shell-wait-probe/fixture.mjs');
     const { renderManagedRescueRole } = await import('../scripts/lib/managed-agent-role.mjs');
-    const repositorySha = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+    const repositorySha = spawnSync('git', ['rev-parse', 'HEAD'], { env: isolatedBaseEnv(), encoding: 'utf8' }).stdout.trim();
     const realTemplate = await readFile(join(repositoryRoot, 'agents', 'zcode-rescue.toml.template'), 'utf8');
     const realSkill = await readFile(join(repositoryRoot, 'skills', 'rescue', 'SKILL.md'), 'utf8');
     const ORIGINAL_WAITING_PARAGRAPH = realTemplate.split('\n').find((line) => line.includes('subsequent same-handle observations are 60000'));
@@ -16292,7 +18317,7 @@ process.exit(result.status ?? 1);
 
     test('the driver CLI enforces the selector matrix with exit one before any launch and documents the new finite surface', () => {
       const driverCliPath = fileURLToPath(new URL('../tools/shell-wait-probe/driver.mjs', import.meta.url));
-      const sourceSha = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+      const sourceSha = spawnSync('git', ['rev-parse', 'HEAD'], { env: isolatedBaseEnv(), encoding: 'utf8' }).stdout.trim();
       const negatives = [
         // Unknown selector literal.
         ['--case', 'rescue-interrupt', '--codex', process.execPath, '--source-sha', sourceSha, '--output', '/tmp', '--interrupt-baseline-selector', '60000', '--wait-policy', 'config-default', '--exec-default-ms', '3600000'],
@@ -16302,11 +18327,11 @@ process.exit(result.status ?? 1);
         ['--case', 'rescue-long', '--codex', process.execPath, '--source-sha', sourceSha, '--output', '/tmp', '--survival-control-selector', 'progress-terminal', '--wait-policy', 'config-default', '--exec-default-ms', '3600000'],
       ];
       for (const negative of negatives) {
-        const result = spawnSync(process.execPath, [driverCliPath, ...negative], { encoding: 'utf8', timeout: 30_000 });
+        const result = spawnSync(process.execPath, [driverCliPath, ...negative], { encoding: 'utf8', env: isolatedBaseEnv(), timeout: 30_000 });
         assert.equal(result.status, 1, `expected exit 1 for ${negative.join(' ')}`);
         assert.match(result.stderr, /Invalid shell wait case input/);
       }
-      const help = spawnSync(process.execPath, [driverCliPath, '--help'], { encoding: 'utf8', timeout: 30_000 });
+      const help = spawnSync(process.execPath, [driverCliPath, '--help'], { encoding: 'utf8', env: isolatedBaseEnv(), timeout: 30_000 });
       assert.equal(help.status, 0, help.stderr);
       assert.match(help.stdout, /--interrupt-baseline-selector short-window-60000/u);
       assert.match(help.stdout, /--survival-control-selector progress-terminal/u);
@@ -16323,7 +18348,7 @@ process.exit(result.status ?? 1);
     // without any private path.
     const { createShellWaitFixture, normalizeFixtureInstructionText, SURVIVAL_CONTROL_LINE_COUNT } = await import('../tools/shell-wait-probe/fixture.mjs');
     const { renderManagedRescueRole } = await import('../scripts/lib/managed-agent-role.mjs');
-    const repositorySha = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+    const repositorySha = spawnSync('git', ['rev-parse', 'HEAD'], { env: isolatedBaseEnv(), encoding: 'utf8' }).stdout.trim();
     const realTemplate = await readFile(join(repositoryRoot, 'agents', 'zcode-rescue.toml.template'), 'utf8');
     const realSkill = await readFile(join(repositoryRoot, 'skills', 'rescue', 'SKILL.md'), 'utf8');
 
@@ -16453,7 +18478,7 @@ process.exit(result.status ?? 1);
 
     test('the survival-control script emits uniquely tagged lines at the declared cadence', async (t) => {
       const fixture = await createFastFixture(t, { survivalControl: true, waitPolicy: 'config-default' });
-      const child = spawn(process.execPath, [fixture.survivalControlPath], { stdio: ['ignore', 'pipe', 'ignore'] });
+      const child = spawn(process.execPath, [fixture.survivalControlPath], { env: isolatedBaseEnv(), stdio: ['ignore', 'pipe', 'ignore'] });
       const startedAtMs = Date.now();
       let collected = '';
       const killer = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* already exiting */ } }, 4600);
@@ -16563,20 +18588,23 @@ process.exit(result.status ?? 1);
       assert.equal(Object.hasOwn(unobserved.facts.completion, 'exactTerminalMatch'), false);
     });
 
-    test('the live evidence request DERIVES the exact expectation for every rescue case (codex review round 8)', async () => {
+    test('the live evidence request DERIVES the exact expectation for every rescue case (codex review round 8; v2 per-invoked-path — task-5 instrument correction)', async () => {
       // The derivation is OFFLINE and case-constant: the deterministic
-      // production renderer (renderOutput, via exactRescueRenderedExpectation
-      // — the same independent source these tests use) applied to the case's
-      // DECLARED harmless output profile. The rescue case profile declares
-      // the fixture's public result AND its resumability fact (round-4
-      // review fix: the rendered terminal view carries the Resumability
-      // Indicator, so the expectation is COMPLETE — an unestablished fact
-      // would derive no expectation at all, never a partial framing-less
-      // one). No caller supplies the expectation: the live default executor
-      // gets it through the SAME validated seam, so every real policy run
-      // carries the exact-byte check in its evidence facts.
-      const { PUBLIC_RESULT_RESUMABLE } = await import('../tools/shell-wait-probe/fixture.mjs');
-      const derived = exactRescueRenderedExpectation({ result: SENTINEL, resumable: PUBLIC_RESULT_RESUMABLE });
+      // production formatter applied to the INVOKED path's return shape.
+      // History (round 8 as amended by round 4): the v1 derivation rendered
+      // the terminal-MANAGEMENT view (result + declared Resumability
+      // Indicator) for every rescue result. The task-5 instrument correction
+      // (`RESCUE_EXPECTATION_DERIVATION_VERSION` 2, report §21.2.1)
+      // SUPERSEDES that for the live wiring: every rescue-family case
+      // delivers through the `invoke-prepared rescue` FOREGROUND chain whose
+      // production contract renders the RAW durable job —
+      // `exactRescueForegroundRenderedExpectation` is the corrected v2
+      // source, and the values come from the production contract, never from
+      // captured bytes. No caller supplies the expectation: the live default
+      // executor gets it through the SAME validated seam, so every real
+      // policy run carries the exact-byte check in its evidence facts.
+      const { exactRescueForegroundRenderedExpectation } = await import('../tools/shell-wait-probe/release-qualification.mjs');
+      const derived = exactRescueForegroundRenderedExpectation({ result: SENTINEL });
       for (const label of ['rescue-baseline', 'rescue-long', 'rescue-repeat', 'rescue-noise', 'rescue-interrupt', 'background']) {
         const request = shellWaitEvidenceRequest({ case: label, command: LAUNCHER, rollouts: [], zcodeCalls: [], workerDurationMs: 420_000, pollMs: 3_600_000, workerStillAliveAfterObservation: false });
         assert.deepEqual(request.exactExpectedTerminal, derived, `${label} carries the derived exact-byte expectation`);
@@ -16603,48 +18631,106 @@ process.exit(result.status ?? 1);
       assert.deepEqual(evidence.facts.completion.exactTerminalMatch, { matched: null, reason: 'stdout-stream-attribution-unavailable', releaseQualificationVersion: 1 });
     });
 
-    test('the wired rescue expectation carries the COMPLETE production framing and needs the declared Resumability Indicator (round-4 review fix)', async () => {
-      // Verified production shape (READ-ONLY trace): renderOutput's succeeded
-      // terminal view renders `Resumable: yes/no` whenever the job view
-      // carries the projection-derived indicator (scripts/lib/render.mjs
-      // :34-38, plus the resume hint for a true indicator), and
-      // terminalResultJob (scripts/zcode-companion.mjs:2492-2495) supplies
-      // that indicator from resumableJobIndicator (scripts/lib/job-control.mjs
-      // :1009-1029 — accepted session + same-turn permission snapshot +
-      // binding currency, definite for the live single-turn succeeded run).
-      // An expectation WITHOUT the line is PARTIAL: it false-rejects valid
-      // output as extra-output and false-accepts framing-less output. The
-      // fixture therefore DECLARES the resumability fact, the wiring derives
-      // the COMPLETE expectation from it, and an UNESTABLISHED fact derives
-      // NO expectation at all — never a partial framing-less one.
-      const { PUBLIC_RESULT_RESUMABLE } = await import('../tools/shell-wait-probe/fixture.mjs');
-      assert.equal(PUBLIC_RESULT_RESUMABLE, true, 'the fixture declares the resumability fact of its successful rescue result view');
+    test('the v1 management-view builder is retained UNCHANGED for status/management results; the live wiring derives the v2 foreground contract (task-5 instrument correction, superseding the round-4 framing pin)', async () => {
+      // SUPERSESSION (2026-10-22 task-5 instrument correction,
+      // RESCUE_EXPECTATION_DERIVATION_VERSION 2, report §21.2.1): this test's
+      // round-4 form pinned the terminal-MANAGEMENT framing as THE wired
+      // rescue expectation. The static chain (READ-ONLY) established that the
+      // registered `invoke-prepared rescue` foreground invocation renders the
+      // RAW durable job (terminalResultJob is never applied there), so the
+      // round-4 "complete framing" premise held only for the MANAGEMENT
+      // `result` path — the live wiring now derives the v2 FOREGROUND
+      // expectation (its completeness-for-path is pinned by the v2 test
+      // above). What REMAINS true of the v1 builder — and is pinned here — is
+      // its management semantics: the complete terminal view for a definite
+      // indicator (renderOutput's succeeded terminal view,
+      // scripts/lib/render.mjs:34-38, the indicator supplied by
+      // terminalResultJob, scripts/zcode-companion.mjs:2492-2495, from
+      // resumableJobIndicator, scripts/lib/job-control.mjs:1009-1029) and NO
+      // expectation for an unestablished fact (never a partial framing-less
+      // expectation).
       const { renderOutput } = await import('../scripts/lib/render.mjs');
-      const complete = exactRescueRenderedExpectation({ result: SENTINEL, resumable: PUBLIC_RESULT_RESUMABLE });
-      assert.equal(complete.output, renderOutput({ result: SENTINEL, job: { resumable: PUBLIC_RESULT_RESUMABLE } }),
-        'the complete expectation IS the production render with the indicator line');
-      assert.match(complete.output, new RegExp(`^${SENTINEL}\\nResumable: yes\\n`, 'u'), 'the framing includes the rendered Resumable line');
-      // The live wiring derives the SAME complete expectation from the
-      // declared fact.
-      const request = shellWaitEvidenceRequest({ case: 'rescue-interrupt', command: LAUNCHER, rollouts: [], zcodeCalls: [], workerDurationMs: 420_000, pollMs: 3_600_000, workerStillAliveAfterObservation: false });
-      assert.deepEqual(request.exactExpectedTerminal, complete, 'the wired derivation carries the complete framing');
-      // (a) An attributable capture carrying sentinel + the correct Resumable
-      // line (+ hint) MATCHES — previously rejected as extra-output against
-      // the partial framing-less expectation.
-      const matched = inspectShellWaitEvidence(evidenceInput(complete.output, { exactExpectedTerminal: request.exactExpectedTerminal, observedTerminalStdout: complete.output }));
-      assert.deepEqual(matched.facts.completion.exactTerminalMatch, { matched: true, reason: null, releaseQualificationVersion: 1 });
-      // (b) A capture MISSING the required framing is rejected — never
-      // accepted (previously the partial expectation byte-matched it).
-      const framingless = inspectShellWaitEvidence(evidenceInput(`${SENTINEL}\n`, { exactExpectedTerminal: request.exactExpectedTerminal, observedTerminalStdout: `${SENTINEL}\n` }));
-      assert.equal(framingless.facts.completion.exactTerminalMatch.matched, false, 'framing-less output never satisfies the exact gate');
-      assert.equal(framingless.facts.completion.exactTerminalMatch.reason, 'output-truncated');
-      // (c) An UNESTABLISHED resumability fact derives NO expectation — the
-      // exact equality stays unestablished (no verdict key), never a partial
-      // expectation and never a false rejection.
+      const complete = exactRescueRenderedExpectation({ result: SENTINEL, resumable: true });
+      assert.equal(complete.output, renderOutput({ result: SENTINEL, job: { resumable: true } }),
+        'the v1 management expectation IS the production render with the indicator line');
+      assert.match(complete.output, new RegExp(`^${SENTINEL}\\nResumable: yes\\n`, 'u'), 'the v1 management framing includes the rendered Resumable line');
       assert.equal(exactRescueRenderedExpectation({ result: SENTINEL, resumable: null }), null);
       assert.equal(exactRescueRenderedExpectation({ result: SENTINEL }), null);
-      const unestablished = inspectShellWaitEvidence(evidenceInput(complete.output));
+      // The v2 live wiring no longer derives that management view for rescue
+      // cases: the wired expectation is the foreground contract output.
+      const request = shellWaitEvidenceRequest({ case: 'rescue-interrupt', command: LAUNCHER, rollouts: [], zcodeCalls: [], workerDurationMs: 420_000, pollMs: 3_600_000, workerStillAliveAfterObservation: false });
+      assert.deepEqual(request.exactExpectedTerminal, { output: `${SENTINEL}\n`, exitCode: 0 }, 'the wired derivation is the v2 foreground contract output');
+      // (a) An attributable capture of the exact foreground bytes MATCHES the
+      // wired expectation.
+      const matched = inspectShellWaitEvidence(evidenceInput(request.exactExpectedTerminal.output, { exactExpectedTerminal: request.exactExpectedTerminal, observedTerminalStdout: request.exactExpectedTerminal.output }));
+      assert.deepEqual(matched.facts.completion.exactTerminalMatch, { matched: true, reason: null, releaseQualificationVersion: 1 });
+      // (b) A capture carrying the management framing is the named
+      // extra-output divergence against the foreground contract — never
+      // normalized away, and never (as under v1) the expectation itself.
+      const framingless = inspectShellWaitEvidence(evidenceInput(complete.output, { exactExpectedTerminal: request.exactExpectedTerminal, observedTerminalStdout: complete.output }));
+      assert.equal(framingless.facts.completion.exactTerminalMatch.matched, false, 'management-view bytes never satisfy the foreground exact gate');
+      assert.equal(framingless.facts.completion.exactTerminalMatch.reason, 'extra-output');
+      // (c) No threaded expectation leaves the equality unestablished.
+      const unestablished = inspectShellWaitEvidence(evidenceInput(request.exactExpectedTerminal.output));
       assert.equal(Object.hasOwn(unestablished.facts.completion, 'exactTerminalMatch'), false, 'no threaded expectation leaves the equality unestablished');
+    });
+
+    test('the expectation derivation follows the INVOKED path’s production contract (v2: the invoke-prepared foreground shape renders the raw durable job; task-5 instrument correction)', async () => {
+      // Static chain (READ-ONLY, §21.2.1; the §19.2 offline-versioning
+      // convention): the registered `invoke-prepared rescue` foreground chain
+      // returns the RAW durable job — runDirectInvocation's preparedInvocation
+      // branch (zcode-companion.mjs:822, ending at the runCompanion call
+      // :1019-1020) reaches review.mjs:421
+      // `output = { job: publication.job, result: publication.result }` where
+      // publication.job is the RAW store.finishJob winner (review.mjs:743-761)
+      // — and the foreground chain NEVER applies terminalResultJob
+      // (zcode-companion.mjs:2482-2496, the only producer of the job-view
+      // `resumable` field; its only call sites are :207/:209, the `result`
+      // management command). formatDirectInvocationSuccess → renderOutput
+      // over that shape renders `${result}\n`. The v1 builder
+      // (exactRescueRenderedExpectation with the DECLARED resumable fact)
+      // derived the terminal-MANAGEMENT view for every rescue result — a
+      // demonstrated input defect for the foreground invocation: the O1/O2
+      // comparator mismatches were artifacts of that wrong expectation, not
+      // production divergences. v2 derives the expectation per the INVOKED
+      // path; values come from the production contract, never from captured
+      // bytes.
+      const { RESCUE_EXPECTATION_DERIVATION_VERSION, exactRescueForegroundRenderedExpectation } = await import('../tools/shell-wait-probe/release-qualification.mjs');
+      assert.equal(RESCUE_EXPECTATION_DERIVATION_VERSION, 2, 'the expectation derivation is at the v2 foreground correction');
+      const { formatDirectInvocationSuccess } = await import('../scripts/lib/direct-invocation-result.mjs');
+      const { createHash } = await import('node:crypto');
+      // The RAW durable record's public projection shape (production fields,
+      // NO resumable — terminalResultJob is the only producer and never runs
+      // on this path).
+      const rawJob = { id: 'a'.repeat(64), command: 'rescue', status: 'succeeded', readOnly: false };
+      const foreground = exactRescueForegroundRenderedExpectation({ result: SENTINEL });
+      assert.deepEqual(foreground, { output: `${SENTINEL}\n`, exitCode: 0 },
+        'the foreground expectation is the production render of the raw-job return shape');
+      assert.equal(foreground.output, formatDirectInvocationSuccess({ job: rawJob, result: SENTINEL }).text,
+        'the derived bytes equal the real formatter’s output for the invoked path');
+      assert.equal(
+        createHash('sha256').update(foreground.output, 'utf8').digest('hex'),
+        '61ccf5084f7b6d8dcf00b5081772afc8d85148708e5dda979343cf8b7ed82927',
+        'the statically predicted foreground bytes equal the recorded O1/O2 capture digest (§21.2.1 chain; never read from the capture)');
+      // The live wiring derives the SAME v2 foreground expectation for every
+      // rescue-family case (all six deliver through the invoke-prepared
+      // foreground path), replacing the v1 terminal-management framing.
+      for (const label of ['rescue-baseline', 'rescue-long', 'rescue-repeat', 'rescue-noise', 'rescue-interrupt', 'background']) {
+        const request = shellWaitEvidenceRequest({ case: label, command: LAUNCHER, rollouts: [], zcodeCalls: [], workerDurationMs: 420_000, pollMs: 3_600_000, workerStillAliveAfterObservation: false });
+        assert.deepEqual(request.exactExpectedTerminal, foreground, `${label} carries the v2 foreground expectation`);
+      }
+      // The v2 expectation is COMPLETE for its path (never a partial
+      // expectation): the exact foreground bytes MATCH, and a capture carrying
+      // the terminal-management framing is the named extra-output divergence.
+      const matched = inspectShellWaitEvidence(evidenceInput(foreground.output, { exactExpectedTerminal: foreground, observedTerminalStdout: foreground.output }));
+      assert.deepEqual(matched.facts.completion.exactTerminalMatch, { matched: true, reason: null, releaseQualificationVersion: 1 });
+      const terminalFraming = exactRescueRenderedExpectation({ result: SENTINEL, resumable: true });
+      const extra = inspectShellWaitEvidence(evidenceInput(terminalFraming.output, { exactExpectedTerminal: foreground, observedTerminalStdout: terminalFraming.output }));
+      assert.deepEqual(extra.facts.completion.exactTerminalMatch, { matched: false, reason: 'extra-output', releaseQualificationVersion: 1 },
+        'management-view bytes are extra-output against the foreground contract — never normalized away');
+      // Input validation mirrors the v1 discipline (bounded nonempty result).
+      assert.throws(() => exactRescueForegroundRenderedExpectation({ result: '' }), /rescue foreground expectation/iu);
+      assert.throws(() => exactRescueForegroundRenderedExpectation({ result: 'x'.repeat(4097) }), /rescue foreground expectation/iu);
     });
 
     test('exact stdout equality needs STREAM ATTRIBUTION; merged-only output is unestablished (codex review round 12)', () => {
@@ -18005,7 +20091,7 @@ process.exit(result.status ?? 1);
       assert.equal(dirname(scriptPath), ownedDir, 'the probe script must live inside the owned temporary directory');
       try {
         await writeFile(scriptPath, childScript);
-        const result = spawnSync(process.execPath, [scriptPath], { encoding: 'utf8' });
+        const result = spawnSync(process.execPath, [scriptPath], { env: isolatedBaseEnv(), encoding: 'utf8' });
         assert.equal(result.status, 0, result.stderr);
         // The LEAK assertion FIRST (it is this test's defect): the private
         // marker appears NOWHERE in the process output.
@@ -19764,6 +21850,10 @@ process.exit(result.status ?? 1);
         previousStatusOnly: false,
         unreadableContinuation: false,
         pendingWindowConfirmed: true,
+        // 2026-10-21 evidence-closure Task 3: the §19.4-registered host
+        // activity admission is part of the fully-established delivery —
+        // the registered admission set (report §19.4) rides the base input.
+        hostActivityAdmitted: true,
       },
       turnSettled: true,
       deliveryToSettlementMs: 5_000,
@@ -20035,5 +22125,2916 @@ describe('cleanup-boundary attribution for exit-code settlements (round-9 review
     assert.equal(facts.interrupt.settled, true);
   });
 });
+
+  // -------------------------------------------------------------------------
+  // Task 2 evidence closure (plan 2026-10-21): attributable stdout capture
+  // through the frozen §19.3 seam. OFFLINE pipeline tests only: every
+  // transport scenario is a real spawned Node child running the
+  // FIXTURE-GENERATED preload (the repository never ships executable
+  // observation code; the preload source is generated into a disposable temp
+  // directory here exactly like the fixture does). No Codex host, ZCode task,
+  // or authenticated trial runs in this block.
+  // -------------------------------------------------------------------------
+  describe('closure stdout capture seam (task 2 evidence closure)', async () => {
+    const { randomBytes } = await import('node:crypto');
+    const { lstat, realpath } = await import('node:fs/promises');
+    // (lstat/realpath are used by the capture-scope harness and the fixture test below.)
+    const {
+      CLOSURE_OBSERVATION_VERSION, STDOUT_CAPTURE_MAX_BYTES,
+      CAPTURE_DIRECTORY_VARIABLE, CAPTURE_NONCE_VARIABLE, CAPTURE_ENTRY_VARIABLE, CAPTURE_MAX_BYTES_VARIABLE,
+      closurePreloadSource, writeClosurePreload, captureEnvironment, admitStdoutCapture, closureExactLinkage,
+    } = await import('../tools/shell-wait-probe/closure-observation.mjs');
+    const { PUBLIC_RESULT_SENTINEL } = await import('../tools/shell-wait-probe/fixture.mjs');
+    const { evaluateExactTerminalLinkage, exactRescueRenderedExpectation } = await import('../tools/shell-wait-probe/release-qualification.mjs');
+    const { formatDirectInvocationError } = await import('../scripts/lib/direct-invocation-result.mjs');
+    const { PluginError } = await import('../scripts/lib/errors.mjs');
+
+    const launcherRealpath = fileURLToPath(new URL('../skills/rescue/launcher.mjs', import.meta.url));
+    const companionEntry = fileURLToPath(new URL('../scripts/zcode-companion.mjs', import.meta.url));
+    const directInvocationResultModule = new URL('../scripts/lib/direct-invocation-result.mjs', import.meta.url);
+
+    // The exact production fast-fail expectation: built through the REAL
+    // production formatter from the error shape the production source throws
+    // at the CODEX_THREAD_ID check (zcode-companion.mjs THREAD_ID_REQUIRED,
+    // category authorization) — never from captured bytes. The 207-byte size
+    // is the §19.3 T1 pinned envelope length.
+    const threadIdRequiredEnvelope = formatDirectInvocationError(
+      new PluginError('THREAD_ID_REQUIRED', 'The active Codex thread identity is unavailable.', { category: 'authorization', remedy: 'Invoke this installed skill from an active Codex turn.' }),
+    );
+    const envelopeBytes = Buffer.byteLength(threadIdRequiredEnvelope.text);
+
+    /**
+     * Bounded spawned child: stdout/stderr are captured up to 256 KiB for the
+     * delivery assertions only — the child's own stdout is the production
+     * surface and is never truncated by the harness in the asserted cases.
+     */
+    function spawnBounded(command, args, env) {
+      return new Promise((resolve, reject) => {
+        const child = spawn(command, args, { env, stdio: ['ignore', 'pipe', 'pipe'] });
+        const stdoutChunks = []; const stderrChunks = []; let bytes = 0;
+        child.stdout.on('data', (chunk) => { bytes += chunk.length; if (bytes <= 256 * 1024) stdoutChunks.push(chunk); });
+        child.stderr.on('data', (chunk) => { if (bytes <= 256 * 1024) stderrChunks.push(chunk); });
+        child.once('error', reject);
+        child.once('close', (code, signal) => {
+          // Decode ONCE from the reassembled bytes: torn multi-byte sequences
+          // across pipe chunk boundaries must never be mis-decoded.
+          const decoder = new TextDecoder('utf-8');
+          resolve({ code, signal, stdout: decoder.decode(Buffer.concat(stdoutChunks)), stderr: decoder.decode(Buffer.concat(stderrChunks)) });
+        });
+      });
+    }
+
+    /**
+     * One fresh disposable capture scope: fixture-generated preload written
+     * into the temp root, a private 0700 capture directory, a fresh 64-hex
+     * nonce, and the composed capture environment. When `probe` is supplied,
+     * the probe entry is written first and its realpath becomes the declared
+     * capture entry (the exact frozen gate shape). Everything here is
+     * disposable-fixture-scoped exactly like the production fixture seam.
+     */
+    async function captureScope(t, { entry = launcherRealpath, maxBytes = STDOUT_CAPTURE_MAX_BYTES, probe = null } = {}) {
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-closure-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const captureDirectory = join(root, 'stdout-capture');
+      await mkdir(captureDirectory, { mode: 0o700 });
+      const nonce = randomBytes(32).toString('hex');
+      const preload = await writeClosurePreload(root);
+      // The declared entry is the probe's REALPATH: the frozen gate compares
+      // realpathSync(process.argv[1]) against it (macOS /var is a symlink).
+      const entryRealpath = probe === null ? entry : await realpath(await writeProbe(root, probe.name, probe.body));
+      // Post-merge-review fix 1: the composed capture environment starts from
+      // the isolated base built over THIS scope's disposable root — the temp
+      // home/codex-home/data-root directories are created here and disposed
+      // with the root — never from the ambient identity.
+      for (const directory of ISOLATED_ENV_DIRECTORIES) await mkdir(join(root, directory), { mode: 0o700 });
+      const env = captureEnvironment({ captureDirectory, nonce, entryRealpath, maxBytes, baseEnv: isolatedBaseEnv(root), nodeOptionsFragment: preload.nodeOptionsFragment });
+      return { root, captureDirectory, nonce, preload, env, probe: probe === null ? null : entryRealpath };
+    }
+
+    /** Write one fixture-owned probe entry whose realpath becomes the declared capture entry. */
+    async function writeProbe(root, name, body) {
+      const probePath = join(root, name);
+      await writeFile(probePath, body, { mode: 0o700 });
+      return probePath;
+    }
+
+    const captureNames = (nonce) => [`${nonce}.stdout`, `${nonce}.meta.json`];
+
+    async function captureFileBytes(captureDirectory, nonce) {
+      return readFile(join(captureDirectory, `${nonce}.stdout`));
+    }
+
+    async function captureMetaRaw(captureDirectory, nonce) {
+      return readFile(join(captureDirectory, `${nonce}.meta.json`), 'utf8');
+    }
+
+    test('exported seam constants pin the frozen §19.3 capture contract', () => {
+      assert.equal(CLOSURE_OBSERVATION_VERSION, 1);
+      assert.equal(STDOUT_CAPTURE_MAX_BYTES, 65536, 'the frozen 64 KiB fail-closed capture bound');
+      assert.match(CAPTURE_DIRECTORY_VARIABLE, /^ZCODE_SHELL_WAIT_/u);
+      assert.match(CAPTURE_NONCE_VARIABLE, /^ZCODE_SHELL_WAIT_/u);
+      assert.match(CAPTURE_ENTRY_VARIABLE, /^ZCODE_SHELL_WAIT_/u);
+      assert.match(CAPTURE_MAX_BYTES_VARIABLE, /^ZCODE_SHELL_WAIT_/u);
+      const source = closurePreloadSource();
+      // The generated preload must be pure text (no repository import) and
+      // gate on the frozen argv selector; the entry/nonce/directory all ride
+      // the fixture-only environment.
+      assert.ok(!source.includes('shell-wait-probe'), 'the preload source must never import the research modules');
+      assert.ok(source.includes('invoke-prepared'), 'the frozen argv selector must be part of the generated gate');
+      assert.ok(source.includes("'wx'"), 'the private capture file must be created exclusively (wx)');
+    });
+
+    test('option validation fails before any fixture side effect', async (t) => {
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-closure-validate-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      await assert.rejects(() => writeClosurePreload('relative-closure-dir'), /absolute/u);
+      // captureEnvironment is a synchronous validator: assert.throws.
+      assert.throws(() => captureEnvironment({ captureDirectory: 'rel', nonce: 'a'.repeat(64), entryRealpath: launcherRealpath, maxBytes: 65536 }), /absolute/u);
+      assert.throws(() => captureEnvironment({ captureDirectory: root, nonce: 'nothex', entryRealpath: launcherRealpath, maxBytes: 65536 }), /64-hex/u);
+      assert.throws(() => captureEnvironment({ captureDirectory: root, nonce: 'a'.repeat(64), entryRealpath: 'rel-entry', maxBytes: 65536 }), /absolute/u);
+      assert.throws(() => captureEnvironment({ captureDirectory: root, nonce: 'a'.repeat(64), entryRealpath: launcherRealpath, maxBytes: 0 }), /positive/u);
+      assert.throws(() => captureEnvironment({ captureDirectory: root, nonce: 'a'.repeat(64), entryRealpath: launcherRealpath, maxBytes: STDOUT_CAPTURE_MAX_BYTES + 1 }), /65536/u);
+      assert.throws(() => captureEnvironment({ captureDirectory: root, nonce: 'a'.repeat(64), entryRealpath: launcherRealpath, maxBytes: 1024 }), /65536/u, 'a smaller maxBytes is dead flexibility: construction pins the frozen bound');
+      await assert.rejects(() => admitStdoutCapture({ captureDirectory: 'rel', nonce: 'a'.repeat(64) }), /absolute/u);
+      await assert.rejects(() => admitStdoutCapture({ captureDirectory: root, nonce: 'short' }), /64-hex/u);
+      assert.deepEqual(await readdir(root), [], 'rejected options must leave the fixture root untouched');
+    });
+
+    test('the exact launcher invocation is captured byte-exact through the real writer path (fast-fail envelope)', async (t) => {
+      const scope = await captureScope(t);
+      const outcome = await spawnBounded(process.execPath, [launcherRealpath, 'invoke-prepared', 'rescue'], scope.env);
+      assert.equal(outcome.code, 1, 'the production fast-fail exit code is preserved');
+      assert.equal(outcome.stdout, threadIdRequiredEnvelope.text, 'production stdout is unchanged by the passive preload');
+      assert.equal(outcome.stderr, '');
+      assert.equal(envelopeBytes, 207, 'the §19.3 T1 pinned fast-fail envelope size');
+      const admission = await admitStdoutCapture({ captureDirectory: scope.captureDirectory, nonce: scope.nonce });
+      assert.equal(admission.status, 'complete');
+      assert.equal(admission.reason, null);
+      assert.equal(admission.byteCount, 207);
+      assert.equal(admission.stdout, threadIdRequiredEnvelope.text, 'the capture holds exactly the production stdout bytes');
+      assert.equal(admission.exitCode, 1);
+      assert.equal(admission.truncated, false);
+      assert.equal(admission.captureComplete, true);
+      assert.match(admission.captureSha256, /^[a-f0-9]{64}$/u);
+      assert.equal(admission.verifiedDigest, admission.captureSha256, 'the read side re-verifies the bytes against the capture-time digest');
+      // This spawn IS the in-fixture NODE_OPTIONS propagation proof for the
+      // real launcher child (the preload only ran because the composed
+      // NODE_OPTIONS reached the child). The LIVE host-spawn propagation
+      // (§19.3(e) blocker 1) stays the registered O1/I preflight duty.
+      assert.ok(String(scope.env.NODE_OPTIONS ?? '').includes('--require'), 'the composed NODE_OPTIONS carries the preload');
+    });
+
+    test('an ambient CODEX_THREAD_ID can never reach the composed capture environment, and the launcher still fast-fails the pinned envelope (post-merge review fix 1)', async (t) => {
+      // The honest in-situ simulation of "ambient": the composition itself
+      // reads process.env (captureScope's baseEnv), so the canaries are
+      // planted on THIS process's own environment — exactly where an invoking
+      // Codex turn's identity would sit — around the captureScope call, and
+      // restored immediately after. The environment assertions run BEFORE any
+      // spawn, so a leaking composition fails here and never launches a child
+      // that carries the ambient identity.
+      const ambientCanaries = {
+        CODEX_THREAD_ID: 'ZCODE_CANARY_AMBIENT_THREAD_4e7a1',
+        CODEX_HOME: '/ZCODE_CANARY_AMBIENT_CODEX_HOME',
+        ZCODE_DATA_ROOT: '/ZCODE_CANARY_AMBIENT_DATA_ROOT',
+        PLUGIN_DATA: '/ZCODE_CANARY_AMBIENT_PLUGIN_DATA',
+        CLAUDE_PLUGIN_DATA: '/ZCODE_CANARY_AMBIENT_CLAUDE_PLUGIN_DATA',
+      };
+      const previous = new Map(Object.entries(ambientCanaries).map(([variable]) => [variable, process.env[variable]]));
+      for (const [variable, value] of Object.entries(ambientCanaries)) process.env[variable] = value;
+      let scope;
+      try {
+        scope = await captureScope(t);
+      } finally {
+        for (const [variable, value] of previous) {
+          if (value === undefined) delete process.env[variable];
+          else process.env[variable] = value;
+        }
+      }
+      // The restore must reinstate whatever THIS process carried before the
+      // canaries were planted (including "absent"): an ambient parent value is
+      // restored, not erased. Asserting canary-absence here would fail the
+      // suite in exactly the ambient environment this isolation supports.
+      assert.equal(process.env.CODEX_THREAD_ID, previous.get('CODEX_THREAD_ID'), 'the ambient canary was restored to its captured original value after the composition');
+      // The composed base carries NO identity variable and NO ambient
+      // home/data-root value: every routing variable points inside the
+      // disposable scope root.
+      assert.equal(scope.env.CODEX_THREAD_ID, undefined, 'the ambient thread identity must be stripped from the composed base');
+      for (const variable of ['HOME', 'USERPROFILE', 'CODEX_HOME', 'ZCODE_DATA_ROOT', 'PLUGIN_DATA', 'CLAUDE_PLUGIN_DATA']) {
+        if (variable in ambientCanaries) assert.notEqual(scope.env[variable], ambientCanaries[variable], `${variable} must never carry the ambient value`);
+        assert.ok(String(scope.env[variable]).startsWith(scope.root), `${variable} must point inside the disposable scope root`);
+      }
+      // Under that env the launcher must STILL fast-fail with the exact
+      // pinned THREAD_ID_REQUIRED envelope: the ambient id cannot activate
+      // the launcher path, and the canary never enters production stdout.
+      const outcome = await spawnBounded(process.execPath, [launcherRealpath, 'invoke-prepared', 'rescue'], scope.env);
+      assert.equal(outcome.code, 1, 'the production fast-fail exit code is preserved');
+      assert.equal(outcome.stdout, threadIdRequiredEnvelope.text, 'the pinned THREAD_ID_REQUIRED envelope is byte-identical');
+      assert.equal(outcome.stderr, '');
+      assert.equal(envelopeBytes, 207, 'the §19.3 T1 pinned fast-fail envelope size');
+      assert.ok(!outcome.stdout.includes(ambientCanaries.CODEX_THREAD_ID), 'the ambient canary never reaches production stdout');
+      const admission = await admitStdoutCapture({ captureDirectory: scope.captureDirectory, nonce: scope.nonce });
+      assert.equal(admission.status, 'complete');
+      assert.equal(admission.byteCount, 207);
+      assert.equal(admission.exitCode, 1);
+      assert.equal(admission.truncated, false);
+    });
+
+    test('without the fixture capture environment the preload stays inert and delivery is unchanged', async (t) => {
+      const scope = await captureScope(t);
+      const inertEnv = { ...scope.env };
+      for (const variable of [CAPTURE_DIRECTORY_VARIABLE, CAPTURE_NONCE_VARIABLE, CAPTURE_ENTRY_VARIABLE, CAPTURE_MAX_BYTES_VARIABLE]) delete inertEnv[variable];
+      const outcome = await spawnBounded(process.execPath, [launcherRealpath, 'invoke-prepared', 'rescue'], inertEnv);
+      assert.equal(outcome.code, 1);
+      assert.equal(outcome.stdout, threadIdRequiredEnvelope.text);
+      assert.deepEqual(await readdir(scope.captureDirectory), [], 'no capture artifact may appear without the fixture environment');
+    });
+
+    test('wrong argv on the same launcher entry stays inert and the launcher behaves normally', async (t) => {
+      const scope = await captureScope(t);
+      // An over-long argv fails the launcher's own closed command set and
+      // still writes its envelope to stdout: the tap must stay inert.
+      const extra = await spawnBounded(process.execPath, [launcherRealpath, 'invoke-prepared', 'rescue', 'extra'], scope.env);
+      assert.equal(extra.code, 2, 'the launcher rejects the non-declared argv through its own validation');
+      assert.match(extra.stdout, /RESCUE_LAUNCHER_ARGUMENT_INVALID/u);
+      // A different declared command writes its own bounded envelope too.
+      const status = await spawnBounded(process.execPath, [launcherRealpath, 'invoke-status', 'rescue'], scope.env);
+      assert.equal(status.code, 1);
+      assert.equal(status.stdout, threadIdRequiredEnvelope.text);
+      assert.deepEqual(await readdir(scope.captureDirectory), [], 'non-declared argv must never produce a capture');
+    });
+
+    test('the companion entry with the same argv stays inert (exact entry gate)', async (t) => {
+      const scope = await captureScope(t);
+      const outcome = await spawnBounded(process.execPath, [companionEntry, 'invoke-prepared', 'rescue'], scope.env);
+      assert.equal(outcome.code, 1);
+      assert.equal(outcome.stdout, threadIdRequiredEnvelope.text, 'the companion delivers its own envelope normally');
+      assert.deepEqual(await readdir(scope.captureDirectory), [], 'the companion entry must never be captured');
+    });
+
+    test('preparation, Status and background-runner invocations stay inert', async (t) => {
+      const scope = await captureScope(t);
+      const prepare = await spawnBounded(process.execPath, [launcherRealpath, 'prepare', 'rescue'], scope.env);
+      assert.equal(prepare.code, 1);
+      assert.equal(prepare.stdout, threadIdRequiredEnvelope.text, 'the preparation entry delivers its own envelope');
+      const background = await spawnBounded(process.execPath, [companionEntry, 'run-host-rescue-job', 'rescue'], scope.env);
+      assert.notEqual(background.code, 0, 'the background runner fails fast without its protected envelope');
+      assert.deepEqual(await readdir(scope.captureDirectory), [], 'preparation and background-runner processes must never be captured');
+    });
+
+    test('a foreign Node process stays inert and delivers its output normally', async (t) => {
+      const scope = await captureScope(t);
+      const outcome = await spawnBounded(process.execPath, ['-e', 'process.stdout.write("hello\\n"); process.exitCode = 0;'], scope.env);
+      assert.equal(outcome.code, 0);
+      assert.equal(outcome.stdout, 'hello\n');
+      assert.deepEqual(await readdir(scope.captureDirectory), [], 'foreign Node processes must never be captured');
+    });
+
+    test('a replacement launcher copy and a non-declared symlink stay inert; the declared realpath via a symlink stays captured', async (t) => {
+      // (1) A replacement script at a path whose realpath differs from the
+      // declared launcher entry behaves normally and is NEVER captured.
+      const scope = await captureScope(t);
+      const replacement = await writeProbe(scope.root, 'launcher-replacement.mjs', 'process.stdout.write("replacement output\\n");\n');
+      const copy = await spawnBounded(process.execPath, [replacement, 'invoke-prepared', 'rescue'], scope.env);
+      assert.equal(copy.code, 0);
+      assert.equal(copy.stdout, 'replacement output\n', 'the replacement entry behaves normally');
+      // (2) A declared entry path that is NOT the child's real entry fails
+      // closed: the symlink's realpath (the replacement probe) differs from
+      // the declared symlink path set as the entry.
+      const linkPath = join(scope.root, 'entry-link.mjs');
+      await symlink(replacement, linkPath);
+      const declaredLink = await spawnBounded(process.execPath, [linkPath, 'invoke-prepared', 'rescue'], { ...scope.env, [CAPTURE_ENTRY_VARIABLE]: linkPath });
+      assert.equal(declaredLink.code, 0);
+      assert.equal(declaredLink.stdout, 'replacement output\n');
+      assert.deepEqual(await readdir(scope.captureDirectory), [], 'non-declared replacement entries must never produce a capture');
+      // A symlink RESOLVING to the declared launcher realpath IS the declared
+      // entry (realpath equality), so its invocation stays captured — here
+      // production's own runtime-entry identity rejects the lexical location
+      // outside the plugin root, and the capture holds exactly the bytes the
+      // launcher wrote (its bounded rejection envelope): attribution is
+      // byte-exact for WHATEVER the selected invocation produces.
+      const linkScope = await captureScope(t);
+      const launcherLink = join(linkScope.root, 'launcher-link.mjs');
+      await symlink(launcherRealpath, launcherLink);
+      const viaLink = await spawnBounded(process.execPath, [launcherLink, 'invoke-prepared', 'rescue'], linkScope.env);
+      assert.equal(viaLink.code, 1);
+      assert.match(viaLink.stdout, /PLUGIN_DATA_ROOT_INVALID/u);
+      const linkAdmission = await admitStdoutCapture({ captureDirectory: linkScope.captureDirectory, nonce: linkScope.nonce });
+      assert.equal(linkAdmission.status, 'complete');
+      assert.equal(linkAdmission.stdout, viaLink.stdout, 'the declared-entry capture is byte-exact even for a production-rejected invocation');
+    });
+
+    test('stdout written inside exit listeners is captured before finalization (codex round 7)', async (t) => {
+      const scope = await captureScope(t, { probe: { name: 'exit-listener-probe.mjs', body: [
+        'process.stdout.write("result\\n");',
+        // The application-registered exit listener runs AFTER the preload's
+        // own 'exit' listener (registration order): its bytes previously hit
+        // stdout after the capture had already been finalized and were lost
+        // from the admitted capture while the verdict stayed matched.
+        'process.once("exit", function () { process.stdout.write("extra\\n"); });',
+      ].join('\n') } });
+      const outcome = await spawnBounded(process.execPath, [scope.probe, 'invoke-prepared', 'rescue'], scope.env);
+      assert.equal(outcome.code, 0);
+      assert.equal(outcome.stdout, 'result\nextra\n', 'the production delivery keeps both writes');
+      const admission = await admitStdoutCapture({ captureDirectory: scope.captureDirectory, nonce: scope.nonce, expectedExitCode: outcome.code });
+      assert.equal(admission.status, 'complete', `the exit-listener bytes must be inside the admitted capture (actual ${admission.status}: ${admission.reason})`);
+      assert.equal(admission.stdout, 'result\nextra\n', 'the admitted capture is byte-exact over ALL writes incl. exit handlers');
+      assert.equal(admission.byteCount, Buffer.byteLength('result\nextra\n', 'utf8'));
+      // The exact-linkage verdict is honest: matched ONLY when the expectation
+      // includes both lines; a partial expectation is the named extra-output
+      // mismatch, never a false match.
+      const fullExpectation = { output: 'result\nextra\n', exitCode: 0 };
+      assert.equal(closureExactLinkage(admission, fullExpectation).matched, true);
+      const partialExpectation = { output: 'result\n', exitCode: 0 };
+      const partial = closureExactLinkage(admission, partialExpectation);
+      assert.equal(partial.matched, false, 'a partial expectation can never match a capture carrying exit-handler bytes');
+    });
+
+    test('the reallyExit wrapper finalizes complete captures, and an exit bypass stays named-incomplete (codex round 7)', async (t) => {
+      // Path 1 — the wrapper: a normal exit flows through the wrapped
+      // process.reallyExit (AFTER all 'exit' listeners), which finalizes the
+      // COMPLETE meta over every captured byte.
+      const wrapperScope = await captureScope(t, { probe: { name: 'really-exit-probe.mjs', body: [
+        'process.stdout.write("wrapped\\n");',
+        'process.reallyExit(0);',
+      ].join('\n') } });
+      const wrapperOutcome = await spawnBounded(process.execPath, [wrapperScope.probe, 'invoke-prepared', 'rescue'], wrapperScope.env);
+      assert.equal(wrapperOutcome.code, 0);
+      const wrapperAdmission = await admitStdoutCapture({ captureDirectory: wrapperScope.captureDirectory, nonce: wrapperScope.nonce });
+      assert.equal(wrapperAdmission.status, 'complete', `the explicit reallyExit path finalizes (actual ${wrapperAdmission.status}: ${wrapperAdmission.reason})`);
+      assert.equal(wrapperAdmission.stdout, 'wrapped\n');
+      const wrapperMeta = JSON.parse(await captureMetaRaw(wrapperScope.captureDirectory, wrapperScope.nonce));
+      // Codex round 11: on the explicit reallyExit path the wrapper is the
+      // ONLY finalizer (no 'exit' listeners fired) — and it publishes
+      // complete (no captureError).
+      assert.equal(wrapperMeta.finalizedBy, 'really-exit', 'the wrapper is the recorded finalizer');
+      assert.equal(wrapperMeta.captureError, undefined, 'the wrapper publishes the complete meta');
+
+      // Path 2 — the fallback: a bypass that invokes the UNDERLYING exit
+      // directly never reaches the wrapper, so only the PROVISIONAL
+      // 'exit'-listener meta exists — marked complete:false and NAMED
+      // incomplete, and the exact-linkage oracle stays unestablished.
+      const fallbackScope = await captureScope(t, { probe: { name: 'bypass-probe.mjs', body: [
+        'process.stdout.write("result\\n");',
+        'process.once("exit", function () { process.stdout.write("extra\\n"); });',
+        'const underlying = process.reallyExit;',
+        'process.reallyExit = function () { return 0; };',
+        'process.exit(0);',
+        'process.reallyExit.call(process, 0);',
+      ].join('\n') } });
+      const fallbackOutcome = await spawnBounded(process.execPath, [fallbackScope.probe, 'invoke-prepared', 'rescue'], fallbackScope.env);
+      assert.equal(fallbackOutcome.code, 0, 'the bypass still terminates the probe');
+      const fallbackAdmission = await admitStdoutCapture({ captureDirectory: fallbackScope.captureDirectory, nonce: fallbackScope.nonce });
+      // Codex round 8 alignment: with no forced bridge, a stubbed reallyExit
+      // that swallows process.exit leaves the preload's own (first) 'exit'
+      // listener as the finalizer — the application listener's write lands
+      // AFTER it and INVALIDATES the capture (named incomplete). The
+      // ordering gap fails closed by construction.
+      assert.equal(fallbackAdmission.status, 'incomplete', `a bypassed capture is never complete (actual ${fallbackAdmission.status}: ${fallbackAdmission.reason})`);
+      assert.equal(fallbackAdmission.reason, 'write-after-finalization', 'the post-finalization write is the NAMED incomplete reason');
+      assert.equal(fallbackAdmission.stdout, null, 'a provisional capture never yields stdout');
+      const linkage = closureExactLinkage(fallbackAdmission, { output: 'result\nextra\n', exitCode: 0 });
+      assert.equal(linkage.matched, null, 'the oracle stays unestablished on a fallback-finalized capture');
+    });
+
+    test('the preload preserves the business exit status (unsettled top-level await exits 13)', async (t) => {
+      const scope = await captureScope(t, { probe: { name: 'tla-probe.mjs', body: [
+        'process.stdout.write("tla\\n");',
+        'await new Promise(() => {});',
+      ].join('\n') } });
+      // Node exits 13 when the event loop drains with an unresolved top-level
+      // await: the business exit behavior. The preload (round 8) never calls
+      // process.exit and never alters the exit status.
+      const bare = await spawnBounded(process.execPath, [scope.probe, 'invoke-prepared', 'rescue'], { ...scope.env, NODE_OPTIONS: '' });
+      assert.equal(bare.code, 13, `the bare probe exits 13 (actual ${bare.code})`);
+      const outcome = await spawnBounded(process.execPath, [scope.probe, 'invoke-prepared', 'rescue'], scope.env);
+      assert.equal(outcome.code, 13, `the preloaded probe preserves the status-13 exit (actual ${outcome.code})`);
+      assert.equal(outcome.stdout, 'tla\n');
+      const admission = await admitStdoutCapture({ captureDirectory: scope.captureDirectory, nonce: scope.nonce });
+      assert.equal(admission.status, 'complete', `the capture finalizes on the status-13 path (actual ${admission.status}: ${admission.reason})`);
+      assert.equal(admission.exitCode, 13, 'the capture meta reports the REAL exit code');
+      assert.equal(admission.stdout, 'tla\n');
+    });
+
+    test('a stdout write landing after finalization invalidates the capture (codex round 8)', async (t) => {
+      const scope = await captureScope(t, { probe: { name: 'late-write-probe.mjs', body: [
+        'process.stdout.write("result\\n");',
+        'process.once("exit", function () { process.stdout.write("extra\\n"); });',
+        'process.exit(0);',
+      ].join('\n') } });
+      // On the explicit process.exit path the preload's 'exit' listener runs
+      // FIRST (beforeExit never fires there, so no re-ordering): it publishes
+      // the complete meta, and the application listener's write lands AFTER
+      // finalization. Fail closed by construction: the bytes are still
+      // appended, and the meta is synchronously rewritten as the NAMED
+      // incomplete state — never a complete capture missing bytes.
+      const outcome = await spawnBounded(process.execPath, [scope.probe, 'invoke-prepared', 'rescue'], scope.env);
+      assert.equal(outcome.code, 0);
+      assert.equal(outcome.stdout, 'result\nextra\n', 'the production delivery keeps both writes');
+      const admission = await admitStdoutCapture({ captureDirectory: scope.captureDirectory, nonce: scope.nonce });
+      assert.equal(admission.status, 'incomplete', `a post-finalization write must invalidate the capture (actual ${admission.status}: ${admission.reason})`);
+      assert.equal(admission.reason, 'write-after-finalization');
+      assert.equal(admission.stdout, null, 'an invalidated capture never yields stdout');
+      const bytes = await captureFileBytes(scope.captureDirectory, scope.nonce);
+      assert.equal(bytes.toString('utf8'), 'result\nextra\n', 'the late bytes are still appended to the capture file');
+      const linkage = closureExactLinkage(admission, { output: 'result\nextra\n', exitCode: 0 });
+      assert.equal(linkage.matched, null, 'the oracle stays unestablished on an invalidated capture');
+    });
+
+    test('the meta exit code tracks the final business exit status (codex round 9)', async (t) => {
+      const scope = await captureScope(t, { probe: { name: 'exit-code-probe.mjs', body: [
+        'process.stdout.write("result\\n");',
+        'process.once("exit", function () { process.exitCode = 7; });',
+        'process.exit(0);',
+      ].join('\n') } });
+      const outcome = await spawnBounded(process.execPath, [scope.probe, 'invoke-prepared', 'rescue'], scope.env);
+      assert.equal(outcome.code, 7, `the business exit status is 7 (actual ${outcome.code})`);
+      // The parent-observed exit is the authority: admission cross-checks the
+      // meta's self-reported code against it. The reallyExit wrapper is the
+      // LAST finalization word on explicit paths (finalized must not block
+      // the authoritative rewrite), so the meta is rewritten to 7 and stays
+      // complete — and the oracle can never match a wrong code.
+      const admission = await admitStdoutCapture({ captureDirectory: scope.captureDirectory, nonce: scope.nonce, expectedExitCode: outcome.code });
+      assert.equal(admission.status, 'complete', `the rewritten meta stays complete (actual ${admission.status}: ${admission.reason})`);
+      assert.equal(admission.exitCode, 7, `the meta carries the FINAL business exit code (actual ${admission.exitCode})`);
+      const linkage = closureExactLinkage(admission, { output: 'result\n', exitCode: 7 });
+      assert.equal(linkage.matched, true);
+      const staleExpectation = closureExactLinkage(admission, { output: 'result\n', exitCode: 0 });
+      assert.equal(staleExpectation.matched, false, 'a stale expected code can never match');
+    });
+
+    test('a stale meta exit code is the named mismatch against the parent-observed exit (codex round 9)', async (t) => {
+      const scope = await captureScope(t, { probe: { name: 'stale-code-probe.mjs', body: [
+        'process.stdout.write("result\\n");',
+        'process.on("beforeExit", function () { process.once("exit", function () { process.exitCode = 7; }); });',
+      ].join('\n') } });
+      const outcome = await spawnBounded(process.execPath, [scope.probe, 'invoke-prepared', 'rescue'], scope.env);
+      assert.equal(outcome.code, 7, `the parent observes the changed exit code (actual ${outcome.code})`);
+      // The listener changing the code registered DURING the exit ordering
+      // (via beforeExit) and runs AFTER the preload's re-ordered finalizer:
+      // the meta stays stale. Fail closed by construction: admission names
+      // the mismatch against the parent-observed exit and the oracle stays
+      // unestablished.
+      const admission = await admitStdoutCapture({ captureDirectory: scope.captureDirectory, nonce: scope.nonce, expectedExitCode: outcome.code });
+      assert.equal(admission.status, 'incomplete', `a stale meta code is the named mismatch (actual ${admission.status}: ${admission.reason})`);
+      assert.equal(admission.reason, 'capture-exit-code-mismatch');
+      assert.equal(admission.exitCode, 0, 'the stale meta still reports its own (stale) code');
+      assert.equal(admission.stdout, null, 'a mismatched capture never yields stdout');
+      const linkage = closureExactLinkage(admission, { output: 'result\n', exitCode: 7 });
+      assert.equal(linkage.matched, null, 'the oracle stays unestablished on the mismatch');
+    });
+
+    test('an admission without a supplied expected exit carries UNKNOWN exit attribution — the linkage can never match on it (overall review fix 2)', async (t) => {
+      // The STALE-META scenario: the capture meta reports exit 0 while the
+      // process actually exits 7 (the round-9 probe). An admission admitted
+      // WITHOUT an expectedExitCode cannot detect the staleness, so its meta
+      // exit code is UNCHECKED — the linkage's exit comparison stays
+      // unestablished (matched can never be true on an unknown/unchecked
+      // exit), with the named reason. The verified control (the SAME capture
+      // admitted against the supplied-and-matched expected exit, and a
+      // truly-exiting probe) keeps full attribution and matches.
+      const scope = await captureScope(t, { probe: { name: 'stale-code-probe.mjs', body: [
+        'process.stdout.write("result\\n");',
+        'process.on("beforeExit", function () { process.once("exit", function () { process.exitCode = 7; }); });',
+      ].join('\n') } });
+      const outcome = await spawnBounded(process.execPath, [scope.probe, 'invoke-prepared', 'rescue'], scope.env);
+      assert.equal(outcome.code, 7, `the process actually exits 7 (actual ${outcome.code})`);
+      const unchecked = await admitStdoutCapture({ captureDirectory: scope.captureDirectory, nonce: scope.nonce });
+      assert.equal(unchecked.status, 'complete', `the unchecked admission stays complete (actual ${unchecked.status}: ${unchecked.reason})`);
+      assert.equal(unchecked.exitCode, 0, 'the stale meta reports its own exit 0');
+      assert.equal(unchecked.exitAttribution, 'unknown', 'an admission without a supplied expected exit carries UNKNOWN attribution');
+      const uncheckedLinkage = closureExactLinkage(unchecked, { output: 'result\n', exitCode: 0 });
+      assert.equal(uncheckedLinkage.matched, null, 'matched can never be true on an unknown/unchecked exit');
+      assert.equal(uncheckedLinkage.reason, 'exit-attribution-unknown');
+      // The verified control: the SAME capture admitted against the
+      // supplied-and-matched expected exit carries VERIFIED attribution.
+      const verified = await admitStdoutCapture({ captureDirectory: scope.captureDirectory, nonce: scope.nonce, expectedExitCode: 7 });
+      assert.equal(verified.status, 'incomplete', 'the parent-observed 7 rejects the stale meta 0 (the round-9 mismatch, unchanged)');
+      const trulyZeroScope = await captureScope(t, { probe: { name: 'zero-exit-probe.mjs', body: [
+        'process.stdout.write("result\\n");',
+      ].join('\n') } });
+      const zeroOutcome = await spawnBounded(process.execPath, [trulyZeroScope.probe, 'invoke-prepared', 'rescue'], trulyZeroScope.env);
+      assert.equal(zeroOutcome.code, 0);
+      const verifiedZero = await admitStdoutCapture({ captureDirectory: trulyZeroScope.captureDirectory, nonce: trulyZeroScope.nonce, expectedExitCode: 0 });
+      assert.equal(verifiedZero.status, 'complete');
+      assert.equal(verifiedZero.exitAttribution, 'verified', 'a supplied-and-matched expected exit verifies the attribution');
+      const verifiedLinkage = closureExactLinkage(verifiedZero, { output: 'result\n', exitCode: 0 });
+      assert.equal(verifiedLinkage.matched, true, 'the verified-exit control still matches');
+    });
+
+    test('a captureError outside the preload’s closed vocabulary is classified — private text never persists (overall review fix, round 2)', async (t) => {
+      // The preload writes EXACTLY FOUR named captureError strings, each
+      // suffixing the fs error code or 'unknown' (the preload source's four
+      // failure sites: capture-file-unavailable / capture-encode-failed /
+      // capture-hash-failed / capture-write-failed). An admission of a meta
+      // carrying an in-vocabulary captureError keeps that string VERBATIM as
+      // its reason; a meta carrying ANY other value (e.g. a tampered meta
+      // embedding a private-looking path) is the FIXED classification
+      // 'capture-error-unclassified' — the raw text never reaches the
+      // admission reason and never persists through the provenance block
+      // (stdoutCaptureProvenance passes admission reasons through verbatim:
+      // exactly the leak this closes).
+      const { writeFile } = await import('node:fs/promises');
+      const { stdoutCaptureProvenance } = await import('../tools/shell-wait-probe/driver.mjs');
+      const scope = await captureScope(t, { probe: { name: 'vocab-probe.mjs', body: 'process.stdout.write("result\\n");' } });
+      const outcome = await spawnBounded(process.execPath, [scope.probe, 'invoke-prepared', 'rescue'], scope.env);
+      assert.equal(outcome.code, 0);
+      const metaPath = join(scope.captureDirectory, `${scope.nonce}.meta.json`);
+      const meta = JSON.parse(await readFile(metaPath, 'utf8'));
+      assert.equal(meta.captureError, undefined, 'premise: the clean meta carries no captureError');
+      // (a) An in-vocabulary member passes through VERBATIM.
+      await writeFile(metaPath, `${JSON.stringify({ ...meta, captureError: 'capture-write-failed:EACCES' })}\n`, { mode: 0o600 });
+      const inVocab = await admitStdoutCapture({ captureDirectory: scope.captureDirectory, nonce: scope.nonce });
+      assert.equal(inVocab.status, 'incomplete');
+      assert.equal(inVocab.reason, 'capture-write-failed:EACCES');
+      // (b) A tampered private-looking captureError is the FIXED
+      // classification; the canary never persists.
+      const canary = '/private/tmp/secret-fixture/stdout-capture/abc.meta.json';
+      await writeFile(metaPath, `${JSON.stringify({ ...meta, captureError: canary })}\n`, { mode: 0o600 });
+      const tampered = await admitStdoutCapture({ captureDirectory: scope.captureDirectory, nonce: scope.nonce });
+      assert.equal(tampered.status, 'incomplete');
+      assert.equal(tampered.reason, 'capture-error-unclassified', 'the out-of-vocabulary value is the fixed classification, never the raw text');
+      const fixture = { codexHome: '/private/tmp/secret-fixture/home', workspace: '/private/tmp/secret-fixture/ws', installedRoot: '/private/tmp/secret-fixture/installed', env: { HOME: '/private/tmp/secret-fixture/home' } };
+      const block = stdoutCaptureProvenance(tampered, null, fixture);
+      assert.equal(block.reason, 'capture-error-unclassified');
+      assert.ok(!JSON.stringify(block).includes('secret-fixture'), 'the tampered private text never persists in the provenance block');
+      // (c) A non-string captureError is equally the fixed classification.
+      await writeFile(metaPath, `${JSON.stringify({ ...meta, captureError: { embedded: canary } })}\n`, { mode: 0o600 });
+      const nonString = await admitStdoutCapture({ captureDirectory: scope.captureDirectory, nonce: scope.nonce });
+      assert.equal(nonString.status, 'incomplete');
+      assert.equal(nonString.reason, 'capture-error-unclassified');
+    });
+
+    // -------------------------------------------------------------------------
+    // Codex round 11 — PRELOAD STRUCTURAL MATRIX (P1-P5). Table-driven over
+    // write form × stream default encoding, plus finalization paths, tamper
+    // cases, gate inertness and the launcher fast-fail. Written FIRST against
+    // the pre-rewrite preload; the REDs observed are recorded in §19.8.
+    // -------------------------------------------------------------------------
+    const MATRIX_CONTENT = 'é-ok';
+
+    /** Build the expected delivered/captured/hashed byte sequence for one matrix row. */
+    function matrixExpectedBytes(defaultEncoding, explicitUtf8) {
+      return Buffer.from(MATRIX_CONTENT, explicitUtf8 ? 'utf8' : defaultEncoding);
+    }
+
+    const matrixSetup = (defaultEncoding) => defaultEncoding === 'latin1' ? 'process.stdout.setDefaultEncoding("latin1");' : '';
+    const matrixContentUtf8 = JSON.stringify(MATRIX_CONTENT);
+    const matrixContentLatin1Bytes = `Buffer.from(${JSON.stringify(MATRIX_CONTENT)}, "latin1")`;
+    const matrixContentUtf8Bytes = `Buffer.from(${JSON.stringify(MATRIX_CONTENT)}, "utf8")`;
+
+    // form → [probe write lines builder, explicit-utf8 flag]
+    const MATRIX_FORMS = (defaultEncoding) => ({
+      buffer: { writes: [`process.stdout.write(${defaultEncoding === 'latin1' ? matrixContentLatin1Bytes : matrixContentUtf8Bytes});`], explicitUtf8: false },
+      string: { writes: [`process.stdout.write(${matrixContentUtf8});`], explicitUtf8: false },
+      'string+enc': { writes: [`process.stdout.write(${matrixContentUtf8}, "utf8");`], explicitUtf8: true },
+      'string+cb': { writes: [`process.stdout.write(${matrixContentUtf8}, function () {});`], explicitUtf8: false },
+      'string+enc+cb': { writes: [`process.stdout.write(${matrixContentUtf8}, "utf8", function () {});`], explicitUtf8: true },
+    });
+
+    for (const defaultEncoding of ['utf8', 'latin1']) {
+      for (const [form, spec] of Object.entries(MATRIX_FORMS(defaultEncoding))) {
+        test(`matrix: ${form} under a ${defaultEncoding} stream default delivers, captures and hashes identical bytes`, async (t) => {
+          const expected = matrixExpectedBytes(defaultEncoding, spec.explicitUtf8);
+          const scope = await captureScope(t, { probe: { name: `matrix-${form}-${defaultEncoding}.mjs`, body: [
+            matrixSetup(defaultEncoding),
+            ...spec.writes,
+          ].filter(Boolean).join('\n') } });
+          const outcome = await spawnBounded(process.execPath, [scope.probe, 'invoke-prepared', 'rescue'], scope.env);
+          assert.equal(outcome.code, 0);
+          // Delivered bytes: the harness decodes the pipe as UTF-8 once, so
+          // the roundtrip comparison is exact for valid and invalid UTF-8.
+          assert.equal(outcome.stdout, expected.toString('utf8'), 'the production delivery carries the matrix bytes');
+          const bytes = await captureFileBytes(scope.captureDirectory, scope.nonce);
+          assert.equal(bytes.equals(expected), true, `the captured bytes equal the delivered bytes (actual ${bytes.toString('hex')} vs ${expected.toString('hex')})`);
+          const admission = await admitStdoutCapture({ captureDirectory: scope.captureDirectory, nonce: scope.nonce, expectedExitCode: 0 });
+          assert.equal(admission.byteCount, expected.length, 'the meta byte count matches the intercepted bytes');
+          const expectedDigest = createHash('sha256').update(expected).digest('hex');
+          const meta = JSON.parse(await captureMetaRaw(scope.captureDirectory, scope.nonce));
+          assert.equal(meta.captureSha256, expectedDigest, 'the meta digest is the hasher-authoritative digest over the intercepted bytes');
+          const bytesAreValidUtf8 = spec.explicitUtf8 || defaultEncoding === 'utf8';
+          if (!bytesAreValidUtf8) {
+            assert.equal(admission.status, 'invalid');
+            assert.equal(admission.reason, 'capture-utf8-invalid', 'non-UTF-8 captures keep the named fail-closed string state');
+            assert.equal(admission.verifiedDigest, expectedDigest, 'the digest verifies the exact captured bytes');
+          } else {
+            assert.equal(admission.status, 'complete', `the utf8 row admits complete (actual ${admission.status}: ${admission.reason})`);
+            assert.equal(admission.stdout, MATRIX_CONTENT);
+            assert.equal(admission.verifiedDigest, expectedDigest);
+          }
+        });
+      }
+    }
+
+    test('matrix: a same-length capture-file rewrite before finalization is the named digest mismatch (codex round 11)', async (t) => {
+      // The hasher is authoritative: the meta digest covers the INTERCEPTED
+      // bytes, and admission verifies the FILE against it — a same-length
+      // rewrite of the capture file can never pass as complete.
+      const scope = await captureScope(t, { probe: { name: 'tamper-rewrite-probe.mjs', body: [
+        'import FS from "node:fs";',
+        'import PATH from "node:path";',
+        'process.stdout.write("BAD\\n");',
+        'const capturePath = PATH.join(process.env.ZCODE_SHELL_WAIT_CAPTURE_DIR, process.env.ZCODE_SHELL_WAIT_CAPTURE_NONCE + ".stdout");',
+        'FS.writeFileSync(capturePath, "OK!\\n", { flag: "r+" });',
+      ].join('\n') } });
+      const outcome = await spawnBounded(process.execPath, [scope.probe, 'invoke-prepared', 'rescue'], scope.env);
+      assert.equal(outcome.code, 0, `probe exit ${outcome.code} stderr: ${outcome.stderr}`);
+      const admission = await admitStdoutCapture({ captureDirectory: scope.captureDirectory, nonce: scope.nonce });
+      assert.equal(admission.status, 'invalid', `a tampered capture never admits complete (actual ${admission.status}: ${admission.reason})`);
+      assert.equal(admission.reason, 'capture-digest-mismatch', 'the tamper is the NAMED digest-mismatch reason');
+      assert.equal(admission.stdout, null);
+    });
+
+    test('matrix: a replaced capture file (different length) is the named byte-count mismatch (codex round 11)', async (t) => {
+      const scope = await captureScope(t, { probe: { name: 'tamper-replace-probe.mjs', body: [
+        'import FS from "node:fs";',
+        'import PATH from "node:path";',
+        'process.stdout.write("BAD\\n");',
+        'const capturePath = PATH.join(process.env.ZCODE_SHELL_WAIT_CAPTURE_DIR, process.env.ZCODE_SHELL_WAIT_CAPTURE_NONCE + ".stdout");',
+        'FS.rmSync(capturePath);',
+        'FS.writeFileSync(capturePath, "REPLACED-LONGER-CONTENT\\n", { flag: "wx", mode: 0o600 });',
+      ].join('\n') } });
+      const outcome = await spawnBounded(process.execPath, [scope.probe, 'invoke-prepared', 'rescue'], scope.env);
+      assert.equal(outcome.code, 0);
+      const admission = await admitStdoutCapture({ captureDirectory: scope.captureDirectory, nonce: scope.nonce });
+      assert.equal(admission.status, 'invalid', `a replaced capture never admits complete (actual ${admission.status}: ${admission.reason})`);
+      assert.equal(admission.reason, 'byte-count-mismatch', 'the length divergence is the NAMED mismatch reason');
+      assert.equal(admission.stdout, null);
+    });
+
+    test('matrix: the meta binds the nonce and records the finalization bookkeeping (codex round 11)', async (t) => {
+      const scope = await captureScope(t, { probe: { name: 'meta-bookkeeping-probe.mjs', body: [
+        'process.stdout.write("book\\n");',
+      ].join('\n') } });
+      const outcome = await spawnBounded(process.execPath, [scope.probe, 'invoke-prepared', 'rescue'], scope.env);
+      assert.equal(outcome.code, 0);
+      const meta = JSON.parse(await captureMetaRaw(scope.captureDirectory, scope.nonce));
+      assert.equal(meta.version, 1, 'the meta carries its closed-schema version');
+      assert.equal(meta.nonce, scope.nonce, 'the meta is bound to the fixture nonce');
+      // The probe exits via the natural drain: the re-ordered 'exit'
+      // listener is the last writer (the reallyExit wrapper is the
+      // authoritative finalizer only on explicit process.exit paths).
+      assert.equal(meta.finalizedBy, 'exit-listeners', 'the drain finalizer is recorded');
+      assert.ok(Number.isSafeInteger(meta.finalizations) && meta.finalizations >= 1, 'the finalization count is recorded');
+      assert.equal(meta.writesAfterFinalization, 0, 'no write landed after finalization');
+      const admission = await admitStdoutCapture({ captureDirectory: scope.captureDirectory, nonce: scope.nonce, expectedExitCode: 0 });
+      assert.equal(admission.status, 'complete');
+    });
+
+    test('matrix: a write landing after finalization is counted and named incomplete (codex round 11)', async (t) => {
+      const scope = await captureScope(t, { probe: { name: 'late-write-count-probe.mjs', body: [
+        'process.stdout.write("result\\n");',
+        'process.once("exit", function () { process.stdout.write("extra\\n"); });',
+        'process.exit(0);',
+      ].join('\n') } });
+      const outcome = await spawnBounded(process.execPath, [scope.probe, 'invoke-prepared', 'rescue'], scope.env);
+      assert.equal(outcome.code, 0);
+      const meta = JSON.parse(await captureMetaRaw(scope.captureDirectory, scope.nonce));
+      assert.equal(meta.writesAfterFinalization, 1, 'the post-finalization write is counted');
+      assert.equal(meta.byteCount, Buffer.byteLength('result\nextra\n', 'utf8'), 'the late bytes are still captured');
+      const admission = await admitStdoutCapture({ captureDirectory: scope.captureDirectory, nonce: scope.nonce });
+      assert.equal(admission.status, 'incomplete', `the late write is the named incomplete state (actual ${admission.status}: ${admission.reason})`);
+      assert.equal(admission.reason, 'write-after-finalization');
+      assert.equal(admission.stdout, null);
+    });
+
+    test('matrix: a synchronously-rejected write is never captured and the exception propagates (codex round 12)', async (t) => {
+      // A caller catches a sync stdout-write error (write(42) throws
+      // ERR_INVALID_ARG_TYPE): NOTHING was delivered, so NOTHING may be
+      // captured — the bytes are recorded only after the original write
+      // returns without throwing.
+      const scope = await captureScope(t, { probe: { name: 'sync-throw-then-real.mjs', body: [
+        'try { process.stdout.write(42); } catch (error) { }',
+        'process.stdout.write("real\\n");',
+      ].join('\n') } });
+      const outcome = await spawnBounded(process.execPath, [scope.probe, 'invoke-prepared', 'rescue'], scope.env);
+      assert.equal(outcome.code, 0, `the caller survived the sync rejection (actual ${outcome.code}; stderr ${JSON.stringify(outcome.stderr)})`);
+      assert.equal(outcome.stdout, 'real\n', 'only the real write is delivered');
+      const admission = await admitStdoutCapture({ captureDirectory: scope.captureDirectory, nonce: scope.nonce, expectedExitCode: 0 });
+      assert.equal(admission.status, 'complete', `the capture holds ONLY the accepted bytes (actual ${admission.status}: ${admission.reason})`);
+      assert.equal(admission.stdout, 'real\n');
+      const bytes = await captureFileBytes(scope.captureDirectory, scope.nonce);
+      assert.equal(bytes.toString('utf8'), 'real\n', 'no rejected bytes were ever captured');
+    });
+
+    test('matrix: a sync-throw-only probe captures nothing and the original exception propagates (codex round 12)', async (t) => {
+      // Without a catch the original exception propagates unchanged
+      // (non-zero exit, the invalid-argument error on stderr), and the
+      // capture stays EMPTY (byteCount 0 — the empty-capture-valid
+  //      // contract: admission complete with an empty stdout).
+      const scope = await captureScope(t, { probe: { name: 'sync-throw-propagate.mjs', body: [
+        'process.stdout.write(42);',
+      ].join('\n') } });
+      const outcome = await spawnBounded(process.execPath, [scope.probe, 'invoke-prepared', 'rescue'], scope.env);
+      assert.notEqual(outcome.code, 0, 'the original exception propagates');
+      assert.match(outcome.stderr, /ERR_INVALID_ARG_TYPE/u, 'the original invalid-argument error surfaces');
+      const admission = await admitStdoutCapture({ captureDirectory: scope.captureDirectory, nonce: scope.nonce });
+      assert.equal(admission.status, 'complete', `nothing was delivered: the empty capture is the valid named state (actual ${admission.status}: ${admission.reason})`);
+      assert.equal(admission.byteCount, 0, 'no rejected bytes were captured');
+      assert.equal(admission.stdout, '');
+    });
+
+    test('matrix: an EMPTY encoding resolves from the stream default (codex round 12)', async (t) => {
+      // Node treats an empty-string encoding as unspecified: latin1 default
+      // + write('é','') delivers byte e9 (utf8 default delivers c3a9).
+      for (const defaultEncoding of ['latin1', 'utf8']) {
+        const expected = defaultEncoding === 'latin1' ? Buffer.from([0xe9]) : Buffer.from('\u00e9', 'utf8');
+        const scope = await captureScope(t, { probe: { name: `empty-enc-${defaultEncoding}.mjs`, body: [
+          matrixSetup(defaultEncoding),
+          'process.stdout.write("\\u00e9", "");',
+        ].filter(Boolean).join('\n') } });
+        const outcome = await spawnBounded(process.execPath, [scope.probe, 'invoke-prepared', 'rescue'], scope.env);
+        assert.equal(outcome.code, 0);
+        const bytes = await captureFileBytes(scope.captureDirectory, scope.nonce);
+        assert.equal(bytes.equals(expected), true, `the ${defaultEncoding} default resolves the empty encoding (actual ${bytes.toString('hex')})`);
+        const admission = await admitStdoutCapture({ captureDirectory: scope.captureDirectory, nonce: scope.nonce });
+        assert.equal(admission.byteCount, expected.length);
+        const expectedDigest = createHash('sha256').update(expected).digest('hex');
+        const meta = JSON.parse(await captureMetaRaw(scope.captureDirectory, scope.nonce));
+        assert.equal(meta.captureSha256, expectedDigest, 'the hasher digest covers the delivered bytes');
+      }
+    });
+
+    test('matrix: truncation is declared only when bytes were DISCARDED (codex round 12)', async (t) => {
+      const BOUNDARY = 65536;
+      const chunk = (size, filler) => `Buffer.alloc(${size}, 0x${filler})`;
+      // (a) single write of EXACTLY 65536: every byte captured, complete.
+      const exactScope = await captureScope(t, { probe: { name: 'boundary-exact.mjs', body: [
+        'process.stdout.write(' + chunk(BOUNDARY, '61') + ');',
+      ].join('\n') } });
+      const exactOutcome = await spawnBounded(process.execPath, [exactScope.probe, 'invoke-prepared', 'rescue'], exactScope.env);
+      assert.equal(exactOutcome.code, 0);
+      assert.equal(exactOutcome.stdout, 'a'.repeat(65536), 'all 65536 bytes delivered');
+      const exactAdmission = await admitStdoutCapture({ captureDirectory: exactScope.captureDirectory, nonce: exactScope.nonce, expectedExitCode: 0 });
+      assert.equal(exactAdmission.status, 'complete', `an exactly-bound capture is NOT truncated (actual ${exactAdmission.status}: ${exactAdmission.reason})`);
+      assert.equal(exactAdmission.byteCount, BOUNDARY);
+      const exactLinkage = closureExactLinkage(exactAdmission, { output: 'a'.repeat(BOUNDARY), exitCode: 0 });
+      assert.equal(exactLinkage.matched, true, 'exact linkage matches against the full 64 KiB expectation');
+      // (b) multi-write totaling EXACTLY 65536: complete.
+      const multiScope = await captureScope(t, { probe: { name: 'boundary-multi.mjs', body: [
+        'process.stdout.write(' + chunk(BOUNDARY / 2, '62') + ');',
+        'process.stdout.write(' + chunk(BOUNDARY / 2, '63') + ');',
+      ].join('\n') } });
+      const multiOutcome = await spawnBounded(process.execPath, [multiScope.probe, 'invoke-prepared', 'rescue'], multiScope.env);
+      assert.equal(multiOutcome.code, 0);
+      const multiAdmission = await admitStdoutCapture({ captureDirectory: multiScope.captureDirectory, nonce: multiScope.nonce });
+      assert.equal(multiAdmission.status, 'complete', `a multi-write exact-bound total is NOT truncated (actual ${multiAdmission.status}: ${multiAdmission.reason})`);
+      assert.equal(multiAdmission.byteCount, BOUNDARY);
+      // (c) 65537: one byte discarded → truncated named.
+      const overScope = await captureScope(t, { probe: { name: 'boundary-over.mjs', body: [
+        'process.stdout.write(' + chunk(BOUNDARY + 1, '64') + ');',
+      ].join('\n') } });
+      const overOutcome = await spawnBounded(process.execPath, [overScope.probe, 'invoke-prepared', 'rescue'], overScope.env);
+      assert.equal(overOutcome.code, 0);
+      const overAdmission = await admitStdoutCapture({ captureDirectory: overScope.captureDirectory, nonce: overScope.nonce });
+      assert.equal(overAdmission.status, 'truncated', `a discarded byte is the named truncated state (actual ${overAdmission.status}: ${overAdmission.reason})`);
+      assert.equal(overAdmission.byteCount, BOUNDARY);
+      // (d) a write STRADDLING the boundary: prefix captured, truncated.
+      const straddleScope = await captureScope(t, { probe: { name: 'boundary-straddle.mjs', body: [
+        'process.stdout.write(' + chunk(BOUNDARY - 10, '65') + ');',
+        'process.stdout.write(' + chunk(100, '66') + ');',
+      ].join('\n') } });
+      const straddleOutcome = await spawnBounded(process.execPath, [straddleScope.probe, 'invoke-prepared', 'rescue'], straddleScope.env);
+      assert.equal(straddleOutcome.code, 0);
+      const straddleAdmission = await admitStdoutCapture({ captureDirectory: straddleScope.captureDirectory, nonce: straddleScope.nonce });
+      assert.equal(straddleAdmission.status, 'truncated');
+      assert.equal(straddleAdmission.byteCount, BOUNDARY, 'only the captured prefix counts');
+      const straddleBytes = await captureFileBytes(straddleScope.captureDirectory, straddleScope.nonce);
+      assert.equal(straddleBytes.length, BOUNDARY);
+    });
+
+    test('an omitted encoding resolves from the stream default, never hard-coded utf8 (codex round 9)', async (t) => {
+      const scope = await captureScope(t, { probe: { name: 'default-encoding-probe.mjs', body: [
+        // Explicit utf8 BEFORE the default change: c3a9.
+        'process.stdout.write("\\u00e9", "utf8");',
+        // The stream default changes to latin1: an OMITTED encoding must
+        // resolve from it (byte e9), not from a hard-coded utf8 (c3a9).
+        'process.stdout.setDefaultEncoding("latin1");',
+        'process.stdout.write("\\u00e9");',
+        // An EXPLICIT encoding always wins over the default: c3a9.
+        'process.stdout.write("\\u00e9", "utf8");',
+      ].join('\n') } });
+      const outcome = await spawnBounded(process.execPath, [scope.probe, 'invoke-prepared', 'rescue'], scope.env);
+      assert.equal(outcome.code, 0);
+      const expectedBytes = Buffer.concat([
+        Buffer.from('\u00e9', 'utf8'),
+        Buffer.from([0xe9]),
+        Buffer.from('\u00e9', 'utf8'),
+      ]);
+      const admission = await admitStdoutCapture({ captureDirectory: scope.captureDirectory, nonce: scope.nonce });
+      // The mixed bytes are not valid UTF-8: the named fail-closed string
+      // state, with the byte-level facts verified (the round-1 contract).
+      assert.equal(admission.status, 'invalid');
+      assert.equal(admission.reason, 'capture-utf8-invalid');
+      assert.equal(admission.byteCount, expectedBytes.length, `the capture holds the DEFAULT-ENCODING bytes (actual ${admission.byteCount})`);
+      assert.equal(admission.verifiedDigest, createHash('sha256').update(expectedBytes).digest('hex'),
+        'the digest verifies exactly the delivered bytes (latin1 default honored)');
+      // The harness decodes the pipe as UTF-8 once: the delivered raw e9 byte
+      // surfaces as the replacement character (the byte identity itself is
+      // proven by the verified digest over e9 above).
+      assert.ok(outcome.stdout.includes('\uFFFD'), 'the production delivery carries the raw latin1 byte');
+    });
+
+    test('the capture exit authority is the handle-linked launcher exit, never the outer codex process (codex round 10)', async (t) => {
+      // The exact launcher exits 1 with a VALID error envelope while the
+      // outer `codex exec` process successfully finishes its turn with
+      // exit 0. The capture exit authority is the handle-linked exit —
+      // conflating the outer process code rejected intact captures.
+      const scope = await captureScope(t, { probe: { name: 'launcher-error-probe.mjs', body: [
+        'process.stdout.write(JSON.stringify({ error: { code: "RESCUE_FAILED", message: "the rescue failed", category: "execution" } }));',
+        'process.exit(1);',
+      ].join('\n') } });
+      const outcome = await spawnBounded(process.execPath, [scope.probe, 'invoke-prepared', 'rescue'], scope.env);
+      assert.equal(outcome.code, 1, 'the launcher (probe) exits 1 with its error envelope');
+      const envelope = JSON.parse(outcome.stdout);
+      assert.equal(envelope.error.code, 'RESCUE_FAILED');
+      // The handle-linked exit (1) validates the intact capture as complete.
+      const admission = await admitStdoutCapture({ captureDirectory: scope.captureDirectory, nonce: scope.nonce, expectedExitCode: outcome.code });
+      assert.equal(admission.status, 'complete', `the intact capture is admitted against the handle-linked exit (actual ${admission.status}: ${admission.reason})`);
+      const linkage = closureExactLinkage(admission, { output: outcome.stdout, exitCode: 1 });
+      assert.equal(linkage.matched, true, 'the oracle matches against the handle-linked exit 1');
+      // The CONFLATION (using the outer process's exit 0) is dead: a
+      // meta-vs-authority mismatch is the named incomplete state.
+      const conflated = await admitStdoutCapture({ captureDirectory: scope.captureDirectory, nonce: scope.nonce, expectedExitCode: 0 });
+      assert.equal(conflated.status, 'incomplete', `the conflated authority names the mismatch (actual ${conflated.status}: ${conflated.reason})`);
+      assert.equal(conflated.reason, 'capture-exit-code-mismatch');
+      assert.equal(closureExactLinkage(conflated, { output: outcome.stdout, exitCode: 1 }).matched, null);
+    });
+
+    test('an unavailable handle-linked exit keeps exit attribution unestablished (codex round 10)', async (t) => {
+      const scope = await captureScope(t, { probe: { name: 'unjoinable-probe.mjs', body: [
+        'process.stdout.write("done\\n");',
+      ].join('\n') } });
+      const outcome = await spawnBounded(process.execPath, [scope.probe, 'invoke-prepared', 'rescue'], scope.env);
+      assert.equal(outcome.code, 0);
+      // No handle-linked exit is supplied: the admission carries no exit
+      // cross-check (exit attribution pending), and the ORACLE — fed the
+      // null handle-linked exit through the evidence contract — stays
+      // unestablished (never a pass, never a mismatch).
+      const admission = await admitStdoutCapture({ captureDirectory: scope.captureDirectory, nonce: scope.nonce });
+      assert.equal(admission.status, 'complete', 'the capture itself is intact');
+      // The unjoinable-ACTUAL case is the live evidence oracle's contract:
+      // evaluateExactTerminalLinkage with a null observed exit stays
+      // unestablished (never a pass, never a mismatch).
+      const unjoinable = evaluateExactTerminalLinkage({
+        terminalStdout: admission.stdout,
+        exitCode: null,
+        expectedOutput: 'done\n',
+        expectedExitCode: 0,
+      });
+      assert.equal(unjoinable.matched, null, 'an unjoinable exit keeps the oracle unestablished');
+      assert.equal(unjoinable.reason, 'missing-evidence', 'the missing handle-linked exit is the NAMED unestablished reason');
+    });
+
+    test('multibyte text torn across chunk boundaries reassembles byte-exact', async (t) => {
+      const scope = await captureScope(t, { probe: { name: 'multibyte-probe.mjs', body: [
+        // Byte cuts INSIDE multi-byte UTF-8 sequences (§19.3 T4): 结 occupies
+        // bytes 0-2 and 果 bytes 3-5, so the cuts at 2 and 4 land mid-sequence.
+        'const bytes = Buffer.from(结果_MARKER, "utf8");',
+        'process.stdout.write(bytes.subarray(0, 2));',
+        'process.stdout.write(bytes.subarray(2, 4));',
+        'process.stdout.write(bytes.subarray(4));',
+      ].join('\n').replace('结果_MARKER', JSON.stringify('结果-ok')) } });
+      const outcome = await spawnBounded(process.execPath, [scope.probe, 'invoke-prepared', 'rescue'], scope.env);
+      assert.equal(outcome.code, 0);
+      assert.equal(outcome.stdout, '结果-ok');
+      const admission = await admitStdoutCapture({ captureDirectory: scope.captureDirectory, nonce: scope.nonce });
+      assert.equal(admission.status, 'complete');
+      assert.equal(admission.byteCount, Buffer.byteLength('结果-ok', 'utf8'));
+      assert.equal(admission.stdout, '结果-ok', 'bytes captured mid-sequence reassemble into the exact text');
+      assert.equal(admission.exitCode, 0);
+    });
+
+    test('stream-write encoding, return value and callback dispatch are preserved exactly', async (t) => {
+      const scope = await captureScope(t, { probe: { name: 'mechanics-probe.mjs', body: [
+        `import { writeFileSync } from 'node:fs';`,
+        `const recordPath = process.env.PROBE_RECORD;`,
+        `const observed = {};`,
+        `await new Promise((resolve) => { observed.first = { returned: process.stdout.write('first\\n', 'utf8', resolve) }; });`,
+        `observed.latin1 = { returned: process.stdout.write('caf\\xe9-lat\\xe9\\n', 'latin1') };`,
+        `observed.buffer = { returned: process.stdout.write(Buffer.from('third\\n', 'utf8')) };`,
+        `observed.default = { returned: process.stdout.write('fourth\\n') };`,
+        `let callbackFired = false;`,
+        `process.stdout.write('cb\\n', () => { callbackFired = true; });`,
+        `await new Promise((resolve) => setTimeout(resolve, 200));`,
+        `writeFileSync(recordPath, JSON.stringify({ ...observed, callbackFired }));`,
+      ].join('\n') } });
+      scope.env.PROBE_RECORD = join(scope.root, 'probe-record.json');
+      const outcome = await spawnBounded(process.execPath, [scope.probe, 'invoke-prepared', 'rescue'], scope.env);
+      assert.equal(outcome.code, 0);
+      const probeRecord = JSON.parse(await readFile(join(scope.root, 'probe-record.json'), 'utf8'));
+      assert.equal(probeRecord.callbackFired, true, 'the caller callback must be dispatched');
+      assert.equal(probeRecord.first.returned, true);
+      assert.equal(probeRecord.latin1.returned, true);
+      assert.equal(probeRecord.buffer.returned, true);
+      assert.equal(probeRecord.default.returned, true);
+      const admission = await admitStdoutCapture({ captureDirectory: scope.captureDirectory, nonce: scope.nonce });
+      // Codex round 1 (F6): the mixed-encoding stream embeds latin1 bytes that
+      // are not valid UTF-8, so the STRING surface is the named fail-closed
+      // state (never replacement characters). The byte-exactness proof is the
+      // verified digest — every chunk (string/encoding/Buffer) is captured
+      // byte-exact.
+      assert.equal(admission.status, 'invalid');
+      assert.equal(admission.reason, 'capture-utf8-invalid');
+      assert.equal(admission.stdout, null);
+      const expectedBytes = Buffer.concat([
+        Buffer.from('first\n', 'utf8'),
+        Buffer.from('caf\xe9-lat\xe9\n', 'latin1'),
+        Buffer.from('third\n', 'utf8'),
+        Buffer.from('fourth\n', 'utf8'),
+        Buffer.from('cb\n', 'utf8'),
+      ]);
+      assert.equal(admission.byteCount, expectedBytes.length);
+      assert.equal(admission.verifiedDigest, createHash('sha256').update(expectedBytes).digest('hex'), 'every chunk (string/encoding/Buffer) is captured byte-exact');
+      const delivery = Buffer.concat([Buffer.from(outcome.stdout, 'utf8')]);
+      assert.ok(delivery.includes(Buffer.from('first\n')), 'the production delivery keeps flowing');
+    });
+
+    test('an oversized stream sets the truncated flag and the capture stays fail-closed incomplete', async (t) => {
+      const scope = await captureScope(t, { probe: { name: 'oversize-probe.mjs', body: [
+        'const chunk = Buffer.alloc(16384, 0x61);',
+        'for (let index = 0; index < 5; index += 1) process.stdout.write(chunk);',
+        'process.stdout.write("tail-marker\\n");',
+      ].join('\n') } });
+      const outcome = await spawnBounded(process.execPath, [scope.probe, 'invoke-prepared', 'rescue'], scope.env);
+      assert.equal(outcome.code, 0, 'the business flow is unaffected by truncation');
+      const admission = await admitStdoutCapture({ captureDirectory: scope.captureDirectory, nonce: scope.nonce });
+      assert.equal(admission.status, 'truncated', 'an oversized capture is a named fail-closed state');
+      assert.equal(admission.truncated, true);
+      assert.equal(admission.captureComplete, false);
+      assert.equal(admission.stdout, null, 'a truncated capture never yields a partial stdout');
+      const bytes = await captureFileBytes(scope.captureDirectory, scope.nonce);
+      assert.equal(bytes.length, STDOUT_CAPTURE_MAX_BYTES, 'the capture is hard-bounded at 64 KiB');
+      const meta = JSON.parse(await captureMetaRaw(scope.captureDirectory, scope.nonce));
+      assert.equal(meta.truncated, true);
+      assert.equal(meta.byteCount, STDOUT_CAPTURE_MAX_BYTES);
+      const linkage = closureExactLinkage(admission, { output: 'x\n', exitCode: 0 });
+      assert.equal(linkage.matched, null, 'a truncated capture can never pass the exact-match oracle');
+    });
+
+    test('an empty stdout is a valid attributable capture that compares definitively', async (t) => {
+      const scope = await captureScope(t, { probe: { name: 'empty-probe.mjs', body: 'process.stderr.write("noise\\n");\n' } });
+      const outcome = await spawnBounded(process.execPath, [scope.probe, 'invoke-prepared', 'rescue'], scope.env);
+      assert.equal(outcome.code, 0);
+      assert.equal(outcome.stdout, '');
+      const admission = await admitStdoutCapture({ captureDirectory: scope.captureDirectory, nonce: scope.nonce, expectedExitCode: outcome.code });
+      assert.equal(admission.status, 'complete', 'an empty capture is a VALID attributable capture');
+      assert.equal(admission.byteCount, 0);
+      assert.equal(admission.stdout, '');
+      assert.equal(admission.verifiedDigest, createHash('sha256').update(new Uint8Array(0)).digest('hex'));
+      const linkage = closureExactLinkage(admission, { output: 'expected\n', exitCode: 0 });
+      assert.equal(linkage.matched, false, 'an empty capture compares definitively against a nonempty expectation');
+      assert.equal(linkage.reason, 'output-truncated');
+    });
+
+    test('missing, incomplete and tampered captures are named observer failures, never results', async (t) => {
+      const scope = await captureScope(t);
+      const missing = await admitStdoutCapture({ captureDirectory: scope.captureDirectory, nonce: scope.nonce });
+      assert.equal(missing.status, 'missing');
+      assert.equal(missing.stdout, null);
+      assert.equal(closureExactLinkage(missing, { output: 'x\n', exitCode: 0 }).matched, null);
+      // A capture file with no meta record: the final exit/flush never ran.
+      await writeFile(join(scope.captureDirectory, `${scope.nonce}.stdout`), 'orphan bytes\n', { mode: 0o600 });
+      const incomplete = await admitStdoutCapture({ captureDirectory: scope.captureDirectory, nonce: scope.nonce });
+      assert.equal(incomplete.status, 'incomplete');
+      assert.equal(incomplete.reason, 'capture-meta-missing');
+      assert.equal(incomplete.stdout, null);
+      // Corrupt meta JSON.
+      await writeFile(join(scope.captureDirectory, `${scope.nonce}.meta.json`), '{not json', { mode: 0o600 });
+      const corrupt = await admitStdoutCapture({ captureDirectory: scope.captureDirectory, nonce: scope.nonce });
+      assert.equal(corrupt.status, 'invalid');
+      assert.equal(corrupt.stdout, null);
+      // Byte-count mismatch between meta and capture bytes.
+      const bytes = Buffer.from('ten bytes!', 'utf8');
+      await writeFile(join(scope.captureDirectory, `${scope.nonce}.stdout`), bytes, { mode: 0o600 });
+      await writeFile(join(scope.captureDirectory, `${scope.nonce}.meta.json`), `${JSON.stringify({
+        version: 1, nonce: scope.nonce, truncated: false, byteCount: 4,
+        captureSha256: createHash('sha256').update(bytes).digest('hex'),
+        maxBytes: STDOUT_CAPTURE_MAX_BYTES, exitCode: 0,
+        finalizedBy: 'exit-listeners', finalizations: 1, writesAfterFinalization: 0,
+        argv: ['invoke-prepared', 'rescue'], entryRealpath: launcherRealpath, durationMs: 1,
+      })}\n`, { mode: 0o600 });
+      const mismatched = await admitStdoutCapture({ captureDirectory: scope.captureDirectory, nonce: scope.nonce });
+      assert.equal(mismatched.status, 'invalid');
+      assert.equal(mismatched.reason, 'byte-count-mismatch');
+      // Digest mismatch: the read side re-verifies the bytes against the
+      // capture-time digest and fails closed on any divergence.
+      await writeFile(join(scope.captureDirectory, `${scope.nonce}.stdout`), 'TAMPERED!!', { mode: 0o600 });
+      const digest = createHash('sha256').update(bytes).digest('hex');
+      await writeFile(join(scope.captureDirectory, `${scope.nonce}.meta.json`), `${JSON.stringify({
+        version: 1, nonce: scope.nonce, truncated: false, byteCount: 10,
+        captureSha256: digest,
+        maxBytes: STDOUT_CAPTURE_MAX_BYTES, exitCode: 0,
+        finalizedBy: 'exit-listeners', finalizations: 1, writesAfterFinalization: 0,
+        argv: ['invoke-prepared', 'rescue'], entryRealpath: launcherRealpath, durationMs: 1,
+      })}\n`, { mode: 0o600 });
+      const tampered = await admitStdoutCapture({ captureDirectory: scope.captureDirectory, nonce: scope.nonce });
+      assert.equal(tampered.status, 'invalid');
+      assert.equal(tampered.reason, 'capture-digest-mismatch');
+      assert.equal(tampered.stdout, null);
+      assert.equal(closureExactLinkage(tampered, { output: 'x\n', exitCode: 0 }).matched, null);
+    });
+
+    test('two distinct invocations admit independently; a same-nonce collision never disturbs the first capture', async (t) => {
+      const probeBody = 'process.stdout.write("scoped\\n");\n';
+      const first = await captureScope(t, { probe: { name: 'probe-one.mjs', body: probeBody } });
+      const second = await captureScope(t, { probe: { name: 'probe-two.mjs', body: probeBody } });
+      const one = await spawnBounded(process.execPath, [first.probe, 'invoke-prepared', 'rescue'], first.env);
+      const two = await spawnBounded(process.execPath, [second.probe, 'invoke-prepared', 'rescue'], second.env);
+      assert.equal(one.code, 0);
+      assert.equal(two.code, 0);
+      const firstAdmission = await admitStdoutCapture({ captureDirectory: first.captureDirectory, nonce: first.nonce });
+      const secondAdmission = await admitStdoutCapture({ captureDirectory: second.captureDirectory, nonce: second.nonce });
+      assert.equal(firstAdmission.status, 'complete');
+      assert.equal(secondAdmission.status, 'complete');
+      assert.deepEqual(await readdir(first.captureDirectory).then((entries) => entries.sort()), captureNames(first.nonce).sort(), 'each nonce owns exactly its own capture pair');
+      // A second invocation in the SAME scope (same nonce) must not disturb
+      // the first capture (wx creation fails closed) and must still deliver
+      // its own business output with its own exit code.
+      const before = await captureFileBytes(first.captureDirectory, first.nonce);
+      const beforeMeta = await captureMetaRaw(first.captureDirectory, first.nonce);
+      const collision = await spawnBounded(process.execPath, [first.probe, 'invoke-prepared', 'rescue'], first.env);
+      assert.equal(collision.code, 0, 'the colliding invocation keeps its own business exit code');
+      assert.equal(collision.stdout, 'scoped\n', 'the colliding invocation still delivers its own stdout');
+      assert.equal(await captureFileBytes(first.captureDirectory, first.nonce).then((value) => value.equals(before)), true, 'the first capture bytes are untouched');
+      assert.equal(await captureMetaRaw(first.captureDirectory, first.nonce), beforeMeta, 'the first capture meta is untouched');
+      const stillAdmitted = await admitStdoutCapture({ captureDirectory: first.captureDirectory, nonce: first.nonce });
+      assert.equal(stillAdmitted.status, 'complete');
+    });
+
+    test('capture files stay private (0600) inside the fixture-owned directory', async (t) => {
+      const scope = await captureScope(t, { probe: { name: 'private-probe.mjs', body: 'process.stdout.write("private\\n");\n' } });
+      await spawnBounded(process.execPath, [scope.probe, 'invoke-prepared', 'rescue'], scope.env);
+      for (const name of captureNames(scope.nonce)) {
+        const metadata = await lstat(join(scope.captureDirectory, name));
+        assert.equal(metadata.isSymbolicLink(), false);
+        assert.equal(metadata.mode & 0o777, 0o600, `${name} must be private`);
+      }
+    });
+
+    test('noisy stderr with a counterfeit sentinel never enters the capture basis', async (t) => {
+      const scope = await captureScope(t, { probe: { name: 'counterfeit-probe.mjs', body: [
+        `process.stderr.write(${JSON.stringify(`${PUBLIC_RESULT_SENTINEL} counterfeit\n`)});`,
+        `process.stdout.write('different stdout\\n');`,
+      ].join('\n') } });
+      const outcome = await spawnBounded(process.execPath, [scope.probe, 'invoke-prepared', 'rescue'], scope.env);
+      assert.equal(outcome.code, 0);
+      assert.ok(outcome.stderr.includes(PUBLIC_RESULT_SENTINEL), 'the counterfeit sentinel was delivered on stderr');
+      const admission = await admitStdoutCapture({ captureDirectory: scope.captureDirectory, nonce: scope.nonce, expectedExitCode: outcome.code });
+      assert.equal(admission.status, 'complete');
+      assert.equal(admission.stdout, 'different stdout\n', 'the capture holds stdout only');
+      assert.ok(!admission.stdout.includes(PUBLIC_RESULT_SENTINEL));
+      assert.ok(!(await captureFileBytes(scope.captureDirectory, scope.nonce)).includes(Buffer.from(PUBLIC_RESULT_SENTINEL, 'utf8')), 'the counterfeit sentinel bytes never enter the capture file');
+      const sentinelExpectation = exactRescueRenderedExpectation({ result: PUBLIC_RESULT_SENTINEL, resumable: true });
+      assert.ok(sentinelExpectation);
+      const linkage = closureExactLinkage(admission, sentinelExpectation);
+      assert.equal(linkage.matched, false, 'a counterfeit stderr sentinel can never satisfy the exact stdout oracle');
+      // The merged transcript contains the sentinel, but the capture basis is
+      // NOT the transcript: with no capture the exact equality stays
+      // unestablished even though the merged bytes carry the expectation.
+      const mergedTranscript = `${outcome.stdout}${outcome.stderr}`;
+      assert.ok(mergedTranscript.includes(PUBLIC_RESULT_SENTINEL));
+      const transcriptOnlyVerdict = closureExactLinkage(
+        { ...admission, status: 'missing', stdout: null },
+        sentinelExpectation,
+      );
+      assert.equal(transcriptOnlyVerdict.matched, null, 'no stdout may ever be reconstructed from merged transcript bytes');
+    });
+
+    test('preparation and environment canaries never enter the capture, meta or admitted record', async (t) => {
+      const threadCanary = 'ZCODE_CANARY_THREAD_9f2c7';
+      const stderrCanary = 'ZCODE_CANARY_PRIVATE_PAYLOAD_51ab';
+      const scope = await captureScope(t, { probe: { name: 'canary-probe.mjs', body: [
+        `process.stderr.write(${JSON.stringify(`${stderrCanary}\n`)});`,
+        `process.stdout.write('clean stdout\\n');`,
+      ].join('\n') } });
+      const env = { ...scope.env, CODEX_THREAD_ID_ABSENT_CANARY: threadCanary };
+      const outcome = await spawnBounded(process.execPath, [scope.probe, 'invoke-prepared', 'rescue'], env);
+      assert.equal(outcome.code, 0);
+      assert.ok(outcome.stderr.includes(stderrCanary), 'the canary existed in the child environment surface');
+      const admission = await admitStdoutCapture({ captureDirectory: scope.captureDirectory, nonce: scope.nonce });
+      const admittedJson = JSON.stringify(admission);
+      assert.equal(admission.stdout, 'clean stdout\n');
+      assert.ok(!admittedJson.includes(threadCanary), 'the thread canary never enters the admitted record');
+      assert.ok(!admittedJson.includes(stderrCanary), 'the stderr canary never enters the admitted record');
+      assert.ok(!(await captureFileBytes(scope.captureDirectory, scope.nonce)).includes(Buffer.from(stderrCanary, 'utf8')));
+      assert.ok(!(await captureMetaRaw(scope.captureDirectory, scope.nonce)).includes(threadCanary));
+      assert.ok(!(await captureMetaRaw(scope.captureDirectory, scope.nonce)).includes(stderrCanary));
+    });
+
+    test('a BOM-prefixed capture is preserved byte-exact and never equals the BOM-less expectation (codex round 1)', async (t) => {
+      const scope = await captureScope(t, { probe: { name: 'bom-probe.mjs', body: [
+        `const bom = Buffer.from([0xEF, 0xBB, 0xBF]);`,
+        `process.stdout.write(bom);`,
+        `process.stdout.write(${JSON.stringify('expected\n')});`,
+      ].join('\n') } });
+      const outcome = await spawnBounded(process.execPath, [scope.probe, 'invoke-prepared', 'rescue'], scope.env);
+      assert.equal(outcome.code, 0);
+      const admission = await admitStdoutCapture({ captureDirectory: scope.captureDirectory, nonce: scope.nonce, expectedExitCode: outcome.code });
+      assert.equal(admission.status, 'complete');
+      const linkage = closureExactLinkage(admission, { output: 'expected\n', exitCode: 0 });
+      assert.equal(linkage.matched, false, 'the three BOM bytes are extra content: the comparison can never strip them');
+    });
+
+    test('a capture with invalid UTF-8 never yields a comparable stdout (codex round 1)', async (t) => {
+      const scope = await captureScope(t, { probe: { name: 'invalid-utf8-probe.mjs', body: [
+        `process.stdout.write(Buffer.from([0x41, 0xFF, 0x0A]));`,
+      ].join('\n') } });
+      await spawnBounded(process.execPath, [scope.probe, 'invoke-prepared', 'rescue'], scope.env);
+      const admission = await admitStdoutCapture({ captureDirectory: scope.captureDirectory, nonce: scope.nonce });
+      assert.equal(admission.status, 'invalid', 'invalid UTF-8 is a named fail-closed state, never replaced characters');
+      assert.equal(admission.reason, 'capture-utf8-invalid');
+      assert.equal(admission.stdout, null);
+      const linkage = closureExactLinkage(admission, { output: 'A\uFFFD\n', exitCode: 0 });
+      assert.equal(linkage.matched, null, 'the replacement-character expectation can never match a lossy decode');
+    });
+
+    test('expected bytes come from the real formatter and the oracle linkage is pipeline-established', async (t) => {
+      const declaredResult = 'fixture-result';
+      // The expectation is derived from the REAL renderer with independently
+      // declared result/resumability facts — never by copying captured bytes.
+      const expectation = exactRescueRenderedExpectation({ result: declaredResult, resumable: true });
+      assert.ok(expectation, 'the declared resumability fact derives the complete framing');
+      const renderModule = directInvocationResultModule.href;
+      const successScope = await captureScope(t, { probe: { name: 'success-probe.mjs', body: [
+        `import { formatDirectInvocationSuccess } from ${JSON.stringify(renderModule)};`,
+        `const text = formatDirectInvocationSuccess({ result: ${JSON.stringify(declaredResult)}, job: { resumable: true } }).text;`,
+        `const bytes = Buffer.from(text, 'utf8');`,
+        `process.stdout.write(bytes.subarray(0, 3));`,
+        `process.stdout.write(bytes.subarray(3));`,
+      ].join('\n') } });
+      const success = await spawnBounded(process.execPath, [successScope.probe, 'invoke-prepared', 'rescue'], successScope.env);
+      assert.equal(success.code, 0);
+      const complete = await admitStdoutCapture({ captureDirectory: successScope.captureDirectory, nonce: successScope.nonce, expectedExitCode: success.code });
+      assert.equal(complete.status, 'complete');
+      const matched = closureExactLinkage(complete, expectation);
+      assert.equal(matched.matched, true, 'the pipeline-established capture equals the independently derived production framing');
+      assert.equal(matched.reason, null);
+      // Plan case 2 as a PIPELINE input: extra trailing bytes fail the gate.
+      const extraScope = await captureScope(t, { probe: { name: 'extra-probe.mjs', body: [
+        `import { formatDirectInvocationSuccess } from ${JSON.stringify(renderModule)};`,
+        `const text = formatDirectInvocationSuccess({ result: ${JSON.stringify(declaredResult)}, job: { resumable: true } }).text;`,
+        `process.stdout.write(text + 'extra');`,
+      ].join('\n') } });
+      await spawnBounded(process.execPath, [extraScope.probe, 'invoke-prepared', 'rescue'], extraScope.env);
+      const extraAdmission = await admitStdoutCapture({ captureDirectory: extraScope.captureDirectory, nonce: extraScope.nonce, expectedExitCode: 0 });
+      const extraLinkage = closureExactLinkage(extraAdmission, expectation);
+      assert.equal(extraLinkage.matched, false, 'extra trailing stdout fails the exact gate');
+      assert.equal(extraLinkage.reason, 'extra-output');
+      // Plan case 1 as a PIPELINE input: a missing capture stays unestablished.
+      const missingScope = await captureScope(t);
+      const missingAdmission = await admitStdoutCapture({ captureDirectory: missingScope.captureDirectory, nonce: missingScope.nonce });
+      assert.equal(missingAdmission.status, 'missing');
+      const missingLinkage = closureExactLinkage(missingAdmission, expectation);
+      assert.equal(missingLinkage.matched, null, 'a missing capture leaves the exact equality unestablished');
+    });
+
+    test('an unestablished resumability fact derives no expectation and the linkage stays unestablished', async (t) => {
+      const expectation = exactRescueRenderedExpectation({ result: 'fixture-result', resumable: null });
+      assert.equal(expectation, null, 'an unknown indicator yields NO complete expected output');
+      const scope = await captureScope(t, { probe: { name: 'unestablished-probe.mjs', body: `process.stdout.write(${JSON.stringify('fixture-result\n')});\n` } });
+      await spawnBounded(process.execPath, [scope.probe, 'invoke-prepared', 'rescue'], scope.env);
+      const admission = await admitStdoutCapture({ captureDirectory: scope.captureDirectory, nonce: scope.nonce });
+      assert.equal(admission.status, 'complete');
+      const linkage = closureExactLinkage(admission, null);
+      assert.equal(linkage.matched, null);
+      assert.equal(linkage.reason, 'expectation-unestablished');
+    });
+
+    test('the fixture stdoutCapture seam generates the preload, composes the environment and records bounded provenance', async (t) => {
+      const { createShellWaitFixture } = await import('../tools/shell-wait-probe/fixture.mjs');
+      const repositorySha = spawnSync('git', ['rev-parse', 'HEAD'], { env: isolatedBaseEnv(), encoding: 'utf8' }).stdout.trim();
+
+      /** Seam-injected fast installer (the fast-path describe's exact pattern). */
+      async function fakeInstallPlugin({ codexHome, cleanSource }) {
+        const installedRoot = join(codexHome, 'plugins', 'cache', 'vitry', 'zcode', '0.1.0');
+        await mkdir(join(installedRoot, 'agents'), { recursive: true });
+        await cp(join(cleanSource, 'agents', 'zcode-rescue.toml.template'), join(installedRoot, 'agents', 'zcode-rescue.toml.template'));
+        for (const skill of ['rescue', 'review', 'adversarial-review', 'status']) {
+          await mkdir(join(installedRoot, 'skills', skill), { recursive: true });
+          await cp(join(cleanSource, 'skills', skill, 'SKILL.md'), join(installedRoot, 'skills', skill, 'SKILL.md'));
+        }
+        await cp(join(cleanSource, 'skills', 'rescue', 'launcher.mjs'), join(installedRoot, 'skills', 'rescue', 'launcher.mjs'));
+        await writeFile(join(codexHome, 'config.toml'), '[marketplaces.vitry]\nsource_type = "local"\n\n[plugins."zcode@vitry"]\nenabled = true\n', { encoding: 'utf8' });
+        return { pluginVersion: '0.1.0' };
+      }
+      async function fakeBuildSnapshot({ output: snapshotOutput, sourceSha }) {
+        await mkdir(join(snapshotOutput, '.agents', 'plugins'), { recursive: true });
+        await writeFile(join(snapshotOutput, '.agents', 'plugins', 'provenance.json'), `${JSON.stringify({ sourceSha })}\n`, 'utf8');
+      }
+      const fakeIsolatedSetup = (context) => Promise.resolve({ sessionEstablished: true, launcherDescriptorPublished: true, setupAttempts: 1, roleStatus: 'ready', capVerified: context.capMs === null ? null : true });
+      const dependencies = { buildSnapshot: fakeBuildSnapshot, installPlugin: fakeInstallPlugin, runSetup: fakeIsolatedSetup };
+
+      const temporary = await mkdtemp(join(tmpdir(), 'shell-wait-closure-fixture-'));
+      t.after(() => rm(temporary, { recursive: true, force: true }));
+      const output = join(temporary, 'output');
+      await mkdir(output, { mode: 0o700 });
+      const fixture = await createShellWaitFixture({
+        sourceRoot: repositoryRoot, sourceSha: repositorySha, codexBinary: process.execPath,
+        output, variant: 'baseline', capMs: null, stdoutCapture: true,
+      }, dependencies);
+      t.after(() => fixture.dispose());
+      const handle = fixture.stdoutCapture;
+      assert.ok(handle, 'the fixture handle must expose the private capture seam');
+      assert.equal(handle.maxBytes, 65536);
+      assert.match(handle.nonce, /^[a-f0-9]{64}$/u);
+      assert.equal((await lstat(handle.preloadPath)).isFile(), true, 'the generated preload exists inside the disposable fixture root');
+      const fixtureRoot = dirname(handle.captureDirectory);
+      assert.ok(handle.preloadPath.startsWith(fixtureRoot), 'the preload lives inside the disposable fixture root');
+      assert.ok(fixtureRoot.startsWith(tmpdir()), 'the disposable fixture root is the fixture-owned temp root');
+      assert.equal(handle.entryRealpath, await realpath(join(fixture.installedRoot, 'skills', 'rescue', 'launcher.mjs')), 'the declared entry is the exact installed launcher realpath');
+      assert.equal(fixture.env[CAPTURE_DIRECTORY_VARIABLE], handle.captureDirectory);
+      assert.equal(fixture.env[CAPTURE_NONCE_VARIABLE], handle.nonce);
+      assert.equal(fixture.env[CAPTURE_ENTRY_VARIABLE], handle.entryRealpath);
+      assert.equal(fixture.env[CAPTURE_MAX_BYTES_VARIABLE], '65536');
+      assert.ok(String(fixture.env.NODE_OPTIONS ?? '').includes(`--require "${handle.preloadPath}"`), 'NODE_OPTIONS carries the quoted generated preload');
+      // Bounded provenance only: digests and closed configuration, never the
+      // private fixture paths.
+      const recordBlock = fixture.record.closureStdoutCapture;
+      assert.ok(recordBlock);
+      assert.equal(recordBlock.preload, 'closure-stdout-preload.cjs');
+      assert.equal(recordBlock.preloadSha256, createHash('sha256').update(await readFile(handle.preloadPath, 'utf8'), 'utf8').digest('hex'));
+      assert.equal(recordBlock.maxBytes, 65536);
+      assert.deepEqual(recordBlock.gate.argv, ['invoke-prepared', 'rescue']);
+      assert.equal(recordBlock.gate.declaredEntryRealpathSha256, createHash('sha256').update(handle.entryRealpath, 'utf8').digest('hex'));
+      const serializedRecord = JSON.stringify(recordBlock);
+      assert.ok(!serializedRecord.includes(temporary), 'the fixture record must never carry the private fixture root');
+      assert.deepEqual(recordBlock.environmentVariables, [CAPTURE_DIRECTORY_VARIABLE, CAPTURE_NONCE_VARIABLE, CAPTURE_ENTRY_VARIABLE, CAPTURE_MAX_BYTES_VARIABLE]);
+
+      // The default (opt-out) fixture composes no capture environment and
+      // records no capture provenance.
+      const plainOutput = join(temporary, 'plain-output');
+      await mkdir(plainOutput, { mode: 0o700 });
+      const plain = await createShellWaitFixture({
+        sourceRoot: repositoryRoot, sourceSha: repositorySha, codexBinary: process.execPath,
+        output: plainOutput, variant: 'baseline', capMs: null,
+      }, dependencies);
+      t.after(() => plain.dispose());
+      assert.equal(plain.stdoutCapture, undefined);
+      assert.equal(plain.record.closureStdoutCapture, undefined);
+      for (const variable of [CAPTURE_DIRECTORY_VARIABLE, CAPTURE_NONCE_VARIABLE, CAPTURE_ENTRY_VARIABLE, CAPTURE_MAX_BYTES_VARIABLE]) {
+        assert.equal(plain.env[variable], undefined, `${variable} must be absent without the opt-in flag`);
+      }
+    });
+
+    test('the preload NODE_OPTIONS fragment quotes a spaced temporary path (codex round 2)', async (t) => {
+      // A custom TMPDIR whose name contains spaces: the unquoted fragment
+      // splits into multiple NODE_OPTIONS arguments and node exits before any
+      // entry executes.
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-closure-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const spacedRoot = join(root, 'space dir');
+      await mkdir(spacedRoot, { mode: 0o700 });
+      const captureDirectory = join(spacedRoot, 'stdout-capture');
+      await mkdir(captureDirectory, { mode: 0o700 });
+      const nonce = randomBytes(32).toString('hex');
+      const preload = await writeClosurePreload(spacedRoot);
+      assert.ok(preload.nodeOptionsFragment.includes('"'), 'the fragment must quote the preload path');
+      const scope = await captureScope(t, {
+        entry: join(spacedRoot, 'unused-launcher.mjs'),
+        probe: { name: 'spaced-probe.mjs', body: 'process.stdout.write("spaced ok\\n");\n' },
+      });
+      // Rebuild the environment with the SPACED roots: captureScope used the
+      // default tmp root, so compose explicitly over the spaced directory.
+      const { entryRealpath } = { entryRealpath: scope.probe };
+      const env = captureEnvironment({
+        captureDirectory, nonce, entryRealpath,
+        baseEnv: isolatedBaseEnv(), nodeOptionsFragment: preload.nodeOptionsFragment,
+      });
+      // (1) The gate MATCHES: normal execution AND capture both work.
+      const outcome = await spawnBounded(process.execPath, [entryRealpath, 'invoke-prepared', 'rescue'], env);
+      assert.equal(outcome.code, 0, `the child must survive a spaced preload path: ${outcome.stderr.slice(0, 300)}`);
+      assert.equal(outcome.stdout, 'spaced ok\n', 'the entry executes normally');
+      const admission = await admitStdoutCapture({ captureDirectory, nonce });
+      assert.equal(admission.status, 'complete', 'the capture still works through the quoted fragment');
+      assert.equal(admission.stdout, 'spaced ok\n');
+      // (2) The gate STAYS INERT for a foreign entry: normal execution, and
+      // the matched entry's capture pair is untouched (no second capture).
+      const before = (await readdir(captureDirectory)).sort();
+      const inert = await spawnBounded(process.execPath, ['-e', 'process.stdout.write("inert ok\\n");'], env);
+      assert.equal(inert.code, 0, `a foreign entry must survive too: ${inert.stderr.slice(0, 300)}`);
+      assert.equal(inert.stdout, 'inert ok\n');
+      assert.deepEqual((await readdir(captureDirectory)).sort(), before, 'the foreign entry is never captured');
+    });
+
+    test('the generated preload itself fails closed on malformed nonce or max-bytes env (path escape)', async (t) => {
+      // The scope declares the PROBE as the entry, so a corrupted variable is
+      // the ONLY deviation from a capturing composition.
+      const scope = await captureScope(t, { probe: { name: 'escape-probe.mjs', body: 'process.stdout.write("escape probe\\n");\n' } });
+      // A corrupted NONCE value must leave the preload inert: the capture
+      // path would otherwise escape the capture directory ('../escape').
+      const escapeEnv = { ...scope.env, [CAPTURE_NONCE_VARIABLE]: '../escape' };
+      const outcome = await spawnBounded(process.execPath, [scope.probe, 'invoke-prepared', 'rescue'], escapeEnv);
+      assert.equal(outcome.code, 0);
+      assert.equal(outcome.stdout, 'escape probe\n', 'business delivery is unaffected by inertness');
+      assert.deepEqual(await readdir(scope.captureDirectory), [], 'a malformed nonce must never produce a capture');
+      const { existsSync } = await import('node:fs');
+      assert.equal(existsSync(join(scope.root, 'escape.stdout')), false, 'no escape.stdout may exist outside the capture directory');
+      assert.equal(existsSync(join(scope.root, 'escape.meta.json')), false, 'no escape meta may exist outside the capture directory');
+      // A malformed max-bytes value also stays inert (no capture, no partial file).
+      const badMaxEnv = { ...scope.env, [CAPTURE_MAX_BYTES_VARIABLE]: '0' };
+      const capped = await spawnBounded(process.execPath, [scope.probe, 'invoke-prepared', 'rescue'], badMaxEnv);
+      assert.equal(capped.code, 0);
+      assert.deepEqual(await readdir(scope.captureDirectory), [], 'a malformed max-bytes value must never produce a capture');
+    });
+
+    test('a stdout the parent closed keeps the false return and the EPIPE dispatch through the original write', async (t) => {
+      const scope = await captureScope(t, { probe: { name: 'epipe-probe.mjs', body: [
+        `import { writeFileSync } from 'node:fs';`,
+        `const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));`,
+        `process.stdout.on('error', () => {});`,
+        `await sleep(150);`,
+        `const observed = {};`,
+        `observed.returned = process.stdout.write('after-parent-close\\n', (error) => { observed.callbackError = error ? String(error.code ?? error.message) : null; });`,
+        `await sleep(300);`,
+        `writeFileSync(process.env.PROBE_RECORD, JSON.stringify(observed));`,
+      ].join('\n') } });
+      scope.env.PROBE_RECORD = join(scope.root, 'epipe-record.json');
+      // The parent destroys its side of the pipe before the child writes: the
+      // child's underlying stdout write then fails (EPIPE) and returns false —
+      // the exact error/backpressure surface the preload must preserve.
+      const child = spawn(process.execPath, [scope.probe, 'invoke-prepared', 'rescue'], { env: scope.env, stdio: ['ignore', 'pipe', 'ignore'] });
+      child.stdout.destroy();
+      const code = await new Promise((resolve) => { child.once('close', resolve); });
+      assert.equal(code, 0, 'the probe controls its own error surface and still exits cleanly');
+      const probeRecord = JSON.parse(await readFile(join(scope.root, 'epipe-record.json'), 'utf8'));
+      assert.equal(probeRecord.returned, false, 'the underlying write\'s FALSE (backpressure/errored) return is passed through, never rewritten to true');
+      assert.equal(probeRecord.callbackError, 'EPIPE', 'the underlying write error is dispatched to the caller\'s callback through the original write');
+      const admission = await admitStdoutCapture({ captureDirectory: scope.captureDirectory, nonce: scope.nonce });
+      assert.equal(admission.status, 'complete', 'the fd-level tee still attributes exactly the bytes the process wrote');
+    });
+  });
+
+  describe('closure capture provenance redaction (task 2 review fix)', async () => {
+    const { stdoutCaptureProvenance } = await import('../tools/shell-wait-probe/driver.mjs');
+
+    test('an admission-failure reason is redacted of private fixture paths before persisting', () => {
+      const fixture = {
+        codexHome: '/private/tmp/secret-fixture/home', workspace: '/private/tmp/secret-fixture/ws',
+        installedRoot: '/private/tmp/secret-fixture/installed', env: { HOME: '/private/tmp/secret-fixture/home' },
+      };
+      const privateCapturePath = '/private/tmp/secret-fixture/stdout-capture/abc.stdout';
+      const error = new Error(`EACCES: permission denied, lstat '${privateCapturePath}'`);
+      const block = stdoutCaptureProvenance(null, error, fixture);
+      assert.equal(block.status, 'admission-failed');
+      assert.ok(!JSON.stringify(block).includes('secret-fixture'), 'the private fixture path must never persist in the provenance block');
+      assert.match(String(block.reason), /<redacted>/u, 'the reason keeps the failure shape with paths redacted');
+      assert.equal(block.byteCount, null);
+      assert.equal(block.closureObservationVersion, null);
+      assert.equal(block.exitAttribution, null, 'no admission exists to attribute (schema-additive)');
+      // A successful admission passes its bounded fields through unchanged
+      // (the overall-review exit-attribution fact rides schema-additively).
+      const complete = stdoutCaptureProvenance(
+        { status: 'complete', reason: null, byteCount: 3, captureSha256: 'a'.repeat(64), exitCode: 0, exitAttribution: 'verified', closureObservationVersion: 1 },
+        null, fixture,
+      );
+      assert.deepEqual(complete, { status: 'complete', reason: null, byteCount: 3, captureSha256: 'a'.repeat(64), exitCode: 0, exitAttribution: 'verified', closureObservationVersion: 1 });
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Task 2 evidence closure: the PASSIVE durable obligation snapshot reader
+  // (report §19.5 freeze). The durable state below is created through the
+  // PRODUCTION state store only; the reader itself must never create, chmod,
+  // lock, or update anything. Offline only — no host, no model turn.
+  // -------------------------------------------------------------------------
+  describe('passive durable obligation snapshot reader (task 2 evidence closure)', async () => {
+    const { createStateStore } = await import('../scripts/lib/state.mjs');
+    const { withFileLock } = await import('../scripts/lib/fs.mjs');
+    const { createJobController } = await import('../scripts/lib/job-control.mjs');
+    const { readDurableObligationSnapshot } = await import('../tools/shell-wait-probe/closure-observation.mjs');
+    const { rescueBindingPartitionKey } = await import('../scripts/lib/rescue-binding.mjs');
+    const { realpath: realPath } = await import('node:fs/promises');
+
+    const OWNER_SESSION = 'session-a';
+    const EPOCH = 'b'.repeat(64);
+    const LEASE = 'a'.repeat(64);
+
+    const hostExecutor = (workspace, agentId) => ({ parentSessionId: OWNER_SESSION, parentTurnId: 'turn-a', agentId, agentType: 'zcode-rescue', agentPath: '/root/zcode_rescue_task', workspace, parentPermissionMode: 'workspace-write' });
+
+    async function durableScope(t) {
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-durable-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const workspace = join(root, 'workspace');
+      await mkdir(workspace, { recursive: true });
+      const workspaceReal = await realPath(workspace);
+      const dataRoot = join(root, 'data-root');
+      const persisted = createStateStore({ dataRoot });
+      // A writable Rescue queued→running transition requires the execution
+      // claim first (state.mjs transition guard); the job-control suite wraps
+      // its transitions the same production-required way.
+      /** @type {typeof persisted.transitionJob} */
+      const transitionJob = async (targetWorkspace, jobId, expected, nextStatus, patch = {}) => {
+        let effectivePatch = patch;
+        if (expected.includes('queued') && nextStatus === 'running') {
+          const job = await persisted.readJob(targetWorkspace, jobId);
+          if (job.command === 'rescue' && job.readOnly === false && job.rescueReservationKind !== undefined
+            && job.rescueExecutionClaim === undefined) {
+            const childPid = Number.isSafeInteger(patch.childPid) ? Number(patch.childPid) : 999_999_999;
+            const workerLeaseId = typeof patch.workerLeaseId === 'string' ? patch.workerLeaseId : job.id;
+            const claimed = await persisted.claimJobWorkerForExecution(targetWorkspace, jobId, { childPid, workerLeaseId });
+            effectivePatch = { ...patch, childPid: claimed.childPid, workerLeaseId: claimed.workerLeaseId };
+          }
+        }
+        return persisted.transitionJob(targetWorkspace, jobId, expected, nextStatus, effectivePatch);
+      };
+      const store = { ...persisted, transitionJob };
+      return { root, workspace, workspaceReal, dataRoot, store, persisted };
+    }
+
+    async function reserveHostOwned(scope, agentId, { marked = false } = {}) {
+      return scope.store.reserveFreshRescueJob({ workspace: scope.workspaceReal,
+        reservation: { workspace: scope.workspaceReal, ownerSessionId: OWNER_SESSION, ownerTurnId: 'turn-a', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } },
+        executor: hostExecutor(scope.workspaceReal, agentId),
+        lifecycle: { ownerLifecycleEpoch: EPOCH, executionOwner: 'host-child', hostPlacement: marked ? 'background' : 'foreground' },
+        ...(marked ? { executionInput: { version: 1, task: 'bounded private task' } } : {}) });
+    }
+
+    /** Independent whole-partition snapshot: entries, content digests, modes. */
+    async function partitionFingerprint(dataRoot, workspaceReal) {
+      const { createHash: hash } = await import('node:crypto');
+      const { readdir: listDir, readFile: readFileBytes, lstat: statEntry } = await import('node:fs/promises');
+      const key = hash('sha256').update(workspaceReal, 'utf8').digest('hex');
+      const partition = join(dataRoot, 'workspaces', key);
+      const entries = [];
+      async function walk(directory, prefix) {
+        const names = (await listDir(directory)).sort();
+        for (const name of names) {
+          if (entries.length > 512) throw new Error('fingerprint bound exceeded');
+          const path = join(directory, name);
+          const stats = await statEntry(path);
+          if (stats.isDirectory()) await walk(path, `${prefix}${name}/`);
+          else entries.push([`${prefix}${name}`, `0o${(stats.mode & 0o777).toString(8)}`, hash('sha256').update(await readFileBytes(path)).digest('hex')]);
+        }
+      }
+      await walk(partition, '');
+      return entries;
+    }
+
+    test('input validation fails before any filesystem access', async () => {
+      await assert.rejects(() => readDurableObligationSnapshot({ dataRoot: 'rel', workspace: '/w', ownerSessionId: OWNER_SESSION, jobId: 'a'.repeat(64) }), /absolute/u);
+      await assert.rejects(() => readDurableObligationSnapshot({ dataRoot: '/dr', workspace: '/w', ownerSessionId: 'bad\nsession', jobId: 'a'.repeat(64) }), /owner session/u);
+      await assert.rejects(() => readDurableObligationSnapshot({ dataRoot: '/dr', workspace: '/w', ownerSessionId: OWNER_SESSION, jobId: 'short' }), /64-hex/u);
+      await assert.rejects(() => readDurableObligationSnapshot({ dataRoot: '/dr', workspace: '/w', ownerSessionId: OWNER_SESSION, jobId: 'a'.repeat(64), expectedOwnerLifecycleEpoch: 'nope' }), /64-hex/u);
+    });
+
+    test('a naturally succeeded bound job aggregates settled with every applicable duty positively established', async (t) => {
+      const scope = await durableScope(t);
+      const { job, binding } = await reserveHostOwned(scope, 'natural-success-child');
+      assert.equal(binding.state, 'active');
+      assert.equal(binding.currentJobId, job.id);
+      await scope.store.transitionJob(scope.workspaceReal, job.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-natural' });
+      await scope.store.finishJob(scope.workspaceReal, job.id, ['running'], 'succeeded', { exitCode: 0, resultArtifact: 'results/natural.md' });
+
+      const before = await partitionFingerprint(scope.dataRoot, scope.workspaceReal);
+      const snapshot = await readDurableObligationSnapshot({ dataRoot: scope.dataRoot, workspace: scope.workspaceReal, ownerSessionId: OWNER_SESSION, jobId: job.id, expectedOwnerLifecycleEpoch: EPOCH });
+      const after = await partitionFingerprint(scope.dataRoot, scope.workspaceReal);
+
+      assert.equal(snapshot.closureObservationVersion, 1);
+      assert.equal(snapshot.partition.status, 'resolved');
+      assert.equal(snapshot.partition.workspaceKey, createHash('sha256').update(scope.workspaceReal, 'utf8').digest('hex'));
+      assert.equal(snapshot.job.presence, 'found');
+      assert.equal(snapshot.job.projection.id, job.id);
+      assert.equal(snapshot.job.projection.status, 'succeeded');
+      assert.equal(snapshot.job.projection.ownerSessionId, OWNER_SESSION);
+      assert.equal(snapshot.layers.winner.terminalStatus, 'succeeded');
+      assert.equal(snapshot.layers.endedObligation.settled, true, 'the raw terminal record without a marked claim is settled per the exported predicate');
+      assert.equal(snapshot.layers.runnerCleanupDuty.applicable, false, 'a foreground record never carries the marked claim duty');
+      assert.equal(snapshot.layers.writableGuard.applicable, false, 'a terminal record holds no writable guard');
+      assert.equal(snapshot.layers.stopIntent.applicable, false, 'a natural success carries no stop-intent duty (recorded reason)');
+      assert.ok(snapshot.layers.stopIntent.reason);
+      assert.equal(snapshot.layers.bindingCurrency.state, 'current', 'the active binding still anchors this exact job');
+      assert.equal(snapshot.layers.lifecycleEpoch.matches, true);
+      assert.equal(snapshot.passive.snapshotEqual, true, 'the reader left the partition byte-identical');
+      assert.deepEqual(after, before, 'independent whole-partition fingerprint is unchanged');
+      assert.equal(snapshot.aggregate, 'settled', 'settled ONLY when every applicable duty is positively established');
+      assert.deepEqual(snapshot.reasons, []);
+      // Never probe a lease: no acquisition, no waiting, no process inspection.
+      assert.ok(!(await partitionFingerprint(scope.dataRoot, scope.workspaceReal)).some(([, , digest]) => digest === undefined));
+    });
+
+    test('a terminal record that still carries the marked runner claim has an OUTSTANDING duty (replaced/reused PID is never probed)', async (t) => {
+      const scope = await durableScope(t);
+      const { job } = await reserveHostOwned(scope, 'marked-terminal-child', { marked: true });
+      // childPid = THIS live test process: the reader must never probe, signal,
+      // or wait on it; the duty stays outstanding from the record alone. The
+      // execution claim rides the wrapped transition (the production-required
+      // queued→running path).
+      await scope.store.transitionJob(scope.workspaceReal, job.id, ['queued'], 'running',
+        { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-marked', childPid: process.pid, workerLeaseId: LEASE });
+      await scope.store.finishJob(scope.workspaceReal, job.id, ['running'], 'succeeded', { exitCode: 0, resultArtifact: 'results/marked.md' });
+
+      const snapshot = await readDurableObligationSnapshot({ dataRoot: scope.dataRoot, workspace: scope.workspaceReal, ownerSessionId: OWNER_SESSION, jobId: job.id });
+      assert.equal(snapshot.job.presence, 'found');
+      assert.equal(snapshot.layers.winner.terminalStatus, 'succeeded');
+      assert.equal(snapshot.layers.runnerCleanupDuty.applicable, true, 'the marked claim carries the local termination duty');
+      assert.equal(snapshot.layers.runnerCleanupDuty.outstanding, true, 'a terminal record still carrying the marked claim owes cleanup');
+      assert.equal(snapshot.layers.endedObligation.settled, false, 'the raw terminal + marked-claim projection is NOT settled (recovery.mjs)');
+      assert.equal(snapshot.layers.writableGuard.applicable, false);
+      assert.equal(snapshot.aggregate, 'unresolved', 'terminal status alone is NOT discharged duties');
+      assert.ok(snapshot.reasons.includes('runner-cleanup-duty-outstanding'));
+    });
+
+    test('a valid numeric runner version persists its numeric identity (codex round 3)', async (t) => {
+      const scope = await durableScope(t);
+      const { job } = await reserveHostOwned(scope, 'numeric-marker-child', { marked: true });
+      await scope.store.transitionJob(scope.workspaceReal, job.id, ['queued'], 'running',
+        { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-numeric', childPid: 999_999_999, workerLeaseId: job.id });
+      await scope.store.finishJob(scope.workspaceReal, job.id, ['running'], 'succeeded', { exitCode: 0, resultArtifact: 'results/numeric.md' });
+      const snapshot = await readDurableObligationSnapshot({ dataRoot: scope.dataRoot, workspace: scope.workspaceReal, ownerSessionId: OWNER_SESSION, jobId: job.id });
+      assert.equal(snapshot.job.presence, 'found');
+      assert.equal(snapshot.job.projection.rescueRunnerVersion, 2, 'the validated numeric marker persists as the number production defines');
+      assert.equal(snapshot.layers.runnerCleanupDuty.applicable, true, 'the marked claim duty is still recognized');
+      assert.equal(snapshot.aggregate, 'unresolved', 'the terminal marked claim still owes cleanup');
+    });
+
+    test('a persisted stop intent is reported on natural terminal winners (codex round 5)', async (t) => {
+      const scope = await durableScope(t);
+      const { job } = await reserveHostOwned(scope, 'natural-winner-child');
+      // Production permits a natural success to win AFTER a stop intent was
+      // persisted (stopAndSettle persists the intent FIRST, then elects the
+      // winner): running→cancelling (the intent lands), then the natural
+      // cancelling→succeeded election.
+      await scope.store.transitionJob(scope.workspaceReal, job.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-natural-winner' });
+      await scope.store.transitionJob(scope.workspaceReal, job.id, ['running'], 'cancelling', { stopIntent: { version: 1, cause: 'user', requestedAt: new Date().toISOString() } });
+      await scope.store.finishJob(scope.workspaceReal, job.id, ['cancelling'], 'succeeded', { exitCode: 0, resultArtifact: 'results/natural-winner.md' });
+
+      const snapshot = await readDurableObligationSnapshot({ dataRoot: scope.dataRoot, workspace: scope.workspaceReal, ownerSessionId: OWNER_SESSION, jobId: job.id });
+      assert.equal(snapshot.job.presence, 'found');
+      assert.equal(snapshot.layers.winner.terminalStatus, 'succeeded');
+      // Presence and validity are derived from the record's persisted intent
+      // for ANY status — restricting them to cancelling/cancelled reported
+      // present:null/valid:null for these valid terminal records.
+      assert.equal(snapshot.layers.stopIntent.present, true, 'the persisted intent is PRESENT on the natural winner');
+      assert.equal(snapshot.layers.stopIntent.valid, true, 'the persisted intent is VALID on the natural winner');
+      // Applicability stays the separate cancellation-duty fact.
+      assert.equal(snapshot.layers.stopIntent.applicable, false, 'no cancellation duty remains on the natural winner');
+      assert.ok(snapshot.layers.stopIntent.reason);
+      // Production allows natural winners after the intent: the record still
+      // settles when its other duties are discharged.
+      assert.equal(snapshot.layers.endedObligation.settled, true);
+      assert.equal(snapshot.aggregate, 'settled', 'a natural winner after a persisted intent still settles');
+    });
+
+    test('an empty zcodeSessionId is rejected before resumability is derived (codex round 6)', async (t) => {
+      const scope = await durableScope(t);
+      const { job } = await reserveHostOwned(scope, 'session-identifier-child');
+      await scope.store.transitionJob(scope.workspaceReal, job.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-session-id' });
+      await scope.store.finishJob(scope.workspaceReal, job.id, ['running'], 'succeeded', { exitCode: 0, resultArtifact: 'results/session-id.md' });
+      const key = createHash('sha256').update(scope.workspaceReal, 'utf8').digest('hex');
+      const jobPath = join(scope.dataRoot, 'workspaces', key, 'jobs', `${job.id}.json`);
+      // The exact corrupt shape: a terminal record whose consumed session
+      // identifier is the EMPTY string. Production validateJobRecord rejects
+      // it at write time (`!('zcodeSessionId' in job) || isSafeIdentifier(
+      // job.zcodeSessionId)`), but `resumableJobIndicator` accepts ANY string
+      // as the accepted session — so without an admission clause the reader
+      // reported `resumable: true` and settled from corrupted state.
+      const original = await readFile(jobPath, 'utf8');
+      const record = JSON.parse(original);
+      record.zcodeSessionId = '';
+      await writeFile(jobPath, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 });
+      const corrupted = await readDurableObligationSnapshot({ dataRoot: scope.dataRoot, workspace: scope.workspaceReal, ownerSessionId: OWNER_SESSION, jobId: job.id, expectedOwnerLifecycleEpoch: EPOCH, viewingPermissionMode: 'workspace-write' });
+      assert.equal(corrupted.job.presence, 'invalid', 'the empty session identifier invalidates the record before any predicate runs');
+      assert.equal(corrupted.job.reason, 'job-record-session-identifier-invalid');
+      assert.equal(corrupted.layers, null, 'no layers block may coexist with the identifier rejection');
+      assert.equal(corrupted.aggregate, 'unestablished', 'corrupted session state can never ground a settled aggregate');
+      assert.ok(corrupted.reasons.includes('job-record-session-identifier-invalid'));
+      // Restore: the intact record still derives resumability and settles.
+      await writeFile(jobPath, original, { mode: 0o600 });
+      const intact = await readDurableObligationSnapshot({ dataRoot: scope.dataRoot, workspace: scope.workspaceReal, ownerSessionId: OWNER_SESSION, jobId: job.id, expectedOwnerLifecycleEpoch: EPOCH, viewingPermissionMode: 'workspace-write' });
+      assert.equal(intact.job.presence, 'found');
+      assert.equal(intact.layers.resumable, true, 'the intact record derives the indicator through the same path');
+      assert.equal(intact.aggregate, 'settled');
+    });
+
+    test('stop intents are validated against the writable rescue command before settlement (codex round 7)', async (t) => {
+      const scope = await durableScope(t);
+      const { job } = await reserveHostOwned(scope, 'intent-scope-child');
+      const key = createHash('sha256').update(scope.workspaceReal, 'utf8').digest('hex');
+      const jobPath = join(scope.dataRoot, 'workspaces', key, 'jobs', `${job.id}.json`);
+      await scope.store.transitionJob(scope.workspaceReal, job.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-intent-scope' });
+      await scope.store.transitionJob(scope.workspaceReal, job.id, ['running'], 'cancelling', { stopIntent: { version: 1, cause: 'user', requestedAt: new Date().toISOString() } });
+      const original = await readFile(jobPath, 'utf8');
+      // Production validateJobRecord permits a stop intent ONLY on the
+      // writable Rescue command (`job.command === 'rescue' &&
+      // job.readOnly === false`, state.mjs): a corrupted read-only Rescue
+      // record or a Review record carrying a STRUCTURALLY VALID stop intent
+      // is post-write corruption that production would never publish. Under
+      // the structurally-only clause the cancelling record was admitted and
+      // `endedObligationSettled` accepted it (cancelling + valid intent)
+      // while the writable-guard and marked-runner duties were inapplicable
+      // — aggregate settled despite a NONTERMINAL winner. The Host-owned
+      // trio is absent (production read-only/Review records never carry it).
+      const readOnly = { ...JSON.parse(original), readOnly: true };
+      delete readOnly.executionOwner;
+      delete readOnly.hostPlacement;
+      delete readOnly.ownerLifecycleEpoch;
+      await writeFile(jobPath, `${JSON.stringify(readOnly, null, 2)}\n`, { mode: 0o600 });
+      const readOnlyIntent = await readDurableObligationSnapshot({ dataRoot: scope.dataRoot, workspace: scope.workspaceReal, ownerSessionId: OWNER_SESSION, jobId: job.id });
+      assert.equal(readOnlyIntent.job.presence, 'invalid', 'a read-only record may not carry a stop intent');
+      assert.equal(readOnlyIntent.job.reason, 'job-record-stop-intent-command-mismatch');
+      assert.equal(readOnlyIntent.layers, null, 'no layers block may coexist with the command-mismatch rejection');
+      assert.equal(readOnlyIntent.aggregate, 'unestablished', 'a nonterminal winner can never settle from a command-mismatched intent');
+      assert.ok(readOnlyIntent.reasons.includes('job-record-stop-intent-command-mismatch'));
+      // Same shape on the Review command.
+      const review = { ...JSON.parse(original), command: 'review' };
+      delete review.executionOwner;
+      delete review.hostPlacement;
+      delete review.ownerLifecycleEpoch;
+      await writeFile(jobPath, `${JSON.stringify(review, null, 2)}\n`, { mode: 0o600 });
+      const reviewIntent = await readDurableObligationSnapshot({ dataRoot: scope.dataRoot, workspace: scope.workspaceReal, ownerSessionId: OWNER_SESSION, jobId: job.id });
+      assert.equal(reviewIntent.job.presence, 'invalid');
+      assert.equal(reviewIntent.job.reason, 'job-record-stop-intent-command-mismatch');
+      assert.equal(reviewIntent.aggregate, 'unestablished');
+      // Restore: the intact WRITABLE rescue record keeps its guard (safe
+      // unresolved) with the intent applicable, present and valid.
+      await writeFile(jobPath, original, { mode: 0o600 });
+      const restored = await readDurableObligationSnapshot({ dataRoot: scope.dataRoot, workspace: scope.workspaceReal, ownerSessionId: OWNER_SESSION, jobId: job.id });
+      assert.equal(restored.job.presence, 'found');
+      assert.equal(restored.layers.stopIntent.applicable, true);
+      assert.equal(restored.layers.stopIntent.present, true);
+      assert.equal(restored.layers.stopIntent.valid, true);
+      assert.equal(restored.aggregate, 'unresolved', 'the retained cancelling guard stays the safe unresolved state');
+    });
+
+    test('every production-rejected record mutation fails closed before settlement (codex round 8 mutation sweep)', async (t) => {
+      const scope = await durableScope(t);
+      const { job } = await reserveHostOwned(scope, 'schema-child');
+      const key = createHash('sha256').update(scope.workspaceReal, 'utf8').digest('hex');
+      const jobPath = join(scope.dataRoot, 'workspaces', key, 'jobs', `${job.id}.json`);
+      await scope.store.transitionJob(scope.workspaceReal, job.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-schema' });
+      await scope.store.finishJob(scope.workspaceReal, job.id, ['running'], 'succeeded', { exitCode: 0, resultArtifact: 'results/schema.md' });
+      const original = await readFile(jobPath, 'utf8');
+      const base = () => JSON.parse(original);
+      // Every mutation below is a shape production validateJobRecord rejects
+      // with JOB_RECORD_INVALID (state.mjs). Round 8 ports the WHOLE
+      // validator: each mutation must yield the named schema-invalid state
+      // and never a settled aggregate. The named mutations codex round 8
+      // demonstrated come first.
+      const mutations = {
+        'createdAt deleted': (record) => { delete record.createdAt; },
+        'boundary triple incomplete (inputId alone)': (record) => { record.inputId = 'sess-input'; },
+        'resultArtifact escapes the workspace': (record) => { record.resultArtifact = '../../foreign-file'; },
+        'startedAt is not an ISO timestamp': (record) => { record.startedAt = 'not-a-timestamp'; },
+        'updatedAt precedes createdAt': (record) => { record.updatedAt = '2000-01-01T00:00:00.000Z'; },
+        'exitCode has a wrong type': (record) => { record.exitCode = 'zero'; },
+        'exitCode on a nonterminal winner': (record) => { record.status = 'cancelling'; },
+        'resultArtifact on a failed record': (record) => { record.status = 'failed'; delete record.exitCode; },
+        'progress triple incomplete (phase alone)': (record) => { record.phase = 'running'; },
+        'phase outside the production enum': (record) => { record.phase = 'running'; record.lastActivityAt = new Date().toISOString(); record.progressPreview = ['step']; },
+        'effort outside the production enum': (record) => { record.effort = 'bogus'; },
+        'model with a wrong type': (record) => { record.model = 42; },
+        'transfer command without its thread id': (record) => { record.command = 'transfer'; },
+        'queued claim asymmetry': (record) => { record.status = 'queued'; record.workerLeaseId = undefined; delete record.exitCode; delete record.resultArtifact; delete record.startedAt; delete record.zcodeSessionId; },
+        'rescueOriginWorkspace is not canonical': (record) => { record.rescueOriginWorkspace = 'relative/path'; },
+      };
+      let exercised = 0;
+      for (const [name, mutate] of Object.entries(mutations)) {
+        const record = base();
+        mutate(record);
+        await writeFile(jobPath, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 });
+        const snapshot = await readDurableObligationSnapshot({ dataRoot: scope.dataRoot, workspace: scope.workspaceReal, ownerSessionId: OWNER_SESSION, jobId: job.id });
+        assert.equal(snapshot.job.presence, 'invalid', `mutation "${name}" must invalidate the record (actual ${snapshot.job.presence}/${snapshot.job.reason})`);
+        // The ported schema rejection names most mutations; a mutation may
+        // also be caught by an earlier SPECIALIZED clause (e.g. the transfer
+        // mutation breaks the Host-owned trio first) — every rejection is
+        // admission fail-closed either way.
+        assert.ok(snapshot.job.reason === 'job-record-schema-invalid' || String(snapshot.job.reason).startsWith('job-record-'),
+          `mutation "${name}" carries a named admission rejection (actual ${snapshot.job.reason})`);
+        assert.equal(snapshot.layers, null, `mutation "${name}" never interprets predicates`);
+        assert.equal(snapshot.aggregate, 'unestablished', `mutation "${name}" can never settle`);
+        exercised += 1;
+      }
+      assert.ok(exercised >= 15, `the sweep exercised every registered mutation (actual ${exercised})`);
+      // Restore: the intact production-created record still settles.
+      await writeFile(jobPath, original, { mode: 0o600 });
+      const restored = await readDurableObligationSnapshot({ dataRoot: scope.dataRoot, workspace: scope.workspaceReal, ownerSessionId: OWNER_SESSION, jobId: job.id });
+      assert.equal(restored.job.presence, 'found');
+      assert.equal(restored.aggregate, 'settled', 'the intact record settles through the same admission');
+    });
+
+    test('the owner entry cross-checks the job reservation class before settlement (codex round 9)', async (t) => {
+      const scope = await durableScope(t);
+      const { job } = await reserveHostOwned(scope, 'cross-class-child');
+      await scope.store.transitionJob(scope.workspaceReal, job.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-cross' });
+      await scope.store.finishJob(scope.workspaceReal, job.id, ['running'], 'succeeded', { exitCode: 0, resultArtifact: 'results/cross.md' });
+      const key = createHash('sha256').update(scope.workspaceReal, 'utf8').digest('hex');
+      const ownerDirectory = join(scope.dataRoot, 'workspaces', key, 'job-owners', createHash('sha256').update(`zcode-owner-index-v1\0${OWNER_SESSION}`, 'utf8').digest('hex'));
+      const entryPath = join(ownerDirectory, `${job.id}.json`);
+      const originalEntry = await readFile(entryPath, 'utf8');
+      const entry = JSON.parse(originalEntry);
+      assert.ok(entry.rescueReservationKind === 'bound' || entry.rescueReservationKind === 'unbound', 'the production entry carries a reservation kind');
+      // (a) KIND MISMATCH: a v2 entry declaring the OTHER valid reservation
+      // kind. Production readOwnedJobs rejects the pair (state.mjs:
+      // `validModern && binding.rescueReservationKind !==
+      // job.rescueReservationKind` → OWNED_JOB_RECORD_INVALID); the reader
+      // previously admitted it and settled.
+      const flipped = { ...entry, rescueReservationKind: entry.rescueReservationKind === 'bound' ? 'unbound' : 'bound' };
+      await writeFile(entryPath, `${JSON.stringify(flipped)}\n`, { mode: 0o600 });
+      const kindMismatch = await readDurableObligationSnapshot({ dataRoot: scope.dataRoot, workspace: scope.workspaceReal, ownerSessionId: OWNER_SESSION, jobId: job.id });
+      assert.equal(kindMismatch.job.presence, 'invalid', 'the kind-mismatched pair invalidates the record');
+      assert.equal(kindMismatch.job.reason, 'owner-binding-cross-invariant-mismatch');
+      assert.equal(kindMismatch.layers, null);
+      assert.equal(kindMismatch.aggregate, 'unestablished', 'a cross-class pair can never settle');
+      // (b) VERSION/MARKER PARITY: a LEGACY v1 entry beside a job that
+      // carries a reservation kind (production: `validModern !==
+      // validRescueReservationKind(job.rescueReservationKind)`).
+      const legacy = { jobId: job.id, ownerSessionId: OWNER_SESSION, version: 1 };
+      await writeFile(entryPath, `${JSON.stringify(legacy)}\n`, { mode: 0o600 });
+      const parityMismatch = await readDurableObligationSnapshot({ dataRoot: scope.dataRoot, workspace: scope.workspaceReal, ownerSessionId: OWNER_SESSION, jobId: job.id });
+      assert.equal(parityMismatch.job.presence, 'invalid', 'the legacy-entry/kinded-job pair invalidates the record');
+      assert.equal(parityMismatch.job.reason, 'owner-binding-cross-invariant-mismatch');
+      assert.equal(parityMismatch.aggregate, 'unestablished');
+      // Restore: the intact pair still settles.
+      await writeFile(entryPath, originalEntry, { mode: 0o600 });
+      const restored = await readDurableObligationSnapshot({ dataRoot: scope.dataRoot, workspace: scope.workspaceReal, ownerSessionId: OWNER_SESSION, jobId: job.id });
+      assert.equal(restored.job.presence, 'found');
+      assert.equal(restored.aggregate, 'settled');
+    });
+
+    test('an invalid detached-runner marker rejects the record before settlement (codex round 1)', async (t) => {
+      const scope = await durableScope(t);
+      const { job } = await reserveHostOwned(scope, 'marker-child');
+      await scope.store.transitionJob(scope.workspaceReal, job.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-marker' });
+      await scope.store.finishJob(scope.workspaceReal, job.id, ['running'], 'succeeded', { exitCode: 0, resultArtifact: 'results/marker.md' });
+      const key = createHash('sha256').update(scope.workspaceReal, 'utf8').digest('hex');
+      const jobPath = join(scope.dataRoot, 'workspaces', key, 'jobs', `${job.id}.json`);
+      // The exact corrupt shape: a terminal record whose runner marker is the
+      // STRING "2" (production accepts only the numeric version constants and
+      // rejects everything else at write time) beside a positive childPid and
+      // a digest lease. Production state validation would never publish this
+      // record; on disk it is corruption.
+      const record = JSON.parse(await readFile(jobPath, 'utf8'));
+      record.rescueRunnerVersion = '2';
+      await writeFile(jobPath, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 });
+      const snapshot = await readDurableObligationSnapshot({ dataRoot: scope.dataRoot, workspace: scope.workspaceReal, ownerSessionId: OWNER_SESSION, jobId: job.id });
+      assert.equal(snapshot.job.presence, 'invalid', 'a corrupt runner marker invalidates the record');
+      assert.equal(snapshot.job.reason, 'job-record-runner-marker-invalid');
+      assert.equal(snapshot.layers, null, 'predicates are never interpreted on an unvalidated marker (no layers block at all)');
+      assert.equal(snapshot.aggregate, 'unestablished', 'a corrupt marker can never ground a settled aggregate');
+      assert.ok(snapshot.reasons.includes('job-record-runner-marker-invalid'));
+    });
+
+    test('a retained cancelling guard is the safe unresolved state, settled only with its valid stop intent', async (t) => {
+      const scope = await durableScope(t);
+      const { job } = await reserveHostOwned(scope, 'cancelling-child');
+      await scope.store.transitionJob(scope.workspaceReal, job.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-cancel' });
+      await scope.store.transitionJob(scope.workspaceReal, job.id, ['running'], 'cancelling', { stopIntent: { version: 1, cause: 'user', requestedAt: new Date().toISOString() } });
+
+      const snapshot = await readDurableObligationSnapshot({ dataRoot: scope.dataRoot, workspace: scope.workspaceReal, ownerSessionId: OWNER_SESSION, jobId: job.id });
+      assert.equal(snapshot.layers.winner.terminalStatus, null);
+      assert.equal(snapshot.layers.stopIntent.applicable, true);
+      assert.equal(snapshot.layers.stopIntent.present, true);
+      assert.equal(snapshot.layers.stopIntent.valid, true);
+      assert.equal(snapshot.layers.endedObligation.settled, true, 'cancelling settles WITH a valid persisted stop intent');
+      assert.equal(snapshot.layers.writableGuard.retained, true, 'the nonterminal writable rescue still holds the workspace guard');
+      assert.equal(snapshot.aggregate, 'unresolved', 'a retained guard is safe preservation, never successful settlement');
+      assert.ok(snapshot.reasons.includes('writable-guard-retained'));
+    });
+
+    test('a cancelled winner keeps its duties settled while the binding is honestly not-current (layer separation)', async (t) => {
+      const scope = await durableScope(t);
+      const { job } = await reserveHostOwned(scope, 'cancelled-child');
+      const controller = createJobController({ store: scope.store });
+      const winner = await controller.cancel(scope.workspaceReal, job.id, OWNER_SESSION);
+      assert.equal(winner.status, 'cancelled');
+
+      const snapshot = await readDurableObligationSnapshot({ dataRoot: scope.dataRoot, workspace: scope.workspaceReal, ownerSessionId: OWNER_SESSION, jobId: job.id });
+      assert.equal(snapshot.layers.winner.terminalStatus, 'cancelled');
+      assert.equal(snapshot.layers.stopIntent.present, true);
+      assert.equal(snapshot.layers.stopIntent.valid, true);
+      assert.equal(snapshot.layers.endedObligation.settled, true);
+      assert.equal(snapshot.layers.bindingCurrency.state, 'not-current', 'the closed binding no longer anchors this job');
+      assert.ok(snapshot.layers.bindingCurrency.reason);
+      assert.equal(snapshot.aggregate, 'settled', 'binding currency is a resumability fact, never a settlement duty');
+      assert.ok(!snapshot.reasons.includes('binding-not-current'), 'a not-current binding never fails settlement');
+    });
+
+    test('a wrong declared lifecycle generation is a named epoch-mismatch layer fact', async (t) => {
+      const scope = await durableScope(t);
+      const { job } = await reserveHostOwned(scope, 'epoch-child');
+      await scope.store.transitionJob(scope.workspaceReal, job.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-epoch' });
+      await scope.store.finishJob(scope.workspaceReal, job.id, ['running'], 'succeeded', { exitCode: 0, resultArtifact: 'results/epoch.md' });
+
+      const snapshot = await readDurableObligationSnapshot({ dataRoot: scope.dataRoot, workspace: scope.workspaceReal, ownerSessionId: OWNER_SESSION, jobId: job.id, expectedOwnerLifecycleEpoch: 'c'.repeat(64) });
+      assert.equal(snapshot.layers.lifecycleEpoch.applicable, true);
+      assert.equal(snapshot.layers.lifecycleEpoch.matches, false);
+      assert.equal(snapshot.aggregate, 'unestablished', 'a wrong-generation receipt cannot claim settlement');
+      assert.ok(snapshot.reasons.includes('lifecycle-epoch-mismatch'));
+    });
+
+    test('multiple candidate jobs stay per-job facts and each exact read stays bounded', async (t) => {
+      const scope = await durableScope(t);
+      const first = await reserveHostOwned(scope, 'multi-child-a');
+      const controller = createJobController({ store: scope.store });
+      await controller.cancel(scope.workspaceReal, first.job.id, OWNER_SESSION);
+      // A second executor under the SAME owner session adds a second binding
+      // record and a second owner-index entry (the production multi-candidate
+      // partition shape).
+      const second = await reserveHostOwned(scope, 'multi-child-b');
+
+      const stale = await readDurableObligationSnapshot({ dataRoot: scope.dataRoot, workspace: scope.workspaceReal, ownerSessionId: OWNER_SESSION, jobId: first.job.id });
+      assert.equal(stale.enumeration.entryCount, 2, 'both bound jobs are enumerated facts under the hard bound');
+      assert.equal(stale.job.presence, 'found');
+      assert.equal(stale.layers.bindingCurrency.state, 'not-current');
+      assert.equal(stale.aggregate, 'settled');
+
+      const current = await readDurableObligationSnapshot({ dataRoot: scope.dataRoot, workspace: scope.workspaceReal, ownerSessionId: OWNER_SESSION, jobId: second.job.id });
+      assert.equal(current.enumeration.entryCount, 2);
+      assert.equal(current.job.presence, 'found');
+      assert.equal(current.layers.bindingCurrency.state, 'current', 'the active binding anchors the newer job');
+      assert.equal(current.layers.winner.terminalStatus, null);
+      assert.equal(current.layers.writableGuard.retained, true);
+      assert.equal(current.aggregate, 'unresolved');
+    });
+
+    test('a foreign owner session and a foreign worktree never leak their records', async (t) => {
+      const scope = await durableScope(t);
+      const { job } = await reserveHostOwned(scope, 'foreign-owner-child');
+      // Foreign OWNER: the same partition, a different owner index.
+      const foreignOwner = await readDurableObligationSnapshot({ dataRoot: scope.dataRoot, workspace: scope.workspaceReal, ownerSessionId: 'session-b', jobId: job.id });
+      assert.equal(foreignOwner.job.presence, 'missing');
+      assert.equal(foreignOwner.aggregate, 'unestablished');
+      assert.ok(foreignOwner.reasons.includes('owner-binding-missing'));
+      // Foreign WORKTREE: another workspace's partition is a different key.
+      const otherWorkspace = join(scope.root, 'other-workspace');
+      await mkdir(otherWorkspace, { recursive: true });
+      const otherReal = await realPath(otherWorkspace);
+      const foreignWorktree = await readDurableObligationSnapshot({ dataRoot: scope.dataRoot, workspace: otherReal, ownerSessionId: OWNER_SESSION, jobId: job.id });
+      assert.equal(foreignWorktree.partition.status, 'incomplete', 'an unobserved partition is incomplete, never fabricated');
+      assert.equal(foreignWorktree.job.presence, 'missing');
+      // A non-canonical (symlinked) workspace path is a named fact.
+      const symlinked = join(scope.root, 'workspace-link');
+      await symlink(scope.workspaceReal, symlinked);
+      const nonCanonical = await readDurableObligationSnapshot({ dataRoot: scope.dataRoot, workspace: symlinked, ownerSessionId: OWNER_SESSION, jobId: job.id });
+      assert.equal(nonCanonical.partition.canonicalWorkspace, false, 'the non-canonical input path is recorded');
+      assert.equal(nonCanonical.partition.workspaceKey, createHash('sha256').update(scope.workspaceReal, 'utf8').digest('hex'), 'the partition key is the sha256 of the REALPATH');
+    });
+
+    test('missing, corrupt, truncated and symlinked job files are named failures — a missing record is never successful cleanup', async (t) => {
+      const scope = await durableScope(t);
+      const { job } = await reserveHostOwned(scope, 'degraded-child');
+      const key = createHash('sha256').update(scope.workspaceReal, 'utf8').digest('hex');
+      const jobPath = join(scope.dataRoot, 'workspaces', key, 'jobs', `${job.id}.json`);
+
+      const missing = await readDurableObligationSnapshot({ dataRoot: scope.dataRoot, workspace: scope.workspaceReal, ownerSessionId: OWNER_SESSION, jobId: job.id });
+      assert.equal(missing.job.presence, 'found');
+      const original = await readFile(jobPath, 'utf8');
+      await rm(jobPath);
+      const removed = await readDurableObligationSnapshot({ dataRoot: scope.dataRoot, workspace: scope.workspaceReal, ownerSessionId: OWNER_SESSION, jobId: job.id });
+      assert.equal(removed.job.presence, 'missing');
+      assert.equal(removed.aggregate, 'unestablished', 'a missing record is NOT successful cleanup');
+      assert.ok(removed.reasons.includes('job-record-missing'));
+
+      await writeFile(jobPath, '{not json at all', { mode: 0o600 });
+      const corrupt = await readDurableObligationSnapshot({ dataRoot: scope.dataRoot, workspace: scope.workspaceReal, ownerSessionId: OWNER_SESSION, jobId: job.id });
+      assert.equal(corrupt.job.presence, 'invalid');
+      assert.equal(corrupt.job.reason, 'job-record-unparseable');
+      assert.equal(corrupt.aggregate, 'unestablished');
+
+      await writeFile(jobPath, original.slice(0, Math.max(1, original.length - 40)), { mode: 0o600 });
+      const truncated = await readDurableObligationSnapshot({ dataRoot: scope.dataRoot, workspace: scope.workspaceReal, ownerSessionId: OWNER_SESSION, jobId: job.id });
+      assert.equal(truncated.job.presence, 'invalid');
+      assert.equal(truncated.job.reason, 'job-record-unparseable');
+
+      await rm(jobPath);
+      await symlink('/etc/hosts', jobPath);
+      const linked = await readDurableObligationSnapshot({ dataRoot: scope.dataRoot, workspace: scope.workspaceReal, ownerSessionId: OWNER_SESSION, jobId: job.id });
+      assert.equal(linked.job.presence, 'invalid');
+      assert.equal(linked.job.reason, 'job-file-not-regular');
+      assert.equal(linked.aggregate, 'unestablished');
+    });
+
+    test('a job file whose permission deviates from the private contract is a named failure', async (t) => {
+      const scope = await durableScope(t);
+      const { job } = await reserveHostOwned(scope, 'permission-child');
+      const key = createHash('sha256').update(scope.workspaceReal, 'utf8').digest('hex');
+      const jobPath = join(scope.dataRoot, 'workspaces', key, 'jobs', `${job.id}.json`);
+      await chmod(jobPath, 0o644);
+      const snapshot = await readDurableObligationSnapshot({ dataRoot: scope.dataRoot, workspace: scope.workspaceReal, ownerSessionId: OWNER_SESSION, jobId: job.id });
+      assert.equal(snapshot.job.presence, 'invalid');
+      assert.equal(snapshot.job.reason, 'job-file-permission-deviates');
+      assert.equal(snapshot.aggregate, 'unestablished');
+    });
+
+    test('an oversized partition file is named and a mid-file mutation can never pass as equal (codex round 2)', async (t) => {
+      const scope = await durableScope(t);
+      const { job } = await reserveHostOwned(scope, 'oversized-child');
+      await scope.store.transitionJob(scope.workspaceReal, job.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-oversized' });
+      await scope.store.finishJob(scope.workspaceReal, job.id, ['running'], 'succeeded', { exitCode: 0, resultArtifact: 'results/oversized.md' });
+      const key = createHash('sha256').update(scope.workspaceReal, 'utf8').digest('hex');
+      const bigPath = join(scope.dataRoot, 'workspaces', key, 'jobs', 'big.log');
+      // A >1 MiB partition file (production binding partitions reach 16 MiB):
+      // the bounded head+tail fingerprint cannot see its middle.
+      const big = Buffer.alloc(2 * 1024 * 1024, 0x61);
+      await writeFile(bigPath, big);
+      // A SAME-LENGTH mid-file mutation between the passes: exactly the case
+      // the head+tail fingerprint cannot detect.
+      const snapshot = await readDurableObligationSnapshot({ dataRoot: scope.dataRoot, workspace: scope.workspaceReal, ownerSessionId: OWNER_SESSION, jobId: job.id }, {
+        mutateBetween: async () => {
+          const handle = await (await import('node:fs/promises')).open(bigPath, 'r+');
+          try { await handle.write(Buffer.from([0x62]), 0, 1, 1024 * 1024); } finally { await handle.close(); }
+        },
+      });
+      assert.equal(snapshot.passive.reason, 'partition-file-oversized', 'the oversized file is the NAMED reason');
+      assert.equal(snapshot.passive.snapshotEqual, false, 'a mutated oversized file can never read as equal');
+      assert.equal(snapshot.aggregate, 'unestablished', 'a partially fingerprinted file can never settle');
+      assert.ok(snapshot.reasons.includes('partition-file-oversized'));
+      // Even WITHOUT a mutation, an oversized file blocks settlement: a same-
+      // length change could have happened any time before the observation.
+      await rm(bigPath);
+    });
+
+    test('a nonregular partition entry (FIFO) is classified and never opened — the reader never hangs (codex round 1)', async (t) => {
+      const scope = await durableScope(t);
+      const { job } = await reserveHostOwned(scope, 'fifo-child');
+      await scope.store.transitionJob(scope.workspaceReal, job.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-fifo' });
+      await scope.store.finishJob(scope.workspaceReal, job.id, ['running'], 'succeeded', { exitCode: 0, resultArtifact: 'results/fifo.md' });
+      const key = createHash('sha256').update(scope.workspaceReal, 'utf8').digest('hex');
+      const fifoPath = join(scope.dataRoot, 'workspaces', key, 'jobs', 'damaged.fifo');
+      await new Promise((resolve, reject) => {
+        const child = spawn('mkfifo', [fifoPath], { env: isolatedBaseEnv() });
+        child.once('error', reject);
+        child.once('close', (code) => code === 0 ? resolve() : reject(new Error(`mkfifo exited ${String(code)}`)));
+      });
+      const outcome = await Promise.race([
+        readDurableObligationSnapshot({ dataRoot: scope.dataRoot, workspace: scope.workspaceReal, ownerSessionId: OWNER_SESSION, jobId: job.id })
+          .then((snapshot) => ({ kind: 'snapshot', snapshot }), (error) => ({ kind: 'error', error })),
+        new Promise((resolve) => setTimeout(() => resolve({ kind: 'timeout' }), 5_000)),
+      ]);
+      assert.equal(outcome.kind, 'snapshot', `the reader must never hang on a FIFO (outcome ${outcome.kind})`);
+      assert.equal(outcome.snapshot.passive.reason, 'partition-nonregular-entry', 'the damaged entry is the NAMED reason');
+      assert.equal(outcome.snapshot.aggregate, 'unestablished', 'a damaged partition can never settle');
+      assert.ok(outcome.snapshot.reasons.includes('partition-nonregular-entry'));
+      assert.equal(outcome.snapshot.job.presence, 'found', 'the exact bound job itself may still be readable');
+    });
+
+    test('a mutated partition between the snapshot passes is detected and marks the layers unknown', async (t) => {
+      const scope = await durableScope(t);
+      const { job } = await reserveHostOwned(scope, 'mutation-child');
+      await scope.store.transitionJob(scope.workspaceReal, job.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-mutation' });
+
+      // The mutating writer must act on a NONTERMINAL record (progress updates
+      // no-op on terminal records) — a real concurrent production writer.
+      const snapshot = await readDurableObligationSnapshot({ dataRoot: scope.dataRoot, workspace: scope.workspaceReal, ownerSessionId: OWNER_SESSION, jobId: job.id }, {
+        mutateBetween: async () => {
+          await scope.store.updateJobProgress(scope.workspaceReal, job.id, { phase: 'finalizing', message: 'a concurrent writer mutated the partition mid-read', observedAt: new Date().toISOString() });
+        },
+      });
+      assert.equal(snapshot.passive.snapshotEqual, false, 'the before/after inequality is detected');
+      assert.ok(snapshot.passive.reason);
+      assert.equal(snapshot.aggregate, 'unestablished', 'a torn observation is never settled');
+      assert.ok(snapshot.reasons.includes('snapshot-unequal'));
+    });
+
+    test('a held state lock is observed, never probed and never waited on', async (t) => {
+      const scope = await durableScope(t);
+      const { job } = await reserveHostOwned(scope, 'lock-child');
+      await scope.store.transitionJob(scope.workspaceReal, job.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-lock' });
+      await scope.store.finishJob(scope.workspaceReal, job.id, ['running'], 'succeeded', { exitCode: 0, resultArtifact: 'results/lock.md' });
+      const key = createHash('sha256').update(scope.workspaceReal, 'utf8').digest('hex');
+      const lockPath = join(scope.dataRoot, 'workspaces', key, '.state.lock');
+      let releaseLock;
+      const lockAcquired = new Promise((resolve) => { releaseLock = resolve; });
+      let releaseHeld;
+      const held = withFileLock(lockPath, async () => {
+        releaseLock();
+        await new Promise((resolve) => { releaseHeld = resolve; });
+      });
+      try {
+        await lockAcquired;
+        const startedAt = Date.now();
+        const snapshot = await readDurableObligationSnapshot({ dataRoot: scope.dataRoot, workspace: scope.workspaceReal, ownerSessionId: OWNER_SESSION, jobId: job.id });
+        const elapsedMs = Date.now() - startedAt;
+        assert.ok(elapsedMs < 2000, `the reader must never wait on a held lock (took ${elapsedMs} ms)`);
+        assert.equal(snapshot.passive.lockState, 'present', 'the held lock is an OBSERVED fact');
+        assert.equal(snapshot.job.presence, 'found');
+        assert.equal(snapshot.passive.snapshotEqual, true);
+        assert.equal(snapshot.aggregate, 'settled', 'lock-file presence is not hold-evidence (production never unlinks lock files)');
+      } finally {
+        releaseHeld();
+        await held;
+      }
+    });
+
+    test('capture after cleanup is a named failure, never success', async (t) => {
+      const scope = await durableScope(t);
+      const { job } = await reserveHostOwned(scope, 'cleanup-child');
+      const key = createHash('sha256').update(scope.workspaceReal, 'utf8').digest('hex');
+      await rm(join(scope.dataRoot, 'workspaces', key), { recursive: true, force: true });
+      const snapshot = await readDurableObligationSnapshot({ dataRoot: scope.dataRoot, workspace: scope.workspaceReal, ownerSessionId: OWNER_SESSION, jobId: job.id });
+      assert.equal(snapshot.partition.status, 'incomplete');
+      assert.equal(snapshot.partition.reason, 'partition-missing');
+      assert.equal(snapshot.job.presence, 'missing');
+      assert.equal(snapshot.aggregate, 'unestablished');
+      assert.ok(snapshot.reasons.includes('partition-missing'), 'cleanup removal is a named fact, never successful cleanup');
+      assert.equal(snapshot.passive.snapshotEqual, null);
+    });
+
+    test('a corrupt owner-binding ENTRY is named and never grounds ownership (codex round 1)', async (t) => {
+      const scope = await durableScope(t);
+      const { job } = await reserveHostOwned(scope, 'entry-child');
+      await scope.store.transitionJob(scope.workspaceReal, job.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-entry' });
+      await scope.store.finishJob(scope.workspaceReal, job.id, ['running'], 'succeeded', { exitCode: 0, resultArtifact: 'results/entry.md' });
+      const key = createHash('sha256').update(scope.workspaceReal, 'utf8').digest('hex');
+      const ownerDirectory = join(scope.dataRoot, 'workspaces', key, 'job-owners', createHash('sha256').update(`zcode-owner-index-v1\0${OWNER_SESSION}`, 'utf8').digest('hex'));
+      const entryPath = join(ownerDirectory, `${job.id}.json`);
+      const original = await readFile(entryPath, 'utf8');
+
+      // (a) Corrupt entry JSON: production readOwnedJobs rejects the index.
+      await writeFile(entryPath, '{corrupt', { mode: 0o600 });
+      const corrupt = await readDurableObligationSnapshot({ dataRoot: scope.dataRoot, workspace: scope.workspaceReal, ownerSessionId: OWNER_SESSION, jobId: job.id });
+      assert.equal(corrupt.job.presence, 'invalid');
+      assert.equal(corrupt.job.reason, 'owner-binding-invalid');
+      assert.equal(corrupt.aggregate, 'unestablished');
+      assert.ok(corrupt.reasons.includes('owner-binding-invalid'));
+
+      // (b) Conflicting tuple: the entry names a DIFFERENT job/owner than its
+      // filename and index location (production rejects the same index).
+      await writeFile(entryPath, `${JSON.stringify({ jobId: 'c'.repeat(64), ownerSessionId: 'session-z', version: 1 })}\n`, { mode: 0o600 });
+      const conflicting = await readDurableObligationSnapshot({ dataRoot: scope.dataRoot, workspace: scope.workspaceReal, ownerSessionId: OWNER_SESSION, jobId: job.id });
+      assert.equal(conflicting.job.reason, 'owner-binding-invalid');
+      assert.equal(conflicting.aggregate, 'unestablished');
+
+      // (b2) Unknown version/kind shape: neither the legacy nor the modern
+      // production entry shape.
+      await writeFile(entryPath, `${JSON.stringify({ jobId: job.id, ownerSessionId: OWNER_SESSION, rescueReservationKind: 'weird', version: 99 })}\n`, { mode: 0o600 });
+      const unknownShape = await readDurableObligationSnapshot({ dataRoot: scope.dataRoot, workspace: scope.workspaceReal, ownerSessionId: OWNER_SESSION, jobId: job.id });
+      assert.equal(unknownShape.job.reason, 'owner-binding-invalid');
+
+      // (c) Symlinked entry: the bounded no-follow reader refuses it.
+      await rm(entryPath);
+      await symlink('/etc/hosts', entryPath);
+      const linked = await readDurableObligationSnapshot({ dataRoot: scope.dataRoot, workspace: scope.workspaceReal, ownerSessionId: OWNER_SESSION, jobId: job.id });
+      assert.equal(linked.job.presence, 'invalid');
+      assert.equal(linked.job.reason, 'owner-binding-invalid');
+      assert.equal(linked.aggregate, 'unestablished');
+
+      // Restore: the intact entry still settles (the symlink is removed first
+      // so the restore never writes through it).
+      await rm(entryPath);
+      await writeFile(entryPath, original, { mode: 0o600 });
+      const restored = await readDurableObligationSnapshot({ dataRoot: scope.dataRoot, workspace: scope.workspaceReal, ownerSessionId: OWNER_SESSION, jobId: job.id });
+      assert.equal(restored.job.presence, 'found');
+      assert.equal(restored.aggregate, 'settled');
+    });
+
+    test('a cancelled Host-owned record missing its required stop evidence never settles (codex round 3)', async (t) => {
+      const scope = await durableScope(t);
+      const { job } = await reserveHostOwned(scope, 'cancel-evidence-child');
+      const key = createHash('sha256').update(scope.workspaceReal, 'utf8').digest('hex');
+      await scope.store.transitionJob(scope.workspaceReal, job.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-cancel-evidence' });
+      // The exact shape: a Host-owned writable record driven to `cancelled`
+      // through the production path, then STRIPPED of its required stop
+      // intent + confirmed stop cause on disk — production validateJobRecord
+      // requires stopCause (with a valid stop intent) on every cancelled
+      // Host-owned record, so the stripped shape is post-write corruption.
+      await scope.store.transitionJob(scope.workspaceReal, job.id, ['running'], 'cancelling', { stopIntent: { version: 1, cause: 'user', requestedAt: new Date().toISOString() } });
+      await scope.store.finishJob(scope.workspaceReal, job.id, ['cancelling'], 'cancelled', { stopCause: 'user' });
+      const jobPath0 = join(scope.dataRoot, 'workspaces', key, 'jobs', `${job.id}.json`);
+      const cancelled = JSON.parse(await readFile(jobPath0, 'utf8'));
+      delete cancelled.stopIntent;
+      delete cancelled.stopCause;
+      await writeFile(jobPath0, `${JSON.stringify(cancelled, null, 2)}\n`, { mode: 0o600 });
+      const snapshot = await readDurableObligationSnapshot({ dataRoot: scope.dataRoot, workspace: scope.workspaceReal, ownerSessionId: OWNER_SESSION, jobId: job.id });
+      assert.equal(snapshot.job.presence, 'invalid', 'the missing required cancellation evidence invalidates the record');
+      assert.equal(snapshot.job.reason, 'job-record-cancellation-evidence-missing');
+      assert.equal(snapshot.aggregate, 'unestablished', 'a record lacking its required stop evidence can never settle');
+      assert.ok(snapshot.reasons.includes('job-record-cancellation-evidence-missing'));
+      assert.equal(snapshot.layers, null, 'no layers block may coexist with the missing-evidence rejection');
+    });
+
+    test('conflicting or null stop causes reject a cancelled Host-owned record (codex round 4)', async (t) => {
+      const scope = await durableScope(t);
+      const { job } = await reserveHostOwned(scope, 'cause-child');
+      const key = createHash('sha256').update(scope.workspaceReal, 'utf8').digest('hex');
+      const jobPath = join(scope.dataRoot, 'workspaces', key, 'jobs', `${job.id}.json`);
+      await scope.store.transitionJob(scope.workspaceReal, job.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-cause' });
+      await scope.store.transitionJob(scope.workspaceReal, job.id, ['running'], 'cancelling', { stopIntent: { version: 1, cause: 'user', requestedAt: new Date().toISOString() } });
+      await scope.store.finishJob(scope.workspaceReal, job.id, ['cancelling'], 'cancelled', { stopCause: 'user' });
+      const original = await readFile(jobPath, 'utf8');
+      // (a) CONFLICTING cause: stopIntent.cause 'user' vs stopCause
+      // 'session-end' — production requires stopIntent.cause === stopCause.
+      await writeFile(jobPath, `${JSON.stringify({ ...JSON.parse(original), stopCause: 'session-end' }, null, 2)}\n`, { mode: 0o600 });
+      const conflicting = await readDurableObligationSnapshot({ dataRoot: scope.dataRoot, workspace: scope.workspaceReal, ownerSessionId: OWNER_SESSION, jobId: job.id });
+      assert.equal(conflicting.job.presence, 'invalid', 'a conflicting stop cause invalidates the record');
+      assert.equal(conflicting.job.reason, 'job-record-cancellation-evidence-mismatch');
+      assert.equal(conflicting.aggregate, 'unestablished', 'the conflicting record can never settle');
+      // (b) NULL stop cause: production rejects any non-recognized cause.
+      await writeFile(jobPath, `${JSON.stringify({ ...JSON.parse(original), stopCause: null }, null, 2)}\n`, { mode: 0o600 });
+      const nullCause = await readDurableObligationSnapshot({ dataRoot: scope.dataRoot, workspace: scope.workspaceReal, ownerSessionId: OWNER_SESSION, jobId: job.id });
+      assert.equal(nullCause.job.reason, 'job-record-cancellation-evidence-mismatch');
+      assert.equal(nullCause.aggregate, 'unestablished');
+      // (c) UNKNOWN stop cause string: not in production's closed set.
+      await writeFile(jobPath, `${JSON.stringify({ ...JSON.parse(original), stopCause: 'teleported' }, null, 2)}\n`, { mode: 0o600 });
+      const unknownCause = await readDurableObligationSnapshot({ dataRoot: scope.dataRoot, workspace: scope.workspaceReal, ownerSessionId: OWNER_SESSION, jobId: job.id });
+      assert.equal(unknownCause.job.reason, 'job-record-cancellation-evidence-mismatch');
+      // Restore: the intact record still settles.
+      await writeFile(jobPath, original, { mode: 0o600 });
+      const restored = await readDurableObligationSnapshot({ dataRoot: scope.dataRoot, workspace: scope.workspaceReal, ownerSessionId: OWNER_SESSION, jobId: job.id });
+      assert.equal(restored.job.presence, 'found');
+      assert.equal(restored.aggregate, 'settled');
+    });
+
+    test('an incomplete Host lifecycle trio rejects the record before settlement (codex round 5)', async (t) => {
+      const scope = await durableScope(t);
+      const { job } = await reserveHostOwned(scope, 'trio-child');
+      const key = createHash('sha256').update(scope.workspaceReal, 'utf8').digest('hex');
+      const jobPath = join(scope.dataRoot, 'workspaces', key, 'jobs', `${job.id}.json`);
+      await scope.store.transitionJob(scope.workspaceReal, job.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-trio' });
+      await scope.store.transitionJob(scope.workspaceReal, job.id, ['running'], 'cancelling', { stopIntent: { version: 1, cause: 'user', requestedAt: new Date().toISOString() } });
+      await scope.store.finishJob(scope.workspaceReal, job.id, ['cancelling'], 'cancelled', { stopCause: 'user' });
+      const original = await readFile(jobPath, 'utf8');
+      // (a) The exact finding shape: a VALID ownerLifecycleEpoch beside a
+      // MISSING executionOwner/hostPlacement. Production validateJobRecord
+      // requires the COMPLETE Host-owned trio whenever ANY lifecycle field is
+      // present (state.mjs: HOST_LIFECYCLE_FIELDS.some ⇒ hasHostOwnedLifecycle)
+      // — the partial trio is post-write corruption, and under the previous
+      // checklist it also SKIPPED the cancellation-evidence clause (its
+      // validHostLifecycleRecord guard is false), so the record settled
+      // without stop evidence.
+      const partial = JSON.parse(original);
+      delete partial.executionOwner;
+      delete partial.hostPlacement;
+      await writeFile(jobPath, `${JSON.stringify(partial, null, 2)}\n`, { mode: 0o600 });
+      const partialTrio = await readDurableObligationSnapshot({ dataRoot: scope.dataRoot, workspace: scope.workspaceReal, ownerSessionId: OWNER_SESSION, jobId: job.id });
+      assert.equal(partialTrio.job.presence, 'invalid', 'the partial lifecycle trio invalidates the record');
+      assert.equal(partialTrio.job.reason, 'job-record-lifecycle-trio-incomplete');
+      assert.equal(partialTrio.layers, null, 'no layers block may coexist with the incomplete-trio rejection');
+      assert.equal(partialTrio.aggregate, 'unestablished', 'a partial lifecycle trio can never settle');
+      assert.ok(partialTrio.reasons.includes('job-record-lifecycle-trio-incomplete'));
+      // (b) An INVALID member of an otherwise complete trio: production
+      // validHostLifecycleRecord rejects the record equally.
+      const invalid = JSON.parse(original);
+      invalid.hostPlacement = 'teleport';
+      await writeFile(jobPath, `${JSON.stringify(invalid, null, 2)}\n`, { mode: 0o600 });
+      const invalidTrio = await readDurableObligationSnapshot({ dataRoot: scope.dataRoot, workspace: scope.workspaceReal, ownerSessionId: OWNER_SESSION, jobId: job.id });
+      assert.equal(invalidTrio.job.presence, 'invalid');
+      assert.equal(invalidTrio.job.reason, 'job-record-lifecycle-trio-incomplete');
+      assert.equal(invalidTrio.aggregate, 'unestablished');
+      // Restore: the intact record still settles.
+      await writeFile(jobPath, original, { mode: 0o600 });
+      const restored = await readDurableObligationSnapshot({ dataRoot: scope.dataRoot, workspace: scope.workspaceReal, ownerSessionId: OWNER_SESSION, jobId: job.id });
+      assert.equal(restored.job.presence, 'found');
+      assert.equal(restored.aggregate, 'settled');
+    });
+
+    test('a malformed PRESENT stop intent rejects the record before settlement (codex round 2)', async (t) => {
+      const scope = await durableScope(t);
+      const { job } = await reserveHostOwned(scope, 'stop-intent-child');
+      await scope.store.transitionJob(scope.workspaceReal, job.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-intent' });
+      // A terminal WRITABLE record: the exact shape whose raw-terminal
+      // projection `endedObligationSettled` accepts without validating the
+      // stop intent.
+      await scope.store.finishJob(scope.workspaceReal, job.id, ['running'], 'succeeded', { exitCode: 0, resultArtifact: 'results/intent.md' });
+      const key = createHash('sha256').update(scope.workspaceReal, 'utf8').digest('hex');
+      const jobPath = join(scope.dataRoot, 'workspaces', key, 'jobs', `${job.id}.json`);
+      // The corrupt shape: a PRESENT stopIntent failing production
+      // validStopIntent (missing requestedAt, unknown cause) — production
+      // validateJobRecord would reject the record at write time.
+      const record = JSON.parse(await readFile(jobPath, 'utf8'));
+      record.stopIntent = { version: 1, cause: 'user' };
+      await writeFile(jobPath, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 });
+      const snapshot = await readDurableObligationSnapshot({ dataRoot: scope.dataRoot, workspace: scope.workspaceReal, ownerSessionId: OWNER_SESSION, jobId: job.id });
+      assert.equal(snapshot.job.presence, 'invalid', 'a malformed present stop intent invalidates the record');
+      assert.equal(snapshot.job.reason, 'job-record-stop-intent-invalid');
+      assert.equal(snapshot.aggregate, 'unestablished', 'a malformed stop intent can never ground a settled aggregate');
+      assert.ok(snapshot.reasons.includes('job-record-stop-intent-invalid'));
+      // Restore: the intact record still settles.
+      delete record.stopIntent;
+      await writeFile(jobPath, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 });
+      const restored = await readDurableObligationSnapshot({ dataRoot: scope.dataRoot, workspace: scope.workspaceReal, ownerSessionId: OWNER_SESSION, jobId: job.id });
+      assert.equal(restored.job.presence, 'found');
+      assert.equal(restored.aggregate, 'settled');
+    });
+
+    test('an ambiguous binding anchor and an authority-only pair stay unestablished (codex round 4)', async (t) => {
+      const scope = await durableScope(t);
+      // Two executors under ONE owner session: two structurally valid binding
+      // records (unique keys, unique executors — the partition's only
+      // uniqueness rules). Rewriting the SECOND record's currentJobId to
+      // point at the FIRST job is constructible corruption production
+      // rescueBindingPointsAtJob answers false for (cardinality > 1).
+      const first = await reserveHostOwned(scope, 'anchor-child-a');
+      await scope.store.transitionJob(scope.workspaceReal, first.job.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-anchor-a' });
+      await scope.store.finishJob(scope.workspaceReal, first.job.id, ['running'], 'succeeded', { exitCode: 0, resultArtifact: 'results/anchor-a.md' });
+      const second = await reserveHostOwned(scope, 'anchor-child-b');
+      assert.notEqual(second.job.id, first.job.id);
+      const key = createHash('sha256').update(scope.workspaceReal, 'utf8').digest('hex');
+      const partitionDirectory = join(scope.dataRoot, 'workspaces', key);
+      const partitionPath = join(partitionDirectory, `rescue-binding-session-${rescueBindingPartitionKey({ parentSessionId: OWNER_SESSION, workspace: scope.workspaceReal })}.json`);
+      const partition = JSON.parse(await readFile(partitionPath, 'utf8'));
+      const retargeted = partition.records.map((bindingRecord) => bindingRecord.currentJobId === second.job.id ? { ...bindingRecord, currentJobId: first.job.id } : bindingRecord);
+      await writeFile(partitionPath, `${JSON.stringify({ ...partition, records: retargeted }, null, 2)}\n`, { mode: 0o600 });
+
+      // F3: TWO anchors on one job — ambiguous; never a positive resumability fact.
+      const ambiguous = await readDurableObligationSnapshot({ dataRoot: scope.dataRoot, workspace: scope.workspaceReal, ownerSessionId: OWNER_SESSION, jobId: first.job.id, viewingPermissionMode: 'workspace-write' });
+      assert.equal(ambiguous.layers.bindingCurrency.state, 'unknown', 'ambiguous cardinality is unknown, never current');
+      assert.equal(ambiguous.layers.bindingCurrency.reason, 'binding-anchor-ambiguous');
+      assert.equal(ambiguous.layers.resumable, null, 'an ambiguous anchor can never assert resumability');
+      assert.ok(ambiguous.reasons.includes('binding-currency-unknown'));
+
+      // F4: partition file REMOVED, authority file PRESENT — the incomplete
+      // pair is unknown (production readBindingPartitionSnapshot rejects it);
+      // the terminal job can never settle and never reports resumable: false.
+      await rm(partitionPath);
+      const authorityOnly = await readDurableObligationSnapshot({ dataRoot: scope.dataRoot, workspace: scope.workspaceReal, ownerSessionId: OWNER_SESSION, jobId: first.job.id, viewingPermissionMode: 'workspace-write' });
+      assert.equal(authorityOnly.layers.bindingCurrency.state, 'unknown', 'the authority-only pair is unknown, never a confirmed not-current');
+      assert.equal(authorityOnly.layers.bindingCurrency.reason, 'binding-pair-incomplete');
+      assert.equal(authorityOnly.layers.resumable, null, 'resumability is never asserted (neither true nor false) from an incomplete pair');
+      assert.equal(authorityOnly.aggregate, 'unestablished', 'the terminal job can never settle on the incomplete pair');
+      assert.ok(authorityOnly.reasons.includes('binding-currency-unknown'));
+    });
+
+    test('a record whose internal identity disagrees with its placement is a named mismatch that never settles (round-2 review)', async (t) => {
+      const scope = await durableScope(t);
+      const { job } = await reserveHostOwned(scope, 'identity-child');
+      await scope.store.transitionJob(scope.workspaceReal, job.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-identity' });
+      await scope.store.finishJob(scope.workspaceReal, job.id, ['running'], 'succeeded', { exitCode: 0, resultArtifact: 'results/identity.md' });
+      const key = createHash('sha256').update(scope.workspaceReal, 'utf8').digest('hex');
+      const jobPath = join(scope.dataRoot, 'workspaces', key, 'jobs', `${job.id}.json`);
+      // Multi-file-corruption simulation: same filename, same partition, same
+      // owner-index entry — but the record's internal identity fields disagree
+      // with each of the three placement anchors (production readJobRecord
+      // enforces id/workspace; the owner-index enforces the session).
+      const original = await readFile(jobPath, 'utf8');
+      for (const [field, value] of [
+        ['id', 'b'.repeat(64)],
+        ['workspace', join(scope.root, 'elsewhere')],
+        ['ownerSessionId', 'session-z'],
+      ]) {
+        await writeFile(jobPath, `${JSON.stringify({ ...JSON.parse(original), [field]: value }, null, 2)}\n`, { mode: 0o600 });
+        const snapshot = await readDurableObligationSnapshot({ dataRoot: scope.dataRoot, workspace: scope.workspaceReal, ownerSessionId: OWNER_SESSION, jobId: job.id });
+        assert.equal(snapshot.job.presence, 'invalid', `${field} mismatch must invalidate the record`);
+        assert.equal(snapshot.job.reason, 'job-record-identity-mismatch', `${field} mismatch must be the named identity reason`);
+        assert.equal(snapshot.aggregate, 'unestablished', `${field} mismatch must never settle`);
+        assert.ok(snapshot.reasons.includes('job-record-identity-mismatch'));
+      }
+      // Restore: the intact record still settles (the check is load-bearing,
+      // not a blanket rejection).
+      await writeFile(jobPath, original, { mode: 0o600 });
+      const restored = await readDurableObligationSnapshot({ dataRoot: scope.dataRoot, workspace: scope.workspaceReal, ownerSessionId: OWNER_SESSION, jobId: job.id });
+      assert.equal(restored.job.presence, 'found');
+      assert.equal(restored.aggregate, 'settled');
+    });
+
+    test('a binding partition without its authority file is unestablished and never asserts resumability (codex round 1)', async (t) => {
+      const scope = await durableScope(t);
+      const { job } = await reserveHostOwned(scope, 'authority-child');
+      await scope.store.transitionJob(scope.workspaceReal, job.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-authority' });
+      await scope.store.finishJob(scope.workspaceReal, job.id, ['running'], 'succeeded', { exitCode: 0, resultArtifact: 'results/authority.md' });
+      const key = createHash('sha256').update(scope.workspaceReal, 'utf8').digest('hex');
+      const partitionDirectory = join(scope.dataRoot, 'workspaces', key);
+      const authorityPath = join(partitionDirectory, `rescue-binding-authority-${rescueBindingPartitionKey({ parentSessionId: OWNER_SESSION, workspace: scope.workspaceReal })}.json`);
+      await rm(authorityPath);
+      const snapshot = await readDurableObligationSnapshot({ dataRoot: scope.dataRoot, workspace: scope.workspaceReal, ownerSessionId: OWNER_SESSION, jobId: job.id, viewingPermissionMode: 'workspace-write' });
+      assert.equal(snapshot.layers.bindingCurrency.state, 'unknown', 'the incomplete pair is unknown, never current');
+      // Round 4 refined the round-1 reason: the partition-only pair is the
+      // general incomplete-pair clause (production readBindingPartitionSnapshot
+      // rejects BOTH incomplete combinations).
+      assert.equal(snapshot.layers.bindingCurrency.reason, 'binding-pair-incomplete');
+      assert.equal(snapshot.layers.resumable, null, 'resumability is never asserted from an incomplete binding pair');
+      assert.equal(snapshot.aggregate, 'unestablished', 'the incomplete pair blocks a settled aggregate');
+      assert.ok(snapshot.reasons.includes('binding-currency-unknown'));
+    });
+
+    test('binding partition content decides currency: absent, closed and unreadable partitions stay per-layer facts', async (t) => {
+      const scope = await durableScope(t);
+      const { job } = await reserveHostOwned(scope, 'binding-child');
+      const key = createHash('sha256').update(scope.workspaceReal, 'utf8').digest('hex');
+      const partitionDirectory = join(scope.dataRoot, 'workspaces', key);
+      const partitionPath = join(partitionDirectory, `rescue-binding-session-${rescueBindingPartitionKey({ parentSessionId: OWNER_SESSION, workspace: scope.workspaceReal })}.json`);
+
+      // Corrupt partition: named unknown, never guessed.
+      await writeFile(partitionPath, '{corrupt', { mode: 0o600 });
+      const corrupt = await readDurableObligationSnapshot({ dataRoot: scope.dataRoot, workspace: scope.workspaceReal, ownerSessionId: OWNER_SESSION, jobId: job.id });
+      assert.equal(corrupt.layers.bindingCurrency.state, 'unknown');
+      assert.ok(corrupt.layers.bindingCurrency.reason);
+
+      // The ABSENT case means BOTH files gone (round 4: a one-file pair is
+      // the incomplete clause, not absence).
+      const authorityPath = join(partitionDirectory, `rescue-binding-authority-${rescueBindingPartitionKey({ parentSessionId: OWNER_SESSION, workspace: scope.workspaceReal })}.json`);
+      await rm(partitionPath);
+      await rm(authorityPath);
+      const absent = await readDurableObligationSnapshot({ dataRoot: scope.dataRoot, workspace: scope.workspaceReal, ownerSessionId: OWNER_SESSION, jobId: job.id });
+      assert.equal(absent.layers.bindingCurrency.state, 'not-current');
+      assert.equal(absent.layers.bindingCurrency.reason, 'binding-partition-absent');
+      assert.equal(absent.layers.bindingCurrency.state, 'not-current', 'an absent partition is a demonstrated not-current fact, never a guess');
+      assert.equal(absent.aggregate, 'unresolved', 'the queued writable guard is positively retained; binding absence is a separate per-layer fact');
+      assert.equal(absent.layers.writableGuard.retained, true);
+      assert.ok(absent.reasons.includes('writable-guard-retained'));
+      assert.ok(absent.reasons.includes('binding-partition-absent') === false, 'a not-current binding never becomes a settlement failure reason');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Task 2 evidence closure: the durable snapshot JOIN — the passive reader's
+  // typed aggregate becomes the held turn's durableObligations settlement
+  // layer (before any cleanup), the typed snapshot persists into the case
+  // record, and the status-wait fixture (the one observable case with a
+  // pre-known exact bound job) supplies it by default. Offline only.
+  // -------------------------------------------------------------------------
+  describe('durable snapshot join into settlement layers (task 2 evidence closure)', async () => {
+    const { runHeldHostTurn, statusWaitDurableSnapshotSupplier, runShellWaitCase, captureExpectedExitCode } = await import('../tools/shell-wait-probe/driver.mjs');
+    const { createStateStore } = await import('../scripts/lib/state.mjs');
+    const { realpath: realPath } = await import('node:fs/promises');
+
+    const TEST_NONCE = 'e'.repeat(64);
+    const identity = { pid: 70123, ppid: 91, nonce: TEST_NONCE, startIdentity: 'start-closure' };
+    const OWNER_SESSION = 'session-a';
+    const EPOCH = 'b'.repeat(64);
+
+    test('the capture exit authority selects the handle-linked exit, never the outer codex code (codex round 10)', () => {
+      // The launcher may exit 1 with a valid error envelope while the outer
+      // `codex exec` process finishes 0: conflating the two rejected intact
+      // captures as capture-exit-code-mismatch. The selector takes the
+      // handle-linked exit; an unjoinable exit keeps attribution
+      // unestablished (no cross-check at all).
+      assert.equal(captureExpectedExitCode({ heldResultCode: 0, handleLinkedExitCode: 1 }), 1,
+        'the launcher-1/outer-0 conflation is dead: the handle-linked exit wins');
+      assert.equal(captureExpectedExitCode({ heldResultCode: 0, handleLinkedExitCode: null }), undefined,
+        'an unjoinable handle exit keeps exit attribution unestablished');
+      assert.equal(captureExpectedExitCode({ heldResultCode: null, handleLinkedExitCode: 1 }), 1);
+      assert.equal(captureExpectedExitCode({ heldResultCode: 1, handleLinkedExitCode: 1 }), 1);
+      assert.equal(captureExpectedExitCode({ heldResultCode: 0, handleLinkedExitCode: 13 }), 13);
+    });
+
+    const heldHarness = (events, overrides = {}) => ({
+      launch: async () => ({ result: Promise.resolve({ code: 0, stdout: 'launched acknowledgement', stderr: '' }) }),
+      waitForGate: async () => {},
+      gatePath: 'unused-gate',
+      captureProcessIdentity: async () => identity,
+      readProcessIdentity: async () => identity,
+      terminateProcessIdentity: async () => { events.push('terminated'); return { attempted: true, signalled: 'SIGTERM', exited: true, failure: null }; },
+      releaseGate: async () => {},
+      sleep: async () => {},
+      now: (() => { let value = 0; return () => (value += 500); })(),
+      holdMs: 0,
+      budgetMs: 60_000,
+      waitForChildSettlement: async () => { events.push('settlement-watch'); return { observed: true, basis: 'exact-command-launch-then-completed-exit-code-output' }; },
+      ...overrides,
+    });
+
+    test('a settled durable snapshot grounds the durableObligations layer and rides the held record', async () => {
+      const events = [];
+      const typed = { aggregate: 'settled', reasons: [], layers: { endedObligation: { settled: true } } };
+      const held = await runHeldHostTurn(heldHarness(events, {
+        readDurableSnapshot: async () => { events.push('durable-read'); return typed; },
+      }));
+      assert.equal(held.childSettlement.layers.durableObligations, 'settled', 'a positively established snapshot grounds the layer');
+      assert.equal(held.childSettlement.durableSnapshot, typed, 'the typed snapshot rides the held record verbatim');
+      assert.deepEqual(events, ['durable-read', 'settlement-watch', 'terminated'], 'the durable read happens before the watch and before cleanup');
+    });
+
+    test('an unresolved snapshot keeps the retained-duty layer, and unestablished stays null', async () => {
+      const unresolved = await runHeldHostTurn(heldHarness([], {
+        readDurableSnapshot: async () => ({ aggregate: 'unresolved', reasons: ['writable-guard-retained'] }),
+      }));
+      assert.equal(unresolved.childSettlement.layers.durableObligations, 'unresolved');
+      const unestablished = await runHeldHostTurn(heldHarness([], {
+        readDurableSnapshot: async () => ({ aggregate: 'unestablished', reasons: ['snapshot-unequal'] }),
+      }));
+      assert.equal(unestablished.childSettlement.layers.durableObligations, null, 'unestablished never becomes a positive or negative layer');
+      assert.equal(unestablished.childSettlement.durableSnapshot.aggregate, 'unestablished');
+    });
+
+    test('a failing durable reader is a named observer failure, never a business failure', async () => {
+      const events = [];
+      const held = await runHeldHostTurn(heldHarness(events, {
+        readDurableSnapshot: async () => { throw new Error('the durable partition vanished mid-observation'); },
+      }));
+      assert.equal(held.childSettlement.layers.durableObligations, null);
+      assert.equal(held.childSettlement.durableSnapshot.aggregate, 'unestablished');
+      assert.match(String(held.childSettlement.durableSnapshot.reasons?.[0]), /vanished mid-observation/u);
+      assert.deepEqual(events, ['settlement-watch', 'terminated'], 'the watch and cleanup still ran');
+      assert.equal(held.cleanup.label, 'child-settlement-observed');
+    });
+
+    test('without a supplier the persisted schema stays byte-identical (no layer, no snapshot)', async () => {
+      const held = await runHeldHostTurn(heldHarness([]));
+      assert.equal(held.childSettlement.layers.durableObligations, null);
+      assert.equal(held.childSettlement.durableSnapshot, undefined, 'no supplier means no durable block at all');
+    });
+
+    test('the status-wait supplier reads the fixture-owned reserved job passively (settled aggregate)', async (t) => {
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-durable-join-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const workspace = join(root, 'workspace');
+      await mkdir(workspace, { recursive: true });
+      const workspaceReal = await realPath(workspace);
+      const dataRoot = join(root, 'data-root');
+      const store = createStateStore({ dataRoot });
+      const { job } = await store.reserveFreshRescueJob({ workspace: workspaceReal,
+        reservation: { workspace: workspaceReal, ownerSessionId: OWNER_SESSION, ownerTurnId: 'turn-a', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } },
+        executor: { parentSessionId: OWNER_SESSION, parentTurnId: 'turn-a', agentId: 'join-child', agentType: 'zcode-rescue', agentPath: '/root/zcode_rescue_task', workspace: workspaceReal, parentPermissionMode: 'workspace-write' },
+        lifecycle: { ownerLifecycleEpoch: EPOCH, executionOwner: 'host-child', hostPlacement: 'foreground' } });
+      await store.claimJobWorkerForExecution(workspaceReal, job.id, { childPid: 999_999_999, workerLeaseId: job.id });
+      await store.transitionJob(workspaceReal, job.id, ['queued'], 'running',
+        { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-join', childPid: 999_999_999, workerLeaseId: job.id });
+      await store.finishJob(workspaceReal, job.id, ['running'], 'succeeded', { exitCode: 0, resultArtifact: 'results/join.md' });
+
+      const fixture = { workspace: workspaceReal, env: { ZCODE_DATA_ROOT: dataRoot }, statusJob: { jobId: job.id, status: 'succeeded', queryTimeoutMs: 240_000 }, owningSessionId: OWNER_SESSION };
+      const supplier = statusWaitDurableSnapshotSupplier(fixture);
+      assert.ok(supplier, 'an observable status-wait fixture gets a durable supplier');
+      const snapshot = await supplier();
+      assert.equal(snapshot.aggregate, 'settled');
+      assert.equal(snapshot.partition.status, 'resolved');
+      assert.equal(snapshot.job.presence, 'found');
+      // Before/after fingerprints inside the reader proved passivity; the
+      // supplier itself performs no writes by construction.
+      // NOT-APPLICABLE is named: a fixture without the reserved job identity
+      // gets NO supplier (the null branch is demonstrated, never silent).
+      const bare = statusWaitDurableSnapshotSupplier({ workspace: workspaceReal, env: { ZCODE_DATA_ROOT: dataRoot } });
+      assert.equal(bare, null, 'no exact bound job identity means no supplier, with the reason recorded in the source contract');
+    });
+
+    test('a durable read resolving after budget expiry is named after-budget and never credits settled (codex round 2)', async () => {
+      const events = [];
+      // The reader resolves LONG after the tiny budget has expired and the
+      // cleanup boundary has been recorded: the exact budgetExpired:true +
+      // cleanup-before-read shape. The late snapshot says SETTLED — which is
+      // exactly the credit the cleanup-boundary rule forbids.
+      const late = { aggregate: 'settled', reasons: [] };
+      const held = await runHeldHostTurn(heldHarness(events, {
+        budgetMs: 50,
+        readDurableSnapshot: () => new Promise((resolve) => {
+          setTimeout(() => { events.push('durable-read'); resolve(late); }, 300);
+        }),
+        terminateProcessIdentity: async () => { events.push('terminated'); return { attempted: true, signalled: 'SIGTERM', exited: true, failure: null }; },
+      }));
+      assert.equal(held.budgetExpired, true, 'the reproduction shape has the budget expired');
+      assert.notEqual(held.childSettlement.layers.durableObligations, 'settled', 'a after-budget snapshot can never credit settled');
+      assert.equal(held.childSettlement.layers.durableObligations, null);
+      assert.equal(held.childSettlement.durableSnapshot.aggregate, 'unestablished');
+      assert.ok(held.childSettlement.durableSnapshot.reasons.includes('durable-observation-after-budget-expiry'));
+      // The late snapshot fact itself stays recorded (bounded) for
+      // transparency: codex round 3 — the losing read is never AWAITED, and
+      // its late resolution updates only the non-authoritative
+      // `sampledAggregate` field on the already-returned block.
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      assert.equal(held.childSettlement.durableSnapshot.sampledAggregate, 'settled', 'the late resolution updates only sampledAggregate');
+      assert.equal(held.childSettlement.durableSnapshot.aggregate, 'unestablished', 'the recorded observation status never changes');
+      assert.equal(events.includes('terminated'), true, 'cleanup still ran');
+    });
+
+    test('the cleanup boundary fences durable settlement credit in every ordering (codex round 4)', async () => {
+      const deadlineFraming = JSON.stringify({ error: { code: 'JOB_WAIT_TIMEOUT', category: 'timeout', message: 'Timed out waiting for job ' + 'a'.repeat(8) } });
+      // Ordering: boundary-then-read-resolves — the runner records the
+      // cleanup boundary at launch; the read resolves AFTER it. budgetExpired
+      // stays false: only the boundary fence can withhold credit here.
+      const events = [];
+      const settled = { aggregate: 'settled', reasons: [] };
+      const launch = async (budgetContext) => {
+        events.push('boundary');
+        if (typeof budgetContext?.recordCleanupBoundary === 'function') budgetContext.recordCleanupBoundary();
+        return { result: Promise.resolve({ code: 0, stdout: deadlineFraming, stderr: '' }) };
+      };
+      const held = await runHeldHostTurn(heldHarness(events, {
+        budgetMs: 120_000,
+        holdMs: 60_000,
+        launch,
+        statusDeadlineFlow: true,
+        waitForChildSettlement: undefined,
+        readDurableSnapshot: () => new Promise((resolve) => setTimeout(() => resolve(settled), 150)),
+      }));
+      assert.equal(held.statusDeadlineReached, true, `deadline reached (held keys ${JSON.stringify(Object.keys(held))})`);
+      assert.equal(held.budgetExpired, false, `NO budget expiry (actual ${held.budgetExpired})`);
+      assert.equal(held.childSettlement.layers.durableObligations, null, 'sampling after the cleanup boundary can never credit settled');
+      assert.equal(held.childSettlement.durableSnapshot.aggregate, 'unestablished');
+      assert.equal(held.childSettlement.durableSnapshot.reasons.includes('durable-observation-after-cleanup-boundary'), true, `the after-boundary status is the NAMED reason (actual ${JSON.stringify(held.childSettlement.durableSnapshot)})`);
+      assert.equal(held.childSettlement.durableSnapshot.sampledAggregate, 'settled', 'the late snapshot fact stays recorded, non-authoritative');
+      assert.deepEqual(events, ['boundary', 'terminated'], 'the read resolved before cleanup ran');
+
+      // Ordering: boundary-before-budget-expiry — the budget reason wins
+      // (earliest fence), the block stays unestablished either way.
+      const events2 = [];
+      const held2 = await runHeldHostTurn(heldHarness(events2, {
+        budgetMs: 50,
+        holdMs: 60_000,
+        waitForChildSettlement: undefined,
+        launch: async (budgetContext) => {
+          if (typeof budgetContext?.recordCleanupBoundary === 'function') budgetContext.recordCleanupBoundary();
+          return { result: Promise.resolve({ code: 0, stdout: deadlineFraming, stderr: '' }) };
+        },
+        statusDeadlineFlow: true,
+        readDurableSnapshot: () => new Promise((resolve) => setTimeout(() => resolve(settled), 200)),
+      }));
+      assert.equal(held2.budgetExpired, true);
+      assert.equal(held2.childSettlement.layers.durableObligations, null);
+      assert.equal(held2.childSettlement.durableSnapshot.reasons.includes('durable-observation-after-budget-expiry'), true);
+
+      // Ordering: boundary-after (read completes, THEN any boundary) — no
+      // fence triggers; full credit stands (the control ordering).
+      const events3 = [];
+      // Ordering 3 keeps the harness watch: the read resolves synchronously
+      // BEFORE any boundary exists, so the fence leaves full credit standing.
+      const held3 = await runHeldHostTurn(heldHarness(events3, {
+        budgetMs: 120_000,
+        holdMs: 60_000,
+        statusDeadlineFlow: true,
+        readDurableSnapshot: async () => settled,
+      }));
+      assert.equal(held3.childSettlement.layers.durableObligations, 'settled', 'an observation completed before any boundary keeps full credit');
+    });
+
+    test('a read completed BEFORE the boundary but joined after it keeps full credit (codex round 5)', async () => {
+      const events = [];
+      const settled = { aggregate: 'settled', reasons: [] };
+      // The exact finding-4 ordering: the durable read STARTS before the
+      // Child-settlement watch and resolves ~20 ms in; the runner's own
+      // timeout path records the cleanup boundary at ~250 ms (DURING the
+      // watch); the watch returns at ~600 ms. The fence must compare the
+      // read's OWN completion timestamp against the boundary — never the
+      // join instant, which is necessarily after every boundary.
+      let boundaryAtMs = null;
+      const launch = async (budgetContext) => {
+        setTimeout(() => {
+          events.push('boundary');
+          boundaryAtMs = Date.now();
+          if (typeof budgetContext?.recordCleanupBoundary === 'function') budgetContext.recordCleanupBoundary();
+        }, 250);
+        return { result: Promise.resolve({ code: 0, stdout: 'launched acknowledgement', stderr: '' }) };
+      };
+      const held = await runHeldHostTurn(heldHarness(events, {
+        budgetMs: 120_000,
+        launch,
+        readDurableSnapshot: () => new Promise((resolve) => setTimeout(() => { events.push('durable-read-resolved'); resolve(settled); }, 20)),
+        waitForChildSettlement: () => new Promise((resolve) => setTimeout(() => {
+          events.push('settlement-watch');
+          resolve({ observed: true, basis: 'exact-command-launch-then-completed-exit-code-output' });
+        }, 600)),
+      }));
+      assert.equal(held.budgetExpired, false, `no budget expiry in this ordering (actual ${held.budgetExpired})`);
+      assert.notEqual(boundaryAtMs, null, 'the runner recorded its cleanup boundary during the watch');
+      assert.equal(held.childSettlement.layers.durableObligations, 'settled',
+        `an observation that COMPLETED before the earliest cleanup boundary keeps full credit — the join-time comparison fenced a pre-cleanup-completed read (actual ${JSON.stringify(held.childSettlement?.durableSnapshot)})`);
+      assert.equal(held.childSettlement.durableSnapshot, settled, 'the credited typed snapshot rides the held record verbatim');
+      assert.equal(typeof held.childSettlement.durableSnapshot.completedAtMs, 'number', 'the read completion instant is stamped at its own resolution');
+      assert.ok(held.childSettlement.durableSnapshot.completedAtMs <= boundaryAtMs,
+        `the stamped completion precedes the cleanup boundary (${held.childSettlement.durableSnapshot.completedAtMs} <= ${boundaryAtMs})`);
+      assert.deepEqual(events, ['durable-read-resolved', 'boundary', 'settlement-watch', 'terminated'],
+        `the read resolved before the boundary, the boundary before the watch returned (events ${JSON.stringify(events)})`);
+    });
+
+    test('a gate-first completion without any settlement watcher keeps the durable facts (codex round 10)', async (t) => {
+      const events = [];
+      const typed = { aggregate: 'settled', reasons: [] };
+      // The status-wait shape finishing before its deadline: the gate-first
+      // path completes normally with NO settlement watcher installed, yet
+      // the supplied durable reader RUNS — its snapshot and layer must be
+      // joined and persisted (fence contract applies), never dropped.
+      const temporary = await mkdtemp(join(tmpdir(), 'shell-wait-no-watch-'));
+      t.after(() => rm(temporary, { recursive: true, force: true }));
+      const gatePath = join(temporary, 'gate');
+      await writeFile(gatePath, 'hold', 'utf8');
+      let resolveResult;
+      const held = await runHeldHostTurn({
+        gatePath,
+        gateReachedPath: join(temporary, 'reached'),
+        processPath: join(temporary, 'process.json'),
+        processNonce: TEST_NONCE,
+        holdMs: 0,
+        budgetMs: 60_000,
+        launch: async () => ({ result: new Promise((resolve) => { resolveResult = resolve; }) }),
+        waitForGate: async () => {},
+        captureProcessIdentity: async () => ({ pid: 71401, ppid: process.pid, nonce: TEST_NONCE, startIdentity: 'start-no-watch' }),
+        readProcessIdentity: async () => undefined,
+        waitForProcessExit: async () => {},
+        releaseGate: async () => { resolveResult({ code: 0, stdout: '', stderr: '' }); },
+        readDurableSnapshot: async () => { events.push('durable-read'); return typed; },
+        terminateProcessIdentity: async () => { events.push('terminated'); return { attempted: true, signalled: 'SIGTERM', exited: true, failure: null }; },
+        sleep: async () => {},
+      });
+      assert.equal(held.endedBeforeGate, false);
+      assert.ok(held.childSettlement, `the no-watcher completion joins the durable observation (actual keys ${JSON.stringify(Object.keys(held))})`);
+      assert.equal(held.childSettlement.observed, false);
+      assert.equal(held.childSettlement.basis, null, 'no watcher fact exists — honestly null');
+      assert.equal(held.childSettlement.layers.durableObligations, 'settled', 'the completed read grounds the layer');
+      assert.equal(held.childSettlement.durableSnapshot, typed, 'the typed snapshot rides the record');
+      // readProcessIdentity reports the process already gone: the gate-first
+      // success path terminates nothing (round-9 reference semantics).
+      assert.deepEqual(events, ['durable-read']);
+    });
+
+    test('a rejected Child-settlement watch never discards the durable facts (codex round 5)', async (t) => {
+      const settled = { aggregate: 'settled', reasons: [] };
+      // Ordering 1 (acknowledgement-first): the durable read completes, then
+      // the Child-settlement watch REJECTS. The watch outcome is the watch's
+      // own named unestablished block — the independently obtained durable
+      // facts still ride the record (never `childSettlement: null`).
+      const events = [];
+      const held = await runHeldHostTurn(heldHarness(events, {
+        readDurableSnapshot: async () => settled,
+        waitForChildSettlement: async () => { events.push('settlement-watch'); throw new Error('the settlement watch exploded'); },
+      }));
+      assert.ok(held.childSettlement, `a rejected watch still records its own settlement block (actual ${JSON.stringify(held.childSettlement)})`);
+      assert.equal(held.childSettlement.observed, false, 'a failed watch establishes no settlement fact');
+      assert.equal(held.childSettlement.basis, 'child-settlement-watch-failed', 'the failed watch is the NAMED basis');
+      assert.equal(held.childSettlement.layers.durableObligations, 'settled', 'the durable layer survives the watch failure');
+      assert.equal(held.childSettlement.durableSnapshot, settled, 'the typed durable snapshot survives the watch failure');
+      assert.deepEqual(events, ['settlement-watch', 'terminated'], 'the watch failure neither blocks cleanup nor replaces it');
+
+      // Ordering 2 (gate-first after-join watch): the same loss occurred on
+      // this site — the same retention contract applies.
+      const temporary = await mkdtemp(join(tmpdir(), 'shell-wait-watch-fail-'));
+      t.after(() => rm(temporary, { recursive: true, force: true }));
+      const gatePath = join(temporary, 'gate');
+      await writeFile(gatePath, 'hold', 'utf8');
+      let resolveResult;
+      const events2 = [];
+      const held2 = await runHeldHostTurn({
+        gatePath,
+        gateReachedPath: join(temporary, 'reached'),
+        processPath: join(temporary, 'process.json'),
+        processNonce: TEST_NONCE,
+        holdMs: 0,
+        budgetMs: 60_000,
+        launch: async () => ({ result: new Promise((resolve) => { resolveResult = resolve; }) }),
+        waitForGate: async () => {},
+        captureProcessIdentity: async () => ({ pid: 71201, ppid: process.pid, nonce: TEST_NONCE, startIdentity: 'start-watch-fail' }),
+        readProcessIdentity: async () => undefined,
+        waitForProcessExit: async () => {},
+        releaseGate: async () => { resolveResult({ code: 0, stdout: '', stderr: '' }); },
+        waitForChildSettlementAfterJoin: async () => { events2.push('settlement-watch'); throw new Error('the after-join watch exploded'); },
+        readDurableSnapshot: async () => settled,
+        terminateProcessIdentity: async () => { events2.push('terminated'); return { attempted: true, signalled: 'SIGTERM', exited: true, failure: null }; },
+        sleep: async () => {},
+      });
+      assert.ok(held2.childSettlement, `the gate-first ordering keeps the same retention (actual ${JSON.stringify(held2.childSettlement)})`);
+      assert.equal(held2.childSettlement.observed, false);
+      assert.equal(held2.childSettlement.basis, 'child-settlement-watch-failed');
+      assert.equal(held2.childSettlement.layers.durableObligations, 'settled');
+      assert.equal(held2.childSettlement.durableSnapshot, settled);
+      // The gate-first success path terminates nothing (the process exited
+      // naturally before the watch) — the durable facts ride the record
+      // regardless of the watch outcome, which is this test's subject.
+      assert.deepEqual(events2, ['settlement-watch']);
+    });
+
+    test('budget expiry while the settlement watch pends keeps the completed durable facts (codex round 6)', async (t) => {
+      const typed = { aggregate: 'settled', reasons: [] };
+      // Ordering 1 (acknowledgement-first): the durable read completes
+      // IMMEDIATELY (well before expiry), then the watch PENDS until the
+      // budget aborts it. The budget throw must not discard the
+      // independently completed durable facts: the joined record rides the
+      // budget path, with credit decided by the fence contract (completion
+      // BEFORE the expiry-initiated boundary keeps full credit).
+      const events = [];
+      const held = await runHeldHostTurn(heldHarness(events, {
+        budgetMs: 80,
+        readDurableSnapshot: async () => { events.push('durable-read'); return typed; },
+        waitForChildSettlement: (signal) => new Promise((resolve, reject) => {
+          signal.addEventListener('abort', () => { events.push('watch-aborted'); reject(new Error('the held shell wait child-settlement watch was aborted')); }, { once: true });
+        }),
+      }));
+      assert.equal(held.budgetExpired, true, `the reproduction shape has the budget expired (actual ${held.budgetExpired})`);
+      assert.ok(held.childSettlement, `the budget path preserves the joined record (actual keys ${JSON.stringify(Object.keys(held))})`);
+      assert.equal(held.childSettlement.observed, false, 'the aborted watch establishes no settlement fact');
+      assert.equal(held.childSettlement.basis, 'child-settlement-watch-failed', 'the aborted watch is the NAMED basis');
+      assert.equal(held.childSettlement.layers.durableObligations, 'settled', 'a read completed BEFORE the expiry-initiated boundary keeps full credit per the fence contract');
+      assert.equal(held.childSettlement.durableSnapshot, typed, 'the typed snapshot survives the budget throw');
+      assert.deepEqual(events, ['durable-read', 'watch-aborted', 'terminated'], 'the read completed, the watch was aborted by the budget, cleanup still ran');
+
+      // Ordering 2 (gate-first after-join watch): the same loss occurred on
+      // this site — the same retention contract applies.
+      const temporary = await mkdtemp(join(tmpdir(), 'shell-wait-budget-watch-'));
+      t.after(() => rm(temporary, { recursive: true, force: true }));
+      const gatePath = join(temporary, 'gate');
+      await writeFile(gatePath, 'hold', 'utf8');
+      let resolveResult;
+      const events2 = [];
+      const held2 = await runHeldHostTurn({
+        gatePath,
+        gateReachedPath: join(temporary, 'reached'),
+        processPath: join(temporary, 'process.json'),
+        processNonce: TEST_NONCE,
+        holdMs: 0,
+        budgetMs: 80,
+        launch: async () => ({ result: new Promise((resolve) => { resolveResult = resolve; }) }),
+        waitForGate: async () => {},
+        captureProcessIdentity: async () => ({ pid: 71301, ppid: process.pid, nonce: TEST_NONCE, startIdentity: 'start-budget-watch' }),
+        readProcessIdentity: async () => undefined,
+        waitForProcessExit: async () => {},
+        releaseGate: async () => { resolveResult({ code: 0, stdout: '', stderr: '' }); },
+        waitForChildSettlementAfterJoin: (signal) => new Promise((resolve, reject) => {
+          signal.addEventListener('abort', () => { events2.push('watch-aborted'); reject(new Error('the held shell wait child-settlement watch was aborted')); }, { once: true });
+        }),
+        readDurableSnapshot: async () => { events2.push('durable-read'); return typed; },
+        terminateProcessIdentity: async () => { events2.push('terminated'); return { attempted: true, signalled: 'SIGTERM', exited: true, failure: null }; },
+        sleep: async () => {},
+      });
+      assert.equal(held2.budgetExpired, true);
+      assert.ok(held2.childSettlement, `the gate-first ordering keeps the same retention (actual keys ${JSON.stringify(Object.keys(held2))})`);
+      assert.equal(held2.childSettlement.observed, false);
+      assert.equal(held2.childSettlement.basis, 'child-settlement-watch-failed');
+      assert.equal(held2.childSettlement.layers.durableObligations, 'settled');
+      assert.equal(held2.childSettlement.durableSnapshot, typed);
+      // readProcessIdentity reports the process already gone, so the budget
+      // cleanup has nothing to terminate — the turn still completed through
+      // the carried record with no evidence loss.
+      assert.deepEqual(events2, ['durable-read', 'watch-aborted']);
+    });
+
+    test('a SYNCHRONOUSLY-throwing durable supplier is a named observer failure (codex round 10)', async () => {
+      const events = [];
+      // The supplier throws BEFORE returning its promise: the exception must
+      // receive the same named unestablished-snapshot treatment as a
+      // rejection — never escape into the held-turn failure path, never skip
+      // the settlement watch, never fail the case from the observer.
+      const held = await runHeldHostTurn(heldHarness(events, {
+        readDurableSnapshot: () => { throw new Error('the durable supplier exploded synchronously'); },
+      }));
+      assert.ok(held.childSettlement, `the held record persists with the named durable block (actual keys ${JSON.stringify(Object.keys(held))})`);
+      assert.equal(held.childSettlement.layers.durableObligations, null, 'a failed supplier never credits settlement');
+      assert.equal(held.childSettlement.durableSnapshot.aggregate, 'unestablished');
+      assert.match(String(held.childSettlement.durableSnapshot.reasons?.[0]), /exploded synchronously/u);
+      assert.equal(held.failure, undefined, 'the observer failure never fails the case');
+      assert.equal(held.cleanup.label, 'child-settlement-observed', 'the settlement watch proceeded');
+      assert.deepEqual(events, ['settlement-watch', 'terminated'], 'the watch and cleanup still ran');
+    });
+
+    test('a NEVER-resolving durable read never blocks cleanup after budget expiry (codex round 3)', async () => {
+      const events = [];
+      const heldOutcome = await Promise.race([
+        runHeldHostTurn(heldHarness(events, {
+          budgetMs: 50,
+          readDurableSnapshot: () => new Promise(() => { /* never resolves: the stalled-reader hazard */ }),
+          terminateProcessIdentity: async () => { events.push('terminated'); return { attempted: true, signalled: 'SIGTERM', exited: true, failure: null }; },
+        })).then((held) => ({ kind: 'held', held }), (error) => ({ kind: 'error', error })),
+        new Promise((resolve) => setTimeout(() => resolve({ kind: 'timeout' }), 5_000)),
+      ]);
+      assert.equal(heldOutcome.kind, 'held', `runHeldHostTurn must complete despite the stalled reader (outcome ${heldOutcome.kind})`);
+      const held = heldOutcome.held;
+      assert.equal(held.budgetExpired, true);
+      assert.equal(held.childSettlement.layers.durableObligations, null, 'the stalled read never credits settlement');
+      assert.equal(held.childSettlement.durableSnapshot.aggregate, 'unestablished');
+      assert.deepEqual(held.childSettlement.durableSnapshot.reasons, ['durable-observation-after-budget-expiry']);
+      // The settlement watch still runs its normal ordering; the safety
+      // cleanup (termination) ran and the turn completed.
+      assert.deepEqual(events, ['settlement-watch', 'terminated'], 'the safety cleanup ran and terminated the controlled processes');
+    });
+
+    test('the status deadline flow samples the durable reader BEFORE cleanup and records it (codex round 1)', async () => {
+      const events = [];
+      const typed = { aggregate: 'settled', reasons: [] };
+      // The CONFIRMED production JOB_WAIT_TIMEOUT deadline framing (exit 0,
+      // every pinned marker present inside the decoded command output).
+      const deadlineFraming = JSON.stringify({ error: { code: 'JOB_WAIT_TIMEOUT', category: 'timeout', message: 'Timed out waiting for job ' + 'a'.repeat(8) } });
+      const deadlineStdout = `${JSON.stringify({ type: 'item.completed', item: { type: 'command_execution', aggregated_output: deadlineFraming } })}\n`;
+      const held = await runHeldHostTurn({
+        launch: async () => ({ result: Promise.resolve({ code: 0, stdout: deadlineStdout, stderr: '' }) }),
+        gatePath: 'unused-gate',
+        waitForGate: async () => {},
+        captureProcessIdentity: async () => identity,
+        readProcessIdentity: async () => identity,
+        terminateProcessIdentity: async () => { events.push('terminated'); return { attempted: true, signalled: 'SIGTERM', exited: true, failure: null }; },
+        releaseGate: async () => {},
+        sleep: async () => {},
+        now: (() => { let value = 0; return () => (value += 500); })(),
+        holdMs: 60_000,
+        budgetMs: 120_000,
+        statusDeadlineFlow: true,
+        readDurableSnapshot: async () => { events.push('durable-read'); return typed; },
+      });
+      assert.equal(held.statusDeadlineReached, true, 'the verified deadline framing ends the turn as the measured terminal');
+      assert.equal(held.childSettlement.layers.durableObligations, 'settled', 'the deadline flow grounds the durable layer from the sampled snapshot');
+      assert.equal(held.childSettlement.durableSnapshot, typed, 'the typed snapshot rides the deadline answer');
+      assert.deepEqual(events, ['durable-read', 'terminated'], 'the read completes BEFORE the Status cleanup');
+    });
+
+    test('the status-wait supplier binds the OBSERVED acknowledgement identity, never a guess (codex round 1)', async (t) => {
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-durable-live-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const workspace = join(root, 'workspace');
+      await mkdir(workspace, { recursive: true });
+      const workspaceReal = await realPath(workspace);
+      const dataRoot = join(root, 'data-root');
+      const store = createStateStore({ dataRoot });
+      const LIVE_SESSION = 'live-host-session';
+      const { job } = await store.reserveFreshRescueJob({ workspace: workspaceReal,
+        reservation: { workspace: workspaceReal, ownerSessionId: LIVE_SESSION, ownerTurnId: 'turn-live', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } },
+        executor: { parentSessionId: LIVE_SESSION, parentTurnId: 'turn-live', agentId: 'live-child', agentType: 'zcode-rescue', agentPath: '/root/zcode_rescue_task', workspace: workspaceReal, parentPermissionMode: 'workspace-write' },
+        lifecycle: { ownerLifecycleEpoch: EPOCH, executionOwner: 'host-child', hostPlacement: 'foreground' } });
+      await store.claimJobWorkerForExecution(workspaceReal, job.id, { childPid: 999_999_999, workerLeaseId: job.id });
+      await store.transitionJob(workspaceReal, job.id, ['queued'], 'running',
+        { startedAt: new Date().toISOString(), zcodeSessionId: 'zs-live', childPid: 999_999_999, workerLeaseId: job.id });
+      await store.finishJob(workspaceReal, job.id, ['running'], 'succeeded', { exitCode: 0, resultArtifact: 'results/live.md' });
+
+      // The live shape: NO fixture-owned reservation — the identity comes
+      // from the OBSERVED launch acknowledgement.
+      const fixture = { workspace: workspaceReal, env: { ZCODE_DATA_ROOT: dataRoot } };
+      const observedIdentity = { jobId: job.id, ownerSessionId: LIVE_SESSION };
+      const supplier = statusWaitDurableSnapshotSupplier(fixture, observedIdentity);
+      assert.ok(supplier, 'the observed acknowledgement identity binds the live reader');
+      const snapshot = await supplier();
+      assert.equal(snapshot.partition.status, 'resolved');
+      assert.equal(snapshot.job.presence, 'found');
+      assert.equal(snapshot.job.projection.id, job.id, 'the snapshot reads the OBSERVED job, never a guessed id');
+      assert.equal(snapshot.job.projection.ownerSessionId, LIVE_SESSION);
+      assert.equal(snapshot.aggregate, 'settled');
+      // No observed identity and no fixture-owned reservation: null supplier —
+      // the executor records the NAMED reason, never a guessed id.
+      assert.equal(statusWaitDurableSnapshotSupplier(fixture, null), null);
+      assert.equal(statusWaitDurableSnapshotSupplier(fixture, { jobId: null, ownerSessionId: null }), null);
+      // The fixture-owned reserved job remains the instrument-level fallback.
+      const reservedFixture = { ...fixture, statusJob: { jobId: job.id, status: 'succeeded', queryTimeoutMs: 240_000 }, owningSessionId: LIVE_SESSION };
+      const fallback = statusWaitDurableSnapshotSupplier(reservedFixture, null);
+      assert.ok(fallback, 'the fixture-owned reserved job stays a supported fallback');
+      assert.equal((await fallback()).aggregate, 'settled');
+    });
+
+    test('the persisted record carries the typed durable snapshot beside the settlement layers', async (t) => {
+      const temporary = await mkdtemp(join(tmpdir(), 'shell-wait-durable-record-'));
+      t.after(() => rm(temporary, { recursive: true, force: true }));
+      const output = join(temporary, 'output');
+      await mkdir(output, { mode: 0o700 });
+      const typed = { aggregate: 'settled', reasons: [], layers: { endedObligation: { settled: true } } };
+      const record = await runShellWaitCase(
+        { case: 'rescue-long', codexBinary: process.execPath, sourceSha: 'a'.repeat(40), output, workerDurationMs: 1000, capMs: null, pollMs: 3_600_000, budgetMs: 2000 },
+        {
+          createFixture: async () => ({
+            workspace: join(temporary, 'ws'), codexHome: join(temporary, 'home'),
+            installedRoot: join(temporary, 'installed'), env: { CODEX_HOME: join(temporary, 'home') },
+            record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
+            dispose: async () => {},
+          }),
+          executeLiveCase: async () => ({
+            codexVersion: null,
+            route: { requested: 'named', actual: null },
+            hostResult: { exitCode: 0, companionProcessExit: 0, sentinelMatched: true, terminalStdoutChecked: true, resultCheck: null, resultCheckLabel: null },
+            linkage: { checked: true, mode: 'rescue', rootThreadId: null, childThreadId: 'd0d1e2f3-66ff-4b2c-8d7e-2f3a4b5c6d7e', parentThreadId: 'parent-1', companionLaunchCount: 1, companionSendCount: 1, originalHandleChecked: true },
+            observations: { outerReturns: 0, modelCalls: 2, rootJoins: 1, decisiveWallMs: null, pendingInnerAtEnd: false },
+            interrupt: { requested: false, delivered: null, settled: null, missingPrerequisite: null },
+            held: { endedBeforeGate: false, cleanupLabel: 'observation', gateReleased: true, cleanupErrors: { count: 0, reasons: [] }, processTermination: { verifiedTerminated: true, codexTerminated: true }, cleanupComplete: true },
+            child: {
+              settlement: { observed: true, basis: 'exact-launch-handle-linked-completed-exit-code-output' },
+              rootAcknowledgementAtElapsedMs: null, settlementDetectedAtElapsedMs: null,
+              settlementLayers: { remoteTerminal: null, localProcessReaping: 'natural-exit-observed', durableObligations: 'settled' },
+              durableSnapshot: typed,
+            },
+            statusQuery: null,
+            excerpts: [],
+            inconclusive: null,
+          }),
+        },
+      );
+      assert.deepEqual(record.child.durableSnapshot, typed, 'the typed durable snapshot persists into the case record');
+      assert.equal(record.child.settlementLayers.durableObligations, 'settled');
+      const written = JSON.parse(await readFile(join(output, 'rescue-long.record.json'), 'utf8'));
+      assert.deepEqual(written.child.durableSnapshot, typed, 'the written record carries the durable snapshot');
+    });
+
+    test('the persisted durable snapshot is redacted of private fixture paths (codex round 1)', async (t) => {
+      const temporary = await mkdtemp(join(tmpdir(), 'shell-wait-durable-redact-'));
+      t.after(() => rm(temporary, { recursive: true, force: true }));
+      const output = join(temporary, 'output');
+      await mkdir(output, { mode: 0o700 });
+      const privateWorkspace = join(temporary, 'ws');
+      // The real reader's shape: job.projection.workspace carries the ABSOLUTE
+      // private workspace path; reasons may embed it through fs errors.
+      const typed = {
+        aggregate: 'settled', reasons: [],
+        partition: { status: 'resolved', reason: null, workspaceKey: 'a'.repeat(64), canonicalWorkspace: true },
+        job: { presence: 'found', reason: null, projection: { id: 'b'.repeat(64), workspace: privateWorkspace, ownerSessionId: 'session-a', status: 'succeeded' } },
+        layers: { endedObligation: { settled: true } },
+        passive: { snapshotEqual: true, reason: null, lockState: 'present' },
+      };
+      const record = await runShellWaitCase(
+        { case: 'rescue-long', codexBinary: process.execPath, sourceSha: 'a'.repeat(40), output, workerDurationMs: 1000, capMs: null, pollMs: 3_600_000, budgetMs: 2000 },
+        {
+          createFixture: async () => ({
+            workspace: privateWorkspace, codexHome: join(temporary, 'home'),
+            installedRoot: join(temporary, 'installed'), env: { CODEX_HOME: join(temporary, 'home') },
+            record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
+            dispose: async () => {},
+          }),
+          executeLiveCase: async () => ({
+            codexVersion: null,
+            route: { requested: 'named', actual: null },
+            hostResult: { exitCode: 0, companionProcessExit: 0, sentinelMatched: true, terminalStdoutChecked: true, resultCheck: null, resultCheckLabel: null },
+            linkage: { checked: true, mode: 'rescue', rootThreadId: null, childThreadId: 'e0d1e2f3-66ff-4b2c-8d7e-2f3a4b5c6d7e', parentThreadId: 'parent-1', companionLaunchCount: 1, companionSendCount: 1, originalHandleChecked: true },
+            observations: { outerReturns: 0, modelCalls: 2, rootJoins: 1, decisiveWallMs: null, pendingInnerAtEnd: false },
+            interrupt: { requested: false, delivered: null, settled: null, missingPrerequisite: null },
+            held: { endedBeforeGate: false, cleanupLabel: 'observation', gateReleased: true, cleanupErrors: { count: 0, reasons: [] }, processTermination: { verifiedTerminated: true, codexTerminated: true }, cleanupComplete: true },
+            child: {
+              settlement: { observed: true, basis: 'exact-launch-handle-linked-completed-exit-code-output' },
+              rootAcknowledgementAtElapsedMs: null, settlementDetectedAtElapsedMs: null,
+              settlementLayers: { remoteTerminal: null, localProcessReaping: 'natural-exit-observed', durableObligations: 'settled' },
+              durableSnapshot: typed,
+            },
+            statusQuery: null,
+            excerpts: [],
+            inconclusive: null,
+          }),
+        },
+      );
+      const serialized = JSON.stringify(record.child.durableSnapshot);
+      assert.ok(!serialized.includes(privateWorkspace), 'the private workspace path must never persist in the durable snapshot block');
+      assert.match(String(record.child.durableSnapshot.job.projection.workspace), /<redacted>/u, 'the workspace field keeps its shape with the path redacted');
+      const written = JSON.parse(await readFile(join(output, 'rescue-long.record.json'), 'utf8'));
+      assert.ok(!JSON.stringify(written.child.durableSnapshot).includes(privateWorkspace), 'the written record is redacted too');
+      assert.equal(written.child.durableSnapshot.aggregate, 'settled', 'the non-private facts persist unchanged');
+      assert.equal(written.child.durableSnapshot.job.projection.status, 'succeeded');
+    });
+  });
 
 }

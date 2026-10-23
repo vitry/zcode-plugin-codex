@@ -30,6 +30,7 @@
  */
 
 import { renderOutput } from '../../scripts/lib/render.mjs';
+import { formatDirectInvocationSuccess } from '../../scripts/lib/direct-invocation-result.mjs';
 
 // The DESIGNED exit code of the §16.4 survival control — the fixture-owned
 // script's declared design constant (fixture.mjs survivalControlDeclaration
@@ -50,6 +51,34 @@ export const EXECUTING_RELEASE_QUALIFICATION_SOURCE = readFileSync(fileURLToPath
 
 /** The closed oracle version carried by every verdict-bearing export. */
 export const RELEASE_QUALIFICATION_VERSION = 1;
+
+/**
+ * Version of the rescue exact-expectation DERIVATION (the §19.2
+ * offline-versioning convention: a demonstrated input defect is corrected
+ * with a versioned adjudication, prior verdicts preserved as history —
+ * RELEASE_QUALIFICATION_VERSION, the family-oracle version, stays 1 because
+ * `evaluateExactTerminalLinkage` itself is byte-unchanged).
+ *
+ * v1: `exactRescueRenderedExpectation` derived the terminal-MANAGEMENT view
+ * (result + `Resumable:` indicator + hint, from the DECLARED resumability
+ * fact) for EVERY rescue result — the framing `terminalResultJob`
+ * (zcode-companion.mjs:2482-2496) supplies for the `result` management
+ * command. For the registered `invoke-prepared rescue` FOREGROUND invocation
+ * that was a demonstrated input defect: the foreground chain returns the RAW
+ * durable job (review.mjs:421 → the store.finishJob winner, review.mjs:743-761;
+ * `terminalResultJob`'s only call sites are zcode-companion.mjs:207/:209) and
+ * renders exactly `${result}\n` — so the v1 expectation produced the O1/O2
+ * comparator mismatches (`matched: false` / `output-truncated`) against
+ * contract-conforming production bytes.
+ *
+ * v2 (2026-10-22 task-5 instrument correction): the expectation is derived
+ * per the INVOKED path's production contract —
+ * `exactRescueForegroundRenderedExpectation` renders the raw-job return shape
+ * through the REAL `formatDirectInvocationSuccess`; the v1 builder remains
+ * exported UNCHANGED for genuine management/status results (its semantics are
+ * pinned by the retained tests and the §19.2 re-adjudication continuity).
+ */
+export const RESCUE_EXPECTATION_DERIVATION_VERSION = 2;
 
 /**
  * The plan §3 Gate B margin: each of L and R needs decisive-poll-start
@@ -352,6 +381,33 @@ export function exactRescueRenderedExpectation(input) {
   if (input.resumable !== true && input.resumable !== false) return null;
   const view = { result: input.result, job: { resumable: input.resumable } };
   return { output: renderOutput(view), exitCode: 0 };
+}
+
+/**
+ * Build the exact production-rendered expectation for the rescue fixture
+ * result AS THE INVOKED PATH DELIVERS IT (v2, the task-5 instrument
+ * correction — see {@link RESCUE_EXPECTATION_DERIVATION_VERSION}): the
+ * registered `invoke-prepared rescue` FOREGROUND chain returns the RAW
+ * durable job (the review.mjs:421 → store.finishJob-winner shape; production
+ * never applies `terminalResultJob` there), and the REAL production formatter
+ * (`formatDirectInvocationSuccess` → `renderOutput`) is the single source of
+ * truth over that shape — the view below reconstructs the raw record's public
+ * projection fields WITHOUT a `resumable` field (never a captured byte; the
+ * rendered bytes depend only on the result and the structural absence of a
+ * definite indicator). The result is the complete foreground contract output
+ * (`${result}\n` for a bounded nonempty result, exit 0) — never a partial
+ * expectation: it is the full production output of the invoked path.
+ * @param {{ result: string }} input
+ * @returns {{ output: string, exitCode: number }}
+ */
+export function exactRescueForegroundRenderedExpectation(input) {
+  if (!input || typeof input !== 'object' || typeof input.result !== 'string' || input.result.length === 0
+    || input.result.length > 4096) {
+    throw invalidQualificationInput('the rescue foreground expectation needs a bounded nonempty result string.');
+  }
+  const view = { result: input.result, job: { command: 'rescue', status: 'succeeded', readOnly: false } };
+  const formatted = formatDirectInvocationSuccess(view);
+  return { output: formatted.text, exitCode: formatted.exitCode };
 }
 
 /**
@@ -750,6 +806,18 @@ export function evaluateChildSettlementLayers(input) {
 export const RESPONSIVENESS_BOUND_MS = 60_000;
 
 /**
+ * The native-interruption oracle's OWN revision (2026-10-21 evidence-closure
+ * Task 3): v1 was the §16.5/§16.6 freeze (executed under the shared
+ * RELEASE_QUALIFICATION_VERSION 1 stamp); v2 adds the §19.4-registered
+ * host-activity admission conjunct (report §19.4, registered BEFORE any live
+ * trial) to the delivery layer. The shared RELEASE_QUALIFICATION_VERSION
+ * stamp is NOT bumped: the exact-terminal and settlement-layer family
+ * oracles are byte-unchanged, and v1 verdicts stand as recorded (report
+ * §19.2 re-adjudication continuity).
+ */
+export const NATIVE_INTERRUPTION_ORACLE_VERSION = 2;
+
+/**
  * The §16.3/§16.6 Gate-D native-delivery/settlement aggregation over
  * already-adjudicated layer facts. Every mandated rejection fails closed:
  * wrong target, unresolved alias, terminal-before-interrupt, delivery
@@ -771,6 +839,7 @@ export const RESPONSIVENESS_BOUND_MS = 60_000;
  *     previousStatusOnly: boolean,
  *     unreadableContinuation: boolean,
  *     pendingWindowConfirmed: boolean | null,
+ *     hostActivityAdmitted?: boolean | null,
  *   },
  *   turnSettled: boolean | null,
  *   deliveryToSettlementMs?: number | null,
@@ -788,6 +857,7 @@ export const RESPONSIVENESS_BOUND_MS = 60_000;
  *   layers: { delivery: boolean, turnSettlement: boolean, companion: boolean, durableObligations: boolean, noCollateral: boolean },
  *   terminalWinner: 'succeeded' | 'failed' | 'cancelled' | null,
  *   releaseQualificationVersion: number,
+ *   nativeInterruptionOracleVersion: number,
  * }}
  */
 export function evaluateNativeInterruptionSettlement(input) {
@@ -817,6 +887,12 @@ export function evaluateNativeInterruptionSettlement(input) {
   if (delivery.unreadableContinuation === true) reasons.push('unreadable-continuation');
   if (delivery.pendingWindowConfirmed !== true) reasons.push('pending-window-unconfirmed');
   if (delivery.exactTargetMatch !== true) reasons.push('delivery-target-unmatched');
+  // The §19.4 host-activity admission (native-interruption oracle v2): the
+  // host-emitted SubAgentActivity(kind=interrupted) item must be ADMITTED
+  // through the registered admission set (report §19.4, every conjunct). A
+  // missing/null fact (legacy records without the admission block) fails
+  // closed like any other unestablished conjunct — never a pass.
+  if (delivery.hostActivityAdmitted !== true) reasons.push('host-activity-unadmitted');
   const turnSettled = input.turnSettled === true;
   if (!turnSettled) reasons.push('turn-settlement-unobserved');
   // Codex round-8 review fix; refined by the round-11 review fix: the
@@ -872,20 +948,24 @@ export function evaluateNativeInterruptionSettlement(input) {
   if (input.terminalWinner !== 'succeeded' && input.terminalWinner !== 'failed' && input.terminalWinner !== 'cancelled') {
     reasons.push('terminal-winner-unobserved');
   }
-  return withOracleVersion({
-    qualified: reasons.length === 0,
-    reasons,
-    layers: {
-      delivery: reasons.every((reason) => ![
-        'delivery-not-established', 'delivery-unsent', 'delivery-dispatch-unestablished', 'alias-unresolved',
-        'terminal-before-interrupt', 'terminal-state-unestablished', 'previous-status-snapshot-only',
-        'unreadable-continuation', 'pending-window-unconfirmed', 'delivery-target-unmatched',
-      ].includes(reason)),
-      turnSettlement: turnSettled && settlementResponsive,
-      companion: companionSettled,
-      durableObligations: durableSettled,
-      noCollateral,
-    },
-    terminalWinner: input.terminalWinner ?? null,
-  });
+  return {
+    ...withOracleVersion({
+      qualified: reasons.length === 0,
+      reasons,
+      layers: {
+        delivery: reasons.every((reason) => ![
+          'delivery-not-established', 'delivery-unsent', 'delivery-dispatch-unestablished', 'alias-unresolved',
+          'terminal-before-interrupt', 'terminal-state-unestablished', 'previous-status-snapshot-only',
+          'unreadable-continuation', 'pending-window-unconfirmed', 'delivery-target-unmatched',
+          'host-activity-unadmitted',
+        ].includes(reason)),
+        turnSettlement: turnSettled && settlementResponsive,
+        companion: companionSettled,
+        durableObligations: durableSettled,
+        noCollateral,
+      },
+      terminalWinner: input.terminalWinner ?? null,
+    }),
+    nativeInterruptionOracleVersion: NATIVE_INTERRUPTION_ORACLE_VERSION,
+  };
 }
