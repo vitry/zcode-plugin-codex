@@ -14124,3 +14124,250 @@ copy at `/tmp/shell-wait-interrupt-closure-task4/driver-stdout.json`; empty stde
 re-pin). The records are redacted fixture records — no preparation/auth/rollout bodies; this
 section cites only the bounded typed facts, digests and safe identifiers the records already
 carry (`redactPrivatePaths` applies to any path-bearing citation).
+
+## 23.11 2026-10-23 interrupt-closure Task 5: final exact-source verification and the scoped Gate-D disposition (offline; zero model turns, zero live launches)
+
+Task 5 of the [2026-10-23 plan](../superpowers/plans/2026-10-23-rescue-shell-wait-interrupt-closure.md),
+executed 2026-10-23 in the same worktree on top of the Task-4 commit `eceadef`. The final battery
+ran ON THE FINAL IMPLEMENTATION BYTES (the Task-4 tree — the Task-5 commit is docs-only, so the
+bytes it verifies ARE the branch's final implementation bytes; the equality proof is below).
+OFFLINE throughout: ZERO model turns, zero live launches, zero labels spent (the §23.10.7 ledger
+stands closed: I spent-and-consumed, F unspent-with-adjudication; no old allowance is reopened).
+Production `scripts/`, `hooks/`, `skills/`, `agents/`, config, snapshots, dependencies, the spec
+and the Codex source stayed read-only; scratch (`findings.md`, `progress.md`, `task_plan.md`)
+preserved untouched and never staged; no user/global config or cache edit, no auth dump, no
+push/PR/merge, no adoption, no config change.
+
+### 23.11.1 The final bytes and their provenance (all pins re-verified 2026-10-23 at battery time; nothing trusted forward)
+
+Commit lineage from the PR #71 merge base `dba2e8ad8534b5800fd1faff98ad904f492dcf1d`: `5766037`
+(T1 → §23.1–§23.7) → `27e1e7b` (T2 → §23.8) → `dfa6b2fedb0c3090ec685a3451c9b4da65b5e45f` (T3 →
+§23.9) → `eceadefe852ecd37e9db8c8683fd0a3a8b97b338` (T4, DOCS-ONLY — `git diff dfa6b2f..eceadef
+--stat` = exactly this report's §23.10 + the plan's Task-4 ticks) → this Task-5 commit (docs-only:
+this section + the plan's Task-5 ticks). The full branch change set (`git diff dba2e8a..HEAD
+--stat`) is EXACTLY five files: `tools/shell-wait-probe/driver.mjs`, `tools/shell-wait-probe/
+evidence.mjs`, `tests/shell-wait-probe.test.mjs`, this report, the plan — the sanctioned
+research-only set; zero production bytes anywhere (the prohibited-diff negative proof is battery
+gate 10 below).
+
+**Final pins (every value re-executed at battery time):** worktree `git rev-parse HEAD` →
+`eceadefe852ecd37e9db8c8683fd0a3a8b97b338`, `git status --short` → ONLY the three untracked
+scratch files; selected executable `/Users/zhangzikai/.codex/packages/standalone/releases/
+0.163.0-aarch64-apple-darwin/bin/codex` (realpath resolves to itself) → `codex-cli 0.163.0`,
+SHA-256 `8813367285524ac798dd96d1b071aea30d58708c7226fd236cd275cf1cfdee31` — byte-identical to the
+§1 preference, §19.1 baseline, §23.1 re-pin and the §23.10.1/§23.10.2 launch verifications (the
+0.163.0 evidence cohort is the completed cohort; the ambient CLI stays 0.164.0 at its OWN realpath
+— recorded separately, never launched, never blended, never qualified); Codex source
+(`../../../codex`) → HEAD `dffa0deb69268ed4ac31578794c9ea897b336ae3`, `status --short` EMPTY (the
+§16.2/§19.4/§23.3 trace pin, still clean); driver `--help` → 816 bytes, SHA-256
+`afa0e66db58a9ef5576ce868266a0c5257b3cc9dad5720e5fd31fb7b4a5ff6f1` (unchanged). All eight
+instrument module digests recompute BYTE-IDENTICAL to the §23.10.1 launch freeze: `driver.mjs`
+`ef8d17f1…`, `evidence.mjs` `33b0f6ae…`, `fixture.mjs` `1b7b030d…`, `closure-observation.mjs`
+`46b7f5e2…`, `release-qualification.mjs` `5963d65b…`, `shape-diagnostic.mjs` `2f300de2…`,
+`tests/shell-wait-probe.test.mjs` `c49d250d…`, `tests/test-selection.test.mjs` `3aec94d5…`.
+**The executing observer digest RECOMPUTED on the final tree** (the `zcode-shell-wait-observer-v5`
+NUL-separated module-init construction over evidence ⊥ shape-diagnostic ⊥ release-qualification ⊥
+closure-observation ⊥ driver, reproduced from the driver's own construction) =
+**`5ef97779813a168c73f9a9fb65ca927bfcb98bf5fdc3e3b804f79aab4397161b`** — EQUAL to the §23.10.1
+launch value and to the I record's case-start/record-time digest (`sourcesChangedDuringRun:
+false`): no supersession; the bytes that adjudicated the live I case are the final bytes.
+
+**Source/fixture/installed labels (standing):** SOURCE = the read-only pinned checkout
+`dffa0deb…` (presence evidence only; never matched to any binary); FIXTURE = the disposable
+fixture-owned homes the driver prepares and disposes (every executing helper/instruction byte
+digested at the §23.10.1 freeze); INSTALLED = the selected 0.163.0 binary above, the only live
+surface ever launched (the single I case). Labels are never blended: a fixture proof is instrument
+proof only; an installed fact rides a registered live record; a source reading is neither.
+
+### 23.11.2 The final-source gate battery (the plan's Task-5 command list; every result verbatim; exit captured from `$?` into a file, no pipe truncation)
+
+| # | Gate command (plan Task-5 list) | Source | Verbatim result |
+| --- | --- | --- | --- |
+| 1 | `npm run test:shell-research` | worktree at `eceadef` | **ℹ tests 915 / ℹ suites 72 / ℹ pass 915 / ℹ fail 0 / ℹ cancelled 0 / ℹ skipped 0 / ℹ todo 0** (duration_ms 56750.834958), exit **0**, zero `✖` lines — byte-equal to the §23.9 final-bytes record (915/915, 72 suites; no count moved) |
+| 2 | `node --test tests/test-selection.test.mjs` | worktree at `eceadef` | **tests 6 / suites 0 / pass 6 / fail 0 / cancelled 0 / skipped 0 / todo 0** (duration_ms 43.356958), exit **0** |
+| 3 | `node --test tests/rescue-preparation.test.mjs tests/rescue-binding.test.mjs tests/rescue-route-planner.test.mjs` | worktree at `eceadef` | **tests 417 / pass 417 / fail 0 / skipped 0** (duration_ms 26395.373583), exit **0** (the driver is not in these suites' import graph — re-run for the record) |
+| 4 | `node --test tests/rescue-lifecycle.test.mjs tests/rescue-child-reconciliation.test.mjs tests/rescue-progress-relay.test.mjs` | worktree at `eceadef` | **tests 126 / pass 126 / fail 0 / skipped 0** (duration_ms 38711.535208), exit **0** |
+| 5 | `node --test tests/job-control.test.mjs tests/mcp-result.test.mjs` | worktree at `eceadef` | **tests 213 / pass 213 / fail 0 / skipped 0** (duration_ms 50231.168042), exit **0** |
+| 6 | `npm run lint` | worktree at `eceadef` | eslint clean, no findings, exit **0** |
+| 7 | `npm run typecheck` | worktree at `eceadef` | `tsc --noEmit` clean, no findings, exit **0** |
+| 8 | `node scripts/check-line-endings.mjs` | worktree at `eceadef` | *"LF line endings verified in 543 tracked files."*, exit **0** |
+| 9 | `git diff --check` | worktree at `eceadef` | no output, exit **0** |
+| 10 | prohibited diff `git diff dba2e8ad8534b5800fd1faff98ad904f492dcf1d --stat -- scripts/ hooks/ skills/ agents/ .codex-plugin/ marketplace/ docs/superpowers/specs/ package.json npm-shrinkwrap.json` | worktree at `eceadef` | **EMPTY** (0 bytes), exit **0** — the plan's "Prohibited diff expected EMPTY" holds |
+| 11 | `npm test` | verification copy `/tmp/swverify.Eds0QC` of the worktree HEAD `eceadefe852…` (construction below) | **routine suite: ℹ tests 3397 / pass 3394 / fail 0 / cancelled 0 / skipped 3 / todo 0** (duration_ms 657494.62175); **marketplace suite: ℹ tests 2 / pass 2 / fail 0 / skipped 0** (duration_ms 16940.048292); combined **3399 tests / 3396 pass / 0 fail / 3 skipped / 0 cancelled**, exit **0** (captured verbatim from `$?`), **zero `✖` lines in the entire 3545-line log**. The 3 skips are the SAME three standing documented opt-in gates as §18.3/§22.2 (`﹣` SKIP lines recorded verbatim in the log): `codex-skills-unqualified` ×2 — *"installed marketplace skill crosses a real ephemeral Codex turn into ZCode"* (`Set ZCODE_CODEX_SKILLS_E2E=1…`) and *"installed Rescue uses one isolated native child for initial and choice continuations"* (`Set ZCODE_CODEX_RESCUE_E2E=1…`); `real-zcode-unqualified` — *"real ZCode discovery, two-turn session, read-only Companion, cancellation, model, and history import"* (`Set ZCODE_REAL_E2E=1…`) — the standing design, not new omissions |
+
+**Gate-11 copy construction (the §22.2 recipe, followed exactly):** `mktemp -d
+/tmp/swverify.XXXXXX` → `/tmp/swverify.Eds0QC`; `git clone --no-local --no-hardlinks` of the
+worktree at `eceadef` (clone `rev-parse HEAD` = `eceadefe852…`, `status --short` empty — the three
+untracked scratch files structurally excluded; `.git` present); a normal copied `node_modules`
+directory (`cp -R`, verified `drwxr-xr-x`, a real directory, not a symlink); byte-proof by the
+recorded manifest recipe — SHA-256 manifests of ALL **543** tracked files computed on both sides,
+**identical**, sorted-manifest digest **`9507ed5215bd294e27679c1b7c9932d99c697aa0e71fcbdaa5447fbe81d822b2`**
+on both sides (construction: `git ls-files -z | xargs -0 shasum -a 256 | awk '{print $1, $2}' |
+sort | shasum -a 256`); the copy path carries no guarded identity word. One attempt, one run, zero
+failures, no retries — no waiver needed. The copy, its manifests and the gate logs are disposable
+`/tmp` state; the copy was deleted after the run; nothing from it entered the repository.
+
+**The §22.2 named baseline limitation — encountered NOT on this clone:** the historically
+lottery-coupled fixtures (`tests/codex-rescue-qualification.test.mjs`,
+`tests/e2e/codex-skills-e2e.test.mjs` — the cwd-hash-coupled canonical-index precondition of
+§22.2's dated completion) RAN INSIDE this gate-11 run and PASSED on this clone path
+(`/tmp/swverify.Eds0QC` hashed favorably; their tests appear green in the log). For the record and
+per the plan's corroboration duty, the SAME bytes were also run in the worktree cwd: qualification
+**162/162, exit 0** (duration_ms 5936.888208); e2e **46 tests / 44 pass / 2 skipped / 0 fail**,
+exit **0** (duration_ms 4625.104958) — the green holds on the same bytes in both cwds this time.
+The §22.2 classification stands UNCHANGED as history: the failed `/tmp/swverify.Vn0rkr` record at
+`47f0b33` stays failed; the path-dependence of the historical greens stays annotated; the bounded
+repair remains a PROPOSAL requiring its own authorization; nothing here waives the limitation —
+this row is simply a first-attempt green whose clone path met the precondition.
+
+**Post-commit equality (recorded here, verified at the Task-5 commit):** the Task-5 commit changes
+ONLY the two docs files, so `git diff eceadef..HEAD --stat -- tools/ tests/` is EMPTY at the
+commit — the bytes gates 1–11 verified are the branch's final implementation bytes.
+
+### 23.11.3 The Gate-D conjunct map — every conjunct observed/failed/unestablished (from the §23.10 join/oracle output; nothing re-derived)
+
+The offline join `nativeInterruptionGateDInput(record)` and oracle
+`evaluateNativeInterruptionSettlement` (oracle v2, release-qualification v1) ran on the persisted
+I record (§23.10.6): `qualified: false` with the 11 named reasons
+(`delivery-not-established`, `delivery-dispatch-unestablished`, `alias-unresolved`,
+`terminal-state-unestablished`, `previous-status-snapshot-only`, `pending-window-unconfirmed`,
+`delivery-target-unmatched`, `host-activity-unadmitted`, `turn-settlement-unobserved`,
+`settlement-latency-unestablished`, `survival-control-unadjudicated`). The conjunct-level map
+(labels c1–c6 are THIS table's grouping of the §19.4 admission set, NOT §19.4's own numbering:
+§19.4's conjunct (1) bundles the owning-Root scoping this table splits out as c3, its (4) bundles
+that scoping with the pending-window conjunct c4, and its (2)+(3) merge into c2 — the set itself
+is unchanged and every conjunct is required):
+
+| Gate-D conjunct / layer | Status on the I record | Basis (§23.10 facts; never inferred beyond them) |
+| --- | --- | --- |
+| §19.4 c1 — exactly one `interrupt_agent` call | **POSITIVE (raw-call fact)** | `callCount: 1`; the admission's reasons-list composition proves `host-activity-call-count-not-one` never fired; delivery decode POSITIVELY established in the raw-rollout analysis (`-delivery-rejected`/`-delivery-unobserved` never fired) |
+| §19.4 c2 — exactly one matching `SubAgentActivity(interrupted)` item joined by call id + `agent_thread_id` to the spawn acknowledgement | **item-presence POSITIVE; the JOIN unestablished** | `itemPresent: true`, `interruptedItemCount: 1`, `foreignItemCount: 0` — a COMPLETED scan of BOTH collected rollouts (the §23.3 first outcome, measured, never `absent`-by-failure); `foreignItemCount: 0` is NOT an ownership proof under an unavailable Root identity; `idJoin: false` (unestablishable), `agentThreadIdMatch: null` — never guessed |
+| §19.4 c3 — owning-Root rollout | **unestablished** | `rootRolloutOwned: null` — WHICH rollout owns the item stays the named-unestablished conjunct; the owning-Root thread id derives ONLY from the supported-case analysis, which aborted `unsupported-call-shape` on the new unclassified cell before producing supported linkage (the single admission reason `host-activity-owning-root-unestablished`) |
+| §19.4 c4 — inside the confirmed pending window | **unestablished** | `insidePendingWindow: null`, `pendingWindowConfirmed: false` |
+| §19.4 c5 — timed | **unestablished** | `timed: null`, item `completedAtMs: null`; dispatch/pending/cancellation latencies all `null` (never zero); `timingBasis: "unavailable"`; `orderingBound: false` → `settled: null` (`ordering-unbound-not-attributed`) |
+| §19.4 c6 — `previous_status` a pre-dispatch snapshot only | **observed, snapshot-only** | `previousStatus: "running"` (a NONTERMINAL active turn — the interrupt was delivered onto a live turn); `previousStatusOnly: true`; `terminalBeforeInterrupt: null` on the `no-terminal-state-evidence` basis (never false) |
+| Delivery layer (the §19.4 admission set as a whole) | **FAILED CLOSED** | `hostActivityAdmitted: false` with the SINGLE named reason; delivery OUTCOME facts stay `null` per the §23.8 abort-exposure contract (`delivered`/`deliverySent`/`exactTargetMatch`/`aliasResolved` null — unestablished without the supported-case identity); layer result **false** |
+| Turn settlement | **false / unobserved** | `turnSettled: null`; `turn-settlement-unobserved` riding the oracle |
+| Settlement latency / responsiveness | **unestablished** | `deliveryToSettlementMs: null`; the ≤60000-ms bound stays **REGISTERED-BUT-NOT-YET-APPLICABLE** (the §19.4 admission set never satisfied on a live record) — UNAPPLIED, never zero (§23.6) |
+| Companion (remote outcome) | **raw TRUE; qualification UNESTABLISHED** | raw oracle `companionOutcome: 'terminal-result'` through verified executor linkage — preserved verbatim as an instrument result with NO qualification credit: the final settlement read is a TEARDOWN-TIME observation (`durableSnapshot.completedAtMs` 1792771233334 ≈ the hold-deadline instant ≈ epoch 1792771233333). A teardown-time snapshot is NEVER an interruption settlement; local reaping stays the registered named-unobservable `null` |
+| Durable obligations | **raw TRUE; qualification UNESTABLISHED** | raw oracle `durableObligations: 'settled'` — same teardown-time fence. The settled aggregate records what the production authorized-stop path (`'session-end'`) had durably published BY teardown; it is NEVER proof that all applicable physical executor duties were discharged (a terminal job does not infer local reaping, guard release or any unobserved layer). The pre-teardown timeline (§23.10.5) in fact shows the job `running`/`unresolved` with the writable guard RETAINED through reads up to ≈249.3 s held-clock — the §16.2 convergence OBSERVED, never credited |
+| No-collateral (independent survival control) | **unadjudicated — NOT qualified** | `survivalControl` OBSERVED facts `null` (the extraction requires the supported-case identity — the named limitation shape); the declaration is verified and the no-stop/no-input discipline held on the declaration; `noCollateral: false`; null stays null, fail-closed |
+| Cleanup attribution | **observed clean** | `cleanupKill: false` — zero kills (`verifiedTerminated: false`, `codexTerminated: false`); NO termination-initiation boundary exists on the record (`cleanupBoundaryAtMs` absent — correctly none: the held turn ended by the SCHEDULED hold-deadline observation end, and teardown never manufactures a boundary, §22 round-3/§23.9); `durableReadPostCleanupBoundary: false` means "no comparable boundary", NEVER pre-boundary credit |
+| Natural completion | **NOT observed** | `naturalCompletionObserved: false` — the completion-shaped watch (`settlement.observed: false`) provably cannot settle the interrupted path; no natural winner is claimed |
+| Cause classification (four causes DISTINCT) | **kept distinct** | (1) the job's `cancelled` winner rode the REAL authorized `'session-end'` stop intent (requestedAt ≈ held-clock 249.4 s) — a SEPARATE authorized production act, never interrupt settlement, never cleanup; (2) the held turn ended by the scheduled hold-deadline observation cleanup with a natural worker exit — not a budget abort, not a kill; (3) child natural completion NOT observed; (4) no genuine non-session-end stop path fired. `nativeInterruptionClaimed: false` throughout; `statusObservationTimeoutOnly: false`; `stdoutCapture` incomplete/`capture-meta-missing` (named observer fact, never reconstructed) |
+
+**S1–S7/Q1–Q6 coverage — carried from the unchanged contract suites (requirements UNCHANGED):**
+the §22.4 mapping CARRIES with one refinement. The spec and every production path are byte-identical
+to base (gate 10 EMPTY), and the unchanged contract suites re-proved green on the final bytes
+(gates 3–5: 417 + 126 + 213, plus the 915-test research suite and the full gate-11 run). Gate A
+PASS, Gate B CLOSED at the corrected v2 adjudication (twice-measured), Gate C PASS (1-vs-7), Gate
+E MIXED (RV/BG unqualified; no new campaign authorized) — all carried from §22.3/§22.4, nothing
+reopened, the retained long/cadence/output successes (M = 300004 ms; O1/O2 386600/386500 ms;
+exact-stdout v2) and every legacy verdict and failure history preserved. Gate D is **NOT CLOSED**,
+now with the §23.10 per-layer precision above; the one S5/Q4 refinement is the measured
+installed-retention answer: the §21.2.3 item-1 OPEN question (installed retention) is now ANSWERED
+POSITIVE at the item-presence level on a live 0.163.0 record — while every delivery-layer positive
+that depends on the owning-Root join stays named-unestablished.
+
+**Observer gap, not a production contract failure:** nothing in this run is a production defect.
+The instrument performed per its registration: the §23.2 frozen grammar rejected the new cell BY
+DESIGN (a non-`r` binding head is in the frozen rejected list — §20.6's never-an-F-cause class),
+the §23.4 exposure preserved every independently safe positive (retention, spawn identity,
+`callCount: 1`, the sampling timeline), the §23.5 schedule and fence measured and withheld exactly
+as registered, and every unrecovered positive kept its named reason — nothing relabeled. The
+blocker is an ADMISSION/JOIN gap (the owning-Root identity needs a supported-case analysis that
+one unclassified cell aborts). Because no production contract is violated, the plan's
+"for a real production issue, supply a minimal exact-path reproduction and proposed repair scope"
+arm does NOT fire; no production repair is proposed, shipped, or requested here.
+
+### 23.11.4 Independent review record
+
+**The independent pre-live review chain (carried; every research commit covered):** the plan-level
+reviews (`closure_spec_review`, `config_path_a_plan_review` — both CLEAR, recorded in the plan's
+planning-verification record); the T2/T3 self-review rounds (the §23.8 CRLF round with its
+mutation check; the §23.9 round-1 four findings, the codex backfill three findings, the codex
+round-2 one finding — each test-first with RED recorded verbatim) closing in the cumulative
+independent codex review **`review-mvl4r1hj-twr6bd` with ZERO findings** covering the T2+T3
+implementation — closed BEFORE the Task-4 launch (the §23.9 tick's retrospective record; the
+§23.10.1 freeze cites the same chain); the T4 launch/adjudication recorded per its own
+registrations (§23.10.1–§23.10.7).
+
+**The Task-5 in-task review duty (executed 2026-10-23; recorded by this section):**
+(1) **Spec fidelity re-verified** — gate 10's EMPTY prohibited diff proves the 2026-10-05 spec,
+S1–S7/Q1–Q6 requirements and all production bytes unchanged; the §23 chain's report cites were
+re-checked to resolve on the final bytes (`EMISSION_JUNCTION_WRAPPER_PATTERN` evidence.mjs:83
+inside the :56–83 freeze comment, whole-body recognition :721 inside :710–729; the
+`DURABLE_SAMPLING_*` frozen bounds driver.mjs:2229–2262; `INTERRUPT_PARTIAL_FACTS_VERSION`
+:2723; the offline fence :2785–2807; the abort-exposure mapping :5529–5565; the oracle
+`evaluateNativeInterruptionSettlement` release-qualification.mjs:863 with its named reasons at
+:897/:910/:934); the §23.2/§23.5/§23.6 frozen registrations stand unchanged (the two dated
+annotation sets record settled bound interpretations, never clause changes).
+(2) **Privacy rechecked on every new §23 record** — this section and §23.10 cite only bounded
+typed facts, digests and safe identifiers; the withheld bodies stay withheld by digest alone
+(`e9856478…`, `be3b9a1c…` — never reconstructed, no reconstruction attempted or acceptable); the
+fixture-record redaction (private fixture paths in reason texts) is pinned by the real-serializer
+persistence test; no private rollout, preparation, auth, job body or credential entered the
+repository anywhere in §23.
+(3) **Determinism under ambient Codex identity re-verified** — static audit: every
+`CODEX_THREAD_ID` reference in the research tests is confined to the established isolation
+machinery (the `isolatedBaseEnv()` strip + home/data-root redirection, tests
+`shell-wait-probe.test.mjs:40–59`/`:22285`/`:22414–22461`/`:23337` — the `:22285` mention is a
+comment inside the launcher `THREAD_ID_REQUIRED` envelope pin describe, itself part of the
+identity-gate machinery); the §23.8/§23.9 new describes contain
+ZERO spawn calls and ZERO `process.env` reads. Empirical: `CODEX_THREAD_ID=ambient-canary
+node --test --test-name-pattern='ambient CODEX_THREAD_ID' tests/shell-wait-probe.test.mjs` →
+exit 0, **1/1 pass** (duration_ms 453.033542); the same pattern WITHOUT ambient identity → exit 0,
+**1/1 pass** (duration_ms 428.215667). The round-2 restoration assertion (captured-original
+comparison, :22444) is intact.
+
+**The branch-level overall review is the ROOT's separate step, run AFTER this commit** (the plan's
+review duty; not dispatched inside this task, no review loop, no provider outage occurred —
+nothing to substitute). This section prepares its record; docs-only closing records may follow
+tested/reviewed implementation with equality proven (§23.11.2's post-commit equality note).
+
+### 23.11.5 The scoped disposition — three separate answers
+
+**(a) Native delivery / turn responsiveness: UNESTABLISHED on this run.** The delivery admission
+failed closed with the single named reason `host-activity-owning-root-unestablished` (the
+supported-case analysis aborted on the new unclassified wrapper cell); the delivery/dispatch/
+pending/cancellation latencies are all `null` (never zero); the ≤60000-ms native
+turn/cell-responsiveness bound remains REGISTERED-BUT-NOT-YET-APPLICABLE — registered, not
+applied, not met, not failed.
+
+**(b) Companion and ALL applicable owned/no-collateral settlement: UNESTABLISHED.** The raw TRUE
+companion and durable-obligation oracle results are preserved verbatim as instrument results and
+carry ZERO qualification credit: the final settlement read is a TEARDOWN-TIME observation
+coinciding with the hold deadline — never called an interruption settlement; a terminal job never
+proves all applicable physical executor duties. The pre-teardown sampling timeline (job
+`running`/`unresolved`, writable guard retained, through ≈249.3 s) rides the record as independent
+observation fact, not credit. The independent survival control's observed facts are `null`
+(unadjudicated) — no-collateral is NOT qualified.
+
+**(c) Deployment eligibility: NONE.** The unified **DO-NOT-ADOPT-YET** production recommendation
+stands (§22.7 as revised): Gate D is mandatory and NOT proven; the completed evidence cohort is
+the 0.163.0 I-case research record; long-wait/cadence/exact-output successes stay PROVEN
+RESEARCH-SCOPE facts; there is no fictional `rescue-long` product island to adopt; the remaining
+Review/BG/shared-default compatibility questions are unqualified and untouched by this branch.
+
+**Completion statement.** The finite Gate-D task is **PRECISELY BLOCKED**. The ledger is
+exhausted: I spent-and-consumed with a named fail-closed blocker (the new unclassified
+wrapper-shaped cell — a NEW-unknown-shape class per §20.6, its body withheld by construction,
+digest `be3b9a1c…`); F UNspendable on the §23.10.7 three-ground adjudication (no demonstrated
+instrument defect; the frozen grammar declined by design; no offline-versionable correction
+against a withheld body). The next action is NOT another feasibility campaign and NOT a ledger
+reset: it would be either a separately-authorized INSTRUMENT-DESIGN decision (a grammar-expansion
+registration — a new Task-1-design registration decision, versioned offline first against a
+retained raw body that does not yet exist) or a separately-authorized PRODUCTION/COMPATIBILITY
+change. Auto-update/version drift (the ambient 0.164.0) remains a named applicability limit, never
+a free reset; versioned offline re-adjudication of the retained I record stays allowed, never
+stamped as a fresh installed trial. **"Research finished" never means "default enabled."**
+
+### 23.11.6 Raw-data note for Task 5
+
+Task 5 consumed no live case and produced no new raw observation data. Its artifacts are this
+section, the plan's Task-5 checkbox ticks, and disposable `/tmp` state (the verification copy
+`/tmp/swverify.Eds0QC` — deleted after its run; the gate logs and the two manifest digests under
+`/tmp/interrupt-closure-task5-gates/`). The §23.10 records remain the only live-data artifacts of
+this campaign; they are redacted fixture records outside the repository, cited here only at the
+bounded typed-fact level. No private rollout, preparation, auth, job body, credential or
+user-configuration data entered the repository at any point in Tasks 1–5.
