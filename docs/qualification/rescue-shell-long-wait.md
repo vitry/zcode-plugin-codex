@@ -12952,6 +12952,23 @@ private preparation frame (its own recognized path unchanged); extra leading/tra
 blank CONTENT lines beyond inter-statement separators (the `residual` stage stays rejected).
 Task 2's RED matrix must cover exactly the plan's listed negatives against THIS frozen family.
 
+DATED CORRECTION (2026-10-23, task-2 implementation): the frozen sentence above misdescribes the
+EXISTING decoder — the retained wrapper path's bounded literal decoder (`parseWrapperArguments`)
+has ALWAYS admitted duplicate JSON/literal object keys with LAST-WINS semantics, never rejected
+them (empirically verified against the real module at this task's base commit `5766037`: the
+canonical control `const r = await tools.exec_command({cmd:"a",cmd:"b"}); text(r);` decodes to
+`{cmd:"b"}`; no duplicate-key rejection exists on any admitted wrapper path — the
+`rejectDuplicatePreparationKeys` scanner guards only the PREPARATION frame). The admitted frozen
+family therefore inherits these unchanged decoder semantics exactly as the canonical family does
+(the freeze's own rule: `parseWrapperArguments` semantics unchanged, no new decoder). The
+implementation is pinned by the differential canonical-vs-relaxed assertion in
+`tests/shell-wait-probe.test.mjs` (describe "interrupt-closure task 2: the frozen
+emission-junction wrapper family", test "the argument literal bound and decoder semantics are
+unchanged (duplicates, truncation, oversize)" — same verdict, same last-wins value
+`{cmd:"b"}`). This corrects the REPORT's description only: the frozen grammar is unchanged, the
+decoder stays byte-identical, and nothing that was rejected before becomes admitted. §23.8
+records the implementation.
+
 **Identity boundary, stated explicitly:** a synthetic family fixture that reproduces every
 structural diagnostic above is instrument proof only — it is NOT proof of historical raw-body
 identity. The lost body is named by its digest alone; only a retained raw body could prove
@@ -13152,3 +13169,114 @@ for the unchanged implementation (the §19 Task-1 precedent). The prohibited tra
 against `dba2e8a` is EMPTY for `scripts/ hooks/ skills/ agents/ .codex-plugin/ marketplace/
 docs/superpowers/specs/ package.json npm-shrinkwrap.json` (docs-only change set). Untracked scratch
 (`findings.md`, `progress.md`, `task_plan.md`) preserved untouched and never staged.
+
+### 23.8 2026-10-23 interrupt-closure Task 2 executed: the frozen emission-junction family implemented and the independent host facts exposed (offline; zero model turns)
+
+Task 2 of the [2026-10-23 plan](../superpowers/plans/2026-10-23-rescue-shell-wait-interrupt-closure.md),
+executed 2026-10-23 in the same worktree on top of §23's Task-1 commit `5766037`, and committed as
+the task's single implementation commit (message: "research: admit the bounded emission-junction
+call form and expose independent host facts (interrupt-closure task 2)", amended in place with
+this registration). OFFLINE throughout: ZERO model turns, zero live launches, zero labels spent
+(the §21.3 ledger stays closed; the Task-4 I/F registrations are untouched). Production
+`scripts/`, `hooks/`, `skills/`, `agents/`, config, snapshots, dependencies, the spec and the
+Codex source stayed read-only (the prohibited tracked-path diff against `dba2e8a` is EMPTY — gate
+list below); scratch (`findings.md`, `progress.md`, `task_plan.md`) preserved untouched. Changed
+bytes: `tools/shell-wait-probe/evidence.mjs`, `tools/shell-wait-probe/driver.mjs`,
+`tests/shell-wait-probe.test.mjs`, this §23.2 correction + this section, and the plan's Task-2
+checkbox ticks — nothing else.
+
+- **Bounded whole-body admission (§23.2 grammar as implemented; plan checkbox 2)** —
+  `tools/shell-wait-probe/evidence.mjs:56-83` (the `EMISSION_JUNCTION_WRAPPER_PATTERN` freeze
+  comment) and `:710-729` (`parseCallStatements`' whole-body recognition, tried BEFORE the
+  directive strip and the line splitter on the RAW bytes — no strip-first bypass): exactly the
+  frozen form — the existing WRAPPER statement family with ONE relaxed dimension, `text<ws1>(<ws2>r<ws3>)`
+  with space/tab runs of length 0–8 at the three emission junctions only; head/argument junctions
+  copied verbatim (zero tolerance); the declaration→`text` junction keeps the existing same-line
+  `[ \t]*`; tools exactly `{exec_command, write_stdin}`; binding pinned `r` both sides (the
+  equality tail is structural); the `text(JSON.stringify(r))` tail UNRELAXED; directive absent
+  (directive-led cells keep the existing rules); one literal-object argument ≤ 4096 through the
+  SAME unchanged `parseWrapperArguments`; one trailing `\n` artifact admitted; interior newline /
+  trailing blank line / CRLF-split rejected; a whole-body match failing argument decode falls
+  through to the unchanged per-line machinery (additive only — every previously-admitted body
+  keeps its verdict, every unsupported form keeps its fail-closed diagnostics with the body
+  withheld). Per-statement output/continuation ownership is the canonical single-statement one; a
+  shared-cell submission is never evidence that a later awaited poll started.
+- **Independent host facts through the SAME path (§23.4 as preregistered; plan checkboxes 3–4)** —
+  `tools/shell-wait-probe/driver.mjs:2273-2284` (`INTERRUPT_PARTIAL_FACTS_VERSION = 1`, the NEW
+  offline-facts adjudicator version, provenance-separated from the live observer digest and from
+  any installed-trial stamp), `:4698-4703` (`wrappedInterrupt` projected beside `family`),
+  `:4741-4775` (the abort-case exposure: when the collection COMPLETED — `rolloutsFailureReason`
+  null, rollouts captured non-empty — and the whole-case adjudication aborted `inconclusive`, the
+  versioned `interrupt.partialFacts` block carries the spawn-acknowledgement identity
+  (`observeSpawnAcknowledgementIdentity`), the capture-vs-admission facts
+  (`rolloutCount` positive while `childToolCallCount` stays null), the adjudication reason, and
+  the source-rollout SHA-256 digest; `:5000-5051` (the fall-through mapping now keeps the
+  raw-rollout call facts — `attempted`, `callCount`, `family`, `previousStatus`, `target`,
+  `orderingBound` — while the delivery OUTCOME facts stay null, corrects `missingPrerequisite` to
+  name the admission abort instead of a collection failure, and lets the §19.4 admission block
+  persist with its per-conjunct named reasons; pre-turn/collection-failure behavior stays
+  byte-identical), `:1065-1074` (the record serializer persists `partialFacts`, schema-additive).
+  The NOT-qualified limits hold verbatim: the whole case stays inconclusive (`unsupported-call-shape`),
+  an unadmitted item never becomes `absent` (a positive absence rides only a completed scan of a
+  collected rollout — `host-activity-item-absent`; a bounded scan keeps
+  `host-activity-item-bound-exceeded` with absence unestablished; a never-run scan keeps
+  not-measured with no fabricated block), a hidden second attempt keeps
+  `host-activity-call-count-not-one`, a wrapped interrupt keeps
+  `host-activity-wrapped-interrupt-unjoinable`, and the Gate-D join/oracle refuse the delivery
+  layer on the persisted facts (the coexistence test asserts qualified=false with
+  `host-activity-unadmitted` + `previous-status-snapshot-only`, unconfirmed window, null
+  settlement/companion/winner).
+- **Tests** — `tests/shell-wait-probe.test.mjs:25042-25622` (describes at `:25055` and `:25346`;
+  the CRLF test at `:25125`), two describes, 23 tests: describe
+  "interrupt-closure task 2: the frozen emission-junction wrapper family (report §23.2)" (13
+  tests — the plan's checkbox-1 matrix: changed binding/sink name; per-junction 0/8/9 whitespace
+  bounds; same-line rule; trailing `\n` artifact vs trailing blank line; trailing-line whitespace;
+  CRLF line endings (the CRLF-terminated frozen cell reaching the same call-value parse as its LF
+  twin, interior CRLF split rejected — added by the task-2 self-review round); head/argument
+  zero tolerance; tool set; unrelaxed stringify tail; binding pinned `r`; let/var; mismatched/
+  computed/String tails; loops/functions/template/dynamic arguments; extra leading/trailing
+  statements; hidden second call; second awaited poll; blank-separator rule unchanged; duplicate
+  argument keys (differential canonical-vs-relaxed, last-wins per the §23.2 dated correction);
+  truncation; 4096/4097 argument bound; raw invalid directive; directive-led cell unchanged;
+  preparation path unchanged; e2e same-call-value validation; e2e extra-field discipline
+  identical to canonical; e2e over-bound fail-closed with body withheld) and describe
+  "interrupt-closure task 2: independent host facts survive an aborted evidence adjudication
+  (report §23.4)" (10 tests — raw-call facts + capture-vs-admission through the real
+  `inspectShellWaitEvidence` → `mapShellWaitLiveFacts` join; per-conjunct host-item facts;
+  the versioned partial-facts block; record persistence reloaded from disk; the
+  unknown-cell-coexists-with-observed-item test through the persisted record →
+  `nativeInterruptionGateDInput` → `evaluateNativeInterruptionSettlement` path with NO false
+  admitted window / exactly-one-call claim / settlement / adoption; positive absence;
+  scanner-not-reached; bounded scan; hidden extra interruption; wrapped unjoinable).
+- **RED→GREEN evidence** — parser slice: the admission tests failed on the pre-implementation
+  bytes with `parseCallStatements` returning null (`the frozen family must admit: …`, deepEqual
+  null-vs-admitted); the end-to-end tests failed with `actual: 'inconclusive', expected:
+  'supported'` and `{"reason":"unsupported-call-shape",…}` (the §21.2.3 item-1 abort),
+  verified by temporarily stashing the evidence.mjs change; host-fact slice RED: `attempted`
+  expected true got null, the collection-failure `missingPrerequisite` text unchanged,
+  `partialFacts` and `wrappedInterrupt` undefined. The self-review CRLF test was confirmed
+  PASSING on the implementation bytes and proven falsifiable by a mutation check (removing the
+  pattern's `\r?` tolerance flips it RED with "the CRLF-terminated frozen cell reaches the same
+  existing call-value validation as the LF form"), then the implementation was restored
+  byte-identically.
+- **Gates (final amended bytes, all exit 0)** — focused describes 13/13 and 10/10;
+  `npm run test:shell-research` 893/893 pass, 70 suites, 0 fail, 0 skipped (was 870/870 before
+  this task); `node --test tests/test-selection.test.mjs` 6/6; `npm run lint` clean;
+  `npm run typecheck` clean; `node scripts/check-line-endings.mjs` (543 tracked files, LF);
+  `git diff --check` clean; the prohibited tracked-path diff against `dba2e8a` (`scripts/ hooks/
+  skills/ agents/ .codex-plugin/ marketplace/ docs/superpowers/specs/ package.json
+  npm-shrinkwrap.json`) EMPTY. Ambient-identity isolation preserved: the new tests spawn nothing
+  beyond the established `runShellWaitCase` createFixture/executeLiveCase stub pattern and inherit
+  the file's `isolatedBaseEnv()` discipline; no fixture launcher, stop protocol, sampling, new
+  Child poll, Status substitute, binding identity, MCP reopening, operation timeout or inactivity
+  detector was added (Tasks 3's scope untouched).
+- **Versioning** — the new offline facts carry `INTERRUPT_PARTIAL_FACTS_VERSION = 1`
+  (`interrupt-partial-facts`, basis `raw-rollout-fixture-proof`) plus the original source-rollout
+  digest, never the old observer stamp; `RELEASE_QUALIFICATION_VERSION` 1,
+  `NATIVE_INTERRUPTION_ORACLE_VERSION` 2 and `SHAPE_DIAGNOSTIC_SCHEMA_VERSION` 1 are unchanged
+  (no demonstrated offline-fact defect in them — §23.2's dated correction above is the one report
+  -side fix, and it changes no executable byte).
+- **Status** — the instrument repair is implemented and regression-pinned; this does NOT close
+  Gate D, does not qualify the Child call sequence (hidden additional calls, ambiguous IDs, or
+  incomplete collection still block the positive conjuncts), and creates no production change.
+  The Task-4 live I/F labels stay unspent; the §23.5 schedule implementation is Task 3.

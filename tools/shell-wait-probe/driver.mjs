@@ -1062,6 +1062,15 @@ function buildCaseRecord(caseInput, fixture, liveFacts, /** @type {'executed' | 
       ...(liveFacts.interrupt?.attempted === true && liveFacts.interrupt?.hostDelivery !== undefined
         ? { hostDelivery: liveFacts.interrupt.hostDelivery }
         : {}),
+      // 2026-10-23 interrupt-closure Task 2 (schema-additive, abort-case runs
+      // only): the §23.4 versioned partial-facts block — the spawn
+      // acknowledgement identity, the capture-vs-admission distinction and
+      // the source-rollout digest under the NEW adjudicator version, never
+      // the live observer's stamp — so offline readers keep the layer facts
+      // that survive an aborted evidence adjudication.
+      ...(liveFacts.interrupt?.partialFacts !== undefined && liveFacts.interrupt?.partialFacts !== null
+        ? { partialFacts: liveFacts.interrupt.partialFacts }
+        : {}),
       ...(typeof liveFacts.interrupt?.cleanupBoundaryAtMs === 'number' ? { cleanupBoundaryAtMs: liveFacts.interrupt.cleanupBoundaryAtMs } : {}),
       ...(typeof liveFacts.interrupt?.cancelledAtMs === 'number' ? { cancelledAtMs: liveFacts.interrupt.cancelledAtMs } : {}),
       ...(typeof liveFacts.interrupt?.completedBeforeCallMs === 'number' ? { completedBeforeCallMs: liveFacts.interrupt.completedBeforeCallMs } : {}),
@@ -2260,6 +2269,18 @@ export function interruptDurableSnapshotSupplier(fixture, observedIdentity = nul
     resolveJobFromOwnerIndex: true,
   });
 }
+
+/**
+ * The interrupt partial-facts adjudicator's OWN version (2026-10-23
+ * interrupt-closure Task 2, report §23.4): the offline-recoverable layer
+ * facts that survive an aborted whole-case evidence adjudication — the
+ * raw-rollout interrupt call facts, the spawn-acknowledgement identity, the
+ * capture-vs-admission distinction and the source-rollout digest — are
+ * stamped with THIS new identifier so they can never be mistaken for the
+ * live observer's own adjudication (the provenance.observer digest) or for a
+ * fresh installed-trial claim. v1 introduces the block.
+ */
+export const INTERRUPT_PARTIAL_FACTS_VERSION = 1;
 
 /**
  * The offline Gate D join (2026-10-21 evidence-closure Task 3): ONE place
@@ -4674,6 +4695,11 @@ export function mapShellWaitLiveFacts(input, held, evidence, codexVersion, rollo
     requested: input.case === 'rescue-interrupt',
     attempted: interruptInteraction.attempted,
     family: interruptInteraction.family,
+    // Codex round 4's wrapped/direct classification (2026-10-23
+    // interrupt-closure Task 2: projected beside the family so a wrapped
+    // (code-mode-cell) interrupt keeps its named unjoinable limitation
+    // visible at the layer-fact level, never folded into the family label).
+    wrappedInterrupt: interruptInteraction.wrappedInterrupt,
     delivered: interruptInteraction.delivered,
     rejection: interruptInteraction.rejection,
     previousStatus: interruptInteraction.previousStatus,
@@ -4712,6 +4738,39 @@ export function mapShellWaitLiveFacts(input, held, evidence, codexVersion, rollo
     ...(interruptCleanupBoundaryAtMs !== null ? { cleanupBoundaryAtMs: interruptCleanupBoundaryAtMs } : {}),
     ...(interruptCancelledAtMs !== null ? { cancelledAtMs: interruptCancelledAtMs } : {}),
   };
+  // The §23.4 abort-case layer exposure (2026-10-23 interrupt-closure Task
+  // 2): when the evidence COLLECTION completed (real rollouts are in hand)
+  // but the whole-case ADJUDICATION aborted fail-closed (e.g. one unknown
+  // call shape), the raw-rollout layer facts stay recoverable and ride the
+  // mapping instead of being erased by the bare overall failure — while the
+  // overall case keeps its inconclusive verdict and every delivery-layer
+  // positive stays unestablished. The block is stamped with the NEW partial
+  // -facts adjudicator version and the source-rollout digest so offline
+  // readers can always tell these fixture-proof layer facts from the live
+  // observer's own supported-case analysis and from any installed-trial
+  // stamp (the plan's provenance-separation rule). A pre-turn failure or a
+  // rollout-collection failure exposes nothing: there are no raw rollouts to
+  // derive the facts from, and the historical collection-incompleteness
+  // behavior stays byte-identical there.
+  const interruptAbortLayerExposure = input.case === 'rescue-interrupt'
+    && rolloutsFailureReason === null
+    && evidence.status === 'inconclusive'
+    && Array.isArray(rollouts) && rollouts.length > 0;
+  const interruptPartialFacts = interruptAbortLayerExposure
+    ? {
+      adjudicator: 'interrupt-partial-facts',
+      version: INTERRUPT_PARTIAL_FACTS_VERSION,
+      // The provenance CLASS, not a stamp: these facts are derived from the
+      // run's own collected raw rollouts (fixture proof), never from the
+      // live observer's supported-case analysis and never presented as a
+      // fresh installed observation.
+      basis: 'raw-rollout-fixture-proof',
+      sourceRolloutsSha256: createHash('sha256').update(JSON.stringify(rollouts)).digest('hex'),
+      capture: { rolloutsCaptured: true, rolloutCount: rollouts.length, rolloutsFailureReason: null },
+      adjudication: evidence.inconclusive?.reason ?? null,
+      spawnIdentity: observeSpawnAcknowledgementIdentity(rollouts),
+    }
+    : null;
   if (rolloutsFailureReason !== null) {
     inconclusive = { reason: `rollouts-unavailable: rollout collection failed (${rolloutsFailureReason}); the case is inconclusive rather than zero.` };
   } else if (evidence.status === 'inconclusive' && evidence.inconclusive !== null) {
@@ -4937,7 +4996,15 @@ export function mapShellWaitLiveFacts(input, held, evidence, codexVersion, rollo
   }
   return {
     codexVersion,
-    collection: { rolloutCount: null, childToolCallCount: null, truncated: false },
+    collection: {
+      // §23.4 capture-vs-admission: when the collection completed but the
+      // adjudication aborted, the rollout count is a captured fact and only
+      // the supported-case call analysis stays unestablished. Every other
+      // fall-through path keeps the historical nulls.
+      rolloutCount: interruptAbortLayerExposure ? rollouts.length : null,
+      childToolCallCount: null,
+      truncated: false,
+    },
     route: { requested: caseRoute(input.case), actual: null },
     // A PRE-TURN failure (gate setup, version probe) never reached the held
     // lifecycle: every held fact stays unknown (null) instead of dereferencing
@@ -4953,14 +5020,53 @@ export function mapShellWaitLiveFacts(input, held, evidence, codexVersion, rollo
     // The pre-turn failure branch cannot observe the rollouts, so the
     // interaction facts stay unknown (null) with the explicit
     // could-not-observe reason — never the old permanently-null placeholder.
+    // §23.4 EXCEPTION (2026-10-23 interrupt-closure Task 2): when the
+    // collection COMPLETED and only the whole-case adjudication aborted, the
+    // raw-rollout call facts survive exactly as extracted (attempted, count,
+    // family, previous status, target, ordering bound — with the delivery
+    // OUTCOME facts staying unestablished), the §19.4 admission block rides
+    // with its per-conjunct named reasons, and the versioned partial-facts
+    // block carries the spawn identity and the source-rollout digest. The
+    // whole case keeps its inconclusive verdict; a survivor fact earns no
+    // qualification credit by itself.
     interrupt: input.case === 'rescue-interrupt'
-      ? {
-        ...interruptFacts,
-        attempted: null,
-        delivered: null,
-        missingPrerequisite: 'the owning-session interrupt delivery could not be observed in this run: the evidence collection did not complete '
-          + '(rollouts unavailable or the held observation failed before evidence collection)',
-      }
+      ? (interruptAbortLayerExposure
+        ? (interruptInteraction.attempted
+          ? {
+            ...interruptFacts,
+            delivered: null,
+            rejection: null,
+            missingPrerequisite: `the case's evidence collection completed (${String(rollouts.length)} rollout(s) captured) but the whole-case evidence adjudication aborted before the supported-case analysis (${evidence.inconclusive?.reason ?? 'unknown reason'}): the exact Child/Root identity join is unestablished, so every delivery-layer positive stays unestablished (the raw-rollout layer facts ride interrupt.partialFacts and interrupt.hostDelivery, never a qualification claim)`,
+            ...(interruptPartialFacts !== null ? { partialFacts: interruptPartialFacts } : {}),
+          }
+          : {
+            // Codex round-2 review fix (report §23.8): the extractor SKIPPED
+            // the unclassified cell, so "no recognized interrupt call" is
+            // PARSER UNCERTAINTY — the skipped cell could hold the interrupt
+            // — never negative evidence. Absence stays unknown: the
+            // call-shape facts stay null (never false/0, never
+            // absent-as-negative) and the message names the uncertainty
+            // instead of the definitive delivery-not-attempted claim. A
+            // RECOGNIZED attempt keeps the keeper branch above unchanged.
+            // (family/previousStatus/target/exactTargetMatch/settled are
+            // already null — unknown — without a recognized call.)
+            ...interruptFacts,
+            attempted: null,
+            callCount: null,
+            wrappedInterrupt: null,
+            previousStatusTerminal: null,
+            delivered: null,
+            rejection: null,
+            missingPrerequisite: `the case's evidence collection completed (${String(rollouts.length)} rollout(s) captured) but the whole-case evidence adjudication aborted on an unsupported call shape (${evidence.inconclusive?.reason ?? 'unknown reason'}): whether an owning-session interrupt was attempted stays unknown — the unclassified cell could hold the interrupt call, so the absence of a recognized interrupt is parser uncertainty, never negative evidence (the raw-rollout layer facts ride interrupt.partialFacts, never a qualification claim)`,
+            ...(interruptPartialFacts !== null ? { partialFacts: interruptPartialFacts } : {}),
+          })
+        : {
+          ...interruptFacts,
+          attempted: null,
+          delivered: null,
+          missingPrerequisite: 'the owning-session interrupt delivery could not be observed in this run: the evidence collection did not complete '
+            + '(rollouts unavailable or the held observation failed before evidence collection)',
+        })
       : interruptFacts,
     held: {
       endedBeforeGate: held?.endedBeforeGate ?? null,
@@ -5060,7 +5166,7 @@ const defaultLiveExecutor = /** @type {any} */ (executeDefaultLiveCase);
  *   hostResult?: { exitCode?: number | null, companionProcessExit?: number | null, sentinelMatched?: boolean | null, terminalStdoutChecked?: boolean | null, resultCheck?: string | null, resultCheckLabel?: string | null, exactTerminalMatch?: { matched: boolean | null, reason: string | null }, stdoutCapture?: { status: string, reason: string | null, byteCount: number | null, captureSha256: string | null, exitCode: number | null, closureObservationVersion: number | null } },
  *   linkage?: { checked?: boolean | null, mode?: 'rescue' | 'root' | null, rootThreadId?: string | null, childThreadId?: string | null, parentThreadId?: string | null, companionLaunchCount?: number | null, companionSendCount?: number | null, originalHandleChecked?: boolean | null },
  *   observations?: { outerReturns?: number | null, modelCalls?: number | null, rootJoins?: number | null, decisiveWallMs?: number | null, pollWallTimesMs?: (number | null)[] | null, pollStartedAtElapsedMs?: number | null, holdDeadlineElapsedMs?: number | null, remainingLifetimeMs?: number | null, remainingLifetimeBasis?: 'hold-deadline-at-poll-start' | 'unavailable' | null, pendingInnerAtEnd?: boolean | null },
- *   interrupt?: { requested?: boolean, attempted?: boolean | null, family?: 'v2' | 'v1' | null, delivered?: boolean | null, rejection?: string | null, previousStatus?: string | null, callCount?: number | null, orderingBound?: boolean, target?: { kind: 'agent-id' | 'task-name' | 'unknown' | null, value: string | null, suppressed: boolean, chars: number | null } | null, exactTargetMatch?: boolean | null, exactTargetMatchBasis?: string | null, settled?: boolean | null, settledBasis?: string | null, pendingIntervalMs?: number | null, deliveryToSettlementMs?: number | null, timingBasis?: 'rollout-event-timestamps' | 'unavailable' | null, missingPrerequisite?: string | null, pendingWindowObserved?: boolean, settlementCleanupGenerated?: boolean, unreadableContinuationObserved?: boolean, hostDelivery?: Record<string, unknown>, cleanupBoundaryAtMs?: number, cancelledAtMs?: number, completedBeforeCallMs?: number, completedAfterCallMs?: number },
+ *   interrupt?: { requested?: boolean, attempted?: boolean | null, family?: 'v2' | 'v1' | null, wrappedInterrupt?: boolean | null, delivered?: boolean | null, rejection?: string | null, previousStatus?: string | null, previousStatusTerminal?: boolean | null, callCount?: number | null, orderingBound?: boolean, target?: { kind: 'agent-id' | 'task-name' | 'unknown' | null, value: string | null, suppressed: boolean, chars: number | null } | null, exactTargetMatch?: boolean | null, exactTargetMatchBasis?: string | null, settled?: boolean | null, settledBasis?: string | null, pendingIntervalMs?: number | null, deliveryToSettlementMs?: number | null, timingBasis?: 'rollout-event-timestamps' | 'unavailable' | null, missingPrerequisite?: string | null, pendingWindowObserved?: boolean, settlementCleanupGenerated?: boolean, unreadableContinuationObserved?: boolean, hostDelivery?: Record<string, unknown>, partialFacts?: Record<string, unknown>, cleanupBoundaryAtMs?: number, cancelledAtMs?: number, completedBeforeCallMs?: number, completedAfterCallMs?: number },
  *   held?: {
  *     endedBeforeGate?: boolean | null,
  *     statusDeadlineReached?: boolean,

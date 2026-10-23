@@ -53,6 +53,34 @@ const MAX_DIAGNOSTIC_EXCERPTS = 64;
 // launch call, single-quoted JavaScript literals). Both are supported, with
 // an optional terminal semicolon as observed in the second Case 0 record.
 const WRAPPER_PATTERN = /^const r = await tools\.(exec_command|write_stdin)\((\{[\s\S]{1,4096}?\})\);\s*text\((?:JSON\.stringify\(r\)|r)\);?\n?$/u;
+// The 2026-10-23 interrupt-closure Task 1 freeze (report §23.2): the SAME
+// pinned wrapper statement family with exactly ONE relaxed dimension — runs
+// of HORIZONTAL whitespace (space/tab, length 0-8) at the three EMISSION
+// junctions `text<ws1>(<ws2>r<ws3>)`. ws length 0 is the already-admitted
+// canonical form (WRAPPER_PATTERN above, unchanged); 1-8 is the relaxation;
+// a longer run stays rejected. NOTHING else is relaxed: the head/argument
+// junctions (`tools.(`, the object, the declaration's `);`) keep
+// WRAPPER_PATTERN's zero tolerance (the head here is copied verbatim), the
+// declaration→`text` junction keeps the EXISTING `\s*` projected to its
+// same-line `[ \t]*` form (the family's emission shares the declaration's
+// line, so the multi-line `\s*` form never matches whole bodies), the
+// emission `;` stays optional, and the trailing `[ \t]*\r?\n?` mirrors the
+// existing per-line trim/strip semantics (a real trailing BLANK line — a
+// second `\n` — still fails the match and the cell with it). The binding is
+// pinned `r` on BOTH sides (the equality tail is structural in the pattern),
+// the tool alternation is exactly the pinned {exec_command, write_stdin}
+// family, the argument is one bounded literal object decoded by the SAME
+// `parseWrapperArguments`, and a directive remains neither required nor
+// relaxed: this family registers with directive absent (a directive-led body
+// cannot match the `^const` anchor and keeps the existing directive rules in
+// the per-line path below). The object group excludes newlines on purpose:
+// the frozen statement is ONE content line, and a newline-terminated object
+// can never swallow a second statement into the match. This whole-body
+// recognition runs on the RAW directive-prefixed input — never a strip-first
+// bypass — and a match that then fails its argument decode falls through to
+// the unchanged per-line machinery (it only ever ADMITS a fully validated
+// frozen body; every other body keeps its existing verdict and diagnostics).
+const EMISSION_JUNCTION_WRAPPER_PATTERN = /^const r = await tools\.(exec_command|write_stdin)\((\{[^\n]{1,4096}?\})\);[ \t]*text[ \t]{0,8}\([ \t]{0,8}r[ \t]{0,8}\);?[ \t]*\r?\n?$/u;
 // The installed 0.160.1 host additionally observes the inline wrapper form
 // `text(await tools.<tool>({...}));` (first live observation 2026-10-06, Task 4
 // Case 0: `text(await tools.exec_command({cmd:"cat …",max_output_tokens:20000}));`).
@@ -679,6 +707,26 @@ export function parseCallStatements(event) {
   }
   if (typeof payload.input !== 'string') return null;
   let source = payload.input;
+  // The §23.2-frozen whole-body recognition (2026-10-23 interrupt-closure
+  // Task 2), tried BEFORE the directive strip and the line splitter on the
+  // RAW input: the complete emission-junction family is ONE statement whose
+  // declaration and emission share one line, so the whole raw body (including
+  // the trailing-newline artifact) is recognized before any splitting. The
+  // match validates the raw bytes end to end (no strip-first bypass), the
+  // argument reaches the SAME existing bounded literal decoder, and the
+  // per-statement output/continuation ownership is the canonical
+  // single-statement one. A directive-led body, any unsupported surrounding
+  // syntax, or a failed argument decode falls through to the unchanged
+  // per-line machinery below and keeps its existing fail-closed verdict.
+  const wholeBody = EMISSION_JUNCTION_WRAPPER_PATTERN.exec(source);
+  if (wholeBody) {
+    const value = parseWrapperArguments(wholeBody[2]);
+    if (value) return [{ kind: wholeBody[1], value, directive: null, wrapped: true }];
+    // A whole-body match whose argument is over the bound or undecodable
+    // never returns null from here: the unchanged per-line machinery below
+    // renders the existing verdict for the same bytes (fail closed for the
+    // frozen family, admitted for an already-supported shape).
+  }
   let prefix = '';
   const directive = DIRECTIVE_PATTERN.exec(source);
   if (directive) { prefix = directive[0]; source = source.slice(prefix.length); }
