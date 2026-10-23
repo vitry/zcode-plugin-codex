@@ -11983,6 +11983,95 @@ fixed in the SAME dedicated overall-review fix commit by AMEND).**
   §22.2 record pinned to the `297fdd3` verified bytes; the battery refresh on the truly-final
   bytes (including gate 11) belongs to the CLOSING amend.
 
+**Post-merge-review fix record (2026-10-23; TWO P2 findings from the post-merge review of the
+merged closeout; TDD regression-first, ZERO model turns, ZERO live cases, production read-only,
+prohibited diff EMPTY; landed as ONE NEW commit on top of the pushed closeout `38e1909` — never
+an amend of a pushed commit; the commit changes ONLY the research tests file and the two docs
+files).**
+
+- **Finding 1 [P2] — the capture-test environment inherited the ambient Codex identity.**
+  Finding: the capture-scope helper composed the spawned child environment from
+  `baseEnv: process.env` directly (tests/shell-wait-probe.test.mjs, the `captureScope` helper),
+  so whatever `CODEX_THREAD_ID` / `HOME` / `CODEX_HOME` / plugin-data-root variables the
+  invoking shell carried flowed into the composed child env — a spawned launcher/probe could
+  proceed past the intended fast-fail using the real ambient identity and touch the real user
+  Codex home. SURVEY (the identity surface of the launcher/store path): exactly ONE
+  identity-bearing variable exists — **`CODEX_THREAD_ID`**
+  (scripts/zcode-companion.mjs:107/:110/:831, the `AMBIENT_THREAD_UNAVAILABLE`/
+  `THREAD_ID_REQUIRED` authorization gates; no other session/turn identity variable is read on
+  that path) — plus the home/data-root routing variables that reach the REAL user Codex home:
+  **`CODEX_HOME`** (scripts/lib/plugin-data.mjs:37; falls back to `homedir()/.codex`),
+  **`ZCODE_DATA_ROOT`** (plugin-data.mjs:22/:36), **`PLUGIN_DATA`** / **`CLAUDE_PLUGIN_DATA`**
+  (plugin-data.mjs:44/:50), **`HOME`** / **`USERPROFILE`** (scripts/lib/zcode-discovery.mjs:13,
+  scripts/lib/zcode-runtime-config.mjs:58). The companion's remaining ambient reads
+  (`ZCODE_BACKGROUND_WORKER`, `ZCODE_DEBUG`, `ZCODE_PATH`, `CODEX_APP_SERVER_PATH`,
+  `CODEX_APP_SERVER_ARGS_JSON`) are capability/config switches, not identity — recorded, not
+  stripped. The sweep found every env-composing or spawn site in the tests file that passed
+  `process.env` or omitted `env` and routed ALL of them through the same isolated base: the
+  suite-selection self-test child, the import-purity child, the `not-a-suite` child, the suite
+  canary's git spawns, every `git rev-parse`/`git worktree`/`git clone`/`realGit` site, the
+  hostile-GIT-overrides `cleanEnv`, the fake-zcode nonce children, the owning-session hook/
+  companion environments (`{ ...process.env, ZCODE_DATA_ROOT: dataRoot }` ×2), the four
+  `defaultCompanionChildSpawn` `env: process.env` sites, the stdin-wrapper spawns, the survival
+  control spawn, the leak-probe script spawn, the E2E-gated driver dispatch/--help children,
+  every driver-CLI negative spawn, the FIFO fixture child, the SPACED-roots `baseEnv` rebuild,
+  and the capture scope itself (whose temp home/codex-home/data-root directories are created
+  inside the scope's disposable root). TEST FIRST:
+  `an ambient CODEX_THREAD_ID can never reach the composed capture environment, and the launcher
+  still fast-fails the pinned envelope (post-merge review fix 1)` — the honest in-situ
+  simulation: the canaries are planted on the TEST PROCESS's own `process.env` (exactly where an
+  invoking Codex turn's identity would sit) around the `captureScope` call, restored in `finally`
+  — RED: **1 test / 0 pass / 1 fail**, first assertion `the ambient thread identity must be
+  stripped from the composed base` actual `'ZCODE_CANARY_AMBIENT_THREAD_4e7a1'` vs expected
+  `undefined` (the environment assertions run BEFORE any spawn, so the RED run never launched a
+  child carrying the leaked identity). FIX: a file-level `isolatedBaseEnv` helper —
+  `process.env` minus the identity variables, with `HOME`/`USERPROFILE`/`CODEX_HOME`/
+  `ZCODE_DATA_ROOT`/`PLUGIN_DATA`/`CLAUDE_PLUGIN_DATA` redirected into a disposable root —
+  composed under EVERY spawn site above; the capture scope creates the temp directories inside
+  its own root and passes it explicitly. GREEN: the regression passes (composed env carries NO
+  identity variable, every routing variable inside the scope root, and the launcher under that
+  env STILL fast-fails with the EXACT pinned 207-byte `THREAD_ID_REQUIRED` envelope, exit 1 —
+  the ambient id cannot activate the launcher path); NO existing pin moved anywhere (the full
+  research suite passed unchanged at **870/870** = 869 + the one net-new test; every focused
+  suite, lint, typecheck, line-endings, `git diff --check` and the EMPTY prohibited diff below).
+  PLACEMENT DECISION: the sanitization lives in the TEST HELPER ONLY —
+  `tools/shell-wait-probe/closure-observation.mjs`'s `captureEnvironment` keeps its §19.3(b)-frozen
+  `baseEnv` passthrough contract untouched (the fixture composes the base it is given), so there
+  is NO freeze deviation to register; the module (and every other executing observer module) is
+  byte-identical to its §22.1 recorded value, so the executing observer digest STANDS (§22.1).
+  No external `unset` was used (the fix lives entirely in the test-file composition); no test
+  was skipped; no assertion loosened.
+- **Finding 2 [P2] — the production recommendation presented research cases as an adoptable
+  product surface.** Finding: §22.7's four-part recommendation (and the plan's Task-6 summary of
+  it) granted `rescue-long`/`rescue-repeat` an ADOPT-ONLY-ON-LISTED-SURFACE option — but those
+  are RESEARCH CASES of the finite ledger, and the waiting mechanism they exercised is SHARED
+  across commands (including `rescue-interrupt`), so a "long/repeat-only" production adoption
+  would be a fiction while the interruption-settlement gate (Gate D) is open. FIX (docs): §22.7
+  restructured so the production recommendation is ONE UNIFIED **DO-NOT-ADOPT-YET** — no
+  adopt-only-on-listed-surface option for ANY command — with the established facts
+  (long-wait/cadence re-qualified twice; Gate B closed at v2 with the instrument-defect story)
+  kept explicitly labeled RESEARCH-SCOPE results; the (d) eligibility table rewritten to
+  production eligibility NONE for every command with the rescue-long/repeat column reduced to
+  research-coverage-only; the explicit sentence that research coverage of the shared mechanism
+  is not production eligibility while Gate D is open and that any future adoption question
+  returns to the user after Gate D closes; the smallest-arm proposals and the research
+  completion ≠ production adoption statements kept. §22.4 gained the dated annotation aligning
+  every §22.7 cross-reference to the revised section; §21.4's verdict pointer needed no change
+  (it resolves at §22 either way); the plan's Task-6 checkbox 5 gained the dated revision note
+  in place (supersession style — the four-part wording stands as history); NO new Task-6
+  checkbox was ticked. The long-wait mechanism and complete-stdout facts REMAIN established
+  research results nowhere downgraded.
+- **Fix-commit battery (gates 1–10 on the fix bytes; every result verbatim; gate 11 in the
+  §22.2 dated entry):** research **ℹ tests 870 / ℹ suites 68 / ℹ pass 870 / ℹ fail 0 /
+  ℹ cancelled 0 / ℹ skipped 0 / ℹ todo 0** (duration_ms 61596.80975), exit 0 — 869 + the one
+  net-new regression test; selection **tests 6 / pass 6 / fail 0** (duration_ms 36.855375),
+  exit 0; prep/binding/route **tests 417 / pass 417 / fail 0** (duration_ms 26695.425416), exit
+  0; lifecycle/reconciliation/relay **tests 126 / pass 126 / fail 0** (duration_ms
+  39126.960791), exit 0; job-control/mcp **tests 213 / pass 213 / fail 0** (duration_ms
+  50676.205959), exit 0; lint **clean, exit 0**; typecheck **clean, exit 0**; line-endings
+  *"LF line endings verified in 542 tracked files."*, exit 0; `git diff --check` clean; the
+  prohibited diff **EMPTY** (0 bytes), exit 0.
+
 ### 22.1 The final bytes and their provenance
 
 Commit lineage from the merged base `0b522b70b0ed72d7d1566de581dc306c70b38fac` (PR #70):
@@ -12036,8 +12125,54 @@ re-pin value for ANY future registered run (§20.3/§20.7 dated annotations) —
 > (`git diff 9ab0ecd..HEAD --stat -- tools/ tests/` EMPTY; the §22.2 refreshed battery and its
 > verification-copy byte-proof are computed over exactly these bytes). The future-repin observer
 > digest stands at **`57359bff…`** (no launch occurred in the closeout; nothing supersedes it).
+>
+> **Dated annotation (2026-10-23, the post-merge-review fix commit):** the fix commit changes ONLY
+> `tests/shell-wait-probe.test.mjs` plus the two docs files (`git diff 38e1909..fix-commit --stat`
+> shows exactly those three paths; every `tools/` module is byte-identical to the values above).
+> The tests-file digest is SUPERSEDED accordingly: the final research-tests bytes hash to
+> **`268f901857095a78c1dee10381ac7e845302b25801aa9255515115e078242350`** (`1193cb7d…` stands as
+> the closeout-era history), and the restated chain for that file is `7e0fddff…` (§21.5-era) →
+> `e9dc1610…` → `8a621916…` → `dcca6f84…` → `1193cb7d…` → `268f9018…`, each supersession
+> annotated where it was recorded. **The executing observer digest is UNCHANGED**: the digest
+> binds the five executing observer modules (`driver.mjs` `9cbb8c0e…`, `evidence.mjs`,
+> `shape-diagnostic.mjs`, `release-qualification.mjs` `5963d65b…`, `closure-observation.mjs`
+> `46b7f5e2…` — the NUL-separated `zcode-shell-wait-observer-v5` construction, none of them an
+> input from the tests file), and every one is byte-identical here, so the future-repin value
+> STANDS at **`57359bff248ab6723ae3cdff7e325ff3c0d7419495730be76a552965c6881431`** — re-verified
+> from the module-init bytes at the fix tree; no supersession.
 
 ### 22.2 Final-source gate battery (the plan's Task-6 command list; every result verbatim)
+
+> **Dated entry (2026-10-23, the post-merge-review fix run — gates 1–10 executed on the fix
+> bytes in this worktree with exit captured from `$?` into a file; gate 11 on the fresh
+> verification copy of the fix commit's tree, recorded in the closing amend of the same
+> commit per the §22-header procedure; the tests file CHANGED, so the research count differs
+> from every historical record below — recorded fresh here, nothing reused).**
+>
+> | # | Gate command (plan Task-6 list) | Source | Verbatim result |
+> | --- | --- | --- | --- |
+> | 1 | `npm run test:shell-research` | worktree at the fix bytes | **ℹ tests 870 / ℹ suites 68 / ℹ pass 870 / ℹ fail 0 / ℹ cancelled 0 / ℹ skipped 0 / ℹ todo 0** (duration_ms 61596.80975), exit **0**, zero `✖` lines — the 869 record + the ONE net-new post-merge-review regression test (an earlier same-bytes run measured duration_ms 56302.18325 with identical counts) |
+> | 2 | `node --test tests/test-selection.test.mjs` | worktree at the fix bytes | **tests 6 / suites 0 / pass 6 / fail 0 / cancelled 0 / skipped 0 / todo 0** (duration_ms 36.855375), exit **0** |
+> | 3 | `node --test tests/rescue-preparation.test.mjs tests/rescue-binding.test.mjs tests/rescue-route-planner.test.mjs` | worktree at the fix bytes | **tests 417 / pass 417 / fail 0 / skipped 0** (duration_ms 26695.425416), exit **0** |
+> | 4 | `node --test tests/rescue-lifecycle.test.mjs tests/rescue-child-reconciliation.test.mjs tests/rescue-progress-relay.test.mjs` | worktree at the fix bytes | **tests 126 / pass 126 / fail 0 / skipped 0** (duration_ms 39126.960791), exit **0** |
+> | 5 | `node --test tests/job-control.test.mjs tests/mcp-result.test.mjs` | worktree at the fix bytes | **tests 213 / pass 213 / fail 0 / skipped 0** (duration_ms 50676.205959), exit **0** |
+> | 6 | `npm run lint` | worktree at the fix bytes | eslint clean, no output, exit **0** |
+> | 7 | `npm run typecheck` | worktree at the fix bytes | `tsc --noEmit` clean, no output, exit **0** |
+> | 8 | `node scripts/check-line-endings.mjs` | worktree at the fix bytes | *"LF line endings verified in 542 tracked files."*, exit **0** |
+> | 9 | `git diff --check` | worktree at the fix bytes | no output, exit **0** |
+> | 10 | prohibited diff `git diff 0b522b70b0ed72d7d1566de581dc306c70b38fac --stat -- skills/ agents/ scripts/ hooks/ .codex-plugin/ marketplace/ docs/superpowers/specs/ package.json npm-shrinkwrap.json` | worktree at the fix bytes | **EMPTY** (0 bytes), exit **0** |
+> | 11 | `npm test` | verification copy of the fix commit (construction below) | recorded in the closing amend of this same commit — the copy must be cloned from the committed tree |
+>
+> Gate-11 copy construction (the §22.2 recipe, followed exactly): `mktemp -d
+> /tmp/swverify.XXXXXX`; `git clone --no-local --no-hardlinks` of the fix commit's tree (a
+> self-contained repository clone; the three untracked scratch files structurally excluded); a
+> normal copied `node_modules` directory (`cp -R`, real directory, not a symlink); byte-proof by
+> the recorded manifest recipe (SHA-256 manifests of all 542 tracked files on both sides,
+> normalized/sorted, digest of the sorted manifest file). The copy path carries no guarded
+> identity word; the copy was deleted after the run. The amendment that records gate 11's
+> verbatim result touches ONLY the two docs files — the implementation bytes the copy verified
+> are the final bytes (the `tools/ tests/` diff between the cloned commit and the final HEAD is
+> EMPTY, recorded with the result).
 
 > **Dated note (2026-10-22, the overall-review fix — updated in place at the round-4 amend):**
 > the table below is the battery of record for the `297fdd3` verified bytes and stands as
@@ -12293,6 +12428,15 @@ blocked** by the unqualified affected consumers (every other code-mode consumer 
 Review). Requirements were never lowered anywhere: where a layer closed, it closed by new measured
 evidence under the frozen oracles; where it did not, it is named above.
 
+> **Dated annotation (2026-10-23, the post-merge-review fix):** every §22.4 cross-reference to
+> §22.7 — including the Q6 row's "§22.7 scoped draft" pointer — resolves to §22.7 AS REVISED: the
+> production recommendation is the single unified **DO-NOT-ADOPT-YET** with no
+> adopt-only-on-listed-surface option for any command and production eligibility NONE for every
+> command (research coverage of the shared waiting mechanism is not eligibility while Gate D is
+> open). This section's per-layer facts, requirement statuses and unchanged-gates statements are
+> untouched by the revision; nothing here granted, or grants, production eligibility on any
+> listed surface.
+
 ### 22.5 Independent review record — the actual reviews (recorded by the closeout commit)
 
 Per the plan's Task-6 checkbox, the final branch required independent review of (a) Spec fidelity
@@ -12380,70 +12524,78 @@ the observer-digest chain (`8db29d9c…` launched → `30d19736…` → `8b95cea
 and the fix record. Zero model turns and zero live cases in Task 6 and the closeout — consistent
 with the ledger's closed state (no label was available to spend: §21.3).
 
-### 22.7 Scoped recommendation — **CONFIRMED** (closeout, 2026-10-22)
+### 22.7 Scoped recommendation — **DO-NOT-ADOPT-YET (unified)** — revised by the post-merge-review fix (2026-10-23)
 
-> **Status: CONFIRMED.** The DRAFT recorded at `30477b3` is CONFIRMED UNCHANGED in substance by
-> the closeout: nothing in the §22.5 review rounds changed the evidence basis — every review
-> finding was an instrument-hardening defect (the offline join's fence, exit attribution, capture
-> vocabulary, tap-declaration persistence, teardown boundary, result-first durable sampling), not
-> a production-contract or evidence fact. **The fixes correct the INSTRUMENT for future use; the
-> recorded O1/O2/I results stand exactly as recorded at their launch-time instrument** (the
-> §21.2.3 manual fence overlay stands as history and is now CODE-ENFORCED by the round-1 fix —
-> §21.2.3's dated annotation; the I case's qualification status was UNESTABLISHED before the fix
-> and remains UNESTABLISHED after it, unchanged), and the Gate B v2 closure is untouched (the v2
-> expectation derivation bytes were not among the fix commit's changes — `release-qualification.mjs`
-> is byte-identical to its §20.3 value, §22.1). **No wording here authorizes any automatic
-> config/Skill/Role/cache change, any production edit, any new campaign, or any blanket
-> version/platform claim. Research completion is NOT production adoption: everything below is an
-> evidence statement plus a scoped DECISION FRAMEWORK for the separately authorized production
-> decision — the original production goals remain binding.**
+> **Revision record (2026-10-23, the post-merge-review fix commit — supersession, not a silent
+> rewrite).** The four-part recommendation drafted at `30477b3` and CONFIRMED at the closeout —
+> (a) nothing unconditionally adoptable; (b) **ADOPT-ONLY-ON-LISTED-SURFACE** for the
+> long-wait/cadence mechanism + exact-output B, on the per-Role waiting-paragraph surface for
+> `rescue-long`/`rescue-repeat`; (c) do-not-adopt-yet for the remaining surfaces; (d) a
+> per-command eligibility table granting that (b) surface to `rescue-long`/`rescue-repeat` — is
+> REVISED IN PLACE by the post-merge-review fix (the §22-header record): the production
+> recommendation is now ONE UNIFIED **DO-NOT-ADOPT-YET**, with NO adopt-only-on-listed-surface
+> option for ANY command. Reason: `rescue-long`/`rescue-repeat` are RESEARCH CASES of this
+> campaign's finite ledger (§20.1), not a product surface; the waiting mechanism they exercised
+> is SHARED across commands — including `rescue-interrupt` — so a "long/repeat-only" production
+> adoption would be a fiction: it would deploy, through the shared paragraph/Role artifact, the
+> very mechanism whose interruption-settlement gate (Gate D) is open. The superseded four-part
+> text stands as history in the closeout-era records (the plan's Task-6 checkbox 5 carries the
+> dated revision note; this section is the live recommendation). **No wording here authorizes
+> any automatic config/Skill/Role/cache change, any production edit, any new campaign, or any
+> blanket version/platform claim. Research completion is NOT production adoption: everything
+> below is an evidence statement plus a scoped DECISION FRAMEWORK for the separately authorized
+> production decision — the original production goals remain binding.**
 
-**(a) ADOPT (unqualified, evidence-complete):** *nothing is adopted by this research.* No surface
-reaches an unconditional adopt verdict on this branch: the managed-Rescue candidate's mandatory
-native-settlement gate (Gate D) is not closed (§22.3), and adoption authority is human and
-separate by definition (§1, §18.6 precedent).
+**(a) Established facts — RESEARCH-SCOPE results (proven on the research record; unchanged by
+this revision; explicitly NOT production eligibility):**
 
-**(b) ADOPT-ONLY-ON-LISTED-SURFACE (evidence-qualified, decision-ready on that surface alone):**
+- **The long-wait/cadence mechanism is qualified on the research record, twice on the current
+  pin:** M = 300004 ms retained (§17.2, cited never re-derived); O1/O2 decisive natural
+  original-handle observations 386600/386500 ms with +56551/+56388 ms headroom over the M+30000
+  threshold; the 1-vs-7 reduced-re-entry cadence retained (§17.6); Gate A/C facts carried;
+  Gate B CLOSED at the corrected v2 adjudication, twice-measured (§21.2.1/§21.2.2/§21.4/§22.3) —
+  with the instrument-defect story stated honestly: the historical `inconclusive` existed because
+  the instrument's v1 EXPECTATION was wrong (terminal-management framing applied to the
+  foreground chain), not because the production output was; the production foreground contract
+  needed NO change and received NONE (§22.3).
+- **What that evidence IS:** research coverage of the SHARED waiting mechanism, obtained through
+  the finite research ledger's O1 (`rescue-long`) and O2 (`rescue-repeat`) cases. The mechanism
+  does not exist as a per-command island: the same waiting paragraph/Role artifact and the same
+  outer-wait behavior serve every command of the shared Rescue path, `rescue-interrupt`
+  included. Research coverage of a shared mechanism is NOT production eligibility while the
+  interruption-settlement gate (Gate D) is open — any future adoption question returns to the
+  user after Gate D closes.
 
-- **The established long-wait/cadence mechanism** — qualified on the current pin and now with its
-  discriminator re-corroborated twice (M = 300004 retained; O1/O2 decisive natural observations
-  386600/386500 ms with +56551/+56388 ms headroom over the M+30000 threshold; 1-vs-7 cadence
-  retained; Gate A/C facts carried). The evidence-covered surface is the **per-Role
-  waiting-PARAGRAPH template artifact** (explicit per-call windows) for the **foreground
-  `rescue-long` / `rescue-repeat` commands** — the only isolable deployment half (§17.14.5, Q6).
-  A production decision to adopt THIS mechanism on THIS surface is supported by the record.
-- **Exact-output B (closed at v2 via the instrument correction — the defect story stated
-  honestly):** the two halves of Gate B now both hold on measured evidence; the historical
-  `inconclusive` existed because the instrument's v1 EXPECTATION was wrong, not because the
-  production output was (§22.3). The production foreground contract needed NO change and received
-  NONE; the evidence is scoped to the measured foreground chain and is not a whole-surface byte
-  claim. This part strengthens (i) but authorizes nothing by itself.
+**(b) Production recommendation — DO-NOT-ADOPT-YET (unified; each surface stays out until its
+blocker closes under its own future authorization):**
 
-**(c) DO-NOT-ADOPT-YET (named blockers; each surface stays out until its blocker closes under its
-own future authorization):**
-
-- **Native/obligations D (therefore `rescue-interrupt` and anything relying on interrupt-time
-  settlement):** delivery-unestablished (the §19.4 installed-retention question is OPEN; the ONE
-  named parser admission is unmade), obligations/Companion qualification cleanup-time-unestablished
-  (no pre-boundary observation exists), no-collateral unobserved. Not closed by this branch; not
-  closable by this report.
+- **Native/obligations D (the shared-mechanism gate — therefore binding on every command,
+  `rescue-long`/`rescue-repeat` included):** delivery-unestablished (the §19.4
+  installed-retention question is OPEN; the ONE named parser admission is unmade),
+  obligations/Companion qualification cleanup-time-unestablished (no pre-boundary observation
+  exists), no-collateral unobserved. Not closed by this branch; not closable by this report.
 - **The host-global numeric outer default:** no supported Role-scoped override exists (none
-  invented); raising it reaches Root-owned Review (unqualified — the no-send early exit is separate
-  production scope) and every other code-mode consumer (unqualified on this record). Broad
-  shared-default adoption remains blocked.
+  invented); raising it reaches Root-owned Review (unqualified — the no-send early exit is
+  separate production scope) and every other code-mode consumer (unqualified on this record).
+  Broad shared-default adoption remains blocked.
 - **BG live placement, Review (RV), AR/ST beyond recorded single runs, the generic route:** each
   remains its own separate unproven/separately-scoped limit (§22.4 Gate E row); no new RV/BG
   campaign is authorized here.
 
-**(d) Per-command deployment eligibility (which commands the evidence actually covers):**
+**(c) Per-command eligibility — production eligibility is NONE for every command; the middle
+column records what the evidence covers AS RESEARCH FACTS ONLY:**
 
-| Command | Evidence coverage | Eligible surface under this (confirmed) recommendation |
+| Command | Research coverage (what the evidence establishes as research facts) | Production eligibility under this (unified) recommendation |
 | --- | --- | --- |
-| `rescue-long` | Gate B both halves (v2, measured) + Gate A/C facts + retained M | the (b) surface only — per-Role waiting paragraph, foreground |
-| `rescue-repeat` | same, twice-measured (byte-identical contract-conforming captures) | the (b) surface only |
-| `rescue-interrupt` | the one v2 call was delivered-and-recorded on an active turn, but ALL Gate D layers stand unestablished/unobserved (§22.3) | **none — (c)**; open blockers: installed-retention check, ONE-parser-admission + successor trial, pre-boundary obligations/Companion observation, control read-sequence capture |
+| `rescue-long` | Gate B both halves (v2, measured) + Gate A/C facts + retained M — research coverage of the shared waiting mechanism | **NONE — (b)**; the mechanism is shared with `rescue-interrupt`, so no long-only surface exists to adopt while Gate D is open |
+| `rescue-repeat` | same, twice-measured (byte-identical contract-conforming captures) — research coverage only | **NONE — (b)**; same shared-mechanism reason |
+| `rescue-interrupt` | the one v2 call was delivered-and-recorded on an active turn, but ALL Gate D layers stand unestablished/unobserved (§22.3) | **NONE — (b)**; open blockers: installed-retention check, ONE-parser-admission + successor trial, pre-boundary obligations/Companion observation, control read-sequence capture |
 
-**Smallest separate actions (PROPOSALS — each requires its own future authorization; none is
+Research coverage of the shared mechanism is not production eligibility while Gate D is open;
+any future adoption question — for any command, on any surface — returns to the user after Gate
+D closes, with §22.3/§22.4 as the then-current evidence basis.
+
+**(d) Smallest separate actions (PROPOSALS — each requires its own future authorization; none is
 authorized by this report):** (1) the §20.5/§21.4 registered **I-case ONE-parser-admission arm** —
 admit ONLY the withheld structural form (SHA-256 `e9856478…`, statement head `bound-await`,
 2 lines/231 bytes) in the existing bounded parser, versioned OFFLINE against the retained record
@@ -12457,7 +12609,8 @@ production scopes (Review no-send cause; BG live placement) remain where §18.6 
 blockers with no campaign authorized. If core B/D were to close later while RV/BG/global-config
 scope does not, the exact result to state is §18.6's shape: per-surface eligibility only, never a
 blanket verdict. The original waiting mechanism is **not** called unsuccessful anywhere above —
-its mechanism and its exact output are the two parts this branch DID establish.
+its mechanism and its exact output are the two parts this branch DID establish, as RESEARCH-SCOPE
+results (a).
 
 ### 22.8 Raw-data note for Task 6
 

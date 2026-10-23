@@ -8,6 +8,7 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { chmod, cp, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -30,6 +31,71 @@ function escapeRegExp(value) {
 // the guarded marker test and never spawns the CLI again (nesting stays
 // bounded at one level).
 const selfTestGuard = 'ZCODE_SHELL_WAIT_PROBE_SELF_TEST';
+
+// ---------------------------------------------------------------------------
+// Post-merge-review fix 1 (2026-10-23): ambient-identity isolation for every
+// spawned child in this file. The survey of the launcher/store path
+// (skills/rescue/launcher.mjs → scripts/zcode-companion.mjs →
+// scripts/lib/{plugin-data,zcode-discovery,zcode-runtime-config}.mjs) found
+// exactly ONE identity-bearing variable — CODEX_THREAD_ID
+// (zcode-companion.mjs:107/:110/:831, the THREAD_ID_REQUIRED gate; no other
+// session/turn identity variable exists on that path) — and the home/
+// data-root routing variables that would otherwise reach the REAL user Codex
+// home: CODEX_HOME (plugin-data.mjs:37; falls back to homedir()/.codex),
+// ZCODE_DATA_ROOT (plugin-data.mjs:22/:36), PLUGIN_DATA and
+// CLAUDE_PLUGIN_DATA (plugin-data.mjs:44/:50), HOME and USERPROFILE
+// (zcode-discovery.mjs:13, zcode-runtime-config.mjs:58). Every environment
+// composition in this file therefore starts from isolatedBaseEnv(): the
+// identity variable is STRIPPED and every home/data-root variable is
+// redirected into a disposable root, so no spawned launcher/probe can
+// proceed past the intended fast-fail with the ambient identity or touch the
+// real user Codex home. The sanitization lives in THIS test helper only —
+// captureEnvironment's §19.3(b)-frozen contract (baseEnv passthrough) is
+// untouched. The companion's remaining ambient reads (ZCODE_BACKGROUND_WORKER,
+// ZCODE_DEBUG, ZCODE_PATH, CODEX_APP_SERVER_PATH, CODEX_APP_SERVER_ARGS_JSON)
+// are capability/config switches, not identity, and are left to each test's
+// own explicit overrides.
+// ---------------------------------------------------------------------------
+const AMBIENT_IDENTITY_VARIABLES = Object.freeze(['CODEX_THREAD_ID']);
+
+/** Directories the isolated base points the home/data-root variables into. */
+const ISOLATED_ENV_DIRECTORIES = Object.freeze([
+  'isolated-home', 'isolated-codex-home', 'isolated-data-root', 'isolated-plugin-data', 'isolated-claude-plugin-data',
+]);
+
+let sharedIsolatedEnvRoot = null;
+
+/** This file's one disposable isolation root (created lazily, removed at exit). */
+function isolatedEnvRoot() {
+  if (sharedIsolatedEnvRoot === null) {
+    sharedIsolatedEnvRoot = mkdtempSync(join(tmpdir(), 'shell-wait-isolated-env-'));
+    process.once('exit', () => { try { rmSync(sharedIsolatedEnvRoot, { recursive: true, force: true }); } catch { /* best-effort disposal */ } });
+  }
+  return sharedIsolatedEnvRoot;
+}
+
+/**
+ * The isolated base environment every spawn in this file composes over:
+ * process.env minus the ambient identity, with every home/data-root variable
+ * pointed inside the given disposable root (the file's shared root unless a
+ * caller passes its own, as the capture scope does). Callers apply their own
+ * overrides ON TOP, so explicit per-test values always win.
+ * @param {string} [root] @returns {NodeJS.ProcessEnv}
+ */
+function isolatedBaseEnv(root = isolatedEnvRoot()) {
+  const home = join(root, 'isolated-home');
+  const env = {
+    ...process.env,
+    HOME: home,
+    USERPROFILE: home,
+    CODEX_HOME: join(root, 'isolated-codex-home'),
+    ZCODE_DATA_ROOT: join(root, 'isolated-data-root'),
+    PLUGIN_DATA: join(root, 'isolated-plugin-data'),
+    CLAUDE_PLUGIN_DATA: join(root, 'isolated-claude-plugin-data'),
+  };
+  for (const variable of AMBIENT_IDENTITY_VARIABLES) delete env[variable];
+  return env;
+}
 
 /**
  * Split a NODE_OPTIONS value into arguments with the same quoting and
@@ -134,7 +200,7 @@ function withoutTestReporterFlags(nodeOptions) {
  */
 function suiteChildEnv() {
   /** @type {NodeJS.ProcessEnv} */
-  const childEnv = { ...process.env, [selfTestGuard]: '1' };
+  const childEnv = { ...isolatedBaseEnv(), [selfTestGuard]: '1' };
   delete childEnv.NODE_TEST_CONTEXT;
   const preservedOptions = withoutTestReporterFlags(childEnv.NODE_OPTIONS);
   childEnv.NODE_OPTIONS = preservedOptions
@@ -260,7 +326,7 @@ if (process.env[selfTestGuard] === '1') {
   });
 
   test('an unknown suite still fails closed with the existing message', () => {
-    const result = spawnSync(process.execPath, [suiteCliPath, 'not-a-suite'], { encoding: 'utf8' });
+    const result = spawnSync(process.execPath, [suiteCliPath, 'not-a-suite'], { env: isolatedBaseEnv(), encoding: 'utf8' });
     assert.equal(result.status, 1, result.stdout);
     assert.match(result.stderr, /Unknown test suite: not-a-suite/);
   });
@@ -278,12 +344,12 @@ if (process.env[selfTestGuard] === '1') {
   // only in this un-guarded branch so the guarded re-entry child stays pure.
   const suiteCanary = { directory: '', canaryPath: '', created: false, sharedRegistrations: '' };
   before(async () => {
-    const listed = spawnSync('git', ['worktree', 'list', '--porcelain'], { encoding: 'utf8' });
+    const listed = spawnSync('git', ['worktree', 'list', '--porcelain'], { env: isolatedBaseEnv(), encoding: 'utf8' });
     assert.equal(listed.status, 0, listed.stderr);
     suiteCanary.sharedRegistrations = listed.stdout;
     suiteCanary.directory = await mkdtemp(join(tmpdir(), 'shell-wait-suite-canary-'));
     suiteCanary.canaryPath = join(suiteCanary.directory, 'canary-worktree');
-    const added = spawnSync('git', ['worktree', 'add', '--detach', suiteCanary.canaryPath, 'HEAD'], { encoding: 'utf8' });
+    const added = spawnSync('git', ['worktree', 'add', '--detach', suiteCanary.canaryPath, 'HEAD'], { env: isolatedBaseEnv(), encoding: 'utf8' });
     if (added.status !== 0) return;
     await rm(suiteCanary.canaryPath, { recursive: true, force: true });
     suiteCanary.created = true;
@@ -291,14 +357,14 @@ if (process.env[selfTestGuard] === '1') {
   after(async () => {
     try {
       if (suiteCanary.created) {
-        const listed = spawnSync('git', ['worktree', 'list', '--porcelain'], { encoding: 'utf8' }).stdout
+        const listed = spawnSync('git', ['worktree', 'list', '--porcelain'], { env: isolatedBaseEnv(), encoding: 'utf8' }).stdout
           .split('\n').filter((line) => line.startsWith('worktree ')).map((line) => line.slice('worktree '.length))
           .map((value) => value.startsWith('/private/') ? value.slice('/private'.length) : value);
         assert.ok(listed.includes(suiteCanary.canaryPath),
           'the suite destroyed an unrelated worktree registration; every cleanup must stay owned');
       }
     } finally {
-      const commonDir = spawnSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { encoding: 'utf8' }).stdout.trim();
+      const commonDir = spawnSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { env: isolatedBaseEnv(), encoding: 'utf8' }).stdout.trim();
       const adminRoot = join(commonDir, 'worktrees');
       for (const entry of await readdir(adminRoot).catch(() => [])) {
         const pointer = (await readFile(join(adminRoot, entry, 'gitdir'), 'utf8').catch(() => '')).trim();
@@ -308,7 +374,7 @@ if (process.env[selfTestGuard] === '1') {
       }
       await rm(suiteCanary.directory, { recursive: true, force: true });
     }
-    const listed = spawnSync('git', ['worktree', 'list', '--porcelain'], { encoding: 'utf8' });
+    const listed = spawnSync('git', ['worktree', 'list', '--porcelain'], { env: isolatedBaseEnv(), encoding: 'utf8' });
     assert.equal(listed.status, 0, listed.stderr);
     assert.equal(listed.stdout, suiteCanary.sharedRegistrations, 'the entire suite must leave every shared repository registration untouched');
   });
@@ -335,7 +401,7 @@ if (process.env[selfTestGuard] === '1') {
         const cases = driver.SHELL_WAIT_CASES;
         if (!Array.isArray(cases) || Object.isFrozen(cases) !== true) throw new Error('case list must be a frozen array');
         console.log(JSON.stringify({ marker: 'SHELL_WAIT_MODULES_PURE', cases }));
-      `], { encoding: 'utf8', env: { ...process.env, CODEX_BINARY: 'this value must never be launched at import time', ZCODE_SHELL_WAIT_E2E: '1' }, timeout: 30_000 });
+      `], { encoding: 'utf8', env: { ...isolatedBaseEnv(), CODEX_BINARY: 'this value must never be launched at import time', ZCODE_SHELL_WAIT_E2E: '1' }, timeout: 30_000 });
       assert.equal(child.status, 0, `module import was not pure or shape failed:\n${child.stdout}\n${child.stderr}`);
       const payload = JSON.parse(child.stdout);
       assert.equal(payload.marker, 'SHELL_WAIT_MODULES_PURE');
@@ -2805,7 +2871,7 @@ if (process.env[selfTestGuard] === '1') {
   describe('root-family candidate-policy delivery seam (R2)', async () => {
     const { createShellWaitFixture } = await import('../tools/shell-wait-probe/fixture.mjs');
     const { runShellWaitCase } = await import('../tools/shell-wait-probe/driver.mjs');
-    const repositorySha = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+    const repositorySha = spawnSync('git', ['rev-parse', 'HEAD'], { env: isolatedBaseEnv(), encoding: 'utf8' }).stdout.trim();
     const realSkills = {
       review: await readFile(join(repositoryRoot, 'skills', 'review', 'SKILL.md'), 'utf8'),
       'adversarial-review': await readFile(join(repositoryRoot, 'skills', 'adversarial-review', 'SKILL.md'), 'utf8'),
@@ -5432,14 +5498,14 @@ if (process.env[selfTestGuard] === '1') {
 
     test('the driver CLI refuses the shape gate without the structural gate before any launch', () => {
       const driverCliPath = fileURLToPath(new URL('../tools/shell-wait-probe/driver.mjs', import.meta.url));
-      const sourceSha = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+      const sourceSha = spawnSync('git', ['rev-parse', 'HEAD'], { env: isolatedBaseEnv(), encoding: 'utf8' }).stdout.trim();
       const result = spawnSync(process.execPath, [driverCliPath, '--case', 'rescue-noise', '--codex', process.execPath,
-        '--source-sha', sourceSha, '--output', '/tmp', '--unclassified-shape-diagnostic', '1'], { encoding: 'utf8', timeout: 30_000 });
+        '--source-sha', sourceSha, '--output', '/tmp', '--unclassified-shape-diagnostic', '1'], { encoding: 'utf8', env: isolatedBaseEnv(), timeout: 30_000 });
       assert.equal(result.status, 1, 'the pair violation must exit 1');
       assert.match(result.stderr, /requires/i);
       const badValue = spawnSync(process.execPath, [driverCliPath, '--case', 'rescue-noise', '--codex', process.execPath,
         '--source-sha', sourceSha, '--output', '/tmp', '--unclassified-structural-diagnostic', '1', '--unclassified-shape-diagnostic', 'true'],
-      { encoding: 'utf8', timeout: 30_000 });
+      { encoding: 'utf8', env: isolatedBaseEnv(), timeout: 30_000 });
       assert.equal(badValue.status, 1, 'a non-literal value must exit 1');
     });
   });
@@ -5988,22 +6054,22 @@ if (process.env[selfTestGuard] === '1') {
 
     test('the driver CLI refuses an unsafe model identifier with exit one before any launch', () => {
       const driverCliPath = fileURLToPath(new URL('../tools/shell-wait-probe/driver.mjs', import.meta.url));
-      const sourceSha = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+      const sourceSha = spawnSync('git', ['rev-parse', 'HEAD'], { env: isolatedBaseEnv(), encoding: 'utf8' }).stdout.trim();
       for (const bad of ['bad id', 'semi;colon']) {
         const result = spawnSync(process.execPath, [driverCliPath, '--case', 'rescue-noise', '--codex', process.execPath,
-          '--source-sha', sourceSha, '--output', '/tmp', '--model', bad], { encoding: 'utf8', timeout: 30_000 });
+          '--source-sha', sourceSha, '--output', '/tmp', '--model', bad], { encoding: 'utf8', env: isolatedBaseEnv(), timeout: 30_000 });
         assert.equal(result.status, 1, `model ${JSON.stringify(bad)} must exit 1`);
         assert.match(result.stderr, /bounded safe identifier/i);
       }
       const missing = spawnSync(process.execPath, [driverCliPath, '--case', 'rescue-noise', '--codex', process.execPath,
-        '--source-sha', sourceSha, '--output', '/tmp', '--model'], { encoding: 'utf8', timeout: 30_000 });
+        '--source-sha', sourceSha, '--output', '/tmp', '--model'], { encoding: 'utf8', env: isolatedBaseEnv(), timeout: 30_000 });
       assert.equal(missing.status, 1, 'a missing --model value must exit 1');
     });
   });
 
   describe('createShellWaitFixture validation', async () => {
     const { createShellWaitFixture } = await import('../tools/shell-wait-probe/fixture.mjs');
-    const repositorySha = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+    const repositorySha = spawnSync('git', ['rev-parse', 'HEAD'], { env: isolatedBaseEnv(), encoding: 'utf8' }).stdout.trim();
 
     function fixtureInput(overrides = {}) {
       return {
@@ -6058,7 +6124,7 @@ if (process.env[selfTestGuard] === '1') {
 
   describe('createShellWaitFixture fast path and owned cleanup', async () => {
     const { createShellWaitFixture } = await import('../tools/shell-wait-probe/fixture.mjs');
-    const repositorySha = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+    const repositorySha = spawnSync('git', ['rev-parse', 'HEAD'], { env: isolatedBaseEnv(), encoding: 'utf8' }).stdout.trim();
     const realTemplate = await readFile(join(repositoryRoot, 'agents', 'zcode-rescue.toml.template'), 'utf8');
     const realSkill = await readFile(join(repositoryRoot, 'skills', 'rescue', 'SKILL.md'), 'utf8');
     const ORIGINAL_WAITING_PARAGRAPH = realTemplate.split('\n').find((line) => line.includes('subsequent same-handle observations are 60000'));
@@ -6136,7 +6202,7 @@ if (process.env[selfTestGuard] === '1') {
       const temporary = await mkdtemp(join(tmpdir(), 'shell-wait-git-overrides-'));
       t.after(() => rm(temporary, { recursive: true, force: true }));
       const unrelated = join(temporary, 'unrelated');
-      const cleanEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith('GIT_')));
+      const cleanEnv = Object.fromEntries(Object.entries(isolatedBaseEnv()).filter(([key]) => !key.toUpperCase().startsWith('GIT_')));
       const git = (args) => {
         const result = spawnSync('git', args, { cwd: unrelated, env: cleanEnv, encoding: 'utf8' });
         assert.equal(result.status, 0, result.stderr);
@@ -6348,7 +6414,7 @@ if (process.env[selfTestGuard] === '1') {
       // Count-based canary: the registered path lives under the fixture's own
       // random temporary root, so a name-based assertion cannot see a leak
       // (the first draft of this test was vacuous for exactly that reason).
-      const ownedRegistrations = () => spawnSync('git', ['worktree', 'list', '--porcelain'], { encoding: 'utf8' }).stdout
+      const ownedRegistrations = () => spawnSync('git', ['worktree', 'list', '--porcelain'], { env: isolatedBaseEnv(), encoding: 'utf8' }).stdout
         .split('\n').filter((line) => line.startsWith('worktree ') && line.includes('zcode-shell-wait-fixture-')).length;
       const registrationsBefore = ownedRegistrations();
       let creationError;
@@ -6368,9 +6434,9 @@ if (process.env[selfTestGuard] === '1') {
       const worktreePath = fixture.record.ownedCleanSourceWorktree;
       assert.equal(typeof worktreePath, 'string');
       const sourceClone = join(fixture.codexHome, '..', 'source-repository');
-      const sharedBefore = spawnSync('git', ['worktree', 'list', '--porcelain'], { encoding: 'utf8' }).stdout;
+      const sharedBefore = spawnSync('git', ['worktree', 'list', '--porcelain'], { env: isolatedBaseEnv(), encoding: 'utf8' }).stdout;
       assert.doesNotMatch(sharedBefore, new RegExp(escapeRegExp(worktreePath)), 'the shared repository must never register the fixture source');
-      const listed = spawnSync('git', ['worktree', 'list', '--porcelain'], { cwd: sourceClone, encoding: 'utf8' });
+      const listed = spawnSync('git', ['worktree', 'list', '--porcelain'], { env: isolatedBaseEnv(), cwd: sourceClone, encoding: 'utf8' });
       assert.equal(listed.status, 0, listed.stderr);
       const registrationsBefore = listed.stdout;
       assert.match(registrationsBefore, new RegExp(escapeRegExp(worktreePath)), 'the fixture-owned worktree must be registered before dispose');
@@ -6378,7 +6444,7 @@ if (process.env[selfTestGuard] === '1') {
       const preservedEvidence = join(output, 'kept.record.json');
       await writeFile(preservedEvidence, '{"redacted":true}\n', { mode: 0o600 });
       await fixture.dispose();
-      const registrationsAfter = spawnSync('git', ['worktree', 'list', '--porcelain'], { encoding: 'utf8' }).stdout;
+      const registrationsAfter = spawnSync('git', ['worktree', 'list', '--porcelain'], { env: isolatedBaseEnv(), encoding: 'utf8' }).stdout;
       assert.equal(registrationsAfter, sharedBefore, 'shared registrations must remain untouched');
       assert.equal(await stat(sourceClone).then(() => true, () => false), false, 'the clone root and all its Git metadata must be removed');
       assert.equal(await stat(join(fixture.codexHome, 'auth.json')).then(() => true, () => false), false, 'copied credentials must be removed');
@@ -6389,7 +6455,7 @@ if (process.env[selfTestGuard] === '1') {
     });
 
     test('dispose removes the credential home even when the owned worktree removal fails, surfacing both outcomes', async (t) => {
-      const sharedBefore = spawnSync('git', ['worktree', 'list', '--porcelain'], { encoding: 'utf8' }).stdout;
+      const sharedBefore = spawnSync('git', ['worktree', 'list', '--porcelain'], { env: isolatedBaseEnv(), encoding: 'utf8' }).stdout;
       const { fixture } = await createFastFixture(t, {}, {
         ...fastDependencies(),
         removeOwnedWorktree: async () => { throw new Error('could not remove the owned detached worktree registration'); },
@@ -6404,7 +6470,7 @@ if (process.env[selfTestGuard] === '1') {
       assert.equal(await stat(join(fixture.codexHome, '..')).then(() => true, () => false), false, 'the fixture temporary root must still be removed');
       // The clone metadata is inside the removed root, so even an injected
       // removal failure leaves no shared registration to repair.
-      const registrations = spawnSync('git', ['worktree', 'list', '--porcelain'], { encoding: 'utf8' }).stdout;
+      const registrations = spawnSync('git', ['worktree', 'list', '--porcelain'], { env: isolatedBaseEnv(), encoding: 'utf8' }).stdout;
       assert.equal(registrations, sharedBefore, 'the shared registrations must remain untouched on cleanup failure');
     });
 
@@ -6415,12 +6481,12 @@ if (process.env[selfTestGuard] === '1') {
       const unrelatedBase = await mkdtemp(join(tmpdir(), 'shell-wait-unrelated-'));
       t.after(() => rm(unrelatedBase, { recursive: true, force: true }));
       const sharedSource = join(unrelatedBase, 'shared-source');
-      const cloned = spawnSync('git', ['clone', '--shared', repositoryRoot, sharedSource], { encoding: 'utf8' });
+      const cloned = spawnSync('git', ['clone', '--shared', repositoryRoot, sharedSource], { env: isolatedBaseEnv(), encoding: 'utf8' });
       assert.equal(cloned.status, 0, cloned.stderr);
-      const registeredPaths = () => spawnSync('git', ['worktree', 'list', '--porcelain'], { cwd: sharedSource, encoding: 'utf8' }).stdout
+      const registeredPaths = () => spawnSync('git', ['worktree', 'list', '--porcelain'], { env: isolatedBaseEnv(), cwd: sharedSource, encoding: 'utf8' }).stdout
         .split('\n').filter((line) => line.startsWith('worktree ')).map((line) => canonicalize(line.slice('worktree '.length)));
       const removeRegistration = async (registeredPath) => {
-        const commonDir = spawnSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd: sharedSource, encoding: 'utf8' }).stdout.trim();
+        const commonDir = spawnSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { env: isolatedBaseEnv(), cwd: sharedSource, encoding: 'utf8' }).stdout.trim();
         const adminRoot = join(commonDir, 'worktrees');
         for (const entry of await readdir(adminRoot).catch(() => [])) {
           const pointer = (await readFile(join(adminRoot, entry, 'gitdir'), 'utf8').catch(() => '')).trim();
@@ -6434,13 +6500,13 @@ if (process.env[selfTestGuard] === '1') {
       // An unrelated prunable registration (unlocked, directory missing) that a
       // repository-wide prune would destroy.
       const unrelatedPath = join(unrelatedBase, 'unrelated-worktree');
-      const add = spawnSync('git', ['worktree', 'add', '--detach', unrelatedPath, 'HEAD'], { cwd: sharedSource, encoding: 'utf8' });
+      const add = spawnSync('git', ['worktree', 'add', '--detach', unrelatedPath, 'HEAD'], { env: isolatedBaseEnv(), cwd: sharedSource, encoding: 'utf8' });
       assert.equal(add.status, 0, add.stderr);
       await rm(unrelatedPath, { recursive: true, force: true });
       // A locked owned worktree makes the targeted removal fail deterministically
       // (git refuses to remove a locked working tree) while its registration stays.
       const ownedPath = fixture.record.ownedCleanSourceWorktree;
-      const lock = spawnSync('git', ['worktree', 'lock', ownedPath], { cwd: ownedPath, encoding: 'utf8' });
+      const lock = spawnSync('git', ['worktree', 'lock', ownedPath], { env: isolatedBaseEnv(), cwd: ownedPath, encoding: 'utf8' });
       assert.equal(lock.status, 0, lock.stderr);
       try {
         await assert.rejects(fixture.dispose(), /worktree/i, 'a failed targeted removal must surface a failure instead of pruning');
@@ -6488,22 +6554,22 @@ if (process.env[selfTestGuard] === '1') {
       const log = join(temporary, 'git-cleanup.jsonl');
       await mkdir(output, { mode: 0o700 });
       await mkdir(bin);
-      const realGit = spawnSync('/bin/sh', ['-c', 'command -v git'], { encoding: 'utf8' }).stdout.trim();
+      const realGit = spawnSync('/bin/sh', ['-c', 'command -v git'], { env: isolatedBaseEnv(), encoding: 'utf8' }).stdout.trim();
       // A disposable shared source repository lets RED exercise the destructive
       // prune itself without endangering the caller's existing registrations.
       const sharedSource = join(temporary, 'shared-source');
-      const cloned = spawnSync(realGit, ['clone', '--shared', '--no-checkout', repositoryRoot, sharedSource], { encoding: 'utf8' });
+      const cloned = spawnSync(realGit, ['clone', '--shared', '--no-checkout', repositoryRoot, sharedSource], { env: isolatedBaseEnv(), encoding: 'utf8' });
       assert.equal(cloned.status, 0, cloned.stderr);
-      const checkedOut = spawnSync(realGit, ['checkout', '--detach', repositorySha], { cwd: sharedSource, encoding: 'utf8' });
+      const checkedOut = spawnSync(realGit, ['checkout', '--detach', repositorySha], { env: isolatedBaseEnv(), cwd: sharedSource, encoding: 'utf8' });
       assert.equal(checkedOut.status, 0, checkedOut.stderr);
-      const sharedCommon = spawnSync(realGit, ['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd: sharedSource, encoding: 'utf8' }).stdout.trim();
+      const sharedCommon = spawnSync(realGit, ['rev-parse', '--path-format=absolute', '--git-common-dir'], { env: isolatedBaseEnv(), cwd: sharedSource, encoding: 'utf8' }).stdout.trim();
       const unrelated = join(temporary, 'unrelated-worktree');
-      const added = spawnSync(realGit, ['worktree', 'add', '--detach', unrelated, repositorySha], { cwd: sharedSource, encoding: 'utf8' });
+      const added = spawnSync(realGit, ['worktree', 'add', '--detach', unrelated, repositorySha], { env: isolatedBaseEnv(), cwd: sharedSource, encoding: 'utf8' });
       assert.equal(added.status, 0, added.stderr);
-      const unrelatedAdmin = spawnSync(realGit, ['rev-parse', '--absolute-git-dir'], { cwd: unrelated, encoding: 'utf8' }).stdout.trim();
+      const unrelatedAdmin = spawnSync(realGit, ['rev-parse', '--absolute-git-dir'], { env: isolatedBaseEnv(), cwd: unrelated, encoding: 'utf8' }).stdout.trim();
       t.after(() => rm(unrelatedAdmin, { recursive: true, force: true }));
       await rm(unrelated, { recursive: true, force: true });
-      const sharedList = () => spawnSync(realGit, ['worktree', 'list', '--porcelain'], { cwd: sharedSource, encoding: 'utf8' }).stdout;
+      const sharedList = () => spawnSync(realGit, ['worktree', 'list', '--porcelain'], { env: isolatedBaseEnv(), cwd: sharedSource, encoding: 'utf8' }).stdout;
       const registrationsBefore = sharedList();
       assert.ok(registeredWorktreePaths(registrationsBefore).some((path) => sameRegisteredPath(path, unrelated)));
 
@@ -6549,7 +6615,7 @@ process.exit(result.status ?? 1);
       }
       assert.equal(buildError, undefined, 'the clone-internal prune must recover the injected removal failure');
       assert.equal(sharedList(), registrationsBefore, 'every shared registration, including the unrelated prunable entry, must survive untouched');
-      const cloneList = spawnSync(realGit, ['worktree', 'list', '--porcelain'], { cwd: fixture.record.ownedCleanSourceWorktree, encoding: 'utf8' });
+      const cloneList = spawnSync(realGit, ['worktree', 'list', '--porcelain'], { env: isolatedBaseEnv(), cwd: fixture.record.ownedCleanSourceWorktree, encoding: 'utf8' });
       assert.equal(cloneList.status, 0, cloneList.stderr);
       assert.equal(registeredWorktreePaths(cloneList.stdout).length, 2, 'only the clone and fixture clean source may remain after the builder staging prune');
       assert.ok(registeredWorktreePaths(cloneList.stdout).every((path) => !failedRemovals.some((call) => sameRegisteredPath(path, call.args.at(-1)))), 'the clone-internal prune must remove the builder staging registration');
@@ -6590,7 +6656,7 @@ process.exit(result.status ?? 1);
 
     test('inspectVerifiedProcessIdentity resolves a live exact process and rejects a nonce mismatch', async (t) => {
       const child = spawn(process.execPath, ['--input-type=module', '--eval', 'await new Promise((resolve) => setTimeout(resolve, 10_000));'], {
-        env: { ...process.env, FAKE_ZCODE_PROCESS_NONCE: TEST_NONCE }, stdio: 'ignore',
+        env: { ...isolatedBaseEnv(), FAKE_ZCODE_PROCESS_NONCE: TEST_NONCE }, stdio: 'ignore',
       });
       t.after(() => { try { child.kill('SIGKILL'); } catch { /* already exited */ } });
       await assert.rejects(inspectVerifiedProcessIdentity(child.pid, OTHER_NONCE), /identity/i);
@@ -6607,7 +6673,7 @@ process.exit(result.status ?? 1);
     test('the default capture, re-verification, and termination chain accepts the inspector identity shape', async (t) => {
       const { spawn: spawnNode } = await import('node:child_process');
       const child = spawnNode(process.execPath, ['--input-type=module', '--eval', 'await new Promise((resolve) => setTimeout(resolve, 30_000));'], {
-        env: { ...process.env, FAKE_ZCODE_PROCESS_NONCE: TEST_NONCE }, stdio: 'ignore',
+        env: { ...isolatedBaseEnv(), FAKE_ZCODE_PROCESS_NONCE: TEST_NONCE }, stdio: 'ignore',
       });
       t.after(() => { try { child.kill('SIGKILL'); } catch { /* already exited */ } });
       const temporary = await mkdtemp(join(tmpdir(), 'shell-wait-chain-'));
@@ -6642,7 +6708,7 @@ process.exit(result.status ?? 1);
 
       // Part B: default termination of the same shape under budget expiry.
       const childB = spawnNode(process.execPath, ['--input-type=module', '--eval', 'await new Promise((resolve) => setTimeout(resolve, 30_000));'], {
-        env: { ...process.env, FAKE_ZCODE_PROCESS_NONCE: TEST_NONCE }, stdio: 'ignore',
+        env: { ...isolatedBaseEnv(), FAKE_ZCODE_PROCESS_NONCE: TEST_NONCE }, stdio: 'ignore',
       });
       t.after(() => { try { childB.kill('SIGKILL'); } catch { /* already exited */ } });
       const processPathB = join(temporary, 'process-b.json');
@@ -7666,7 +7732,7 @@ process.exit(result.status ?? 1);
       statusWaitInvocation, validateStatusWaitFlow,
     } = await import('../tools/shell-wait-probe/driver.mjs');
 
-    const repositorySha = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+    const repositorySha = spawnSync('git', ['rev-parse', 'HEAD'], { env: isolatedBaseEnv(), encoding: 'utf8' }).stdout.trim();
     const companionEntry = join(repositoryRoot, 'scripts', 'zcode-companion.mjs');
     const identityModule = join(repositoryRoot, 'scripts', 'lib', 'identity.mjs');
     const QUERY_TIMEOUT_MS = 240_000; // the real Status command contract default (parseStatus)
@@ -7721,7 +7787,7 @@ process.exit(result.status ?? 1);
       await mkdir(dataRoot, { mode: 0o700 });
       await mkdir(workspace, { recursive: true });
       const canonicalWorkspace = realpathSync.native(workspace);
-      const env = { ...process.env, ZCODE_DATA_ROOT: dataRoot };
+      const env = { ...isolatedBaseEnv(), ZCODE_DATA_ROOT: dataRoot };
       const sessionId = randomUUID();
       if (runHooks) {
         const hookInput = (extra) => ({ session_id: sessionId, cwd: workspace, transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', ...extra });
@@ -9612,7 +9678,7 @@ process.exit(result.status ?? 1);
         const workspace = join(temporary, `workspace-${label}`);
         await mkdir(workspace, { recursive: true });
         const canonicalWorkspace = realpathSync.native(workspace);
-        const env = { ...process.env, ZCODE_DATA_ROOT: dataRoot };
+        const env = { ...isolatedBaseEnv(), ZCODE_DATA_ROOT: dataRoot };
         const sessionId = randomUUID();
         const turnId = `r4-status-cancel-turn-${label}`;
         const hookInput = (extra) => ({ session_id: sessionId, cwd: workspace, transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', ...extra });
@@ -11195,7 +11261,7 @@ process.exit(result.status ?? 1);
 
     test('a REAL prepared rescue-interrupt fixture carries the armed seam and passes the preflight (codex round 2)', async (t) => {
       const { createShellWaitFixture } = await import('../tools/shell-wait-probe/fixture.mjs');
-      const repositorySha = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+      const repositorySha = spawnSync('git', ['rev-parse', 'HEAD'], { env: isolatedBaseEnv(), encoding: 'utf8' }).stdout.trim();
       const root = await mkdtemp(join(tmpdir(), 'shell-wait-capture-real-'));
       t.after(() => rm(root, { recursive: true, force: true }));
       const output = join(root, 'output');
@@ -13333,7 +13399,7 @@ process.exit(result.status ?? 1);
         command: process.execPath,
         args: ['-e', childScript, envelopeHead, String(payloadBytes)],
         cwd: process.cwd(),
-        env: process.env,
+        env: isolatedBaseEnv(),
         callerEnvelope: { callerContext: 'test' },
         timeoutMs: 30_000,
       });
@@ -13465,7 +13531,7 @@ process.exit(result.status ?? 1);
         command: process.execPath,
         args: ['-e', childScript, part],
         cwd: process.cwd(),
-        env: process.env,
+        env: isolatedBaseEnv(),
         callerEnvelope: { callerContext: 'test' },
         timeoutMs: 30_000,
       });
@@ -13620,7 +13686,7 @@ process.exit(result.status ?? 1);
             'process.exit(0);',
           ].join('\n'), '{"type":"background","job":{"id":"f"}}'],
           cwd: process.cwd(),
-          env: process.env,
+          env: isolatedBaseEnv(),
           callerEnvelope: { callerContext: 'test' },
           timeoutMs: 30_000,
         });
@@ -15826,7 +15892,7 @@ process.exit(result.status ?? 1);
           '{"type":"background","job":{"id":"g"}}',
         ],
           cwd: process.cwd(),
-          env: process.env,
+          env: isolatedBaseEnv(),
           callerEnvelope: { callerContext: 'test' },
           timeoutMs: 30_000,
         });
@@ -16300,7 +16366,7 @@ process.exit(result.status ?? 1);
       // never-ending pipe this blocks forever (the live Case 0 failure); the
       // wrapper must hand the child an already-at-EOF stdin.
       const reader = 'let n=0;for(;;){const c=require("fs").readSync(0,Buffer.alloc(4096));if(!c.length)break;n+=c.length;}process.stdout.write(`bytes:${n}`)';
-      const unwrapped = spawn(process.execPath, ['-e', reader], { stdio: ['pipe', 'pipe', 'pipe'] });
+      const unwrapped = spawn(process.execPath, ['-e', reader], { env: isolatedBaseEnv(), stdio: ['pipe', 'pipe', 'pipe'] });
       const unwrappedOutcome = await Promise.race([
         new Promise((resolve) => unwrapped.once('exit', () => resolve('exited'))),
         new Promise((resolve) => setTimeout(() => resolve('running'), 1_200)),
@@ -16308,7 +16374,7 @@ process.exit(result.status ?? 1);
       unwrapped.kill('SIGKILL');
       assert.equal(unwrappedOutcome, 'running', 'the open-pipe shape must still block (regression premise)');
       const wrapped = closeStdinLaunch({ command: process.execPath, args: ['-e', reader] });
-      const child = spawn(wrapped.command, wrapped.args, { stdio: ['pipe', 'pipe', 'pipe'] });
+      const child = spawn(wrapped.command, wrapped.args, { env: isolatedBaseEnv(), stdio: ['pipe', 'pipe', 'pipe'] });
       const output = await new Promise((resolve, reject) => {
         let text = '';
         const timer = setTimeout(() => reject(new Error('the wrapped reader still blocked on the open parent pipe')), 5_000);
@@ -16402,7 +16468,7 @@ process.exit(result.status ?? 1);
         const { join } = await import('node:path');
         const { runShellWaitCase } = await import(${JSON.stringify(pathToFileURL(driverCli).href)});
         const record = await runShellWaitCase({
-          case: 'rescue-baseline', codexBinary: process.execPath, sourceSha: ${JSON.stringify(spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim())},
+          case: 'rescue-baseline', codexBinary: process.execPath, sourceSha: ${JSON.stringify(spawnSync('git', ['rev-parse', 'HEAD'], { env: isolatedBaseEnv(), encoding: 'utf8' }).stdout.trim())},
           output: ${JSON.stringify(output)}, workerDurationMs: 1000, capMs: null, pollMs: 60000, budgetMs: 2000,
         }, {
           createFixture: async () => {
@@ -16420,7 +16486,7 @@ process.exit(result.status ?? 1);
         console.log('DISPATCH:' + record.status);
       `;
       const child = spawnSync(process.execPath, ['--input-type=module', '--eval', script], {
-        encoding: 'utf8', env: { ...process.env, ZCODE_SHELL_WAIT_E2E: '1' }, timeout: 60_000,
+        encoding: 'utf8', env: { ...isolatedBaseEnv(), ZCODE_SHELL_WAIT_E2E: '1' }, timeout: 60_000,
       });
       assert.equal(child.status, 0, `gated dispatch failed:\n${child.stdout}\n${child.stderr}`);
       assert.match(child.stdout, /DISPATCH:executed/);
@@ -16430,7 +16496,7 @@ process.exit(result.status ?? 1);
     test('--help prints usage, exits zero, and never launches a host', () => {
       const result = spawnSync(process.execPath, [driverCli, '--help'], {
         encoding: 'utf8',
-        env: { ...process.env, CODEX_BINARY: 'never-launched', ZCODE_SHELL_WAIT_E2E: '1' },
+        env: { ...isolatedBaseEnv(), CODEX_BINARY: 'never-launched', ZCODE_SHELL_WAIT_E2E: '1' },
         timeout: 30_000,
       });
       assert.equal(result.status, 0, result.stderr);
@@ -16439,14 +16505,14 @@ process.exit(result.status ?? 1);
     });
 
     test('an unknown case, unknown option, or relative executable fails closed with exit one', () => {
-      const sourceSha = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+      const sourceSha = spawnSync('git', ['rev-parse', 'HEAD'], { env: isolatedBaseEnv(), encoding: 'utf8' }).stdout.trim();
       const invalidArgumentSets = [
         ['--case', 'not-a-case', '--codex', process.execPath, '--source-sha', sourceSha, '--output', '/tmp'],
         ['--case', 'rescue-long', '--codex', process.execPath, '--source-sha', sourceSha, '--output', '/tmp', '--worker', '1'],
         ['--case', 'rescue-long', '--codex', 'relative/codex', '--source-sha', sourceSha, '--output', '/tmp'],
       ];
       for (const arguments_ of invalidArgumentSets) {
-        const result = spawnSync(process.execPath, [driverCli, ...arguments_], { encoding: 'utf8', timeout: 30_000 });
+        const result = spawnSync(process.execPath, [driverCli, ...arguments_], { encoding: 'utf8', env: isolatedBaseEnv(), timeout: 30_000 });
         assert.equal(result.status, 1, `expected exit 1 for ${arguments_.join(' ')}`);
         assert.match(result.stderr, /Invalid shell wait case input|usage:/);
       }
@@ -16602,7 +16668,7 @@ process.exit(result.status ?? 1);
 
     test('the driver CLI refuses a split pair or malformed exec default with exit one before any launch', () => {
       const driverCliPath = fileURLToPath(new URL('../tools/shell-wait-probe/driver.mjs', import.meta.url));
-      const sourceSha = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+      const sourceSha = spawnSync('git', ['rev-parse', 'HEAD'], { env: isolatedBaseEnv(), encoding: 'utf8' }).stdout.trim();
       const negatives = [
         ['--case', 'rescue-long', '--codex', process.execPath, '--source-sha', sourceSha, '--output', '/tmp', '--wait-policy', 'config-default'],
         ['--case', 'rescue-long', '--codex', process.execPath, '--source-sha', sourceSha, '--output', '/tmp', '--exec-default-ms', '240000'],
@@ -16610,7 +16676,7 @@ process.exit(result.status ?? 1);
         ['--case', 'rescue-long', '--codex', process.execPath, '--source-sha', sourceSha, '--output', '/tmp', '--wait-policy', 'config-default', '--exec-default-ms', '3600001'],
       ];
       for (const negative of negatives) {
-        const result = spawnSync(process.execPath, [driverCliPath, ...negative], { encoding: 'utf8', timeout: 30_000 });
+        const result = spawnSync(process.execPath, [driverCliPath, ...negative], { encoding: 'utf8', env: isolatedBaseEnv(), timeout: 30_000 });
         assert.equal(result.status, 1, `expected exit 1 for ${negative.join(' ')}`);
         assert.match(result.stderr, /Invalid shell wait case input/);
       }
@@ -16681,7 +16747,7 @@ process.exit(result.status ?? 1);
     // expected cross-run and must not read as cross-arm incompatibility.
     const { createShellWaitFixture, configDefaultWaitingParagraph, normalizeFixtureInstructionText } = await import('../tools/shell-wait-probe/fixture.mjs');
     const { renderManagedRescueRole } = await import('../scripts/lib/managed-agent-role.mjs');
-    const repositorySha = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+    const repositorySha = spawnSync('git', ['rev-parse', 'HEAD'], { env: isolatedBaseEnv(), encoding: 'utf8' }).stdout.trim();
     const realTemplate = await readFile(join(repositoryRoot, 'agents', 'zcode-rescue.toml.template'), 'utf8');
     const realSkill = await readFile(join(repositoryRoot, 'skills', 'rescue', 'SKILL.md'), 'utf8');
     const ORIGINAL_WAITING_PARAGRAPH = realTemplate.split('\n').find((line) => line.includes('subsequent same-handle observations are 60000'));
@@ -18251,7 +18317,7 @@ process.exit(result.status ?? 1);
 
     test('the driver CLI enforces the selector matrix with exit one before any launch and documents the new finite surface', () => {
       const driverCliPath = fileURLToPath(new URL('../tools/shell-wait-probe/driver.mjs', import.meta.url));
-      const sourceSha = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+      const sourceSha = spawnSync('git', ['rev-parse', 'HEAD'], { env: isolatedBaseEnv(), encoding: 'utf8' }).stdout.trim();
       const negatives = [
         // Unknown selector literal.
         ['--case', 'rescue-interrupt', '--codex', process.execPath, '--source-sha', sourceSha, '--output', '/tmp', '--interrupt-baseline-selector', '60000', '--wait-policy', 'config-default', '--exec-default-ms', '3600000'],
@@ -18261,11 +18327,11 @@ process.exit(result.status ?? 1);
         ['--case', 'rescue-long', '--codex', process.execPath, '--source-sha', sourceSha, '--output', '/tmp', '--survival-control-selector', 'progress-terminal', '--wait-policy', 'config-default', '--exec-default-ms', '3600000'],
       ];
       for (const negative of negatives) {
-        const result = spawnSync(process.execPath, [driverCliPath, ...negative], { encoding: 'utf8', timeout: 30_000 });
+        const result = spawnSync(process.execPath, [driverCliPath, ...negative], { encoding: 'utf8', env: isolatedBaseEnv(), timeout: 30_000 });
         assert.equal(result.status, 1, `expected exit 1 for ${negative.join(' ')}`);
         assert.match(result.stderr, /Invalid shell wait case input/);
       }
-      const help = spawnSync(process.execPath, [driverCliPath, '--help'], { encoding: 'utf8', timeout: 30_000 });
+      const help = spawnSync(process.execPath, [driverCliPath, '--help'], { encoding: 'utf8', env: isolatedBaseEnv(), timeout: 30_000 });
       assert.equal(help.status, 0, help.stderr);
       assert.match(help.stdout, /--interrupt-baseline-selector short-window-60000/u);
       assert.match(help.stdout, /--survival-control-selector progress-terminal/u);
@@ -18282,7 +18348,7 @@ process.exit(result.status ?? 1);
     // without any private path.
     const { createShellWaitFixture, normalizeFixtureInstructionText, SURVIVAL_CONTROL_LINE_COUNT } = await import('../tools/shell-wait-probe/fixture.mjs');
     const { renderManagedRescueRole } = await import('../scripts/lib/managed-agent-role.mjs');
-    const repositorySha = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+    const repositorySha = spawnSync('git', ['rev-parse', 'HEAD'], { env: isolatedBaseEnv(), encoding: 'utf8' }).stdout.trim();
     const realTemplate = await readFile(join(repositoryRoot, 'agents', 'zcode-rescue.toml.template'), 'utf8');
     const realSkill = await readFile(join(repositoryRoot, 'skills', 'rescue', 'SKILL.md'), 'utf8');
 
@@ -18412,7 +18478,7 @@ process.exit(result.status ?? 1);
 
     test('the survival-control script emits uniquely tagged lines at the declared cadence', async (t) => {
       const fixture = await createFastFixture(t, { survivalControl: true, waitPolicy: 'config-default' });
-      const child = spawn(process.execPath, [fixture.survivalControlPath], { stdio: ['ignore', 'pipe', 'ignore'] });
+      const child = spawn(process.execPath, [fixture.survivalControlPath], { env: isolatedBaseEnv(), stdio: ['ignore', 'pipe', 'ignore'] });
       const startedAtMs = Date.now();
       let collected = '';
       const killer = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* already exiting */ } }, 4600);
@@ -20025,7 +20091,7 @@ process.exit(result.status ?? 1);
       assert.equal(dirname(scriptPath), ownedDir, 'the probe script must live inside the owned temporary directory');
       try {
         await writeFile(scriptPath, childScript);
-        const result = spawnSync(process.execPath, [scriptPath], { encoding: 'utf8' });
+        const result = spawnSync(process.execPath, [scriptPath], { env: isolatedBaseEnv(), encoding: 'utf8' });
         assert.equal(result.status, 0, result.stderr);
         // The LEAK assertion FIRST (it is this test's defect): the private
         // marker appears NOWHERE in the process output.
@@ -22136,7 +22202,12 @@ describe('cleanup-boundary attribution for exit-code settlements (round-9 review
       // The declared entry is the probe's REALPATH: the frozen gate compares
       // realpathSync(process.argv[1]) against it (macOS /var is a symlink).
       const entryRealpath = probe === null ? entry : await realpath(await writeProbe(root, probe.name, probe.body));
-      const env = captureEnvironment({ captureDirectory, nonce, entryRealpath, maxBytes, baseEnv: process.env, nodeOptionsFragment: preload.nodeOptionsFragment });
+      // Post-merge-review fix 1: the composed capture environment starts from
+      // the isolated base built over THIS scope's disposable root — the temp
+      // home/codex-home/data-root directories are created here and disposed
+      // with the root — never from the ambient identity.
+      for (const directory of ISOLATED_ENV_DIRECTORIES) await mkdir(join(root, directory), { mode: 0o700 });
+      const env = captureEnvironment({ captureDirectory, nonce, entryRealpath, maxBytes, baseEnv: isolatedBaseEnv(root), nodeOptionsFragment: preload.nodeOptionsFragment });
       return { root, captureDirectory, nonce, preload, env, probe: probe === null ? null : entryRealpath };
     }
 
@@ -22211,6 +22282,57 @@ describe('cleanup-boundary attribution for exit-code settlements (round-9 review
       // NODE_OPTIONS reached the child). The LIVE host-spawn propagation
       // (§19.3(e) blocker 1) stays the registered O1/I preflight duty.
       assert.ok(String(scope.env.NODE_OPTIONS ?? '').includes('--require'), 'the composed NODE_OPTIONS carries the preload');
+    });
+
+    test('an ambient CODEX_THREAD_ID can never reach the composed capture environment, and the launcher still fast-fails the pinned envelope (post-merge review fix 1)', async (t) => {
+      // The honest in-situ simulation of "ambient": the composition itself
+      // reads process.env (captureScope's baseEnv), so the canaries are
+      // planted on THIS process's own environment — exactly where an invoking
+      // Codex turn's identity would sit — around the captureScope call, and
+      // restored immediately after. The environment assertions run BEFORE any
+      // spawn, so a leaking composition fails here and never launches a child
+      // that carries the ambient identity.
+      const ambientCanaries = {
+        CODEX_THREAD_ID: 'ZCODE_CANARY_AMBIENT_THREAD_4e7a1',
+        CODEX_HOME: '/ZCODE_CANARY_AMBIENT_CODEX_HOME',
+        ZCODE_DATA_ROOT: '/ZCODE_CANARY_AMBIENT_DATA_ROOT',
+        PLUGIN_DATA: '/ZCODE_CANARY_AMBIENT_PLUGIN_DATA',
+        CLAUDE_PLUGIN_DATA: '/ZCODE_CANARY_AMBIENT_CLAUDE_PLUGIN_DATA',
+      };
+      const previous = new Map(Object.entries(ambientCanaries).map(([variable]) => [variable, process.env[variable]]));
+      for (const [variable, value] of Object.entries(ambientCanaries)) process.env[variable] = value;
+      let scope;
+      try {
+        scope = await captureScope(t);
+      } finally {
+        for (const [variable, value] of previous) {
+          if (value === undefined) delete process.env[variable];
+          else process.env[variable] = value;
+        }
+      }
+      assert.equal(process.env.CODEX_THREAD_ID, undefined, 'the ambient canary was restored after the composition');
+      // The composed base carries NO identity variable and NO ambient
+      // home/data-root value: every routing variable points inside the
+      // disposable scope root.
+      assert.equal(scope.env.CODEX_THREAD_ID, undefined, 'the ambient thread identity must be stripped from the composed base');
+      for (const variable of ['HOME', 'USERPROFILE', 'CODEX_HOME', 'ZCODE_DATA_ROOT', 'PLUGIN_DATA', 'CLAUDE_PLUGIN_DATA']) {
+        if (variable in ambientCanaries) assert.notEqual(scope.env[variable], ambientCanaries[variable], `${variable} must never carry the ambient value`);
+        assert.ok(String(scope.env[variable]).startsWith(scope.root), `${variable} must point inside the disposable scope root`);
+      }
+      // Under that env the launcher must STILL fast-fail with the exact
+      // pinned THREAD_ID_REQUIRED envelope: the ambient id cannot activate
+      // the launcher path, and the canary never enters production stdout.
+      const outcome = await spawnBounded(process.execPath, [launcherRealpath, 'invoke-prepared', 'rescue'], scope.env);
+      assert.equal(outcome.code, 1, 'the production fast-fail exit code is preserved');
+      assert.equal(outcome.stdout, threadIdRequiredEnvelope.text, 'the pinned THREAD_ID_REQUIRED envelope is byte-identical');
+      assert.equal(outcome.stderr, '');
+      assert.equal(envelopeBytes, 207, 'the §19.3 T1 pinned fast-fail envelope size');
+      assert.ok(!outcome.stdout.includes(ambientCanaries.CODEX_THREAD_ID), 'the ambient canary never reaches production stdout');
+      const admission = await admitStdoutCapture({ captureDirectory: scope.captureDirectory, nonce: scope.nonce });
+      assert.equal(admission.status, 'complete');
+      assert.equal(admission.byteCount, 207);
+      assert.equal(admission.exitCode, 1);
+      assert.equal(admission.truncated, false);
     });
 
     test('without the fixture capture environment the preload stays inert and delivery is unchanged', async (t) => {
@@ -23176,7 +23298,7 @@ describe('cleanup-boundary attribution for exit-code settlements (round-9 review
 
     test('the fixture stdoutCapture seam generates the preload, composes the environment and records bounded provenance', async (t) => {
       const { createShellWaitFixture } = await import('../tools/shell-wait-probe/fixture.mjs');
-      const repositorySha = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+      const repositorySha = spawnSync('git', ['rev-parse', 'HEAD'], { env: isolatedBaseEnv(), encoding: 'utf8' }).stdout.trim();
 
       /** Seam-injected fast installer (the fast-path describe's exact pattern). */
       async function fakeInstallPlugin({ codexHome, cleanSource }) {
@@ -23272,7 +23394,7 @@ describe('cleanup-boundary attribution for exit-code settlements (round-9 review
       const { entryRealpath } = { entryRealpath: scope.probe };
       const env = captureEnvironment({
         captureDirectory, nonce, entryRealpath,
-        baseEnv: process.env, nodeOptionsFragment: preload.nodeOptionsFragment,
+        baseEnv: isolatedBaseEnv(), nodeOptionsFragment: preload.nodeOptionsFragment,
       });
       // (1) The gate MATCHES: normal execution AND capture both work.
       const outcome = await spawnBounded(process.execPath, [entryRealpath, 'invoke-prepared', 'rescue'], env);
@@ -23926,7 +24048,7 @@ describe('cleanup-boundary attribution for exit-code settlements (round-9 review
       const key = createHash('sha256').update(scope.workspaceReal, 'utf8').digest('hex');
       const fifoPath = join(scope.dataRoot, 'workspaces', key, 'jobs', 'damaged.fifo');
       await new Promise((resolve, reject) => {
-        const child = spawn('mkfifo', [fifoPath]);
+        const child = spawn('mkfifo', [fifoPath], { env: isolatedBaseEnv() });
         child.once('error', reject);
         child.once('close', (code) => code === 0 ? resolve() : reject(new Error(`mkfifo exited ${String(code)}`)));
       });
