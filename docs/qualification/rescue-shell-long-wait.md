@@ -12794,3 +12794,361 @@ recorded verbatim in §22.2's dated completion — the failed run stays failed i
 nothing was waived. This records commit itself adds only docs bytes: the tracked `tests/` and
 `tools/` sorted-manifest digests are byte-identical to `47f0b33`'s (§22.2's dated completion), so
 no executable byte — and no raw-data surface — changed.
+
+## 23. 2026-10-23 interrupt-closure Task 1: admission/retention/sampling preregistration (offline; zero model turns)
+
+Task 1 of the [2026-10-23 plan](../superpowers/plans/2026-10-23-rescue-shell-wait-interrupt-closure.md),
+executed 2026-10-23 in the fresh worktree `.worktrees/rescue-shell-wait-interrupt-closure` (branch
+`docs/rescue-shell-wait-interrupt-closure`) at base `dba2e8ad8534b5800fd1faff98ad904f492dcf1d`.
+OFFLINE throughout: ZERO model turns, zero live launches, zero labels spent (the §21.3 ledger stays
+closed; this plan's own I/F labels are Task 4 registrations, not authorizations to launch), zero
+production/source/config edits. Changed bytes: this section and the plan's Task-1 checkbox ticks —
+nothing else (verified by the hygiene gates at §23.7). The §16.2/§19.4/§19.5/§19.6/§20.5/§21.2.3
+registrations are CITED, never re-decided; their allowances stay spent and nothing here reopens them.
+
+### 23.1 Re-pin (checkbox 1; all commands executed 2026-10-23 inside the worktree; nothing trusted forward)
+
+```text
+$ git status --short
+?? docs/superpowers/plans/2026-10-23-rescue-shell-wait-interrupt-closure.md
+?? findings.md
+?? progress.md
+?? task_plan.md
+$ git rev-parse HEAD
+dba2e8ad8534b5800fd1faff98ad904f492dcf1d
+$ /Users/zhangzikai/.codex/packages/standalone/releases/0.163.0-aarch64-apple-darwin/bin/codex --version
+codex-cli 0.163.0
+$ shasum -a 256 /Users/zhangzikai/.codex/packages/standalone/releases/0.163.0-aarch64-apple-darwin/bin/codex
+8813367285524ac798dd96d1b071aea30d58708c7226fd236cd275cf1cfdee31  /Users/zhangzikai/.codex/packages/standalone/releases/0.163.0-aarch64-apple-darwin/bin/codex
+$ git -C ../../../codex rev-parse HEAD
+dffa0deb69268ed4ac31578794c9ea897b336ae3
+$ git -C ../../../codex status --short
+(empty — clean)
+$ node tools/shell-wait-probe/driver.mjs --help
+usage: node tools/shell-wait-probe/driver.mjs --case <case> --codex <absolute executable> --source-sha <40-hex> --output <private empty directory> [--worker-duration-ms ms] [--cap-ms ms] [--poll-ms ms] [--budget-ms ms] [--status-query-timeout-ms ms] [--unclassified-structural-diagnostic 1] [--unclassified-shape-diagnostic 1] [--model <id>] [--wait-policy config-default --exec-default-ms ms] [--interrupt-baseline-selector short-window-60000 | --survival-control-selector progress-terminal] (the wait policy is valid for every registered case with its declared §16.6 combination; the interrupt selectors are valid only for rescue-interrupt at their declared windows)
+cases: rescue-baseline, rescue-long, rescue-repeat, rescue-noise, rescue-interrupt, review-wait, adversarial-review-wait, status-wait, background
+(exit 0; 816 bytes; SHA-256 afa0e66db58a9ef5576ce868266a0c5257b3cc9dad5720e5fd31fb7b4a5ff6f1)
+```
+
+- **Selected executable**: absolute realpath
+  `/Users/zhangzikai/.codex/packages/standalone/releases/0.163.0-aarch64-apple-darwin/bin/codex`
+  (`realpath` resolves to itself — a real file, not a symlink), `codex-cli 0.163.0`, SHA-256
+  `8813367285524ac798dd96d1b071aea30d58708c7226fd236cd275cf1cfdee31` — byte-identical to the §1
+  preference, §19.1 baseline and all three §21.1 launch-time verifications. The 0.163.0 evidence
+  cohort stays closable on this exact binary.
+- **Ambient CLI — recorded SEPARATELY, never blended**: `command -v codex` resolves to
+  `/Users/zhangzikai/.local/bin/codex` → realpath
+  `/Users/zhangzikai/.codex/packages/standalone/releases/0.164.0-aarch64-apple-darwin/bin/codex`,
+  `codex-cli 0.164.0`. Any future launch MUST pass the selected 0.163.0 absolute path explicitly
+  (§20.2's command shape already does); no cross-version comparability is claimed, and 0.164.0
+  behavior stays unqualified (§1's version-boundary rules unchanged).
+- **Model metadata — requested vs effective**: REQUESTED = `gpt-6.1-sol` via the `--model` seam,
+  carried by the frozen §20.2 command registration (the §15.5/§19.1 authenticated bounded discovery
+  recorded it priority 0 / list-visible; this round did NOT re-run `codex debug models` — it is an
+  authenticated network discovery and this task's limits confine discovery to `--version`/help text;
+  its re-pin remains the §20.7 pre-EACH-launch duty). EFFECTIVE model metadata: `null` — never
+  established on any retained record, and this round establishes none. If the pre-launch discovery
+  cannot resolve the approved selection, the §20.7 stop rule applies; no other model is substituted
+  here.
+- **Source pin**: `dffa0deb69268ed4ac31578794c9ea897b336ae3`, `status --short` EMPTY (clean) —
+  byte-identical to the §16.2/§19.4 trace pin, so every §23.3 citation reproduces at the CURRENT
+  checkout without a moved-pin re-derivation. No source fetch/build/edit.
+- **Applicability boundary**: the exact 0.163.0 executable is present, executable, and reports its
+  identity at the `--version`/help level (bounded read-only discovery only — no auth/config value
+  read, no model turn, no install/build). Account/model-path support on that binary is re-pinned at
+  launch time per §20.7; if the binary disappears or stops being supported, that sub-step STOPS with
+  the recorded boundary — never a substitute executable.
+
+### 23.2 Retained fixture-owned records examined OFFLINE; the frozen two-line admission family (checkbox 2)
+
+**Retained corpus (all read-only, all digests re-verified 2026-10-23):**
+`/tmp/shell-wait-closure-i.7O0WIl/rescue-interrupt.record.json` — 12730 bytes, SHA-256
+`731feb13a4687b86f07bf2995710d271feb942a0646cd970f1c2ea4743837a72`, byte-identical to the §21.1
+record digest; the O1/O2 record dirs (`/tmp/shell-wait-closure-o1.YWUis4/`,
+`/tmp/shell-wait-closure-o2.GOsEp6/`); the Task-1/4/5 provenance artifacts
+(`/tmp/shell-wait-evidence-closure/{task1,task4,task5}/`, including the three launch-time
+`debug-models` raw catalogs and the I driver-stdout copy of the record). **Available bytes** are the
+redacted typed record only. **Discarded bodies, named**: the unclassified cell's RAW source (never
+persisted — the fail-closed excerpt withholds it by construction,
+`structuralExcerptForUnclassifiedInput`), all rollout bytes (`evidence.rolloutCount: null` and
+`evidence.childToolCallCount: null` on the record — the record has NO top-level `collection` key;
+rollouts disposed with the fixture home), the interrupt target text (23 chars suppressed).
+The withheld-body digest `e9856478c99a23a93f7997d75418f5352c74cf6cb894df671b908ed032116e84` and the
+2-line/231-byte lengths are a one-way recurrence fingerprint and structural bounds — they do NOT
+reconstruct the deleted raw source, no reconstruction from 231 bytes or from the hash was attempted
+or is acceptable, and no claim below rests on one.
+
+**What the retained diagnostic establishes (record `evidence.excerpts[0]`, verbatim fields):**
+classification `unclassified-script-cell`, tool `exec_command`, `bodyType: string`, 2 input lines,
+231 input bytes, directive absent; structural diagnostic `wholeBodyStatementMatch: false` with
+exactly ONE content-line fact — line 1, prefix class `const-r-await` (the anchored fixed-token test
+`/^const r = await tools\./u`), `braceDepthEnd: 0`, `endsWithSemicolon: true`,
+`tools: ["exec_command"]` — and NO `withheldLines` (so the second physical line is blank: the
+trailing-newline artifact); shape diagnostic v1 `coverage: complete`, `statementCount: 1` with one
+statement `{head: bound-await, tool: exec_command, argument: literal-object, lexical: complete,
+tail: text-binding}`, `bindingEquality: equal`, `parserStage: output`, `wholeInputConsumed: true`,
+`retention: full`.
+
+**Mechanism discrimination (sources read + empirical probes against the REAL modules, offline,
+temp-file only):** the shape classifier's emission head tolerates whitespace the pinned parser does
+not (`EMISSION_HEAD_PATTERN = /^text(?![\p{ID_Continue}$_])\s*\(/u` in shape-diagnostic.mjs vs
+`WRAPPER_PATTERN`'s literal `text\(` in evidence.mjs), and `diagnoseParserStage`'s own `output`
+stage is defined as exactly this family — a pinned wrapper head whose emission the existing grammar
+mechanically rejects (its doc comment names `text (r)` verbatim). Probes run through
+`parseCallStatements`/`inspectCallShape`: the forms `…exec_command({…});␠text (r);` and
+`…exec_command({…});␠text(␠r␠);` REPRODUCE THE ENTIRE retained signature (parser REJECTED;
+shape `{head: bound-await, tail: text-binding, stage: output, bindingEquality: equal,
+statementCount: 1}`), while the candidate confounds do NOT reproduce it and are thereby EXCLUDED as
+the historical cause: CRLF line endings and trailing-line whitespace are admitted by the per-line
+trim (stage `parse-accepted`); a canonical `text(r);` is admitted outright; and the blank-line
+positions do not reproduce the recorded signature either — a blank line BETWEEN the declaration and
+the emission lands at stage `output` with `statementCount: 2` (the record shows 1), a TRAILING blank
+content line after the divergent emission keeps `statementCount: 1` but would make `inputLines` 3
+(the record shows 2), and the `residual` stage arises only for a blank content line AFTER a CANONICAL
+emission. The binding name is proven `r` (prefix class + `bindingEquality:
+equal`), the emission argument is proven exactly that identifier (`tail: text-binding` — not
+`text-stringify-binding`, not `text-public-field`), and the emission shares line 1 (only one
+content-line fact exists).
+
+**FROZEN admitted form(s) — BEFORE any Task 2 implementation:** per content line, the EXISTING
+pinned wrapper statement family with exactly ONE relaxed dimension — bounded whitespace at the
+emission junctions:
+
+```text
+const r = await tools.(exec_command|write_stdin)(<literal-object>);   ← head/argument junctions: NO added whitespace (WRAPPER_PATTERN as-is)
+                            <existing \s*> text<ws₁>(<ws₂>r<ws₃>);?   ← ws₁/ws₂/ws₃: the ONLY relaxed junctions
+```
+
+i.e. ONE `const` binding named literally `r` = ONE awaited allowlisted tools call
+(`exec_command` proven by the retained record; `write_stdin` admitted as the same pinned
+`WRAPPER_PATTERN` head family, reaching the SAME existing call-value validation) whose argument is
+ONE literal object (JSON, or the existing bounded JS-literal fallback — the existing
+`parseWrapperArguments` semantics unchanged), followed on the SAME line by the cell's final `text`
+emission of that same binding `r` (`bindingEquality: equal`). **The whitespace bound, explicit:**
+each of ws₁/ws₂/ws₃ is a run of horizontal whitespace characters (space/tab) of length 1–8 —
+ONE junction-level bound, finite and checkable; length 0 is the already-admitted canonical form,
+and a longer run stays rejected. NOTHING else is relaxed: the head/argument junctions
+(`tools.(`, the object, the declaration's `);`) tolerate NO added whitespace; the
+declaration→`text` junction keeps the EXISTING `WRAPPER_PATTERN` `\s*` (pre-existing, never part
+of this freeze); the optional emission `;` and trailing-line whitespace keep their EXISTING
+semantics (the per-line trim already admits them — excluded as the historical cause above).
+The `text(JSON.stringify(r))` alternation is part of the existing family and stays
+unchanged (its tail class differs; it was never the historical shape). A directive remains neither
+required nor relaxed (this family registers with directive absent; directive-led cells keep the
+existing rules). **Supported bounds**: tool set exactly `{exec_command, write_stdin}`; literal-object
+argument ≤ `MAX_WRAPPER_ARGUMENT_CHARS` (4096); statements per cell ≤ `MAX_STATEMENTS_PER_CELL`
+(16); blank separator lines only BETWEEN statements (existing rule); the admitted statement must be
+the cell's complete content under the existing per-line rules.
+
+**Rejected surrounding syntax (each stays fail-closed with the existing safe diagnostics):** any
+second content statement or hidden second tools call (including a later awaited poll sharing the
+cell — per-statement output/continuation ownership is preserved and a shared-cell submission is
+NEVER evidence that a later awaited poll started); loops, function bodies, template literals, or
+any non-literal/dynamic argument form; binding names other than `r`; `let`/`var` declarations;
+missing emission, mismatched emission (`bindingEquality` not-equal/unrelated/unknown), or any other
+tail form (`text(r.<field>)`, `text(String(r))`, computed access); duplicate argument keys rejected
+by the existing literal decoder; truncated input; oversized bodies; a raw invalid directive; the
+private preparation frame (its own recognized path unchanged); extra leading/trailing statements;
+blank CONTENT lines beyond inter-statement separators (the `residual` stage stays rejected).
+Task 2's RED matrix must cover exactly the plan's listed negatives against THIS frozen family.
+
+**Identity boundary, stated explicitly:** a synthetic family fixture that reproduces every
+structural diagnostic above is instrument proof only — it is NOT proof of historical raw-body
+identity. The lost body is named by its digest alone; only a retained raw body could prove
+identity, and none exists anywhere in the corpus (§19.2's twelve historical dirs hold none either).
+The frozen family is the DEFENSIBLE finite form the retained facts support — admitted for forward
+measurement, never as a retroactive claim about the deleted bytes.
+
+### 23.3 Source retention vs actual artifact schema, traced separately (checkbox 3)
+
+- **Source retention chain — reproduces at the current clean HEAD** (`dffa0deb…`, §23.1):
+  `handle_interrupt_agent` resolves the target, dispatches `agent_control.interrupt(...)`, snapshots
+  `previous_status` PRE-dispatch, and only then emits `SubAgentActivityItem { id: call_id,
+  agent_thread_id, agent_path, kind: Interrupted }` via `emit_sub_agent_activity`
+  (`core/src/tools/handlers/multi_agents_v2/interrupt_agent.rs:33-77`;
+  `multi_agents_v2.rs:44-52` → ItemStarted/ItemCompleted); persistence policy
+  (`codex-rs/rollout/src/policy.rs` `persisted_item_completed_event`): `ItemStarted` is TRANSIENT,
+  Paginated mode keeps EVERY item kind (`_ => Cow::Borrowed`) including
+  `SubAgentActivity(kind=interrupted)`, Legacy keeps only `FunctionCallOutput|Plan|Extension(Sleep)`
+  plus `SubAgentActivity(kind=completed)`; the installed local store's
+  `LocalThreadStore::default_history_mode` returns **Paginated**
+  (`codex-rs/thread-store/src/local/mod.rs:481-484`), and a spawned V2 Child inherits the parent's
+  mode (`core/src/agent/control/spawn.rs:823-827`). Wire shape per §19.4's serde citation
+  (`event_msg`/`item_completed` payload, `SubAgentActivity` item, payload-level
+  `completed_at_ms`, `SubAgentActivityKind` snake_case `interrupted`). Source presence remains NOT
+  an installed observation (§19.4's own rule, unchanged).
+- **Actual artifact schema of what was retained — a DIFFERENT artifact**: the persisted case record
+  (schema: `interrupt.*` closed facts, `child.durableSnapshot`, `evidence.count`/`truncated`/
+  `excerpts[]` with `evidence.rolloutCount` and `evidence.childToolCallCount` — no top-level
+  `collection` key) carries NO rollout bytes and NO host-event payloads — `evidence.rolloutCount:
+  null`, `evidence.childToolCallCount: null`; the only host-event-adjacent bytes anywhere in the
+  corpus are the
+  bounded structural/shape diagnostics of §23.2. The event's own field completeness (presence of
+  `started_at_ms`, `model`, `reasoning_effort`, `agent_path` on the REAL installed item) is
+  therefore NOT determinable from already-retained data.
+- **Installed history mode: NOT determinable from retained data** — no historical host event
+  survives anywhere (this §23.2 corpus, §19.2's twelve §18.1 dirs, §17's disposed rollouts).
+  Consequently the registered I successor trial MEASURES RETENTION AS AN EXPLICIT OUTCOME — the
+  §19.4 first-verification-step duty and §20.5 item 3 stand UNCHANGED: the captured Root rollout is
+  scanned by `admitInterruptHostDelivery` before any other layer is adjudicated; an absent item
+  fails the delivery layer closed with `host-activity-item-absent` riding the record (a POSITIVE
+  absence claim requires a COMPLETED scan of a COLLECTED rollout — never a scan that never ran).
+  No invented API is required or demanded by this registration; the §23.5 schedule adds no new host
+  reads.
+
+### 23.4 Where one unsupported cell aborts the collection, and the host facts that survive it (checkbox 4)
+
+**The abort site (actual code path, current bytes):** `inspectShellWaitEvidence`
+(tools/shell-wait-probe/evidence.mjs:3663-3686) runs a fail-closed scan over EVERY event of EVERY
+collected rollout BEFORE any linkage or statement analysis: for any `custom_tool_call` whose
+`parseCallStatements(event)` returns `null` it returns
+`inconclusive('unsupported-call-shape', …, { manualAdjudicationRequired: true, excerpt })`
+IMMEDIATELY — never reaching `inspectLinkage` (evidence.mjs:3754), the sequence analysis, or any
+host-activity work. Downstream, `mapShellWaitLiveFacts` (tools/shell-wait-probe/driver.mjs) then
+(a) derives `interruptChildThreadId`/`interruptRootThreadId` ONLY when
+`evidence.status === 'supported'` (driver.mjs:4320-4327), so `admitInterruptHostDelivery`
+(driver.mjs:4339) runs with BOTH ids null — every identity/window conjunct unestablished — and
+(b) routes the record to `interrupt.missingPrerequisite` = the collection-incompleteness reason
+(driver.mjs:4959-4962) with NO `hostDelivery` block. This is precisely §21.2.3 item 1's recorded
+outcome: ONE unclassified 2-line/231-byte cell aborted the whole evidence adjudication BEFORE the
+host-activity scan, so the installed-retention question was NOT MEASURED (never `absent`).
+
+**Independently bounded facts that can safely survive that failure (preregistered for Task 2):**
+the interrupt CALL facts `extractInterruptInteraction` derives from RAW rollouts independent of the
+whole-case verdict — `attempted`, `callCount`, family, `previousStatus`, the suppressed target, the
+attributable ordering bounds (the historical record itself proves these survive: §21.2.3 item 2 was
+recorded BEFORE the collection failure); the spawn-acknowledgement identity via
+`observeSpawnAcknowledgementIdentity(rollouts)` (pure over raw rollouts — the exact
+child/parent ids or its named inexact reason, no dependence on the supported-case verdict); the
+host-activity ITEM facts via the admission's own bounded scan (`itemPresent`,
+`interruptedItemCount`, `idJoin`, `agentThreadIdMatch`, `timed`, `completedAtMs`, per-conjunct
+named reasons) wherever its OWN inputs — raw rollouts + the interaction — exist; the collection
+fact that rollouts WERE captured (the historical failure was in ADMISSION, not capture —
+`rolloutCount` may be positive while adjudication is `inconclusive`); and the passive durable
+snapshot, which already runs independent of evidence status (§21.2.3 item 5).
+
+**What does NOT survive, verbatim limits:** this does NOT qualify the Child call sequence —
+exactly-one-call as a sequence-discipline positive, the original-handle/pending-window
+confirmation, and the §16.3 case contract all require the supported-case analysis, so hidden
+additional calls, ambiguous IDs, or incomplete collection still BLOCK the relevant positive
+conjuncts (each stays named-unestablished, never guessed). Unsupported is NEVER relabeled `absent`
+or "unrelated": an unadmitted item or an aborted scan keeps its named reason on the record; only a
+completed scan of a collected rollout can establish a positive absence. A survivor fact earns no
+qualification credit by itself — the delivery layer's positives still require the full §19.4
+admission set, and Task 2 must expose the layer-level facts WITHOUT returning a bare overall
+failure (the plan's Task-2 checkbox 4 contract).
+
+### 23.5 Frozen pre-cleanup passive sampling schedule (checkbox 5; frozen BEFORE any cleanup)
+
+**Machinery (existing only — no new lifecycle engine):** the passive durable reader
+`readDurableObligationSnapshot` (closure-observation.mjs:1474, `DURABLE_SNAPSHOT_VERSION` 1 — never
+creates, chmods, locks, waits, writes, or reconciles; §19.5/§19.8), the supplier identity join
+`interruptDurableSnapshotSupplier` (driver.mjs:2239 — the OBSERVED exact spawn acknowledgement, owner
+= the observed PARENT, executor verified against the observed Child), the held-turn boundary
+machinery (`cleanup.cleanupBoundaryAtMs`, the min-maintained EARLIEST termination-initiation
+instant), and the read's own completion stamping + fence (`startDurableSnapshotRead`/
+`buildDurableSettlementLayer`; the join's `durableReadPostCleanupBoundary`). Rollout observation
+stays the driver's existing collection — **NO extra Child tool polls of any kind** (no new
+`write_stdin`, no Status substitute, no hidden polling script).
+
+**Frozen schedule:**
+
+1. **Baseline** — ONE passive read starts as soon as the exact identity is established (the
+   supplier non-null; in the interrupt case this is the observed spawn acknowledgement). Identity
+   never establishes ⇒ the baseline is OMITTED with its named reason
+   (`durable-identity-unobserved`), never guessed at another job.
+2. **Post-delivery reads** — after the attributable native delivery bound (the admitted host item's
+   `completedAtMs`, §19.4/§19.6 discipline) and after each attributable settlement observation,
+   further passive reads run at an interval of **≥1000 ms between read starts**, each under the
+   unchanged passivity fence.
+3. **Final independent observation** — the LAST read must COMPLETE strictly BEFORE the earliest
+   termination-initiation boundary (`cleanupBoundaryAtMs`). Termination-initiation boundaries are
+   exactly the existing recorded ones: budget abort, hold-deadline observation cleanup,
+   status-query-deadline cleanup, early-exit termination cleanup, fixture disposal; normal watcher
+   teardown without a recorded boundary is NOT one (§22 round-3 semantics). The fence is the
+   code-enforced one: a read completing at/after the boundary is a CLEANUP-TIME observation earning
+   NO qualification credit (`durableReadPostCleanupBoundary`, the §21.2.3 item 8 overlay made
+   mechanical).
+4. **Bounds** — maximum **600 read attempts** total, all inside the existing **1200000-ms
+   experiment budget** (the shared budget signal; sampling never extends it and never delays
+   cleanup: a read still in flight at the boundary/budget is abandoned at the signal with the named
+   omission). At most **32 transition/sample summaries** are retained per case, each a bounded
+   closed-fact block (aggregate, per-layer duty states, `executorLinkage`, job presence, the
+   read's own started/completed timestamps, fingerprint-equality, named reasons). Reads beyond the
+   attempt cap, budget-expired reads, unreadable suppliers, and never-resolving suppliers are
+   OMITTED/TIMED-OUT BY NAME — observer reasons riding the record, never business failures, never
+   zeros.
+5. **Per-snapshot integrity** — every snapshot keeps its OWN started/completed timestamps (the
+   completion instant is the fence input, never the join instant) and its own consistency/identity
+   proofs: the before/after partition fingerprint equality, `executorLinkage`, the owner-index
+   resolution state (exact/ambiguous/missing/unreadable named), and `lockState`
+   observed-never-acquired. Sample count NEVER implies state convergence — aggregates are
+   per-snapshot facts, never extrapolated across reads.
+6. **Duty/process evidence — production-defined only** — the §19.5 predicates (TERMINAL winner,
+   `validStopIntent`, `isMarkedRunnerClaim`, `endedObligationSettled`, writable-guard state,
+   binding currency) plus retained safe identifiers (`childPid` recorded, aliveness NEVER probed —
+   no lease acquisition, no signal). **No passive lease API is demanded or invented**: none exists
+   in the production path; an applicable layer the existing supported evidence cannot establish
+   stays named-unestablished (the Companion local-reaping limitation class, §19.9/§21.2.3).
+
+### 23.6 Preregistered expected outcomes per layer (checkbox 6)
+
+- **Native turn/cell/poll responsiveness**: the existing `RESPONSIVENESS_BOUND_MS` 60000-ms bound
+  (release-qualification.mjs:806, oracle v2) STAYS the oracle of record and STAYS **REGISTERED-BUT-
+  NOT-YET-APPLICABLE** until a live I record first satisfies the §19.4 admission set (§20.5 item 6
+  status re-confirmed: Task 1 of THIS plan did not — and could not — confirm installed
+  applicability). When applicable: delivery-to-settlement measured on ONE established ordering
+  (§19.6 join rules; null stays unestablished, never zero); no settlement by 60000 ms of the
+  attributable delivery bound is recorded NOT responsive — never retried into responsiveness.
+  **The 60000-ms figure and the §23.5 read budget are OBSERVATION bounds only** — production has NO
+  aggregate delivery-to-settlement deadline (§16.5's composition table stands) and this
+  registration creates no new production timeout, detector, or ceiling.
+- **Downstream settlement — separate layers on the ACTUAL production path**: the Companion REMOTE
+  outcome joins ONLY from the production-published durable terminal winner through a verified
+  executor linkage; `localProcessReaping` stays the registered named-unobservable `null`. The
+  durable obligations layer follows the §19.5 predicates over the §23.5 pre-boundary reads.
+  **Expected legitimate outcome shapes, preregistered**: "responsive cell + surviving unresolved
+  guard" (a retained writable guard is SAFE PRESERVATION — never failed settlement, never full
+  settlement); a natural terminal winner that settles after the interrupt is recorded NATURAL —
+  cancellation is NOT required and is never fabricated when the legitimate terminal winner is
+  natural success (the `natural-completion-misclassified-as-cancelled` blocker stands); the
+  interrupt itself persisting NO durable stop intent (§16.2) is the EXPECTED delivery-side result,
+  and a real `'session-end'` stop intent observed later is a SEPARATE authorized act, never
+  interrupt settlement.
+- **Genuine not-applicable duties — production-path evidence required**: a duty is
+  `not-applicable` ONLY with its demonstrated production reason on the record (the retained §21.2.3
+  item 5 shapes: `runnerCleanupDuty: not-applicable` requires NO marked runner claim
+  (`rescueRunnerVersion: null`); `writableGuard: not-applicable` requires the production
+  not-retained state; `lifecycleEpoch: not-applicable` requires no epoch declared for the
+  observation). Local/remote/guard UNKNOWNs are never silently discarded: unknown stays
+  named-unestablished (null, never zero, never folded into another layer).
+- **Delivery layer**: admitted (all six §19.4 conjuncts on a live record) — or the specific named
+  failure (`host-activity-item-absent` only after a completed scan; `-unjoinable`/`-unadmitted`
+  reasons per §19.9's registered limitations; DIRECT-mode is the only qualified path). A delivery
+  acknowledgement alone qualifies nothing downstream (§20.5 item 7 discipline unchanged).
+- **Survival control**: the byte-unchanged §16.4 emission-tag semantics; the final read after
+  settlement reported verbatim; survival proven only by an emission tag strictly after the delivery
+  bound.
+- **Sampling fence**: pre-boundary-completed reads joined later retain their facts and can earn
+  credit; at/after-boundary reads are cleanup-time observations (zero credit); missing timing,
+  incompatible clocks, torn snapshots, or uncertain origin stay unestablished.
+
+### 23.7 Task 1 exit and hygiene gates
+
+**Exit (plan Task 1):** the bounded grammar (§23.2), retention (§23.3), join/abort (§23.4) and
+sampling (§23.5) predicates are frozen with named unavailable mechanisms (installed retention, the
+effective model metadata, event field completeness, Companion local reaping) — not an assumption
+that a parser patch alone makes Gate D pass. Independent offline work continues even where a
+supported host seam is unavailable. No live case, production change, or label consumption follows
+from this section.
+
+**Hygiene gates (executed 2026-10-23 on the exact changed docs bytes):**
+`node scripts/check-line-endings.mjs` → *"LF line endings verified in 543 tracked files."*, exit 0
+(542 → 543 with this plan file's baseline commit); `git diff --check` → exit 0, no output. The
+research/selection/lint/typecheck suites were NOT run: this task changed ONLY the two documentation
+files (this report and the plan's Task-1 checkboxes) — zero modifications under `tools/` and
+`tests/`, so no executable bytes changed and §22.2's final-bytes battery remains the gate of record
+for the unchanged implementation (the §19 Task-1 precedent). The prohibited tracked-path diff
+against `dba2e8a` is EMPTY for `scripts/ hooks/ skills/ agents/ .codex-plugin/ marketplace/
+docs/superpowers/specs/ package.json npm-shrinkwrap.json` (docs-only change set). Untracked scratch
+(`findings.md`, `progress.md`, `task_plan.md`) preserved untouched and never staged.

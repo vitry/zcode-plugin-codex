@@ -1,0 +1,189 @@
+# Native Interrupt and Pre-Cleanup Settlement Closure Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:executing-plans` after execution delegation, or the agreed subagent-driven workflow. Review the actual instrument/oracles independently before live use and the final branch afterward. Checkboxes record execution, not release permission.
+
+**Goal:** Resolve the remaining native-interruption Gate D on the actual pending managed Rescue Child: exact delivery, responsive observation cancellation, real Companion/job/guard obligations and unrelated survival, without reopening the proven long-wait or exact-output questions.
+
+**Architecture:** Reuse the merged installed-plugin fixture and production lifecycle unchanged. Repair only a demonstrated bounded call-admission defect, observe host activity independently of unrelated collection failures where defensible, and sample passive settlement state before any harness cleanup. Preserve layer-specific uncertainty instead of manufacturing a new stop authority or another execution adapter.
+
+**Tech Stack:** Node.js ESM/`node:test`; existing shell-research fixture/driver/evidence/closure reader; installed pinned Codex CLI; read-only production lifecycle and local Codex source.
+
+---
+
+## 1. Authority and exact starting point
+
+- Unchanged [2026-10-05 spec](../specs/2026-10-05-rescue-shell-long-wait-design.md), S1–S7/Q1–Q6 and §8. This is a new plan under that spec, not a new design or weakened production gate.
+- Base: PR [#71](https://github.com/vitry/zcode-plugin-codex/pull/71) merge `dba2e8ad8534b5800fd1faff98ad904f492dcf1d`; main synchronized first. New worktree `.worktrees/rescue-shell-wait-interrupt-closure`, branch `docs/rescue-shell-wait-interrupt-closure`. Preserve unrelated scratch everywhere.
+- Read the [report](../../qualification/rescue-shell-long-wait.md), §§16.2–16.5, 19.4–19.6, 19.9, 20.5–20.6, 21.2.3–21.4 and 22 (including the 2026-10-23 fixes), plus the [previous plan](2026-10-21-rescue-shell-wait-evidence-closure.md). Previous ledgers are closed; their unspent F is not a new allowance here.
+- Source location: `/Users/zhangzikai/Workspace/Codes/github/codex`, `../../../codex` here, NOT plugin `.codex`. Draft observation: clean `dffa0deb69268ed4ac31578794c9ea897b336ae3`; no source/binary correspondence established. No source fetch/build/edit.
+
+**Current delegation is plan drafting and independent review only.** Later execution delegation authorizes the bounded research-only work here, not production changes, real-project/provider work, user/global config/cache edits, commit/push/PR/merge or automatic adoption. Uncertain supported host/evidence mechanisms are investigation tasks, not demands for the user to design APIs. A genuinely needed production fix requires a separate explicit implementation decision, not a silent expansion of this plan.
+
+### Retained successes and version choice
+
+Long waiting and its repeat, reduced observation re-entry (7 to 1), and exact foreground stdout/exit linkage are established research results on CLI **0.163.0**. O1/O2's corrected expectation v2 is independently derived from the actual foreground formatter; do not restore the wrong management-result framing, erase historical v1 mismatches, or rerun O/M/B/C0/C1 as a fresh feasibility campaign.
+
+The ambient CLI is now **0.164.0**, but the exact measured 0.163.0 executable remains available:
+
+```text
+/Users/zhangzikai/.codex/packages/standalone/releases/0.163.0-aarch64-apple-darwin/bin/codex
+SHA-256 8813367285524ac798dd96d1b071aea30d58708c7226fd236cd275cf1cfdee31
+```
+
+Prefer that explicitly selected executable to close the **existing 0.163.0 evidence cohort**. Re-verify it before execution; do not silently use `command -v codex` (now a different version), install/build/downgrade anything, or claim this qualifies 0.164.0. If that exact binary/model/account path is no longer supported, investigate the current executable read-only and record the new applicability boundary before any launch. A Gate-D result on another version stays on that version; previous B/C observations cannot silently complete a cross-version adoption claim. No new calibration/cadence campaign is authorized by such drift.
+
+**This is not a production-integration plan.** The shared Rescue path remains `do-not-adopt-yet` until mandatory Gate D actually closes. `rescue-long/repeat/interrupt` are research case labels, not isolable product commands. Closing D would still require a scoped deployment decision accounting for unqualified Review/BG/global-config effects; this plan neither hides nor re-tests them.
+
+## 2. Concrete gaps, not hypothetical new requirements
+
+| Gap | Required observation / limit |
+| --- | --- |
+| Previous I collection failed on one unclassified 2-line/231-byte `bound-await` / `text-binding` cell, digest `e9856478…` | Establish and test only a defensible finite form. The digest/length do not reconstruct deleted raw source or prove a synthetic form equals the historical body |
+| Host Interrupted activity retention never measured | Inspect actual fixture-owned host events/stream with provenance; absence vs collection failure vs unsupported wrapper join are different outcomes |
+| Existing host-activity admission uses direct call IDs | Keep direct delivery as the registered starting path; wrapped delivery requires separately proven nested-call ownership, not alias text or outer-call-id guessing |
+| Prior durable/Companion snapshot completed at cleanup boundary | Read actual passive state earlier and retain each read's own completion time. At/after-boundary evidence receives no settlement credit |
+| Companion/local process/job/guard layers differ | A cancelled tool future or durable terminal winner does not prove all applicable physical executor duties are discharged. Establish applicability and actual outcome independently |
+| Independent survival control unobserved | Prove it active at delivery and then emitting/alive or independently naturally completed afterward, with exact Root ownership and no shared stop authority |
+
+Native Child interruption aborts the turn and active code-mode cells; the pinned source does NOT promise automatic terminal-process or durable-job cancellation. The production lifecycle recognizes its own real stop causes. Observe those causes, or separately observed natural completion, without calling Cancel, forcing reconcile, sending an OS signal, fabricating SessionEnd/host loss or releasing the fake worker gate early. A naturally occurring SessionEnd must retain its own cause/timestamp; do not attribute its cancellation to the earlier Child interrupt or call it harness-native proof. A safely retained unresolved guard is not successful settlement.
+
+Preserve exact preparation/binding/fresh-resume-choice/permissions, one mapped launch/send, original handle, empty routine observations and separate private preparation. No second pending inner poll, Status substitute, hidden model-side polling script, new binding identity, MCP reopening, new operation timeout, inactivity detector or change of the 100-hour ceiling. Keep the single between-polls Child Status sidecar rule and its observed/unmeasurable latency honest.
+
+## 3. File responsibilities and evidence rules
+
+| File | Responsibility |
+| --- | --- |
+| `tools/shell-wait-probe/evidence.mjs` | Bounded whole-body call form; supported host-event enumeration; exact session/turn/call/statement/pending attribution and safe partial diagnostics |
+| `tools/shell-wait-probe/driver.mjs` | Supported read-side choreography, timestamped pre-cleanup sampling, live preconditions, record joins and finite ledger |
+| `tools/shell-wait-probe/fixture.mjs` | Only necessary isolated control instructions/lifetime; no replacement launcher or alternate stop protocol |
+| `tools/shell-wait-probe/closure-observation.mjs` | Reuse the existing passive production job/binding/obligation reader; extend only a demonstrated missing read fact, not another lifecycle engine |
+| `tools/shell-wait-probe/release-qualification.mjs` | Reuse Gate-D oracle; only demonstrated oracle/input defects receive versioned offline correction, with prior verdicts retained |
+| `tests/shell-wait-probe.test.mjs` | RED→GREEN instrument/pipeline/privacy regressions in the isolated shell-research entry; preserve ambient-identity isolation |
+| `docs/qualification/rescue-shell-long-wait.md`, this plan | New dated registration/results, provenance, layer verdicts and actual final-source gates/reviews |
+
+Production `scripts/`, `hooks/`, `skills/`, `agents/`, config, snapshots, dependencies, the spec and Codex source remain read-only. Root Review/BG fixes and unrelated ordinary-test repairs are outside this implementation set. No refactoring of the large observer/test file merely for size, and no generic JavaScript interpreter to avoid unknowns.
+
+Keep transient analysis confined to fixture-owned data. Persist only bounded closed facts/digests/times/safe identifiers, not private preparation, arbitrary aliases, whole rollouts or raw job bodies. All executing helper/fixture/instruction bytes enter appropriate provenance. New offline facts carry the new adjudicator version and original source-record digest, never the old observer stamp. Unknown/truncated/missing remains unknown, not zero or not-applicable. Passive state reads must not create/chmod storage, acquire/probe a lease, write an intent, repair a record or trigger reconciliation.
+
+## Task 1: Resolve the exact admission and sampling design BEFORE live use
+
+**Read:** report sections above; `parseCallStatements/parseCallEvent`, `inspectShellWaitEvidence`, `extractInterruptInteraction`, `observeSpawnAcknowledgementIdentity`, `admitInterruptHostDelivery`, `interruptDeliveryAttributionGuard`, `runHeldHostTurn`, `interruptDurableSnapshotSupplier`, `nativeInterruptionGateDInput`, and production lifecycle/reader contracts. **Write:** dated preregistration in the report only.
+
+- [x] Re-pin base/tree, selected executable absolute realpath/hash/version, source SHA/dirty state, approved explicit requested model and current support through bounded read-only discovery. Distinguish requested/effective metadata. Record ambient 0.164.0 versus selected 0.163.0 rather than blending them; ask for model selection only if approved supported discovery cannot resolve it. No auth/config dumps or model turns. — DONE 2026-10-23, report [§23.1](../../qualification/rescue-shell-long-wait.md): all seven commands verbatim (HEAD `dba2e8a` tracked-clean beyond the plan+scratch; selected 0.163.0 binary realpath/hash `8813…e31`/`codex-cli 0.163.0` = the §21.1 launch pins; source `dffa0deb…` clean; driver `--help` 816 bytes digest `afa0e66d…`); ambient 0.164.0 recorded at its OWN realpath, never blended; requested `gpt-6.1-sol` carried from the §20.2/§20.3 registration, effective metadata stays `null`; `codex debug models` NOT re-run (authenticated network discovery outside this task's offline limits — the §20.7 pre-launch duty stands); applicability boundary recorded (no substitute executable ever).
+
+```bash
+git status --short
+git rev-parse HEAD
+/Users/zhangzikai/.codex/packages/standalone/releases/0.163.0-aarch64-apple-darwin/bin/codex --version
+shasum -a 256 /Users/zhangzikai/.codex/packages/standalone/releases/0.163.0-aarch64-apple-darwin/bin/codex
+git -C ../../../codex rev-parse HEAD
+git -C ../../../codex status --short
+node tools/shell-wait-probe/driver.mjs --help
+```
+
+- [x] Examine retained fixture-owned records/diagnostics OFFLINE first. Distinguish available bytes from discarded bodies; no reconstruction from 231 bytes/hash. Investigate the closed two-line family “one `const` binding = one awaited allowlisted tools call with literal arguments; a second `text` of that same binding”, versus forms the existing parser already accepts. Freeze the admitted exact form(s), supported tool/argument bounds and rejected surrounding syntax BEFORE implementation; a synthetic family fixture is not proof of historical raw-body identity. — DONE 2026-10-23, report [§23.2](../../qualification/rescue-shell-long-wait.md): the I record re-verified byte-identical (`731feb13…`, §21.1) read-only; available bytes vs discarded bodies named (raw cell source/rollouts/target text gone — digest `e9856478…` never reconstructs them); the retained diagnostic + classifier sources + empirical probes against the REAL modules discriminate the family — `text (r);`/`text( r );` reproduce the ENTIRE retained signature (`parserStage: output`) while CRLF/trailing-space parse fine, and blank-line positions land at `output`/statementCount 2 (between statements) or keep statementCount 1 with inputLines 3 (trailing after the divergent emission) — `residual` only after a canonical emission (each excluded as the cause); admitted form FROZEN (the existing WRAPPER family with exactly one relaxation — bounded whitespace at the emission junctions; tools exactly {exec_command, write_stdin}; literal-object ≤4096; binding pinned `r`; equality tail) with the full rejected-syntax list; synthetic-fixture-is-not-identity-proof stated.
+- [x] Trace source retention and actual artifact schema separately. Starting source lead remains `codex-rs/core/src/tools/handlers/multi_agents_v2/interrupt_agent.rs`, `multi_agents_v2.rs`, `codex-rs/rollout/src/policy.rs`, thread-store history mode and protocol ItemCompleted/SubAgentActivity definitions. Find the installed history mode and event field completeness from already-retained suitable data if possible. Never require an invented API; if no actual historical event is retained, the registered I trial must measure retention as an explicit outcome. — DONE 2026-10-23, report [§23.3](../../qualification/rescue-shell-long-wait.md): source HEAD re-pinned `dffa0deb…` CLEAN — byte-identical to the §16.2/§19.4 trace pin, so the retention chain reproduces unchanged (spot re-verified: emission strictly after dispatch; Paginated keeps `SubAgentActivity(interrupted)`, Legacy drops it; `LocalThreadStore` default Paginated; wire shape per §19.4); the ACTUAL retained artifact is the redacted case record carrying NO rollout bytes and NO host-event payloads — installed history mode and event field completeness NOT determinable from retained data, so the registered I successor trial measures retention as its EXPLICIT first outcome (`host-activity-item-absent` only after a completed scan); no API invented.
+- [x] Identify where one unsupported cell currently aborts the whole evidence collection before the host-activity scan. Define independent bounded host-event/identity/collection facts that can safely survive that failure. This does NOT make the Child call sequence qualified: hidden additional calls, ambiguous IDs or incomplete collection still block the relevant positive conjuncts. Do not change unsupported into absent or “unrelated” without proof. — DONE 2026-10-23, report [§23.4](../../qualification/rescue-shell-long-wait.md): the abort site traced exactly — `inspectShellWaitEvidence`'s fail-closed event scan (evidence.mjs:3663-3686) returns `unsupported-call-shape` BEFORE `inspectLinkage`/any host-activity work, and the mapper then nulls both join ids (driver.mjs:4320-4327) and persists the collection-failure `missingPrerequisite` with no `hostDelivery` block (driver.mjs:4959-4962) — precisely §21.2.3 item 1's outcome; survivable facts preregistered (raw-rollout call facts, spawn-acknowledgement identity, the admission's own per-conjunct item facts, capture-succeeded-vs-admission-failed, the passive durable snapshot); the NOT-qualified limits and the never-relabel-absent rule restated.
+- [x] Freeze a passive sampling schedule BEFORE cleanup: exact owner/executor/job baseline when identity is established; reads after attributable native delivery/settlement; final independent observation before any termination-initiation boundary. Use the existing driver-side rollout/state observation, not extra Child tool polls. Register interval ≥1000 ms, maximum 600 read attempts within the existing 1200000-ms experiment budget, ≤32 retained transition/sample summaries, and named omissions/timeouts. Each snapshot keeps its own started/completed timestamps and consistency/identity proofs; sample count never implies state convergence. Investigate suitable production-defined duty/process evidence rather than demanding a fictional passive lease API. — DONE 2026-10-23, report [§23.5](../../qualification/rescue-shell-long-wait.md): the six-clause schedule frozen on EXISTING machinery only (`readDurableObligationSnapshot`, `interruptDurableSnapshotSupplier`'s observed-PARENT/verified-Child join, `cleanupBoundaryAtMs`, the completion-stamped fence) — baseline at identity establishment (named omission otherwise), ≥1000-ms post-delivery reads, the final read completing strictly before the earliest recorded termination-initiation boundary (at/after = cleanup-time, zero credit, code-enforced), 600 attempts / 1200000-ms shared budget / ≤32 retained summaries with every omission and timeout named, per-snapshot own timestamps + fingerprint/identity proofs, production-defined §19.5 duties only, no lease API demanded, no extra Child polls.
+- [x] Preregister expected outcomes for each layer. Keep the existing ≤60000-ms native turn/cell responsiveness bound only after confirming its applicability; downstream job/process/guard settlement is separate and must follow the actual production path. Do not turn the observation budget into a new production timeout or require cancellation when the legitimate terminal winner is natural success. Define genuine not-applicable duties with production-path evidence; local/remote/guard unknowns cannot be silently discarded. — DONE 2026-10-23, report [§23.6](../../qualification/rescue-shell-long-wait.md): the 60000-ms oracle retained REGISTERED-BUT-NOT-YET-APPLICABLE (applicability condition unchanged; §20.5 item 6 re-confirmed); the observation budget explicitly not a production timeout (no aggregate production deadline created); downstream layers separate on the actual path with the expected legitimate shapes preregistered (responsive cell + surviving unresolved guard = safe preservation; natural winner stays natural, cancellation never required); `not-applicable` only with production-path reasons (the §21.2.3 item 5 retained shapes); local-reaping/guard/binding unknowns stay named-unestablished.
+
+**Exit:** bounded grammar/retention/join/sampling predicates and named unavailable mechanisms, not an assumption that a parser patch alone will make Gate D pass. Independent offline tasks continue even if one supported host seam is unavailable.
+
+## Task 2: Regression-first finite admission and independent host facts
+
+**Files:** evidence/driver and the existing research test entry; no production changes.
+
+- [ ] Write RED pipeline tests for the Task-1 admitted complete-body form(s). Include changed binding/sink name, literal argument bounds, line endings/blank separators, raw valid/invalid directive, extra leading/trailing statements, hidden second call, loops/functions/dynamic arguments, mismatched binding use, private preparation in the cell, duplicate arguments, truncated input and oversized body. Expected: only the frozen complete family reaches the same existing call-value validation; unsupported forms stay fail-closed with fixed safe diagnostics.
+- [ ] Implement the smallest full-body recognition before or alongside the existing line splitter. Parse and validate the RAW directive and preserve it; no strip-first bypass. Reuse existing JSON/argument parsers, not `eval`, a general AST interpreter or permissive search for a tools substring. Preserve per-statement output/continuation ownership; a shared-cell submission is not evidence that a later awaited poll started.
+- [ ] Add RED→GREEN host fact tests independent of whole-case qualification: exact Root/Child/spawn/call/event match; actual history mode; event absent vs scanner not reached vs truncated collection; direct-call ID vs unsupported wrapped mapping; duplicate/foreign/stale events; untimed/zero/default timestamps; hidden extra interruption possibility; before-poll/after-resolution delivery; snapshot `previous_status` only. Actual host activity is a dispatch identity bound, not by itself a Child abort or terminal result.
+- [ ] Preserve and expose layer-level facts when safe rather than returning a bare overall failure. Tests must show an unknown cell can coexist with an observed host item WITHOUT producing a false admitted window, exactly-one-call claim, settlement or adoption. If a positive conjunct cannot be recovered under supported evidence, its named reason remains unknown.
+
+Run focused RED→GREEN commands using the actual test names just added, followed by:
+
+```bash
+npm run test:shell-research
+node --test tests/test-selection.test.mjs
+npm run lint
+npm run typecheck
+```
+
+**Exit:** the new bounded form and partial host facts are exercised through the same watch/observer/record path, not merely a pure-parser demonstration. New provenance/versioning explicitly separates fixture proof from installed observation.
+
+## Task 3: Pre-cleanup sampling and real no-collateral settlement
+
+**Files:** driver/fixture, passive closure reader only where necessary, research tests.
+
+- [ ] Add RED tests for early durable baseline/read completion, each held/root-return ordering, native-cancelled poll, early Root exit, genuine SessionEnd, natural completion, budget abort, unreadable/never-resolving suppliers and teardown-only abort. Bound every sampler by the shared budget/signal and count; failure to read is an observer reason, not a business failure. File/lease reads cannot delay cleanup indefinitely.
+- [ ] Implement the Task-1 schedule so sampling does not wait until the fake worker hold ends or a termination branch has started. Read only exact fixture-owned owner-index/job/binding/authority/process facts through the existing passive reader. Store independent transition/timestamp facts without replaying private bodies. A new sample must not actively settle, stop, repair or authorize anything.
+- [ ] Enforce the strict fence in BOTH online joins and offline replay. For a recorded cleanup boundary, sample completion MUST be strictly earlier; equality and later samples never qualify. Missing timing, incompatible clocks, torn snapshots or uncertain origin remain unestablished. A genuinely completed pre-boundary read joined later retains its facts. Normal watcher teardown is not a new termination boundary.
+
+```js
+// Existing offline join contract: pipeline tests must build the complete
+// production-shaped identity/snapshot, then vary only the fence endpoint.
+record.child.durableSnapshot.completedAtMs = record.interrupt.cleanupBoundaryAtMs;
+const joined = nativeInterruptionGateDInput(record);
+assert.equal(joined.durableObligations, null);
+assert.equal(joined.companionOutcome, null);
+```
+
+- [ ] Preserve all applicable physical/lifecycle obligations. A durable winner is a REMOTE result fact, not local Companion reaping; terminal + live marked executor or retained guard stays unsettled. Qualify process cessation only from exact verified identity/outcome, never reused PID or fake ZCode peer exit alone. If existing supported evidence cannot establish an applicable layer, report that precise missing layer, not “all settled”.
+- [ ] Use the existing owning-Root direct native interruption/control choreography as the starting path. Investigate a supported read-only readiness improvement if needed; Root may not drive Child handles or use a separate app-server as owner. The clock floor only schedules an attempt. Actual pending interval must still be proven. Control must be exact Root-owned, unrelated, active at delivery, then alive/emitting or independently naturally complete afterward; buffered bytes or completion-before-delivery reject. No external stop, explicit code-mode terminate or harness gate release earns native credit.
+- [ ] Pipeline-test the complete Gate-D input: exact actual Child delivery inside a bound pending interval, measured responsive turn/cell cancellation, independent local/remote/durable/guard results, unrelated survival and real terminal winner. Include wrong target/session/generation, multiple interrupts, rejected/unsent/unreadable delivery, explicit terminate, post-cleanup cancellation, still-live Companion, unresolved obligations and absent control. Keep output v2 preservation and ambient-test isolation regressions green.
+- [ ] Independently review actual admission/sampling/oracle/privacy changes BEFORE live use. A fake-host success is instrument proof only. Unknown supported APIs remain execution investigation tasks; no placeholder reader or field invented to make the gate pass.
+
+**Exit:** each layer is actually measurable or specifically unavailable, and early sampling can distinguish native/natural settlement from cleanup. No new lifecycle behavior has been implemented.
+
+## Task 4: New finite live ledger — one successor, not another campaign
+
+**Files:** this ledger, concrete implemented commands and new dated report registration BEFORE launch.
+
+| Label | Maximum logical cases | Purpose / dependency |
+| --- | --- | --- |
+| I | 1 conditional | Actual native interruption during one pending long managed-Child observation, with declared same-host unrelated control and pre-cleanup passive sampling; launch only after relevant instrument prerequisites pass offline |
+| F | 1 TOTAL conditional | One concrete demonstrated correctable cause, one named change and one preregistered successor; no per-layer/per-failure retries |
+
+Maximum **2 logical cases**. Register every actual CLI/model turn and internal Child/control sequence; diagnostics/model turns and failed starts consume their label. Read-only version/config/model-list discovery without a model turn does not. No free exploratory/retention/smoke/short-window case, no old allowance reuse and no M/B/O/cadence/Review/BG trial under another name.
+
+- [ ] Freeze the selected binary/model/source/instruction/observer/fixture hashes, exact validated options and finite command/turn sequence after Tasks 1–3 implement/test any needed closed selector. Existing base command is `--case rescue-interrupt --survival-control-selector progress-terminal` with `config-default`, cap/inner request/exec default/continuation 3600000 ms, harmless hold 420000 ms and experiment budget 1200000 ms, requested approved model and both existing safe diagnostics. Keep actual Root wait configuration recorded. Do not pretend an unimplemented new flag exists.
+- [ ] Preflight the actual fixture: capture/reader/control scripts and environment are armed, exact executable and expected role/paragraph are present, direct native path requirements and source provenance are known. Missing known prerequisites keep I unspent; source-presence-only installed retention is explicitly measured by I, not silently assumed to pass preflight. Parent/Child mapping and real pending timing remain post-launch actual facts.
+- [ ] Run I once, if eligible. Persist bounded per-layer evidence BEFORE disposal; record the real installed retained event/no-event result, exact dispatch/pending/cancellation timing, every relevant sample's fence status and control outcomes. One unsupported form must not erase independently safe facts, but cannot be ignored to manufacture positive qualification. Keep normal completion/cancelled winner/SessionEnd/harness cleanup as distinct causes.
+- [ ] F is eligible ONLY after a concrete causal diagnosis plus tested correction or supported choreography change that addresses it, preregistered before launch. A NEW unknown shape alone, retrying model obedience, or changing the model until it behaves is not a cause. Conversely, **do not blanket-classify every unknown shape as permanently F-ineligible**: a reproducible finite parser defect, a missing read-side join or a proven sampling-timing defect can qualify once it is demonstrated and fixed offline, with old verdicts preserved/versioned. This is the already-budgeted follow-up, not a new authorization request solely because it is an instrument correction. F remains one named change; a bundle of unrelated hypotheses does not qualify.
+- [ ] If no bounded correction exists, preserve I's partial facts and leave F unspent with the actual reason. After F, or after a justified unspent close-out, stop live work. Auto-update/version/config drift is a named applicability limit, never a free reset. Versioned offline re-adjudication of suitable retained data is allowed, never stamped as a fresh installed trial.
+
+**Exit:** real native/owned-settlement evidence or the smallest exact blocker, with an exhausted or honestly unspent ledger. No declaration that long waiting failed, and no guarantee of a positive host result.
+
+## Task 5: Final exact-source verification and actionable disposition
+
+**Files:** report/plan and research implementation/tests only; no production rollout.
+
+- [ ] Append a dated record with pins, grammar/retention/sampling changes, independent pre-live review, I/F registration/outcomes, all native/natural/SessionEnd/cleanup distinctions, source/fixture/installed labels and bounded raw-data omissions. Preserve prior long/cadence/output successes, legacy verdicts and failure history. Do not call a late snapshot an interruption settlement or infer all physical duties from a terminal job.
+- [ ] Map every Gate-D conjunct to observed/failed/unestablished and retain S1–S7/Q1–Q6 coverage from unchanged contract suites. If D fails, distinguish an observer gap from an actual production contract failure. For a real production issue, supply a minimal exact-path reproduction and proposed repair scope requiring separate authority; do not ship it here or ask the user to design the solution. If D passes, state the exact completed evidence cohort/version and remaining Review/BG/shared-default compatibility; still no automatic adoption or production change.
+- [ ] Run the final battery on FINAL implementation bytes, including each new helper:
+
+```bash
+npm run test:shell-research
+node --test tests/test-selection.test.mjs
+node --test tests/rescue-preparation.test.mjs tests/rescue-binding.test.mjs tests/rescue-route-planner.test.mjs
+node --test tests/rescue-lifecycle.test.mjs tests/rescue-child-reconciliation.test.mjs tests/rescue-progress-relay.test.mjs
+node --test tests/job-control.test.mjs tests/mcp-result.test.mjs
+npm run lint
+npm run typecheck
+node scripts/check-line-endings.mjs
+git diff --check
+git diff dba2e8ad8534b5800fd1faff98ad904f492dcf1d --stat -- scripts/ hooks/ skills/ agents/ .codex-plugin/ marketplace/ docs/superpowers/specs/ package.json npm-shrinkwrap.json
+npm test
+```
+
+  Prohibited diff expected EMPTY. Preserve unowned scratch; use a clean exact final-source clone/copy where necessary, copied real `node_modules` (not an unignored symlink), `.git` present and a path without guarded identity fragments. Record every failure/source/count/skip/exit, never commit or select a lucky path to manufacture a green. The known unrelated `tests/codex-rescue-qualification.test.mjs` and `tests/e2e/codex-skills-e2e.test.mjs` cwd-hash ordering preconditions remain a named baseline limitation; if encountered, corroborate the cause read-only and retain failure. Do not silently fix those out-of-scope files, weaken assertions or claim old source passed the new gate. A successful current-HEAD CI that demonstrably executes the full `npm test` on matching final implementation may supply the applicable full-suite evidence (as PR #71 did); old CI does not. Without applicable green evidence the verification gate stays pending/failed, not waived. Complete independent tasks rather than stopping all instrument work for that unrelated failure. Any expanded fixture-repair authority or actual waiver must be explicit.
+- [ ] Independently review final Spec fidelity and implementation/evidence/privacy; record actual reviewed/tested revisions, findings and narrow rechecks. Keep tests deterministic under ambient Codex identity. No infinite review loop or provider-outage substitution. Docs-only closing records can follow tested/reviewed implementation with equality proven; later code/test changes need applicable fresh verification.
+- [ ] Deliver one scoped decision with three separate answers: native delivery/turn responsiveness; Companion and ALL applicable owned/no-collateral settlement; deployment eligibility. Until mandatory D is proven, production recommendation remains unified `do-not-adopt-yet`, not a fictional `rescue-long` product island. A passing D supports only the actually measured version/surface; any future production integration requires its own explicit design/implementation authorization and applicable remaining compatibility checks, not another long-wait feasibility investigation.
+
+**Completion:** the finite Gate-D task is evidence-complete or precisely blocked, actual final verification/review status is recorded, and the next action is a concrete observer repair or separately authorized production/compatibility change. Original goals remain binding; “research finished” never means “default enabled”.
+
+## 4. Planning verification record
+
+- Draft base `dba2e8a`, fresh isolated worktree, unchanged spec and production implementation. The current task is drafting/review only; every execution checkbox remains open.
+- Fresh drafting checks on 2026-10-23: `npm ci --ignore-scripts` succeeded (2 moderate/3 high audit advisories; dependency/lockfile bytes unchanged); shell-research **870/870**, 68 suites, zero failures/skips, exit 0; selection **6/6**, exit 0; tracked-file LF **542 files**, exit 0. No full `npm test` success is claimed for this plan-only drafting step; Task 5 records the final implementation's actual applicable gate.
+- Main self-review checked unchanged requirements, version/cohort boundaries, no reopened long/stdout campaign, supported-mechanism investigation rather than mandatory guessed APIs, exact duty/fence semantics and I/F authority. New plan/scratch LF/final-newline/trailing-space/local-link checks and `git diff --check` passed; prohibited tracked-path diff against `dba2e8a` was EMPTY.
+- Independent read-only reviews completed: `closure_spec_review` (Spec/authority/coverage) and `config_path_a_plan_review` (executability/oracles/privacy). Both returned CLEAR, no P1/P2 or required P3; neither implemented or launched a live case. These are plan reviews, not pre-certification of host behavior.
+- Drafting/review complete and ready for separately delegated execution. No live case, production mutation, commit, push or PR was performed. All execution checkboxes remain open.
