@@ -22310,7 +22310,11 @@ describe('cleanup-boundary attribution for exit-code settlements (round-9 review
           else process.env[variable] = value;
         }
       }
-      assert.equal(process.env.CODEX_THREAD_ID, undefined, 'the ambient canary was restored after the composition');
+      // The restore must reinstate whatever THIS process carried before the
+      // canaries were planted (including "absent"): an ambient parent value is
+      // restored, not erased. Asserting canary-absence here would fail the
+      // suite in exactly the ambient environment this isolation supports.
+      assert.equal(process.env.CODEX_THREAD_ID, previous.get('CODEX_THREAD_ID'), 'the ambient canary was restored to its captured original value after the composition');
       // The composed base carries NO identity variable and NO ambient
       // home/data-root value: every routing variable points inside the
       // disposable scope root.

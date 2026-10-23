@@ -12621,6 +12621,42 @@ a PR exists"*). Full attribution, the PATH-DEPENDENCE classification of the two
 historical gate-11 greens, and the bounded repair PROPOSAL (requiring its own authorization) are
 in §22.2's dated completion; the failed run stays failed, no waiver.
 
+**Post-merge-review fix round 2 (2026-10-23; ONE P2 finding from the round-2 post-merge review
+of the round-1 fix and its records (`47f0b33`/`010e0ed`); TDD regression-first, ZERO model
+turns, ZERO live cases, production read-only, prohibited diff EMPTY; landed as ONE NEW commit on
+top of the pushed records commit — never an amend: `47f0b33` is `010e0ed`'s parent and rewriting
+it would falsify a SHA-pinned record; the commit changes ONLY `tests/shell-wait-probe.test.mjs`
+and this docs file).** Finding [P2] — the round-1 ambient-regression test checked the restored
+identity against a canary-ABSENT state instead of its captured original: the assertion after the
+`finally` restore (tests/shell-wait-probe.test.mjs:22313) demanded
+`process.env.CODEX_THREAD_ID === undefined`, but the `finally` block CORRECTLY reinstates
+`previous.get('CODEX_THREAD_ID')`, so under an ambient `CODEX_THREAD_ID` (exactly the
+environment the round-1 isolation exists to support) the suite deterministically failed BEFORE
+the launcher checks. DEMONSTRATION (RED, verbatim): `CODEX_THREAD_ID=ambient-canary node --test
+--test-name-pattern='ambient CODEX_THREAD_ID' tests/shell-wait-probe.test.mjs` → exit **1**,
+**tests 1 / pass 0 / fail 1** (duration_ms 342.479417): `AssertionError [ERR_ASSERTION]: the
+ambient canary was restored after the composition` — actual `'ambient-canary'`, expected
+`undefined`, at `tests/shell-wait-probe.test.mjs:22313:14` — fired before any spawn; the
+restoration itself was CORRECT, the assertion was wrong. FIX: the restoration assertion now
+compares against the CAPTURED ORIGINAL `previous.get('CODEX_THREAD_ID')` (whatever the parent
+env carried, including absent); the separate absence assertion on the composed `scope.env` (the
+child env carries NO identity variable), every launcher/fast-fail pin (exit 1, the byte-exact
+207-byte `THREAD_ID_REQUIRED` envelope, empty stderr, the capture admission) and the test name
+are UNCHANGED — no assertion loosened, no test skipped, no production byte touched. GREEN: the
+same ambient-env run → exit **0**, **tests 1 / pass 1 / fail 0** (duration_ms 383.007375); the
+no-ambient run of the same pattern → exit **0**, **tests 1 / pass 1 / fail 0** (duration_ms
+402.747375). Round-2 gates (verbatim): `npm run test:shell-research` **ℹ tests 870 / ℹ suites
+68 / ℹ pass 870 / ℹ fail 0 / ℹ cancelled 0 / ℹ skipped 0 / ℹ todo 0** (duration_ms 56397.714208),
+exit **0**, zero `✖` lines; lint **clean, exit 0**; line-endings *"LF line endings verified in
+542 tracked files."*, exit 0; `git diff --check` clean; the prohibited diff **EMPTY**. The
+tests-file digest is SUPERSEDED accordingly: the research-tests bytes hash to
+**`0cb391f6648d9dce335e2343bc48ef88a23c49af17e6985fbeb3fee70e9186f9`** (`268f9018…` stands as
+the round-1 history; chain `7e0fddff…` → `e9dc1610…` → `8a621916…` → `dcca6f84…` → `1193cb7d…` →
+`268f9018…` → `0cb391f6…`, each supersession annotated where it was recorded), and the executing
+observer digest is UNCHANGED — the tests file is not an observer input, so the future-repin
+value STANDS at **`57359bff248ab6723ae3cdff7e325ff3c0d7419495730be76a552965c6881431`** (no
+supersession).
+
 ### 22.6 Plan-completeness audit (Task 6's own exhaustive reconciliation, executed before committing)
 
 Every checkbox across Tasks 1–6 was reconciled against the report and the actual tree; no stale
