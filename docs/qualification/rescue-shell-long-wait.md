@@ -14464,3 +14464,578 @@ section, the plan's Task-5 checkbox ticks, and disposable `/tmp` state (the veri
 this campaign; they are redacted fixture records outside the repository, cited here only at the
 bounded typed-fact level. No private rollout, preparation, auth, job body, credential or
 user-configuration data entered the repository at any point in Tasks 1–5.
+
+## 23.12 2026-10-24 interrupt-closure Task 4F: the ONE authorized F successor launched once on the fixed instrument (the PR #72 post-review fix) — preregistration frozen BEFORE the launch, live execution, offline Gate-D adjudication and the F-spent close-out
+
+The plan Task-4 table's F row (1 TOTAL, conditional), executed 2026-10-24 (UTC record stamps
+`2026-10-24T15:29–15:37Z`, the local-night continuation of the 2026-10-23 campaign) in the same
+worktree on top of the post-review fix commit `cf9f0a7` (`75e4b0e` Task 5 → `cf9f0a7` fix). THIS
+SECTION'S REGISTRATION SUBSECTIONS (§23.12.1–§23.12.2) WERE WRITTEN AND FROZEN BEFORE THE LAUNCH —
+worktree HEAD `cf9f0a715fdbd9605bb3d53b5b53829fa7240898` at freeze, the tracked tree clean beyond
+this report's own §23.12 bytes (uncommitted, staged nowhere — the recorded §23.10.1 pattern) and
+the three untracked scratch files. The F authority was adjudicated OUTSIDE the instrument and is
+RECORDED here, not re-litigated: the user's independent PR review (the PR #72 review) overturned
+the §23.10.7 F-unspent close-out by demonstrating a concrete correctable instrument cause; the fix
+is committed offline, regression-first, with old verdicts preserved; the offline re-adjudication of
+the retained I record (the §23.10.7 dated annotation) proved the identity join at record level
+while showing the retained record cannot close Gate D because the live computation nulled the
+needed facts under the unwired code. That satisfies the plan's F row text verbatim: "a missing
+read-side join … can qualify once it is demonstrated and fixed offline, with old verdicts
+preserved/versioned". This is the ONE F: exactly one launch, no per-layer/per-failure retries; a
+diagnostics/model turn or a failed start consumes the label the same way; after F — regardless of
+outcome — live work STOPS (the plan's "After F, or after a justified unspent close-out, stop live
+work"). Production `scripts/`, `hooks/`, `skills/`, `agents/`, config, snapshots, dependencies,
+the spec and the Codex source stay read-only; scratch (`findings.md`, `progress.md`,
+`task_plan.md`) preserved untouched and never staged; no user/global config or cache edit, no auth
+dump, no push/PR/merge; the 100-hour ceiling, the single between-polls Child Status sidecar rule
+and the §23.2 frozen grammar are unchanged.
+
+### 23.12.1 The F authority chain and the named change (preregistered BEFORE the launch)
+
+**(i) The F cause chain.** The user's independent PR review finding, translated: the Task-4
+close-out's claim that no F-eligible cause arose was overturned by a demonstrated concrete
+correctable INSTRUMENT cause — the recovered spawn identity was never wired into interrupt
+attribution, and valid pre-boundary samples were excluded wholesale from the settlement join. The
+two demonstrated wiring defects (ONE named change, one commit):
+(1) the mapper derived the Root/Child join ids ONLY from the supported-case analysis, so one
+unclassified cell aborting that analysis left the §19.4 admission unestablishable
+(`host-activity-owning-root-unestablished`) while the exact `observeSpawnAcknowledgementIdentity`
+identity sat recovered in `interrupt.partialFacts.spawnIdentity` — precisely the recorded
+§23.10.4 outcome; (2) the offline Gate-D join consumed only the final durable snapshot, so the
+§23.5 schedule's pre-boundary per-sample facts never entered the join even where the strict fence
+admits them. The fix: commit `cf9f0a715fdbd9605bb3d53b5b53829fa7240898` ("research: wire the
+recovered spawn identity into interrupt attribution and admit pre-boundary samples in the offline
+join (post-review fix)") — regression-first (the finding-1 describe RED verbatim:
+`the owning-Root scoping joins from the recovered identity` → `null !== true`; 13 new tests),
+the exact-identity-only wiring (no alias text, no outer-call-id guessing, no wrapped mapping — the
+wrapped fail-closed rule stands; a supported/independent disagreement stays the named-unestablished
+mismatch; the §23.2 frozen grammar untouched — the unclassified cell stays unclassified; the
+settlement attribution guards unchanged — no settlement is ever manufactured), and the versioned
+join/oracle pair **`NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION = 2` (driver.mjs) /
+`NATIVE_INTERRUPTION_ORACLE_VERSION = 3` (release-qualification.mjs; the oracle's own logic
+byte-unchanged — the bump marks the join input-contract growth so a v3 adjudication can never be
+mistaken for a recorded v1/v2 verdict)**. The offline re-adjudication of the retained I record
+(byte-identical `13aae0ca…`, re-verified immediately before the re-adjudication run) PROVED the
+identity join at record level — `spawnIdentityJoin.owningRootBound: true` (the durable owner
+session `01a16976-f6c8-…` is EXACTLY the spawn acknowledgement's `parentThreadId`) +
+`executorVerified: true` — and admitted the §23.10.5 samples as observation facts (26
+identity-bound intact samples; the 6 pre-job reads refused `sample-identity-unbound` by name),
+while showing the retained record resolves NONE of the 11 oracle reasons: the delivery-layer
+positives were computed-unestablished LIVE under the unwired code and the record carries no
+rollout bytes, so the §19.4 item conjuncts are unestablishable FROM THIS RECORD — what each needs
+is a NEW capture under the fixed wiring. The §23.10.7 F-unspent close-out and the §23.11
+disposition stand as HISTORY (never re-stamped); this section is the separately recorded F
+verdict the annotation reserved.
+
+**(ii) THE NAMED CHANGE — exactly the `cf9f0a7` instrument fix, no other variation.** No grammar
+change, no choreography change, no model change, no flag change, no timeout/budget change, no
+selector change. The case shape stays the §20.2/§23.10.1 I shape verbatim: `--case
+rescue-interrupt --survival-control-selector progress-terminal`, `--wait-policy config-default`
+(the fixture's `configDefaultWaitingParagraph` @3600000 with the same-cell explicit `tools.wait`
+continuation; initial launcher yield unchanged ≤30000 ms), inner request/exec default/cap
+3600000 ms, harmless hold 420000 ms, experiment budget 1200000 ms, requested approved model
+`gpt-6.1-sol`, both safe diagnostics (`--unclassified-structural-diagnostic 1
+--unclassified-shape-diagnostic 1`), the selected 0.163.0 absolute path passed explicitly, and
+`--source-sha` = the driving worktree's HEAD at launch. Every flag is on the implemented 16-option
+surface (`--help` re-verified below); no new flag is invented.
+
+**(iii) The pre-launch freeze (every value re-executed 2026-10-24 immediately before the launch,
+nothing trusted forward; all read-only, zero model turns):** `git status --short` → ONLY the three
+untracked scratch files beyond this report's §23.12 bytes; `git rev-parse HEAD` →
+`cf9f0a715fdbd9605bb3d53b5b53829fa7240898`; selected binary
+`/Users/zhangzikai/.codex/packages/standalone/releases/0.163.0-aarch64-apple-darwin/bin/codex`
+(realpath resolves to itself) → `codex-cli 0.163.0`, SHA-256
+`8813367285524ac798dd96d1b071aea30d58708c7226fd236cd275cf1cfdee31` (byte-identical to the §1
+preference, §19.1, §23.1, §23.10.1/§23.10.2 and §23.11.1 verifications — the 0.163.0 evidence
+cohort is the cohort this F closes; the ambient CLI stays 0.164.0 at its OWN realpath, recorded
+separately, never launched, never blended); Codex source (`git -C ../../../codex`) → HEAD
+`dffa0deb69268ed4ac31578794c9ea897b336ae3`, `status --short` EMPTY (the §16.2/§19.4/§23.3 trace
+pin, still clean); driver `--help` → 816 bytes, SHA-256
+`afa0e66db58a9ef5576ce868266a0c5257b3cc9dad5720e5fd31fb7b4a5ff6f1` (unchanged — the fix changed no
+parsed surface). **Instrument provenance (SHA-256 over the exact F launch tree `cf9f0a7`,
+recomputed 2026-10-24; every byte the run executes):** `driver.mjs` =
+`13a2fc59d2645580aa32ca2c3782f2b6cf9bfbd47c663f72225cf0d446823294`;
+`evidence.mjs` = `33b0f6ae0936cb762b4df3d5d8ba2f8426a1659c51d2a8bc34f5db577a15d3ae`;
+`fixture.mjs` = `1b7b030d95dc0e4fb03d5ccb4596af51cda1441c3aa1c19c8bfad6a496c3e4a3` (byte-identical
+from the previous campaign's Task-2 tree onward);
+`closure-observation.mjs` = `46b7f5e282b811c3bb88518a6f2d36f54da2f586eac74fe40c134978a90f6fa7`;
+`release-qualification.mjs` = `6bf94348b76d9ae3a524ec4c1015613625416c0a4953c88863d55bfbde45a855`;
+`shape-diagnostic.mjs` = `2f300de25af3c12635d2dec400170a3e50b057dbe33f27a2375a01c0ffb1bb31`;
+`tests/shell-wait-probe.test.mjs` =
+`152ec5a642d24bac2021b789e0abd7d0a6fea0d2dedc56597692cc63228ab567`;
+`tests/test-selection.test.mjs` =
+`3aec94d52ce48e39d95fa02ab0c114cb6328411b6bfd1edb1cf7f12fecb51e41`. **The executing observer
+digest RECOMPUTED on these launch bytes** (`zcode-shell-wait-observer-v5`, NUL-separated
+module-init over evidence ⊥ shape-diagnostic ⊥ release-qualification ⊥ closure-observation ⊥
+driver, reproduced through the driver's own `observerProvenance()` construction) =
+**`8f75af59b29e419733a54e48c1c2408b36b5374cb0f5573cd4b9005927e6a160`** — the value this launch
+carries at case start and must equal at record time (`sourcesChangedDuringRun: false` duty). This
+supersedes `5ef97779…` (the §23.10.1/§23.11.1 value) because `cf9f0a7` changed `driver.mjs` and
+`release-qualification.mjs` — the registered §20.3 supersession pattern, never a mid-run change
+(the I record's bytes and verdict are history and stay untouched). **Fixture-owned observer bytes
+frozen pre-launch:** the survival-control script recomputed offline over the generated bytes =
+`c510d81f296881a9e4e3c174429758c3e2f26c08cf7a63b26ac75d2e5ca30172` (879 bytes), byte-identical to
+the §21.1/§23.10.1 declarations (fixture.mjs unchanged, so the generated bytes are unchanged);
+the fixture's prepared capture preload and normalized instruction hashes are preparation-time
+facts verified on the record (the expected §20.4 clause-4 candidates `2ea76cf0…`/`5800e3ab814f…`
+@3600000). **Model selection:** the §20.7 pre-launch duty was EXECUTED for the I launch
+(§23.10.1: `codex debug models` with the selected 0.163.0 binary — read-only authenticated catalog
+discovery, NO model turn; raw `52f8de84…` byte-identical to the §20.7 re-pin; 10 entries, 7
+list-visible, `gpt-6.1-sol` list-visible at priority 0) and is CITED here; the driver implements
+no read-only catalog mode on its 16-option surface, so no re-verification is run for F and no
+substitution question arises (the requested approved model `gpt-6.1-sol` resolved through
+supported discovery at the I launch; effective host/Child model metadata stays the `null`
+contract). **Connectivity pre-check (the §21.1 prudent extra, recorded before the launch):**
+shell `http_proxy`/`https_proxy` = `http://127.0.0.1:7890`; the listener is ALIVE (`verge-mihomo`
+PID 83570, LISTEN — the same listener as §21.1/§23.10.1); reachability through the proxy:
+`https://chatgpt.com/` → HTTP 403, `https://api.openai.com/v1/models` → HTTP 401 — both normal
+HTTP responses, NOT the recorded outage signatures. No proxy outage; the launch proceeds.
+
+**The exact registered F command (the executable content; implemented flags only — the §20.2/§23.10.1
+I shape with `--source-sha` = the F HEAD):**
+
+```bash
+shell_case_output=$(mktemp -d /tmp/shell-wait-interrupt-closure-f.XXXXXX)
+ZCODE_SHELL_WAIT_E2E=1 node tools/shell-wait-probe/driver.mjs \
+  --case rescue-interrupt --survival-control-selector progress-terminal \
+  --codex /Users/zhangzikai/.codex/packages/standalone/releases/0.163.0-aarch64-apple-darwin/bin/codex \
+  --source-sha cf9f0a715fdbd9605bb3d53b5b53829fa7240898 \
+  --output "$shell_case_output" --model gpt-6.1-sol \
+  --worker-duration-ms 420000 --poll-ms 3600000 --budget-ms 1200000 --cap-ms 3600000 \
+  --wait-policy config-default --exec-default-ms 3600000 \
+  --unclassified-structural-diagnostic 1 --unclassified-shape-diagnostic 1
+```
+
+**The finite command/turn sequence registered under F (the label consumes ONCE — exactly ONE F;
+a failed start or a diagnostics/model turn also consumes it; there is exactly ONE F):** the
+§23.10.1 I sequence verbatim — one held Root turn carrying the §16.4 five-step directive (child
+launch → control launch → control-clock readiness → pre-delivery read → exactly ONE interrupt
+delivery) + the fixture's rescue-interrupt case prompt; 1 internal Child launch + 1 send; 1 Root
+join; the declared survival control launched ONCE on its own `exec_command` handle (60 lines
+@2000 ms, never Status-observed, never sent input, never stopped); exactly ONE `interrupt_agent`
+delivery attempt expected (DIRECT mode only — `WRAPPED_INTERRUPT_REQUIRED_CASES` frozen-EMPTY);
+the §23.5 pre-cleanup passive sampling loop running CONCURRENTLY driver-side (zero model turns,
+zero Child polls); bounded cleanup at the earliest recorded termination boundary. Maximum 2
+logical cases total (I + F); **I spent (1 of 2), F spent by this launch (2 of 2) — after this run
+live work STOPS regardless of outcome; no further case under any label; no old-allowance reuse;
+no free exploratory/retention/smoke/short-window case.**
+
+**(iv) Preregistered expected outcomes per layer (frozen BEFORE the launch; the honest
+per-conjunct accounting standard):**
+
+- **Whole-case verdict:** if the model again emits an unclassified wrapper cell, the supported-case
+  analysis aborts again and the case stays `inconclusive` — the §23.2 frozen grammar is untouched
+  by the fix and the cell shape stays UNCLASSIFIED; NO shape-admission outcome is predicted either
+  way (whether the emitted cells land inside the frozen family is a live fact, not a registration).
+  Either way the Gate-D join + oracle run OFFLINE on the persisted record (the §23.10.6 pattern).
+- **The owning-Root conjunct (§19.4 c3) — the fix's demonstrated effect:** EXPECTED to establish
+  from the wired spawn identity (the exact `observeSpawnAcknowledgementIdentity` join over the
+  captured rollouts) EVEN IF the supported-case analysis again aborts on an unclassified cell. It
+  needs: an exact spawn acknowledgement (`exact: true` with both `childThreadId` and
+  `parentThreadId` recovered) and the joined item's `threadId`/`rolloutSessionId` equal to that
+  Root id. An inexact recovery keeps the conjunct named-unestablished (never guessed); a
+  supported/independent disagreement is the named mismatch.
+- **The item join (c2):** needs the host to emit exactly one `SubAgentActivity(kind=interrupted)`
+  item whose `id` equals the interrupt call's id and whose `agent_thread_id` equals the
+  spawn-acknowledged Child id, in the Root's own rollout. Installed retention is already measured
+  POSITIVE at the item-presence level (§23.10.4); the per-item field join is what the wired
+  identity adds. Zero such items → `host-activity-item-absent` (a completed scan's positive
+  absence, never not-measured); >1 same-id items in the Root rollout → `host-activity-duplicate-item`.
+- **The pending window (c4):** needs the model to execute the §16.4 directive's pre-delivery read
+  (a NONTERMINAL pending observation on the same pending observation cell —
+  `pendingBeforeCall.observed === true` with a finite `atMs`) AND the item's `completedAtMs` to
+  fall inside the registered [poll start, first resolution) window with both window bounds
+  satisfied (the codex-round-5 both-bounds rule). An observed window with an unestablishable start
+  stays unestablished (`host-activity-window-unestablished`), never approximated.
+- **Timed (c5):** needs the host's ItemCompletedEvent payload-level `completed_at_ms` finite
+  POSITIVE on the joined item (the protocol's missing-stamp default 0 is the legacy-untimed shape
+  → null, named `host-activity-untimed`, never zero).
+- **Previous-status-only (c6):** resolves ONLY through the proven-delivery composition (admitted
+  item + confirmed pending window — `previousStatusOnly` goes false exactly when `provenDelivery`
+  holds); there is no independent resolution path. `previousStatus: "running"` (the I shape) stays
+  a NONTERMINAL snapshot fact.
+- **Delivery/dispatch:** `delivered` needs the delivery decode under the now-bound attribution
+  (the interaction's `delivered` fact — the host's processing of the interrupt call observed in
+  the rollouts); `deliverySent` follows a boolean `delivered` (attempted + observed outcome →
+  true). `exactTargetMatch`/`aliasResolved` need either a lexical/uuid-normalized id match
+  (caller target vs the recovered Child id) or the host-admitted-identity basis.
+- **Turn settlement:** needs a post-delivery settlement resolution — the native-cancellation basis
+  (a `pendingBeforeCall.observed` pending cell resolved by a cancellation marker strictly before
+  any recorded cleanup boundary; no kill is expected in this choreography, so a pre-teardown
+  cancellation marker keeps full native credit) or the exit-code completion basis (which requires
+  the supported-case analysis — UNAVAILABLE whenever an unclassified cell aborts it, so the
+  realistic settlement basis on the unclassified shape is the native-cancellation resolution).
+  Every attribution guard stands: exactly-one-call, delivered, bound ordering, non-terminal
+  previous status, readable continuations, EXACT target, owning-Root call rollout, confirmed
+  pending window.
+- **Responsiveness (the ≤60000-ms bound):** the bound becomes **APPLICABLE for this trial exactly
+  when the §19.4 admission set is satisfied ON THIS RECORD** (the §23.6/§20.5-item-6 applicability
+  condition — the pending window AND the delivery establish through the wired identity); if
+  applicable, `deliveryToSettlementMs` must be measured (the settled+delivered+exact-target
+  composition) and finite within the bound — an over-bound or contradictory value rides its named
+  reason, never silently dropped; if the admission set is not satisfied the bound stays
+  REGISTERED-BUT-NOT-YET-APPLICABLE and the latency stays `null`, never zero.
+- **Survival control (no-collateral):** the extraction now receives the recovered `childThreadId`
+  (the wiring); the no-collateral verdict needs the §16.4 machinery to decode from the captured
+  rollouts: the control's grounded handle, the bounded pre-delivery read (a fresh mid-run line
+  ordered before the interrupt call), an emission tag strictly after the delivery bound
+  B = D − L (never assuming a tag↔host offset), the post-delivery read alive/emitting or the
+  designed natural completion, and exact Root ownership. Buffered-only bytes, completion before
+  delivery, a premature/abnormal exit, or a lost post-delivery read each reject by name.
+  Unestablishable anchors keep the layer fail-closed (`survival-control-unadjudicated`), never
+  qualified by absence.
+- **Durable/Companion layers and the samples:** same choreography → same fence semantics. Zero
+  kills are expected (the held turn ends by the scheduled hold-deadline observation end), so NO
+  termination-initiation boundary is expected on the record; with no recorded boundary the join-v2
+  settlement fallback stays unused and the final snapshot keeps its raw v1 credit semantics —
+  which the §23.10.6 overlay adjudicates as TEARDOWN-TIME (zero qualification credit). The
+  §23.10.5-style pre-boundary samples ENTER the join output as admitted observation facts
+  (join v2's `durableSamplesJoin.admitted`, each with its named fence state — expected
+  `boundary-unrecorded`), never grounding the settlement cause facts: join v2 consumes the
+  terminal winner ONLY from the final durable snapshot and no sample fact touches
+  `turnSettled`/`cleanupKill`/`naturalCompletionObserved`/`terminalWinner`.
+- **The four causes stay DISTINCT:** (1) any durable winner rides its own recorded stop cause (a
+  real `'session-end'` stop intent is a SEPARATE authorized production act, never interrupt
+  settlement, never cleanup); (2) the held turn ends by the scheduled hold-deadline observation
+  cleanup with a natural worker exit; (3) the child's natural completion stays its own observation
+  (`naturalCompletionObserved` only on actual completion-shaped evidence); (4) no genuine
+  non-session-end stop path is manufactured. `nativeInterruptionClaimed: false` throughout; zero
+  kills expected; no external stop, no Cancel, no OS signal, no gate release — the same
+  non-interference discipline as I.
+
+**(v) The finite ledger statement:** I spent-and-consumed (1 of the max 2 logical cases,
+§23.10.7). F is spent by this single launch (2 of 2). After this run — qualified, unqualified, or
+failed — live work STOPS; the plan's Gate-D task closes with this record; any future live work
+needs new explicit authorization, and auto-update/version drift (the ambient 0.164.0) remains a
+named applicability limit, never a free reset. Versioned offline re-adjudication of the retained
+records stays allowed, never stamped as a fresh installed trial.
+
+### 23.12.3 Preflight verdict and the launch record
+
+**The implemented live-launch preflight PASSED at zero registered rejections.** The driver runs
+`evaluateLiveLaunchPreflight` AFTER fixture preparation and BEFORE any host launch
+(driver.mjs:4333); a rejection there is a fail-closed pre-launch throw — none occurred, and the
+run proceeded into the full hosted lifecycle (per the F delegation's stricter reading the label
+would also have been consumed by a failed start; no such case arose). Every declared observer was
+armed on the actual prepared fixture (the §19.9 known-present rule): the survival-control script
+on disk (the fixture-owned `survival-control.mjs`; the record's `survivalControlDeclaration`:
+`scriptSha256 c510d81f…`, 60 lines @2000 ms cadence, designed exit 0, emission-tag clock
+`control-process-monotonic-elapsed-ms-since-start` — byte-identical to the §23.12.2 freeze); the
+durable settlement reader's partition basis present; the registered stdout-capture seam ARMED
+(declaration on the record: `closure-stdout-preload.cjs`, SHA-256
+`cb168b74d5175b9915d12cbc3e37f3655403cfdb4611940b2694f7196020e362` — byte-identical to the
+§23.10.2 armed value, maxBytes 65536, gate argv exactly `[invoke-prepared, rescue]`);
+`WRAPPED_INTERRUPT_REQUIRED_CASES` frozen-EMPTY (the direct-mode design; the wrapped-reliance
+rejection arm neutral by registration). The exact executable and expected role/paragraph were
+present: in-record `codexVersion 0.163.0` with `hashNativeExecutable` re-verification
+`codexBinarySha256 8813…e31` (`…Sha256Error: null`), `roleStatus: ready`, `capVerified: true`,
+`setupAttempts: 2`, and the normalized instruction hashes BYTE-IDENTICAL to the §20.4 clause-4
+candidate values (`2ea76cf0…` named-role / `5800e3ab814f…` generic @3600000). Source provenance
+recorded on the record: `sourceSha cf9f0a7…` (`sourceWorktreeOwnedByFixture: true`), executing
+observer digest at CASE START = `8f75af59…` (the §23.12.2 launch value) with record-time
+`sourcesChangedDuringRun: false` — the run executed exactly the frozen instrument bytes.
+`requestedModel: "gpt-6.1-sol"` with the effective-metadata `null` contract.
+
+**Launch record:** output dir `/tmp/shell-wait-interrupt-closure-f.AD92sT` (fresh disposable
+mktemp); record `rescue-interrupt.record.json` 80022 bytes, SHA-256
+`634289fd64a87f73962f59e12216466b86f812dd0e703f4e99c2df21469ed5b7` — byte-identical to the
+retained driver-stdout copy `/tmp/shell-wait-interrupt-closure-task4f/driver-stdout.json`; driver
+stderr EMPTY; driver exit 0; `status: executed`, `fixtureDisposed: true`, `cleanupComplete: true`,
+`cleanupErrorCount: 0`, `disposalError: null`; fixture owning session
+`44c0db37-0979-43ca-b975-1597e381c6d6`; route requested `rescue-foreground` (actual `null` — the
+supported-case analysis aborted, §23.12.5); record time `2026-10-24T15:37:50.341Z` (~8.7 min wall
+including preparation and disposal). Isolated fixture homes only; scratch untouched; nothing
+pushed.
+
+### 23.12.4 The registered sequence as executed (§20.1 rule 1 accounting — F is SPENT-AND-CONSUMED)
+
+One held Root turn (the §16.4 five-step directive + the case prompt; held timeline:
+`launchedAtElapsedMs` 1, `observationDetectedAtElapsedMs` 40056, `pollStartedAtElapsedMs` 72670,
+`rootAcknowledgementAtElapsedMs` 156582, `holdDeadlineElapsedMs` 460056, `endedAtElapsedMs`
+460071 — the scheduled hold-deadline observation end, deadline anchored at the observation
+detection); 1 internal Child launch + send (the spawn-acknowledgement identity observed EXACT:
+child `01a16e89-1667-7920-9f9d-9e0bfac06235`, parent `01a16e88-920e-7463-819a-a20c339281dd`); the
+declared survival control launched once (declaration verified: selector `progress-terminal`,
+script `c510d81f…`, 60 lines @2000 ms, designed exit 0); exactly ONE `interrupt_agent` call
+(`callCount: 1` — the exactly-one contract held; family `v2` DIRECT — the persisted
+classification; pre-dispatch snapshot `previousStatus: "running"` — a NONTERMINAL active turn, so
+`terminalBeforeInterrupt` stays `null` on the `no-terminal-state-evidence` basis, never false);
+the §23.5 sampling loop (driver-side, zero model turns, zero Child polls); bounded cleanup at the
+scheduled hold-deadline observation end — ZERO kills (`verifiedTerminated: false`,
+`codexTerminated: false`), no termination-initiation boundary recorded, gate released, natural
+worker exit. The measured model-call count is UNESTABLISHED on this record
+(`observations.modelCalls: null` — the supported-case analysis aborted, §23.12.5); the turn ran to
+its natural acknowledgement. Failed starts: none. Total logical cases: **2 of the max 2**; **F:
+spent-and-consumed** — the label is spent by this single launch regardless of the adjudication
+below.
+
+### 23.12.5 The §19.4 admission under the wired identity — the fix's demonstrated effect verified, and the one remaining named blocker
+
+**The identity wiring performed exactly as the finding-1 regressions proved it would.** The
+spawn identity was recovered EXACT and independent of the aborted supported-case analysis
+(`interrupt.partialFacts.spawnIdentity`: `checked: true`, `exact: true`, `reason: null`,
+`childThreadId 01a16e89-1667-…`, `parentThreadId 01a16e88-920e-…`; `adjudicator
+interrupt-partial-facts` version 1; `sourceRolloutsSha256 c526862c…`; `capture: 2 rollouts
+captured, rolloutsFailureReason: null`), and the mapper wired it into the attribution
+(`interruptChildThreadId`/`interruptRootThreadId` resolved through the independent identity; the
+supported-case analysis contributed nothing — it aborted). The whole-case verdict therefore stays
+`inconclusive` (`unsupported-call-shape`), and the delivery-layer facts ride the bound
+attribution exactly as preregistered.
+
+**The §19.4 admission block (`interrupt.hostDelivery`) — per-conjunct outcome:**
+
+| §19.4 conjunct | Outcome on the F record | Basis |
+| --- | --- | --- |
+| (1) exactly one `interrupt_agent` call | **POSITIVE** | `callCount: 1`; `attempted: true`, `family: "v2"` (DIRECT); `-call-count-not-one`/`-delivery-rejected`/`-delivery-unobserved` never fired |
+| (2) item joined by call id + `agent_thread_id` | **POSITIVE** | `itemPresent: true`, `interruptedItemCount: 1`, `joinedItemCount: 1`, `foreignItemCount: 0`; `idJoin: true` (basis `outer-call-id` — the item's id = the interrupt call's id `call_42b2122794b744cbaa4796ee19481a75`); `agentThreadIdMatch: true` — the item's `agent_thread_id` equals the spawn-acknowledged Child id |
+| (3) owning-Root rollout | **POSITIVE — the fix's demonstrated effect** | `rootRolloutOwned: true` — the joined item's `threadId`/`rolloutSessionId` equal the Root id grounded through the wired spawn identity; the I record's single blocker `host-activity-owning-root-unestablished` did NOT fire |
+| (4) inside the confirmed pending window | **FAILED — the single remaining reason** | `insidePendingWindow: false`, reason `host-activity-after-settlement` (below); `pendingWindowObserved: true` (the pre-delivery read WAS observed) but the item's emission stamp is not strictly inside the window |
+| (5) timed | **POSITIVE** | `timed: true`, `completedAtMs 1792855936561` (finite positive — the host's payload-level stamp; `-untimed` never fired) |
+| (6) `previous_status` a pre-dispatch snapshot | **observed, snapshot-only** | `previousStatus: "running"` (NONTERMINAL — the interrupt landed on a live turn); `previousStatusOnly: true` (resolves only through proven delivery, which the window refusal withholds) |
+
+**The one remaining admission reason — `host-activity-after-settlement`, recorded precisely:** the
+joined item's emission stamp (`completedAtMs 1792855936561` = `2026-10-24T15:32:16.561Z`) EQUALS
+the settlement-resolution stamp (the cancellation marker `cancelledAtMs 1792855936561` — the same
+millisecond). The registered window is [attributable poll start, first resolution) and closes AT
+the resolution (the codex-round-5 both-bounds rule with the codex-round-1 nonterminal-resolution
+closure — evidence.mjs:3078); the host emitted the interrupted item AT the settlement instant
+itself, so the emission is outside the window by the registered comparison (`>=`) — **fail-closed
+BY DESIGN**. This is §20.6's registered/expected host behavior class (the §19.4 counterexample
+family), NOT an instrument defect: every other conjunct established, and the admission refused
+exactly what its frozen registration refuses. `admitted: false` with this SINGLE reason.
+
+**Downstream composition (per the frozen guards — nothing manufactured):** `provenDelivery` false
+→ `terminalBeforeInterrupt: null` (basis `no-terminal-state-evidence`), `previousStatusOnly: true`;
+`exactTargetMatch: null` (the lexical/normalized comparison unavailable — the caller target is the
+suppressed 23-char alias text, `value: null`; the host-admitted-identity basis requires
+`admitted: true`) → `aliasResolved: null`; `settled: null` with basis
+`delivery-target-unmatched-no-settlement-claim` (the exact-target settlement guard HELD — no
+settlement attributed to an unconfirmed target); `deliveryToSettlementMs: null`.
+
+**The delivery-layer positives that DID establish through the wired identity (all null on the I
+record):** `delivered: true`; `deliverySent: true`; `orderingBound: true` (the I record's
+`ordering-unbound-not-attributed` did not fire); `pendingWindowObserved: true`;
+`pendingIntervalMs: 57445` (measured, `timingBasis: "rollout-event-timestamps"` — the dispatch
+onto a pending observation 57.445 s after the attributable poll start); `cancelledAtMs:
+1792855936561` (the cancellation marker stamp, persisted verbatim). These ride the record as the
+bound-attribution layer facts — never a qualification claim by themselves; the whole case keeps
+its `inconclusive` verdict.
+
+**The whole-case blocker (unchanged class, NEW bytes):** ONE unclassified `exec_command` cell —
+2 input lines, 228 input bytes, directive absent, line-1 prefix class **`other`**, structural
+diagnostic `wholeBodyStatementMatch: false` with `braceDepthEnd: 0`, `endsWithSemicolon: true`,
+`tools: ["exec_command"]`; shape diagnostic `coverage: complete`, `statementCount: 1`,
+`{head: bound-await, tool: exec_command, argument: literal-object, lexical: complete, tail:
+text-binding}`, `bindingEquality: equal`, **`parserStage: "wrapper"`**, `wholeInputConsumed: true`,
+`retention: full`; withheld body SHA-256
+`36c90344004996a5b61cf38a102dba1525324828b13bfe7df91d05e93466e7a0`. The same wrapper family as the
+I record's 217-byte cell (`be3b9a1c…`), NEW bytes; the §23.2 frozen grammar rejected it BY DESIGN
+(the frozen admitted family pins the binding literally `r`; a non-`r` binding head is in the
+frozen rejected list); the cell stays UNCLASSIFIED — no shape-admission outcome was predicted at
+registration and none is retrofitted here.
+
+### 23.12.6 The §23.5 sampling schedule on the fresh record, and the join-v2 `durableSamplesJoin`
+
+The sampling block (`child.durableSamples`, `DURABLE_SAMPLING_VERSION` 1): 460 attempts (≤600 ✓),
+interval 1000 ms with **zero interval shortfalls**, identity established at attempt 35, **baseline
+at attempt 35** (started 1792855840491, completed …493 — as soon as the observed spawn
+acknowledgement made the supplier non-null), 32 retained summaries (≤32 ✓) with **394 rolled
+off** — every roll-off a superseded same-aggregate member; the rolling retention ledger worked
+exactly as designed: the post-delivery reads survived. The omission ledger is EMPTY
+(`omissionsTruncated: false`, `omissionsDroppedCount: 0`); the loop stopped with
+`durable-sampling-stopped-at-shared-signal` — the teardown-only stop naming the SHARED SIGNAL,
+never a manufactured termination boundary. Samples never self-settled.
+
+**The captured pre-teardown timeline (per-snapshot facts, each with its own started/completed
+instants):** attempts 35/38/39/40 — pre-job reads, job presence `missing` (named observer facts,
+never zeros); attempt 41 — job found, `running`, `executorLinkage: 'verified'`, **`snapshotEqual:
+false`** (a TORN snapshot — refused by name downstream, never aggregated); attempt 42 — the
+baseline TRANSITION read (aggregate `unresolved`, `snapshotEqual: true`); attempts 129–152 — job
+`running`, aggregate `unresolved`, verified linkage, spanning `2026-10-24T15:32:14.590Z`–
+`15:32:37.651Z` — including **21.090 s AFTER the established interrupt-emission stamp
+(`15:32:16.561Z`, the same epoch-ms clock: exact, not a cross-clock projection)**; **attempt 153 —
+the state TRANSITION: aggregate `settled`, status `cancelled`, `stopCause: "session-end"`,
+`stopIntent {cause: "session-end", requestedAt: 2026-10-24T15:32:38.087Z}`, completed
+1792855958643 = `15:32:38.643Z`** — a pre-teardown read completing ≈333 s before the held turn's
+end; attempt 460 — the final sample at teardown (same settled aggregate). Retained identifiers
+(safe): job `3b3cbaed536d…bba7683b`, owner = the observed durable owner session
+`01a16e88-920e-…` (EXACTLY the spawn acknowledgement's `parentThreadId`), ownerTurn
+`01a16e88-9a7f-…`, `childPid: 45369` (aliveness NEVER probed), `workerLeaseId eca29792…`.
+
+**The join-v2 `durableSamplesJoin` — the finding-2 effect verified on live bytes:**
+`considered: true`; `boundaryRecorded: false` (NO termination-initiation boundary exists on this
+record — `interrupt.cleanupBoundaryAtMs` absent — and none SHOULD: zero kills, the scheduled
+hold-deadline observation end; the §22-round-3/§23.9 semantics refuse to manufacture one);
+`settlementFallback: {used: false, basis: "final-snapshot-not-fenced"}`; **27 admitted
+identity-bound intact samples** (attempts 42, 129–152, 153, 460), each carried as a bounded
+closed-fact block with `timingState: "boundary-unrecorded"` and `creditEligible: false` — the
+§23.5 fence is unestablishable without a recorded boundary, so the samples earn no substitute
+credit by design (the final snapshot keeps its raw v1 credit semantics and still zero
+qualification credit per the §23.12.7 overlay); **5 refused BY NAME** (attempts 35/38/39/40
+`sample-identity-unbound` — the pre-job reads; attempt 41 `sample-torn`). The pre-boundary
+samples ENTER the join output as admitted observation facts with cause discipline — the I
+record's join had no samples at all — and NO sample fact touched `turnSettled`/`cleanupKill`/
+`naturalCompletionObserved`/`terminalWinner` (join v2 consumes the terminal winner ONLY from the
+final durable snapshot).
+
+### 23.12.7 The offline Gate-D join v2 + oracle v3 adjudication — the per-conjunct map and the 11→8 reasons
+
+**The code-enforced join and oracle ran OFFLINE on the persisted record (zero model turns,
+nothing re-derived from memory):** `nativeInterruptionGateDInput(record)` → join **v2**
+(`gateDJoinVersion: 2`): `{ delivery: { delivered: true, exactTargetMatch: null, aliasResolved:
+null, terminalBeforeInterrupt: null, terminalBeforeInterruptBasis: 'no-terminal-state-evidence',
+deliverySent: true, previousStatusOnly: true, unreadableContinuation: false,
+pendingWindowConfirmed: true, hostActivityAdmitted: false }, turnSettled: null,
+deliveryToSettlementMs: null, companionOutcome: 'terminal-result', durableObligations: 'settled',
+cleanupKill: false, survivalControl: null, terminalWinner: 'cancelled', naturalCompletionObserved:
+false, statusObservationTimeoutOnly: false, durableReadPostCleanupBoundary: false,
+durableReadBoundaryBasis: null, spawnIdentityJoin: { exact: true, owningRootBound: true,
+executorVerified: true }, durableSamplesJoin: { … §23.12.6 } }`.
+`evaluateNativeInterruptionSettlement` (oracle **v3**, release-qualification v1) → **`qualified:
+false`** with **8 named reasons** — `alias-unresolved`, `terminal-state-unestablished`,
+`previous-status-snapshot-only`, `delivery-target-unmatched`, `host-activity-unadmitted`,
+`turn-settlement-unobserved`, `settlement-latency-unestablished`,
+`survival-control-unadjudicated`; layers — delivery **false**, turnSettlement **false**,
+companion **TRUE (raw)**, durableObligations **TRUE (raw)**, noCollateral **false**;
+`terminalWinner: 'cancelled'`.
+
+**The identity join PROVEN at record level on a FRESH live capture:** `spawnIdentityJoin {exact:
+true, owningRootBound: TRUE, executorVerified: TRUE}` — the durable owner session
+`01a16e88-920e-…` is EXACTLY the spawn acknowledgement's `parentThreadId` and the executor
+linkage is verified. The §23.10.7 annotation's record-level proof (on the retained I record) is
+REPRODUCED on new live bytes: the wiring works end to end — recovery → attribution → admission
+conjuncts → durable binding.
+
+**The 11 → 8 reasons (honest per-reason accounting against the I record's verdict):** THREE
+RESOLVED through the fix — `delivery-not-established` (delivered true),
+`delivery-dispatch-unestablished` (deliverySent true), `pending-window-unconfirmed`
+(pendingWindowConfirmed true, from the observed pre-delivery read). EIGHT RETAINED, each riding
+the same frozen composition: `alias-unresolved`/`delivery-target-unmatched` (the exact-target
+facts need the admitted-item basis or a comparable id — the target text stays suppressed and the
+admission was refused), `terminal-state-unestablished` + `previous-status-snapshot-only` (resolve
+only through proven delivery — the window refusal withholds it), `host-activity-unadmitted` (the
+single `host-activity-after-settlement` reason), `turn-settlement-unobserved` (the exact-target
+settlement guard held — no settlement attributed), `settlement-latency-unestablished` (no
+attributed settlement, no latency), `survival-control-unadjudicated` (below).
+
+**The fence treatment, recorded precisely:** NO termination-initiation boundary exists on this
+record (`interrupt.cleanupBoundaryAtMs` absent) — and none SHOULD (zero kills; the held turn ended
+by the SCHEDULED hold-deadline observation end; teardown never manufactures a boundary). With no
+boundary endpoint the mechanical fence keeps prior behavior (`durableReadPostCleanupBoundary:
+false` is "no comparable boundary", NOT "pre-boundary credit"). **QUALIFICATION OVERLAY (the
+§23.10.6 adjudication logic applied on substance):** the final settlement read's own completion
+instant (`durableSnapshot.completedAtMs` 1792856270288 = `2026-10-24T15:37:50.288Z`) coincides
+with the hold-deadline instant (held-clock deadline 460056; the record time `15:37:50.341Z` is
+immediately after) — a TEARDOWN-TIME observation. The raw **companion TRUE** and
+**durableObligations TRUE** layer results are therefore preserved verbatim as instrument results
+and carry **NO qualification credit**: both layers' QUALIFICATION status is **UNESTABLISHED**
+(what the snapshot establishes is WHAT the production authorized-stop path had durably published
+by teardown — never a pre-cleanup settlement fact; a terminal job never infers local reaping or
+guard release). What IS new and pre-teardown: the §23.12.6 sampling timeline — including the
+21.090 s post-interrupt `running`/`unresolved` span — riding the record as admitted observation
+facts, never credit.
+
+**The responsiveness bound — applicability adjudicated:** the preregistered condition (the
+§19.4 admission set satisfied ON THIS RECORD) was **NOT met** — `hostActivityAdmitted: false`
+(the single `host-activity-after-settlement` reason) — so the ≤60000-ms bound stays
+**REGISTERED-BUT-NOT-YET-APPLICABLE** on this trial too, and the delivery-to-settlement latency
+stays `null` (never zero): the settlement was never ATTRIBUTED (the exact-target guard held), so
+there is no measured responsiveness value to apply the bound to. The dispatch/pending interval
+that DID establish (`pendingIntervalMs: 57445` ms) is the §13.2-style pending measurement on the
+record — a dispatch fact, not the responsiveness bound.
+
+**The survival-control layer:** the DECLARATION is verified (armed at preflight, digest-identical
+`c510d81f…`); the OBSERVED facts are `null` — the extraction ran WITH the recovered
+`childThreadId` (the fix's wiring) and still produced no launched/handle-grounded facts: the
+launch detection consumes the captured rollouts through the frozen §23.2 parser, and the record's
+ONE unclassified `exec_command` cell (the wrapper family the grammar deliberately rejects) is the
+only collection-level anomaly on the record — whether the control's launch/read statements live
+in that cell is PARSER UNCERTAINTY, never negative evidence. `noCollateral: false` — **NOT
+qualified** (`null` stays `null`, fail-closed; the no-stop/no-input discipline held on the
+declaration).
+
+**Gate D overall on the F run: FAILED CLOSED / unestablished — `qualified: false` (oracle v3,
+8 named reasons).** Delivery: the admission's identity/ownership/join/timing conjuncts all
+ESTABLISHED (the fix's demonstrated effect verified live) but the window conjunct fails on the
+registered after-settlement comparison; turn settlement unattributed; latency unestablished;
+obligations/Companion unestablished-for-qualification (teardown-time overlay); no-collateral
+unadjudicated. Every unrecovered positive keeps its named reason; nothing was relabeled.
+
+### 23.12.8 Cause classification, the scoped disposition, ledger status and the F-spent close-out (live work STOPS)
+
+**Cause classification — the four causes kept DISTINCT (same discipline as §23.10.6):**
+(1) the durable job's `cancelled` winner rode the REAL authorized session-end stop intent
+(present/valid, cause `'session-end'`, requestedAt `2026-10-24T15:32:38.087Z`) — a SEPARATE
+authorized production act (the Root session's own end mid-hold), NEVER interrupt settlement and
+NEVER cleanup (zero kills). The §16.2 convergence is OBSERVED on the pre-teardown timeline, now
+with the ESTABLISHED interrupt stamp the I record lacked: the interrupt (item emitted
+`15:32:16.561Z`) persisted NO durable stop authority — the job stayed `running`/`unresolved`
+through reads completing `15:32:37.651Z` (**21.090 s after the emission, same epoch-ms clock**),
+and no stop intent existed until `15:32:38.087Z` (**21.526 s after**); (2) the held turn itself
+ended by the scheduled hold-deadline observation cleanup (ended 460071 vs deadline 460056) with a
+natural worker exit — not a budget abort (the 1200000-ms budget never expired), not a kill; (3)
+the child's natural completion: NOT observed (the completion-shaped watch `settlement.observed:
+false` — it provably cannot settle the interrupted path; `naturalCompletionObserved: false`); (4)
+no genuine non-session-end stop path fired. `nativeInterruptionClaimed: false` throughout;
+`stdoutCapture: status 'incomplete', reason 'capture-meta-missing'` (the interrupted path never
+delivered a final stdout — named observer fact, never reconstructed).
+
+**The scoped disposition — three separate answers (the §23.11.5 shape, updated by this record):**
+(a) **Native delivery / turn responsiveness: delivery facts PARTIALLY ESTABLISHED, the layer
+still UNQUALIFIED.** The wired identity established delivered/dispatched/window-observed/
+pending-interval-57445-ms/item-joined/owning-Root/timed — but the admission fails closed on the
+single registered after-settlement comparison, so the delivery layer stays false, the settlement
+stays unattributed, the latency stays `null`, and the ≤60000-ms bound stays
+REGISTERED-BUT-NOT-YET-APPLICABLE. (b) **Companion and ALL applicable owned/no-collateral
+settlement: UNESTABLISHED** (raw TRUE layers stripped by the teardown-time fence, zero credit;
+control observed facts `null` — unadjudicated). (c) **Deployment eligibility: NONE** — the
+unified **DO-NOT-ADOPT-YET** production recommendation stands (§22.7 as revised; Gate D is
+mandatory and NOT proven; long-wait/cadence/exact-output successes stay PROVEN RESEARCH-SCOPE
+facts; no product island; Review/BG/shared-default unqualified).
+
+**The remaining blocker, classified honestly:** the single admission blocker
+`host-activity-after-settlement` is the §19.4 window registration performing as frozen (the host
+emits the interrupted item AT the settlement instant; the registered [poll start, resolution)
+window closes AT the resolution) — §20.6's never-an-F-cause class (registered/expected host
+behavior failing closed BY DESIGN), NOT a demonstrated instrument defect; the §23.2 grammar, the
+§23.4 exposure, the §19.4 admission, the §23.5 schedule/fence and BOTH fix wirings all performed
+per their registrations. And F is SPENT: the ledger is closed regardless of this classification —
+no successor exists, none is requested, and another live run after any future correction would
+still need new explicit authorization.
+
+**Ledger status — FINAL:**
+
+| Label | Registered (plan Task 4) | ACTUAL status | Reason |
+| --- | --- | --- | --- |
+| I (`rescue-interrupt --survival-control-selector progress-terminal`) | 1 conditional | **spent-and-consumed: executed** | §23.10.2–§23.10.6 (record `13aae0ca…`); verdicts stand as history |
+| F (`rescue-interrupt --survival-control-selector progress-terminal`, the `cf9f0a7` fixed instrument) | 1 TOTAL conditional | **spent-and-consumed: executed** | this section (record `634289fd…`); the preflight passed, one real hosted run executed end-to-end; the fix's both wirings VERIFIED on live bytes (owning-Root established; 27 samples admitted into the join); the admission fails closed on the single registered after-settlement reason; 3 of the I record's 11 oracle reasons resolved, 8 retained; `qualified: false` |
+
+Total logical cases: **2 of the max 2 — the ledger is EXHAUSTED.** No retry, relabel, or
+per-label allowance was used; the preflight never rejected; no setting, model or paragraph
+deviation occurred; the budget never expired (the run ended at the scheduled hold deadline inside
+the budget); failed starts: none. **Live work STOPS here regardless of outcome** (the plan's
+"After F … stop live work"). The plan's Gate-D task closes with this record as PRECISELY BLOCKED:
+the next action is NOT another feasibility campaign and NOT a ledger reset — it would be a
+separately-authorized INSTRUMENT-DESIGN decision (e.g. a window-registration change for the
+item-at-settlement emission semantics: a new Task-1-design registration decision, versioned
+offline first) or a separately-authorized PRODUCTION/COMPATIBILITY change. Auto-update/version
+drift (the ambient 0.164.0) remains a named applicability limit, never a free reset; versioned
+offline re-adjudication of the retained I and F records stays allowed, never stamped as a fresh
+installed trial. **"Research finished" never means "default enabled."**
+
+**Artifact digests (all retained OUTSIDE the repository):** record
+`/tmp/shell-wait-interrupt-closure-f.AD92sT/rescue-interrupt.record.json` SHA-256
+`634289fd64a87f73962f59e12216466b86f812dd0e703f4e99c2df21469ed5b7` (byte-identical driver-stdout
+copy at `/tmp/shell-wait-interrupt-closure-task4f/driver-stdout.json`; empty stderr; driver exit
+0). The record is a redacted fixture record — no preparation/auth/rollout bodies; this section
+cites only the bounded typed facts, digests and safe identifiers the record already carries
+(`redactPrivatePaths` applies to any path-bearing citation).
+
+### 23.12.9 Raw-data note for Task 4F
+
+Task 4F consumed the ONE authorized F live case and produced one raw observation record (the
+redacted fixture record above, retained outside the repository and cited only at the bounded
+typed-fact level). No private rollout, preparation, auth, job body, credential or
+user-configuration data entered the repository at any point in the F execution; the withheld
+unclassified-cell body stays withheld by digest alone (`36c90344…` — never reconstructed, no
+reconstruction attempted or acceptable).
