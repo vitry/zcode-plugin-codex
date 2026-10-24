@@ -3163,7 +3163,7 @@ const SURVIVAL_CONTROL_LINE_PATTERN = /^zcode-survival-control (\d+) (\d+)$/gm;
 /**
  * @param {unknown[]} rollouts
  * @param {string} controlPath
- * @param {{ lineCount: number, interruptInteraction: ReturnType<typeof extractInterruptInteraction>, exactTargetMatch?: boolean | null, settledDeliveryCleanupGenerated?: boolean | null, childThreadId?: string | null }} options
+ * @param {{ lineCount: number, interruptInteraction: ReturnType<typeof extractInterruptInteraction>, exactTargetMatch?: boolean | null, settledDeliveryCleanupGenerated?: boolean | null, childThreadId?: string | null, scanCompletenessUnestablished?: boolean | null }} options
  *   `lineCount` is the declared §16.4 line count (the fixture-owned design
  *   constant; the final line IS the completion marker). `interruptInteraction`
  *   is the ONE interrupt interaction attributed by the EXISTING extractor —
@@ -3193,7 +3193,7 @@ const SURVIVAL_CONTROL_LINE_PATTERN = /^zcode-survival-control (\d+) (\d+)$/gm;
  *   beforeDeliveryRead: { observed: boolean, lastLineIndex: number | null, orderedBeforeInterrupt: boolean | null },
  * }}
  */
-export function extractSurvivalControlFacts(rollouts, controlPath, options = /** @type {{ lineCount: number, interruptInteraction: ReturnType<typeof extractInterruptInteraction>, exactTargetMatch?: boolean | null, settledDeliveryCleanupGenerated?: boolean | null, childThreadId?: string | null }} */ ({})) {
+export function extractSurvivalControlFacts(rollouts, controlPath, options = /** @type {{ lineCount: number, interruptInteraction: ReturnType<typeof extractInterruptInteraction>, exactTargetMatch?: boolean | null, settledDeliveryCleanupGenerated?: boolean | null, childThreadId?: string | null, scanCompletenessUnestablished?: boolean | null }} */ ({})) {
   const lineCount = options.lineCount;
   if (!Number.isSafeInteger(lineCount) || lineCount <= 0) {
     throw invalidEvidenceInput('the survival-control lineCount must be a positive integer.');
@@ -3229,6 +3229,19 @@ export function extractSurvivalControlFacts(rollouts, controlPath, options = /**
   if (options.childThreadId !== null && options.childThreadId !== undefined
     && (typeof options.childThreadId !== 'string' || options.childThreadId.length === 0 || options.childThreadId.length > 128)) {
     throw invalidEvidenceInput('the survival-control childThreadId must be a bounded nonempty string or null (the exact interrupted Child thread id).');
+  }
+  // CODEX ROUND-4 FIX (2026-10-25, report §23.15): the scan/ownership
+  // rejection state — when the whole-case evidence adjudication rejected
+  // call/response ownership or scan completeness (`unsupported-call-shape`,
+  // `ambiguous-call-linkage`, `rollouts-overflow`), the delivery bound
+  // derived from the SAME rejected interaction is UNESTABLISHED: identity
+  // recovery resolves WHO, never WHICH response is authoritative nor
+  // HOW-MANY. The observed control emissions and reads ride verbatim; the
+  // bound — and everything anchored to it — stays unestablished (the
+  // oracle's named `delivery-bound-unestablished` arm), so no-collateral can
+  // never qualify from an unestablished attribution.
+  if (options.scanCompletenessUnestablished !== null && options.scanCompletenessUnestablished !== undefined && typeof options.scanCompletenessUnestablished !== 'boolean') {
+    throw invalidEvidenceInput('the survival-control scanCompletenessUnestablished must be a boolean or null (the scan/ownership rejection state).');
   }
   const childThreadId = options.childThreadId ?? null;
   if (typeof controlPath !== 'string' || controlPath.length === 0 || controlPath.length > 512 || !isAbsolute(controlPath)) {
@@ -3487,10 +3500,14 @@ export function extractSurvivalControlFacts(rollouts, controlPath, options = /**
   // whose resolution is the cleanup-generated cancellation never anchors the
   // bound (`settledDeliveryCleanupGenerated !== true` keeps the pre-fix
   // semantics for direct offline callers without held-run facts).
+  // CODEX ROUND-4 FIX (§23.15): the scan/ownership rejection excludes the
+  // bound the same way — the interaction the bound derives from is the one
+  // whose ownership/completeness the whole-case adjudication REJECTED.
   const settledDeliveryAtMs = interruptDeliveryAttributionGuard(interaction) === null
     && interaction.pendingBeforeCall?.observed === true
     && options.exactTargetMatch === true
     && options.settledDeliveryCleanupGenerated !== true
+    && options.scanCompletenessUnestablished !== true
     ? (typeof interaction.settledAfterCall?.atMs === 'number' && Number.isFinite(interaction.settledAfterCall.atMs)
       ? interaction.settledAfterCall.atMs
       : null)

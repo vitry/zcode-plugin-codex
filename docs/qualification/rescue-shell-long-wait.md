@@ -13742,6 +13742,41 @@ re-verified resolving on the final bytes: `:1145-1147`, `:1394`, `:1506-1516`, `
 section's `tests/shell-wait-probe.test.mjs:25750` describe cite drifted +161 lines under the new
 Task-2 describe and is refreshed to `:25911` — `:10878` unchanged and verified).
 
+> **Dated annotation (2026-10-23, the post-review fix — the PR #72 independent user review,
+> finding 2; the frozen §23.5 clauses above stand UNCHANGED and this annotation widens no frozen
+> text; the full close-out record comes in a later commit):** the offline Gate-D settlement join
+> consumed ONLY the final durable snapshot, so a valid pre-boundary job-state sample persisted in
+> `child.durableSamples` (the §23.10.5 timeline — the attempt-251 transition captured ~215 s
+> before the teardown-time final read) was excluded wholesale from adjudication. The fix is
+> OFFLINE-FIRST (zero live launches, zero model turns, no grammar/fixture/stop-protocol change):
+> the join now carries its OWN versioned identity — `NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION = 2`
+> (v1 = the unversioned recorded behavior; the §19.9 v1/v2 precedent mechanism), embedded in
+> every join output as `gateDJoinVersion`, with the oracle's input contract marked
+> `NATIVE_INTERRUPTION_ORACLE_VERSION = 3` (the oracle's own logic byte-unchanged) so a new
+> adjudication is never mistaken for a recorded verdict — and admits PRE-BOUNDARY per-sample
+> facts when the final snapshot is fenced out (at/after-boundary or unprovable timing), each
+> sample independently: exact identity binding (positively verified executor linkage AND the
+> sample's anchored job id equal to the join's own job identity), positive snapshot integrity
+> (torn samples refused by name), and the sample's OWN completion instant strictly BEFORE the
+> recorded cleanup boundary (equality/later refused by name; missing/foreign-clock timing
+> named-unestablished, never parsed). CAUSE DISCIPLINE (absolute): the four causes stay distinct
+> — a sample whose terminal winner rode a `'session-end'` (or any non-interrupt) stop cause
+> yields OBSERVED LAYER FACTS ONLY: the whitelisted `jobStatus`/`stopCause`/`stopIntentCause`/
+> `stopIntentRequestedAt` provenance rides the output verbatim, the Gate-D "real terminal
+> winner" conjunct is NEVER flipped by sample facts, and `turnSettled`/`cleanupKill`/
+> `naturalCompletionObserved` are never derived from samples. The plan-pinned fence contract
+> holds unchanged (the existing at-boundary + no-samples pin: `durableObligations: null` +
+> `companionOutcome: null`), and a record without persisted samples reproduces its recorded v1
+> verdict fields exactly (old verdicts preserved, never re-stamped). Regression-first: the
+> 8-test describe "post-review fix: pre-boundary samples enter the offline settlement join and
+> the join is versioned (PR #72 review finding 2)" — RED verbatim: `join v2 = the identity
+> wiring + pre-boundary sample consumption (v1 was the unversioned recorded behavior)` →
+> `undefined !== 2`, then the fenced-final shape → `the obligations aggregate joins from the
+> pre-boundary sample` → `null !== 'settled'`; GREEN after the minimal join fix; research suite
+> 928/928 on the fixed bytes (915 recorded + 13 new). The join also consumes the persisted
+> `interrupt.partialFacts.spawnIdentity` block (exact identity only) — see the §23.10 dated
+> annotation for the retained record's re-adjudication under the new version.
+
 ## 23.10 2026-10-23 interrupt-closure Task 4: the registered successor live ledger — the I launch frozen, executed and adjudicated (F adjudication recorded)
 
 Task 4 of the [2026-10-23 plan](../superpowers/plans/2026-10-23-rescue-shell-wait-interrupt-closure.md),
@@ -14124,6 +14159,64 @@ copy at `/tmp/shell-wait-interrupt-closure-task4/driver-stdout.json`; empty stde
 re-pin). The records are redacted fixture records — no preparation/auth/rollout bodies; this
 section cites only the bounded typed facts, digests and safe identifiers the records already
 carry (`redactPrivatePaths` applies to any path-bearing citation).
+
+> **Dated annotation (2026-10-23, the post-review fix and the offline re-adjudication of the
+> retained I record — the PR #72 independent user review findings 1-2; NOTHING in
+> §23.10.1–§23.10.7 above reopened or rewritten; the frozen §23.2 grammar and the fence contract
+> untouched; the retained record re-verified byte-identical `13aae0ca…` immediately before the
+> re-adjudication run; zero live launches, zero model turns; the full close-out record comes in
+> a later commit):**
+>
+> **Finding 1 (the recovered identity was not used for interrupt attribution) — FIXED offline.**
+> The mapper derived the Root/Child join ids ONLY from the supported-case analysis, so one
+> unclassified cell aborting that analysis left the §19.4 admission unestablishable
+> (`host-activity-owning-root-unestablished`) while the exact identity sat recovered in
+> `interrupt.partialFacts.spawnIdentity` — precisely this record's §23.10.4 outcome. The wiring:
+> the exact `observeSpawnAcknowledgementIdentity` join over the SAME captured rollouts grounds
+> the attribution binding (interaction binding, §19.4 admission, exact-target comparison,
+> survival-control reader) whenever the supported analysis did not establish an id — exact
+> identity only, no alias text, no outer-call-id guessing, no wrapped mapping (the wrapped
+> fail-closed rule stands), any mismatch named-unestablished, the §23.4 delivery-outcome
+> nulling lifted ONLY when the identity is established, the unclassified cell stays
+> unclassified, and the settled chain keeps its guards (no settlement is ever manufactured).
+> Regression-first: the 5-test describe "post-review fix: the recovered spawn identity is wired
+> into the interrupt attribution (PR #72 review finding 1)" — RED verbatim: `the owning-Root
+> scoping joins from the recovered identity` → `null !== true`; the same fixture now establishes
+> the §19.4 admission end to end (mapper → record → join → oracle) with `admitted: true`,
+> `rootRolloutOwned: true` and an empty reasons list, and the delivery layer joins through the
+> persisted exact identity at the oracle level.
+>
+> **The retained record's re-adjudication under the new versioned identity (join v2 / oracle
+> v3):** the legacy verdict fields replay the recorded §23.10.6 join output BYTE-IDENTICALLY and
+> the oracle returns the SAME 11 named reasons (`qualified: false`) — the old verdict is
+> preserved, never re-stamped. NONE of the 11 reasons resolve from the retained bytes alone:
+> the delivery-layer positives were nulled/computed-unestablished live BEFORE the identity
+> wiring (`delivered`/`exactTargetMatch` null, `pendingWindowObserved` false,
+> `hostDelivery.admitted: false`) and the record carries no rollout bytes, so the §19.4 item
+> conjuncts (c2 join, c3 owning-Root, c4 window, c5 timed) stay unestablishable FROM THIS
+> RECORD — what each needs is a NEW capture under the fixed wiring (the finding-1 regressions
+> prove the same fixture now establishes them). THE NON-EMPTY DELTA: (a)
+> `spawnIdentityJoin.owningRootBound: true` + `executorVerified: true` — the durable owner
+> session `01a16976-f6c8-…` is EXACTLY the spawn acknowledgement's `parentThreadId` and the
+> executor linkage is verified: the identity join is PROVEN at record level on the durable side;
+> (b) the §23.10.5 samples ENTER the join output as admitted observation facts — 26
+> identity-bound intact samples (attempts 48, 228-251, 467; the 6 pre-job reads 40-47 refused
+> `sample-identity-unbound` by name), including the attempt-251 transition (settled/cancelled,
+> `stopCause: "session-end"`, completed 1792771016842, ~215 s pre-teardown), each with its
+> preserved cause provenance and named fence state `boundary-unrecorded` — no boundary was ever
+> recorded, so the §23.5 fence is unestablishable and the samples earn no substitute credit by
+> design (the final snapshot keeps its raw v1 credit semantics and still zero qualification
+> credit per the §23.10.6 overlay); (c) the four causes stay distinct — no sample fact touched
+> `turnSettled`/`cleanupKill`/`naturalCompletionObserved`/`terminalWinner`.
+>
+> **F re-adjudication input (the F verdict itself is the separately recorded close-out, not this
+> annotation):** the two demonstrated wiring defects named by the review — the recovered spawn
+> identity unused for attribution, and the pre-boundary samples excluded wholesale from the
+> offline join — are now fixed offline, regression-first, with new versioned adjudicator
+> identities and the old verdicts preserved; the re-adjudicated retained record itself resolves
+> none of the 11 reasons (the deltas above are its complete honest output). The re-adjudication
+> is a versioned OFFLINE replay of a retained record, never a fresh installed trial, and never
+> stamped over the recorded §23.10.6 verdict.
 
 ## 23.11 2026-10-23 interrupt-closure Task 5: final exact-source verification and the scoped Gate-D disposition (offline; zero model turns, zero live launches)
 

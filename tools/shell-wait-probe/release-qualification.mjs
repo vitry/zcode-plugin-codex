@@ -810,12 +810,16 @@ export const RESPONSIVENESS_BOUND_MS = 60_000;
  * Task 3): v1 was the §16.5/§16.6 freeze (executed under the shared
  * RELEASE_QUALIFICATION_VERSION 1 stamp); v2 adds the §19.4-registered
  * host-activity admission conjunct (report §19.4, registered BEFORE any live
- * trial) to the delivery layer. The shared RELEASE_QUALIFICATION_VERSION
- * stamp is NOT bumped: the exact-terminal and settlement-layer family
- * oracles are byte-unchanged, and v1 verdicts stand as recorded (report
- * §19.2 re-adjudication continuity).
+ * trial) to the delivery layer. v3 (2026-10-23 post-review fix, PR #72
+ * review findings 1-2) is the join INPUT-CONTRACT growth: the offline Gate-D
+ * join (NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION 2) can consume the recovered
+ * spawn-acknowledgement identity and pre-boundary per-sample durable facts
+ * when the final snapshot is fenced out — the oracle's own logic is
+ * byte-unchanged, and the bump marks every v3 adjudication so it can never
+ * be mistaken for a recorded v1/v2 verdict (old verdicts stand as history;
+ * report §19.2/§19.9 re-adjudication continuity).
  */
-export const NATIVE_INTERRUPTION_ORACLE_VERSION = 2;
+export const NATIVE_INTERRUPTION_ORACLE_VERSION = 3;
 
 /**
  * The §16.3/§16.6 Gate-D native-delivery/settlement aggregation over
