@@ -15473,6 +15473,19 @@ whose clone path met the precondition. The copy, its manifests and the gate logs
 `/tmp` state (the logs under `/tmp/interrupt-closure-finalbytes-gates/`); the copy was deleted
 after the run; nothing from it entered the repository.
 
+> **Dated annotation (2026-10-25, the close-out-3 battery — SUPERSEDED-BY-NEW-BYTES per the
+> §22.2/§23.11.2 dated-supersession discipline; the table above stands verbatim as history,
+> never re-stamped):** this battery verified the `d34c0b8` tree — whose IMPLEMENTATION bytes were
+> the once-rebased fix commit `0c429324`'s. The fix-round codex review round 2 then returned one
+> P2 in the sample join (the annotation at the end of §23.14.5) and its `--fixup` + autosquash
+> rebase CHANGED the implementation bytes again (the fenced-final identity arm squashed into the
+> fix commit: the two-arm per-sample identity gate, 4 new tests — research 929→933), so these
+> counts are HISTORICAL for THEIR bytes and are no longer the branch's final-bytes record: the
+> current battery — the same 11-gate plan Task-5 command list, run verbatim on HEAD `a07bbce9`
+> (the twice-rebased fix `e448c923` bytes), research **933/933 (75 suites)** — is the re-run
+> record at report [§23.15](../../qualification/rescue-shell-long-wait.md). Every result above
+> remains a valid record of the bytes it named.
+
 ### 23.14.4 The supersession line and the implementation-byte equality proof
 
 **§23.13.2's battery is SUPERSEDED-BY-NEW-BYTES:** its 11-gate table verified the pre-rebase
@@ -15550,3 +15563,395 @@ user-configuration data entered the repository at any point in this round.
 > identity arm, 4 new tests — 929→933) — and the current gates ran on the final rebased bytes
 > (research 933/933, selection 6/6, lint/typecheck clean, 543 files LF, `git diff --check` clean,
 > the prohibited diff vs `dba2e8a` EMPTY); the full close-out record comes in a later commit.
+
+## 23.15 2026-10-25 the codex round-2 fix battery on the final bytes (the interrupt-closure close-out 3; offline — zero model turns, zero live launches)
+
+The §23.14.5 dated annotation promised "the full close-out record comes in a later commit" — this
+is that record. The fix-round codex review round 2 returned ONE P2 (the sample join's identity
+gate anchored every pre-boundary sample to the final read's job projection, which the fenced
+placeholder discards — the annotation at the end of §23.14.5); the fix rode the SECOND `--fixup` +
+autosquash rebase into the join fix commit (now `e448c923`, §23.15.4) and changed the
+implementation bytes AGAIN after §23.14.3's battery, so the final battery ran once more on the
+final bytes and is recorded here, together with the report-only fresh-eyes verification of the
+two-arm gate. Offline throughout — zero model turns, zero live launches (the finite Gate-D ledger
+stays EXHAUSTED 2/2, §23.12.8/§23.13.4); production trees, config, snapshots, dependencies, the
+spec and the Codex source untouched; the three untracked scratch files preserved untouched and
+never staged; no plan checkbox ticked or re-ticked; every §23.14 text intact — the supersession
+rides as the dated annotation AT §23.14.3 (the §22.2/§23.11.2/§23.13.2 discipline).
+
+### 23.15.1 The codex round-2 finding, the two-arm fix, and the fresh-eyes verification (report-only; every element read on the HEAD bytes)
+
+**The finding (the §23.14.5 annotation's subject, re-verified fresh-eyes).** When the final
+durable read is FENCED OUT, the online settlement builder replaces it with the unestablished
+placeholder carrying NO job projection; the join v2 sample gate anchored every sample's identity
+to `durableJobId`, so every pre-boundary sample was refused `sample-identity-unbound` under the
+placeholder.
+
+**The two-arm identity gate as it stands on the final bytes (`tools/shell-wait-probe/driver.mjs`):**
+
+- The final read's job projection exists ONLY when `durableSnapshot?.job?.presence === 'found'`
+  with a projection object (`durableJobProjection`, driver.mjs:2839-2842) — under the fenced
+  placeholder (NO `job` key) it is null, so the second arm engages exactly when the final read is
+  fenced out, and never otherwise.
+- The gate itself (driver.mjs:2996-3008): `anchorsJob` is read from the sample's OWN
+  `layers.bindingCurrency`; `anchorsJobExact` requires a non-empty bounded exact id (length 1–128,
+  never an alias); ARM 1 (final projection present — `durableJobId !== null`): the sample is
+  identity-bound iff `executorLinkage === 'verified'` AND `anchorsJobExact` AND
+  `anchorsJob === durableJobId` — the strongest cross-check, byte-unchanged in kind from the
+  pre-fix gate; ARM 2 (final read fenced out): the same POSITIVELY verified executor linkage AND
+  `anchorsJobExact` AND the PERSISTED exact spawn-identity binding
+  (`persistedSpawnIdentityBound`, driver.mjs:2868-2870 — `spawnIdentityExact === true`, the
+  versioned §23.4 partial-facts block with `checked`/`exact`/both ids, driver.mjs:2815-2822, OR
+  the supported-case linkage with both `record.linkage.childThreadId` and
+  `record.linkage.parentThreadId` non-empty); otherwise refused by name
+  (`sample-identity-unbound`, driver.mjs:3005-3007).
+- The sibling sweep (driver.mjs:2858-2867 with 2843 and 2851): `spawnIdentityJoin.owningRootBound`
+  deliberately STAYS null under the placeholder — it is
+  `spawnIdentityExact && durableOwnerSessionId !== null …`, and `durableOwnerSessionId` derives
+  from the discarded projection — the documented named-unestablished, never re-derived; the
+  SAMPLES' own identity is what the gate re-grounds.
+- No gate is relaxed: a torn sample is refused first (`sample-torn`, driver.mjs:2976-2978); the
+  completion instant must be a safe finite integer (`sample-timing-unestablished`,
+  driver.mjs:3009-3012); with NO recorded boundary the sample rides as an observation fact with
+  `creditEligible: false` (`boundary-unrecorded`, driver.mjs:3014-3019); at/after the boundary is
+  refused (`sample-at-or-after-boundary`, driver.mjs:3021-3023); the integrity gate stays a
+  POSITIVE proof for credit — only `snapshotEqual === true` is credit-eligible, an unproven
+  fingerprint is admitted as a named observation fact with `creditEligible: false` and the RAW
+  tri-state preserved (driver.mjs:3025-3034; `buildAdmittedSample` never coerces,
+  driver.mjs:2770-2774); the settlement fallback draws ONLY from the `creditEligible` filter
+  (driver.mjs:3037-3040) and is used ONLY when the final snapshot is actually withheld
+  (driver.mjs:3041-3047).
+- The winner is never fed from samples: `terminalWinner: durableEstablished && !durableCreditWithheld
+  ? jobStatus : null` (driver.mjs:3207) reads ONLY the final read's production-terminal status;
+  the sample-grounded branch publishes ONLY the Companion layer fact (`companionOutcome`,
+  driver.mjs:3089-3096) under the explicit cause-discipline comment (driver.mjs:3084-3088).
+
+**The named-run verification (worktree at HEAD `a07bbce9`):**
+
+- The 4-test describe "codex round-2 fix: sample identity survives a fenced-out final read
+  (report §23.14)" run by name (`node --test --test-name-pattern="codex round-2 fix: sample
+  identity survives a fenced-out final read" tests/shell-wait-probe.test.mjs`): **tests 4 /
+  pass 4 / fail 0 / skipped 0**, exit **0** — the four tests verbatim: "the fenced-final
+  placeholder never orphans verified pre-boundary samples (codex round-2 reproduction)"; "every
+  existing gate holds in the fenced-final shape (no relaxation through the new identity arm)";
+  "the fenced-final identity arm fails closed without a persisted exact spawn binding"; "the
+  runHeldHostTurn reproduction: a budget-fenced final read leaves the real placeholder beside
+  verified samples, and the join admits them".
+- `evidence.mjs` byte-unchanged vs `75e4b0e`: `git diff 75e4b0e..HEAD --
+  tools/shell-wait-probe/evidence.mjs` is **0 bytes**; SHA-256
+  `33b0f6ae0936cb762b4df3d5d8ba2f8426a1659c51d2a8bc34f5db577a15d3ae` on both sides — the same
+  digest §23.14.1 recorded (the finding-2 attribution correction holds).
+
+**Fresh-eyes verdict:** the two-arm gate on the HEAD bytes MATCHES the registered description on
+every element checked — the fenced-only engagement of arm 2, the bounded anchored-id contract,
+the persisted-exact-binding fail-closed arm, the deliberately-null `owningRootBound`, proven
+integrity for credit, the strictly-pre-boundary fence, and the winner conjunct never fed from
+samples.
+
+### 23.15.2 The fenced-final-bytes battery re-run (the plan Task-5 command list verbatim; every result verbatim; exit captured from `$?`)
+
+Worktree pins at battery time: `git rev-parse HEAD` →
+`a07bbce9153d0ca3635e7ad1df94382058674599`; the tracked tree was CLEAN (this battery ran BEFORE
+the close-out-3 docs were written; only the three untracked scratch files existed outside the
+tracked tree).
+
+| # | Gate command (plan Task-5 list) | Source | Verbatim result |
+| --- | --- | --- | --- |
+| 1 | `npm run test:shell-research` | worktree at `a07bbce9` | **ℹ tests 933 / ℹ suites 75 / ℹ pass 933 / ℹ fail 0 / ℹ cancelled 0 / ℹ skipped 0 / ℹ todo 0** (duration_ms 56750.220583), exit **0**, zero `✖` lines — §23.14.3's 929 + the 4 round-2 tests (the fenced-final identity arm); the round-2 describe also runs by name (4/4, §23.15.1) |
+| 2 | `node --test tests/test-selection.test.mjs` | worktree at `a07bbce9` | **tests 6 / suites 0 / pass 6 / fail 0 / cancelled 0 / skipped 0 / todo 0** (duration_ms 41.32275), exit **0** |
+| 3 | `node --test tests/rescue-preparation.test.mjs tests/rescue-binding.test.mjs tests/rescue-route-planner.test.mjs` | worktree at `a07bbce9` | **tests 417 / suites 0 / pass 417 / fail 0 / cancelled 0 / skipped 0 / todo 0** (duration_ms 28180.529166), exit **0** |
+| 4 | `node --test tests/rescue-lifecycle.test.mjs tests/rescue-child-reconciliation.test.mjs tests/rescue-progress-relay.test.mjs` | worktree at `a07bbce9` | **tests 126 / suites 0 / pass 126 / fail 0 / cancelled 0 / skipped 0 / todo 0** (duration_ms 40349.153167), exit **0** |
+| 5 | `node --test tests/job-control.test.mjs tests/mcp-result.test.mjs` | worktree at `a07bbce9` | **tests 213 / suites 0 / pass 213 / fail 0 / cancelled 0 / skipped 0 / todo 0** (duration_ms 52477.066334), exit **0** |
+| 6 | `npm run lint` | worktree at `a07bbce9` | eslint clean, no findings (banner-only output), exit **0** |
+| 7 | `npm run typecheck` | worktree at `a07bbce9` | `tsc --noEmit` clean, no findings (banner-only output), exit **0** |
+| 8 | `node scripts/check-line-endings.mjs` | worktree at `a07bbce9` | *"LF line endings verified in 543 tracked files."*, exit **0** |
+| 9 | `git diff --check` | worktree at `a07bbce9` | no output (0 bytes), exit **0** |
+| 10 | prohibited diff `git diff dba2e8ad8534b5800fd1faff98ad904f492dcf1d --stat -- scripts/ hooks/ skills/ agents/ .codex-plugin/ marketplace/ docs/superpowers/specs/ package.json npm-shrinkwrap.json` | worktree at `a07bbce9` | **EMPTY** (0 bytes), exit **0** — the plan's "Prohibited diff expected EMPTY" holds on the fenced-final bytes |
+| 11 | `npm test` | verification copy `/tmp/swverify.vVh9tG` of the worktree HEAD `a07bbce9153d0ca…` (construction below) | **routine suite: ℹ tests 3397 / pass 3394 / fail 0 / cancelled 0 / skipped 3 / todo 0** (duration_ms 657063.788459); **marketplace suite: ℹ tests 2 / pass 2 / fail 0 / cancelled 0 / skipped 0 / todo 0** (duration_ms 17259.20775); combined **3399 tests / 3396 pass / 0 fail / 3 skipped / 0 cancelled**, exit **0** (captured verbatim from `$?`), **zero `✖` lines in the entire 3545-line log**. The 3 skips are the SAME three standing documented opt-in gates as §18.3/§22.2/§23.11.2/§23.13.2/§23.14.3 (`﹣` SKIP lines recorded verbatim in the log): `codex-skills-unqualified` ×2 — *"installed marketplace skill crosses a real ephemeral Codex turn into ZCode"* (`Set ZCODE_CODEX_SKILLS_E2E=1…`) and *"installed Rescue uses one isolated native child for initial and choice continuations"* (`Set ZCODE_CODEX_RESCUE_E2E=1…`); `real-zcode-unqualified` — *"real ZCode discovery, two-turn session, read-only Companion, cancellation, model, and history import"* (`Set ZCODE_REAL_E2E=1…`) — the standing design, not new omissions |
+
+**Gate-11 copy construction (the §22.2 recipe, followed exactly):** `mktemp -d
+/tmp/swverify.XXXXXX` → `/tmp/swverify.vVh9tG`; `git clone --no-local --no-hardlinks` of the
+worktree at `a07bbce9` (clone `rev-parse HEAD` = `a07bbce9153d0ca…`, `status --short` empty — the
+three untracked scratch files structurally excluded; `.git` present); a normal copied
+`node_modules` directory (`cp -R`, verified a real directory, not a symlink); the copy path
+carries no guarded identity word. **Byte-proof by the recorded manifest recipe (SHA-256
+manifests of ALL 543 tracked files, both sides; construction verbatim: `git ls-files -z | xargs
+-0 shasum -a 256 | awk '{print $1, $2}' | sort | shasum -a 256`):** the COPY-side and
+WORKTREE-side sorted-manifest digests are **IDENTICAL —
+`f65e6d5b2dc47541d42cdb8fec625ebd2f68923f0588e1b07df2d6b2095ca8c9`** — 543/543 tracked files
+byte-equal, with **NO in-flight-docs difference** (the same stronger form as §23.14.3: this
+battery ran on a clean tracked tree before the close-out-3 docs existed). One attempt, one run,
+zero failures, no retries — no waiver needed.
+
+**The §22.2 named baseline limitation — did NOT strike on this clone:** the two historically
+lottery-coupled fixtures ran INSIDE the gate-11 routine run and PASSED on this clone path (zero
+`✖` lines; the `fixture must place target at canonical index 0` precondition never fired). For
+the record and matching the §23.13.2/§23.11.2/§23.14.3 shape, the SAME bytes were also run in the
+worktree cwd: qualification **162/162, exit 0** (duration_ms 6363.328125); e2e **46 tests / 44
+pass / 2 skipped / 0 fail** (`tests/e2e/codex-skills-e2e.test.mjs`), exit **0**, and **16 tests /
+15 pass / 1 skipped / 0 fail** (`tests/e2e/real-zcode.test.mjs`), exit **0**. The §22.2
+classification stands UNCHANGED as history; nothing here waives the limitation — this row is a
+first-attempt green whose clone path met the precondition. The copy, its manifests and the gate
+logs are disposable `/tmp` state (the logs under `/tmp/interrupt-closure-closeout3-gates/`); the
+copy was deleted after the run; nothing from it entered the repository.
+
+### 23.15.3 The F/I record byte-equivalence re-confirmation (cited; verified once per fixup — not re-run)
+
+The mandatory equivalence check has been executed TWICE, once per fixup, and is cited as the
+standing record:
+
+- First fixup (the integrity-gate correction): §23.14.1's "**F-RECORD EQUIVALENCE VERIFIED**"
+  paragraph — the F record
+  `634289fd64a87f73962f59e12216466b86f812dd0e703f4e99c2df21469ed5b7` replays under the fixed join
+  with the ENTIRE join+oracle output BYTE-IDENTICAL to the pre-fix run (all 27 F samples are
+  boundary-unrecorded/credit-ineligible and the one torn F sample stays refused — no F output
+  changes); the retained I record re-verified the same way, byte-identical.
+- Second fixup (the fenced-final identity arm): the §23.14.5 dated annotation's "**No join-version
+  bump, and why**" paragraph — the F record's final read was NOT fenced, and its join+oracle
+  output (including the `gateDJoinVersion: 2` stamp) replays BYTE-IDENTICAL under the
+  fenced-final code, verified field-by-field; the retained I record likewise.
+
+Both verifications used the same join code this battery ran on, and the F/I records themselves
+are retained persisted artifacts whose bytes no branch commit carries — no third replay is
+required for this close-out.
+
+### 23.15.4 The PRE-REBASE IDENTIFIER mapping update (the §23.14 mapping superseded by the second fixup rebase; the earlier §23.14 citations read as historical identifiers)
+
+The round-2 fixup + autosquash rebase mapped the round's commits AGAIN (message-identical pairs,
+verified for this record via `git log` on both sides; the pre-rebase objects remain resolvable in
+the repository and were verified):
+
+| Previous final identifier (cited in §23.14 and its annotations) | Current identifier (the branch's history) | Content |
+| --- | --- | --- |
+| `0c4293246cef46c6a6c82464b4505a8a27d5162b` | `e448c923304f260b707863f23f82c565ca25739a` | the post-review fix commit — the SECOND fixup ADDED the fenced-final identity arm (`driver.mjs` +35/−2) and the 4 round-2 tests (`tests` +275), so the CURRENT form carries implementation bytes the previous form did not (research 929→933) |
+| `b6096fdba61e42682a8c6671e246334d02430f27` | `da2dc1f3ab676f76e306682f850dd2ecfcd5850d` | the F-successor docs commit (record the fresh Gate-D capture) — NOTE: §23.14.2's table transcribed the PREVIOUS identifier as `b6096dba61e42682a8c6671e246334d02430f27`, which does not resolve; the resolvable object is `b6096fdb…` (one hex digit). The correction is recorded HERE; the original table text stands verbatim (never re-stamped) |
+| `d34c0b8ba33bf5b3cf3ade73a050788466d4fd9f` | `68865dca3b1bc18a76e72a2e2dd07340a747bc3e` | the fix-round close-out docs commit (record the post-review fix round, the battery re-run, the updated Gate-D disposition) |
+| `ae43e53922c724214df91f7e7501f0967f85ec8f` | `a07bbce9153d0ca3635e7ad1df94382058674599` | the close-out-2 commit (§23.14) — its REBASED form additionally carries the §23.14.5 dated annotation (+56 report lines), which the pre-rebase form predated |
+
+The rebase changed implementation bytes as well as identifiers (the fenced-final identity arm, 4
+new tests — 929→933), so the §23.14.3 battery (run at the once-rebased bytes) is superseded
+(§23.15.5). Every §23.14 citation of `0c429324`/`b6096db…`/`d34c0b8`/`ae43e53` reads as a
+HISTORICAL identifier for the same logical commit (message-identical pairs as verified above);
+no recorded claim is invalidated by the mapping alone — only the battery bytes claim needed the
+§23.15.2 re-run.
+
+### 23.15.5 The supersession line and the implementation-byte equality proof
+
+**§23.14.3's battery is SUPERSEDED-BY-NEW-BYTES** (recorded as the dated annotation AT §23.14.3;
+original text intact, never re-stamped — the §22.2/§23.11.2/§23.13.2 discipline): its 11-gate
+table verified the once-rebased `0c429324` implementation bytes; the round-2 fixup + autosquash
+rebase then changed the implementation bytes again (the fenced-final identity arm, 4 new tests —
+929→933), so those counts are HISTORICAL for THEIR bytes and are no longer the branch's
+final-bytes record. §23.15.2's table above is the current final-bytes record, pinned to HEAD
+`a07bbce9153d0ca3635e7ad1df94382058674599` — whose `tools/`/`tests/` bytes are the twice-rebased
+fix commit `e448c923`'s, proven by the equality check below.
+
+**Implementation-byte equality (verified at the closing commit):** the closing commit changes
+ONLY this report, so `git diff a07bbce9..HEAD --stat -- tools/ tests/` is EMPTY at the commit —
+the bytes gates 1–11 verified ARE the branch's final implementation bytes.
+
+### 23.15.6 Raw-data note for the close-out 3
+
+The round consumed no live case and produced no new raw observation data (the battery is an
+offline verification gate; the F record of §23.12 remains the last live-data artifact). Its
+artifacts are this section and the §23.14.3 dated annotation, plus disposable `/tmp` state (the
+gate logs under `/tmp/interrupt-closure-closeout3-gates/`; the verification copy — deleted after
+its run). No private rollout, preparation, auth, job body, credential or user-configuration data
+entered the repository at any point in this round.
+
+> **Dated annotation (2026-10-25, the fix-round codex re-review round 3 — ONE P2, fix-introduced by
+> the identity wiring, fixed by fixup into the join fix commit `e448c923` (the rebased fix-round
+> commit); nothing above reopened; frozen text unchanged; zero live launches, zero model turns):**
+>
+> **The finding.** The recovered-identity wiring (finding 1 of the user review, this round's first
+> fix) binds the interrupt attribution's ordering on the abort path — which let the settlement
+> guards PASS on a MIXED rollout: one RECOGNIZED interrupt call plus ONE unsupported cell (which
+> could itself hold another interrupt or an explicit stop; the extractor skips it and reports
+> `callCount: 1`), the recovered-identity path admitted the first delivery, and a subsequent
+> cancellation marker was attributed as NATIVE settlement despite the possible second
+> interruption (an in-memory reproduction produced `hostDelivery.admitted: true`, `settled: true`
+> and a passing turn-settlement layer; the pre-fix base kept settlement unestablished). The
+> contract distinction the fix registers: **identity recovery resolves WHO, never HOW-MANY —
+> recovering the spawn ids does not establish call-scan completeness.**
+>
+> **The fix (offline, regression-first, fixup into `e448c923` — that commit's own scope).** When
+> an unsupported cell coexists with recognized interrupt calls (the whole-case adjudication
+> aborted `unsupported-call-shape` AND a recognized call exists), the exact-scan-completeness
+> premise FAILS and two guards treat it as UNESTABLISHED: (1) the §19.4 admission set's
+> exactly-one-call conjunct is UNESTABLISHABLE — the set fails with the named reason
+> `host-activity-call-scan-incomplete` while every per-conjunct OBSERVED fact (the item join, the
+> identity/window/timing facts) rides verbatim — they are real, never erased and never a
+> qualification claim; (2) native SETTLEMENT attribution is refused with the named basis
+> `ambiguous-cell-scan-incomplete-not-attributed` (the branch sits beside the
+> `ordering-unbound` refusal it now masks on the identity-wired path), so no delivery-to-settlement
+> latency is measured and the Gate-D turn-settlement layer can never pass on a scan-incomplete
+> record. NO gate is relaxed anywhere else; the pure unsupported-cell case (no recognized call —
+> the round-2 keeper: `attempted` null, no admitted window) and the all-classified cases behave
+> byte-identically to before (both pinned in the new describe).
+>
+> **RED→GREEN evidence (verbatim).** The 4-test describe "codex round-3 fix: attribution
+> uncertainty survives unclassified cells (report §23.15)" — the mixed shape (the recognized
+> interrupt pair + the §19.4 host item + the unsupported cell + a native-cancellation marker
+> resolving the pending poll's cell through its accepted continuation) through the REAL
+> mapper→persisted-record→join→oracle path — RED: `the admission set fails on the unestablishable
+> exactly-one conjunct` → `true !== false` (the finding's `admitted: true`, with `settled: true`
+> behind it); GREEN after the minimum fix: the delivery facts ride
+> (`attempted`/`callCount: 1` (the recognized count)/`delivered`/`exactTargetMatch`/
+> `pendingWindowObserved`/`hostDelivery.{idJoin, rootRolloutOwned, insidePendingWindow, timed}`),
+`admitted: false` with the named reason, `settled: null` with the named basis, the join's
+> `turnSettled: null`, the oracle's turn-settlement layer false. The PURE-case pin and the
+> ALL-CLASSIFIED pin (the same choreography with every call classified keeps `settled: true`,
+> `native-cancellation-settlement-after-delivery`, latency 5000) both green. Suite **937/937**
+> (76 suites — 933 + 4 new).
+>
+> **F/I record replay (mandatory).** The F record `634289fd…` replays under the fixed code with
+> the join+oracle output BYTE-IDENTICAL (verified field-by-field); the retained I record
+> `13aae0ca…` likewise. Shape note recorded honestly: the F record is actually the MIXED shape by
+> this finding's definition (it carries a RECOGNIZED call, `callCount: 1`, `attempted: true`,
+> `delivered: true`) — not the pure case — but its persisted outcome-relevant facts were already
+> the refused outcome (`settled: null` via `delivery-target-unmatched-no-settlement-claim`,
+> `hostDelivery.admitted: false`), and the fix is mapper-side (it changes future record creation,
+> never the join's consumption of retained bytes), so the replay is byte-identical regardless.
+>
+> **Battery supersession (the same discipline, one line):** §23.15.2's battery above is
+> HISTORICAL for ITS bytes — this fix changed the implementation bytes again (the
+> scan-completeness guards, 4 new tests — 933→937) — and the current gates ran on the final
+> rebased bytes (research 937/937, selection 6/6, lint/typecheck clean, 543 files LF,
+> `git diff --check` clean, the prohibited diff vs `dba2e8a` EMPTY); the full close-out record
+> comes in a later commit.
+
+> **Dated annotation (2026-10-25, the fix-round codex re-review round 4 — ONE P2 in the same
+> family, the scan-completeness guard covered only ONE abort reason, fixed by fixup into the join
+> fix commit `9b5ebca0` (the rebased fix-round commit); nothing above reopened; frozen text
+> unchanged; zero live launches, zero model turns):**
+>
+> **The finding.** The §23.15 scan-completeness guard handled only
+> `unsupported-call-shape`. When the ROOT rollout contains CONFLICTING responses for the interrupt
+> call, `inspectShellWaitEvidence` rejects the case with `ambiguous-call-linkage` — but the
+> extractor's call scan still reports one recognized call with the FIRST response decoded, the
+> recovered-identity path admitted the delivery, and a subsequent cancellation marker was
+> attributed as native settlement (a reproduction through the all-classified fixture plus a
+> second conflicting interrupt response produced `hostDelivery.admitted: true`, `settled: true`,
+> and both the delivery and turn-settlement oracle layers passing) — despite the rejected
+> response ownership. An exact spawn identity does not establish WHICH interrupt response is
+> authoritative.
+>
+> **The fix (offline, regression-first, fixup into `9b5ebca0` — that commit's own scope).** The
+> guard is GENERALIZED: the whole-case adjudication's rejection of call/response ownership or
+> scan completeness gates the admission's exactly-one/ownership conjuncts and native settlement
+> attribution regardless of WHICH named reason produced the rejection. The covered
+> `inspectShellWaitEvidence` abort-reason family (surveyed exhaustively — these are the ONLY
+> fail-closed scan reasons the observer emits; enumerated in the contract comment at the guard):
+> `unsupported-call-shape` (an unclassifiable cell body — another interrupt or an explicit stop
+> could live inside it), `ambiguous-call-linkage` (conflicting call/response ownership — the
+> rejected response's authority is unestablishable), and `rollouts-overflow` (a rollout beyond
+> the observer event bound — a TRUNCATED scan; another interrupt could live past the bound).
+> `rollouts-unavailable` is deliberately NOT in the family (no scan ran at all — no observed
+> facts to preserve, nothing to gate; the existing no-rollout paths keep their behavior). The
+> registered contract distinction is EXTENDED: identity recovery resolves WHO, never WHICH
+> response is authoritative nor HOW-MANY. Delivery facts (attempted/delivered/identity/window/
+> timing) ride as observed; the exactly-one/ownership conjuncts stay unestablished with the
+> named reason `host-activity-call-scan-incomplete` and native settlement attribution is refused
+> with the named basis `ambiguous-cell-scan-incomplete-not-attributed` — the same names as the
+> round-3 fix (the reason/basis name the scan-completeness FAMILY, of which the ambiguous
+> linkage is a member). NO gate is relaxed; the all-classified keeper (no rejection → full
+> admission/settlement as before) and the pure-unsupported keeper stay byte-identical.
+>
+> **RED→GREEN evidence (verbatim).** Two new tests in the round-3 describe: (1) the
+> ambiguous-call-linkage reproduction — the ALL-CLASSIFIED fixture plus a second conflicting
+> interrupt response (the shape scan would otherwise mask the ownership reason, so the fixture
+> drops the unsupported cell exactly as the finding prescribes) — RED: `the admission set fails
+> on the rejected ownership` → `true !== false`; GREEN: `admitted: false` with the named reason,
+> `settled: null` with the named basis, the persisted-record→join→oracle path refusing both
+> layers (`turnSettled: null`, `layers.turnSettlement: false`, `host-activity-unadmitted`); (2)
+> the rollouts-overflow pin — a 20,001-event rollout (a real truncated scan: the interrupt facts
+> near the start are within the scanned prefix) — RED the same way, GREEN the same way. Suite
+> **939/939** (76 suites — 937 + 2 new).
+>
+> **F/I record replay (mandatory).** The F record `634289fd…` — whose whole-case abort reason
+> IS in the covered family (`unsupported-call-shape`) — replays under the fixed code with the
+> join+oracle output BYTE-IDENTICAL (verified field-by-field; its persisted verdict is already
+> the refused outcome: `settled: null` via `delivery-target-unmatched-no-settlement-claim`,
+> `hostDelivery.admitted: false`); the retained I record `13aae0ca…` likewise. The fix is
+> mapper-side (it changes future record creation, never the join's consumption of retained
+> bytes).
+>
+> **Battery supersession (the same discipline, one line):** §23.15.2's battery above is
+> HISTORICAL for ITS bytes — this fix changed the implementation bytes again (the generalized
+> guard, 2 new tests — 937→939) — and the current gates ran on the final rebased bytes (research
+> 939/939, selection 6/6, lint/typecheck clean, 543 files LF, `git diff --check` clean, the
+> prohibited diff vs `dba2e8a` EMPTY); the full close-out record comes in a later commit.
+
+> **Dated annotation (2026-10-25, the fix-round codex re-review round 5 — ONE P2, the
+> scan-incompleteness guard had not reached the survival qualification, fixed by fixup into the
+> join fix commit `d224efed` (the rebased fix-round commit); nothing above reopened; frozen text
+> unchanged; zero live launches, zero model turns):**
+>
+> **The finding.** With `progress-terminal` enabled, the round-3/round-4 guards correctly refuse
+> the admission set and native settlement under a scan/ownership rejection — but
+> `extractSurvivalControlFacts` still derived its delivery bound from the SAME rejected
+> interaction: reproducing conflicting responses yielded `settled: null` and
+> `ambiguous-cell-scan-incomplete-not-attributed`, yet `survivalControl.noCollateralQualified`
+> was `true` — the verdict persisted and passed through the offline join as a successful
+> no-collateral layer despite the unestablished delivery attribution.
+>
+> **The fix (offline, regression-first, fixup into `d224efed` — that commit's own scope).** The
+> guard propagates into the survival-bound calculation through the extraction's OWN registered
+> option-gating pattern (the same shape as the `exactTargetMatch`/`settledDeliveryCleanupGenerated`
+> bound gates): a new validated option `scanCompletenessUnestablished` leaves the delivery bound
+> UNESTABLISHED when the whole-case adjudication rejected the interaction's ownership or
+> completeness — the observed control emissions, reads and ownership facts ride verbatim (never
+> erased), and the oracle's NAMED `delivery-bound-unestablished` arm refuses
+> no-collateral (`noCollateralQualified: false`, `postDelivery: 'unknown'` — never true from an
+> unestablished attribution). The driver passes the guard state into the extraction and persists
+> it in the bounded inputs (`survivalControlInputs.scanCompletenessUnestablished`) so an offline
+> reader can see the bound was withheld because the interaction was REJECTED, not because the
+> control was unobserved. NO gate relaxed: the all-classified keeper (the full qualifying verdict
+> byte-identical) and every prior pin stay green.
+>
+> **THE DOWNSTREAM-CONSUMER SWEEP (the exhaustive one-pass pass — every interaction/hostDelivery
+> consumer in driver.mjs + release-qualification.mjs that can grant ANY positive qualification or
+> credit; the code carries the same table at the survival site):**
+>
+> | # | Consumer → Gate-D surface | Disposition under the guard |
+> | --- | --- | --- |
+> | 1 | `admitInterruptHostDelivery` → `hostDelivery` → `delivery.hostActivityAdmitted` → the oracle's `host-activity-unadmitted` conjunct | **GATED (round 3)** — `admitted: false` + `host-activity-call-scan-incomplete`; per-conjunct observed facts ride |
+> | 2 | the settled chain (`settled`/`settledBasis`) → `turnSettled` → the oracle's turn-settlement layer | **GATED (round 3)** — `ambiguous-cell-scan-incomplete-not-attributed` |
+> | 3 | `deliveryToSettlementMs` → the oracle's latency conjuncts | **GATED (round 3)** — null (requires attributed settlement) → `settlement-latency-unestablished` |
+> | 4 | `extractSurvivalControlFacts`'s delivery bound → `evaluateSurvivalControl` → `survivalControl.noCollateralQualified` → `layers.noCollateral` | **GATED (THIS fix)** — the bound unestablished → the oracle's `delivery-bound-unestablished` arm; observed emissions retained |
+> | 5 | `survivalControlInputs` (the persisted oracle inputs) | **GATED (THIS fix)** — carries `scanCompletenessUnestablished: true` |
+> | 6 | the lexical/host exact-target facts (`exactTargetMatch`/`aliasResolved`) | **Proven observation-only** — the facts ride, but the Gate-D delivery layer is already refused via `host-activity-unadmitted` (they cannot grant a positive); the same fact feeds the survival bound, which is gated at #4 |
+> | 7 | `pendingWindowConfirmed`/`pendingIntervalMs`/`timingBasis` | **Proven observation-only** — the real window facts ride; the delivery layer they would serve is refused at #1 |
+> | 8 | `terminalBeforeInterrupt` (its FALSE "open window" branch) | **Proven unobtainable** — the FALSE branch requires a proven delivery (`admitted && window`), which the guard makes impossible; its TRUE branch is a REFUSAL, never credit |
+> | 9 | the completion/cancellation timestamps and `settledDeliveryCleanupGenerated` | **Refusal facts** — cleanup attribution REFUSES settlement credit, never grants it |
+> | 10 | `naturalCompletionObserved` (reads `settledBasis`) | **Proven unobtainable** — the scan basis never equals `terminal-observation-after-delivery` |
+> | 11 | `cleanupKill`/`unreadableContinuation`/`previousStatusTerminal`/`statusObservationTimeoutOnly` | **Refusal facts / constant false** — each blocks or is inert, never grants |
+> | 12 | the durable-side join blocks (`durableSamplesJoin`, `durableIdentityJoin`, `companionOutcome`, `durableObligations`, `terminalWinner`) | **Not interaction-derived** — they consume the durable snapshot/samples and carry their own fixes (rounds 1–2); the cause discipline keeps the winner conjunct sample-proof |
+> | 13 | `evaluateNativeInterruptionSettlement` (the frozen oracle) | **Consumes only the join output** — every positive conjunct is gated upstream; its logic is byte-unchanged through all fix rounds |
+> | 14 | the status-wait/background case paths | **Different cases** — no interrupt interaction consumers; the guard is interrupt-case-scoped by construction |
+>
+> No ungated positive-granting consumer remains.
+>
+> **RED→GREEN evidence (verbatim).** The reproduction (the qualifying §16.4 control fixture plus
+> the spawn acknowledgement making the identity exactly recoverable — the finding's premise —
+> plus a second conflicting interrupt response, the hand-carried `ambiguous-call-linkage`
+> whole-case rejection, through the REAL mapper → persisted-record → join → oracle path) — RED:
+> `no-collateral is never qualified from an unestablished attribution` → `true !== false`; GREEN:
+> `noCollateralQualified: false`, `reason: 'delivery-bound-unestablished'`, `postDelivery:
+> 'unknown'`, the inputs carrying `scanCompletenessUnestablished: true` with
+> `deliveryBoundTag: null` and the observed `emittedLines` retained, and the oracle's
+> `layers.noCollateral: false` with `collateral-control-not-qualified`. Suite **940/940**
+> (76 suites — 939 + 1 new).
+>
+> **F/I record replay (mandatory).** The F record `634289fd…` and the I record `13aae0ca…` replay
+> under the fixed code with the join+oracle output BYTE-IDENTICAL (verified field-by-field) — the
+> F record's persisted `survivalControl` is null (no control facts were extracted on that run),
+> and the fix is mapper-side (future record creation, never the join's consumption of retained
+> bytes).
+>
+> **Battery supersession (the same discipline, one line):** §23.15.2's battery above is
+> HISTORICAL for ITS bytes — this fix changed the implementation bytes again (the survival-bound
+> gate + the sweep documentation, 1 new test — 939→940) — and the current gates ran on the final
+> rebased bytes (research 940/940, selection 6/6, lint/typecheck clean, 543 files LF,
+> `git diff --check` clean, the prohibited diff vs `dba2e8a` EMPTY); the full close-out record
+> comes in a later commit.
