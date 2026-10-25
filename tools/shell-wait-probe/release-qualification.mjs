@@ -829,7 +829,9 @@ export const NATIVE_INTERRUPTION_ORACLE_VERSION = 3;
  * unconfirmed pending window, unobserved turn settlement, a still-live
  * unsettled Companion, unresolved/unobserved durable obligations, cleanup
  * kills (never native settlement), an unadjudicated or lost collateral
- * control — and the production terminal winner/error semantics pass through
+ * control, an owning-Root identity conflict (the durable-side chain is never
+ * provably the interrupted child's job under it) — and the production
+ * terminal winner/error semantics pass through
  * untouched: a natural completion racing cancellation is never rewritten to
  * `cancelled`, and a status observation-only timeout never counts as
  * stopping the unrelated control.
@@ -854,6 +856,7 @@ export const NATIVE_INTERRUPTION_ORACLE_VERSION = 3;
  *   terminalWinner: 'succeeded' | 'failed' | 'cancelled' | null,
  *   naturalCompletionObserved: boolean,
  *   statusObservationTimeoutOnly: boolean,
+ *   spawnIdentityJoin?: { exact: boolean, owningRootBound: boolean | null, executorVerified: boolean | null } | null,
  * }} input
  * @returns {{
  *   qualified: boolean,
@@ -920,6 +923,18 @@ export function evaluateNativeInterruptionSettlement(input) {
   const durableSettled = input.durableObligations === 'settled';
   if (input.durableObligations === 'unresolved') reasons.push('durable-obligations-unresolved');
   else if (!durableSettled) reasons.push('durable-obligations-unobserved');
+  // POST-REVIEW FIX 2 (2026-10-25, the user-review round-2 finding): the
+  // join's owning-Root CONFLICT — the spawn acknowledgement's Root and the
+  // durable job's owner BOTH resolvable and DISAGREEING
+  // (`spawnIdentityJoin.owningRootBound === false`) — is contradictory
+  // identity evidence, and qualification is refused by name: the
+  // durable-side chain (obligations, Companion outcome, terminal winner and
+  // any pre-boundary sample fallback) is never provably THE interrupted
+  // child's job under it. One side unresolvable (null) stays the existing
+  // named-unestablished path — never conflated with the conflict — and the
+  // non-conflict keepers (exact match → bound) are unchanged. Legacy oracle
+  // inputs without the additive join block never carry the reason.
+  if (input.spawnIdentityJoin?.owningRootBound === false) reasons.push('owning-root-identity-conflict');
   if (input.cleanupKill === true) reasons.push('cleanup-termination-is-not-native-settlement');
   // The §16.4 survival layer. A status observation-only timeout NEVER stops
   // an unrelated job: a control whose only loss evidence is such a timeout

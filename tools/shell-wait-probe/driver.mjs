@@ -2840,7 +2840,13 @@ export function nativeInterruptionGateDInput(record) {
     && durableSnapshot?.job?.projection && typeof durableSnapshot.job.projection === 'object'
     ? durableSnapshot.job.projection
     : null;
-  const durableOwnerSessionId = typeof durableJobProjection?.ownerSessionId === 'string' ? durableJobProjection.ownerSessionId : null;
+  // The owner id must be NONEMPTY to be resolvable (self-review P3, the
+  // sibling guard style: the spawn ids require length > 0, the sample anchor
+  // is bounded 1–128) — an empty-string owner id is UNRESOLVABLE (null, the
+  // named-unestablished path), never a resolvable side of a conflict.
+  const durableOwnerSessionId = typeof durableJobProjection?.ownerSessionId === 'string' && durableJobProjection.ownerSessionId.length > 0
+    ? durableJobProjection.ownerSessionId
+    : null;
   const durableExecutorVerified = durableSnapshot && typeof durableSnapshot === 'object'
     ? durableSnapshot.executorLinkage === 'verified'
     : false;
@@ -2855,6 +2861,18 @@ export function nativeInterruptionGateDInput(record) {
         ? durableExecutorVerified
         : null,
     };
+  // POST-REVIEW FIX 2 (2026-10-25, the user-review round-2 finding): the
+  // CONFLICT shape — the spawn acknowledgement's Root and the durable job's
+  // owner BOTH exact and resolvable and DISAGREEING (the computed
+  // `owningRootBound === false`) — is contradictory identity evidence: the
+  // durable-side chain is not provably THE interrupted child's job. The
+  // conflict gates EVERY durable-side credit consumer below
+  // (`durableEstablished`, the obligations snapshot branch and the
+  // pre-boundary sample settlement fallback) and rides the join output for
+  // the oracle's NAMED refusal (`owning-root-identity-conflict`). One side
+  // unresolvable (null) stays the named-unestablished path — never conflated
+  // with the conflict; the exact-match keeper is unchanged.
+  const durableOwnerIdentityConflict = spawnIdentityJoin?.owningRootBound === false;
   // SIBLING-SWEEP NOTE (codex round-2 fix, §23.14): the fenced-out final read
   // (the unestablished placeholder with no job projection) leaves
   // `spawnIdentityJoin.owningRootBound` null by the same discarded-projection
@@ -3040,11 +3058,17 @@ export function nativeInterruptionGateDInput(record) {
     : null;
   const settlementFallback = durableSamplesBlock === null
     ? { used: false, basis: 'no-samples-persisted', sample: null }
-    : durableCreditWithheld && fallbackSample !== null
-      ? { used: true, basis: 'final-snapshot-fenced-pre-boundary-sample', sample: fallbackSample }
-      : durableCreditWithheld
-        ? { used: false, basis: 'no-admissible-pre-boundary-sample', sample: null }
-        : { used: false, basis: 'final-snapshot-not-fenced', sample: null };
+    // POST-REVIEW FIX 2: under the durable-owner identity conflict the
+    // pre-boundary samples (anchored to the conflict's own job id) are
+    // foreign-owner observations — the settlement fallback never fires on
+    // them, with the named basis riding the provenance block.
+    : durableOwnerIdentityConflict
+      ? { used: false, basis: 'durable-owner-identity-conflict', sample: null }
+      : durableCreditWithheld && fallbackSample !== null
+        ? { used: true, basis: 'final-snapshot-fenced-pre-boundary-sample', sample: fallbackSample }
+        : durableCreditWithheld
+          ? { used: false, basis: 'no-admissible-pre-boundary-sample', sample: null }
+          : { used: false, basis: 'final-snapshot-not-fenced', sample: null };
   // Codex round 2: the job's winner/executor evidence is consumable ONLY
   // from a POSITIVELY observed durable snapshot — an unestablished or torn
   // snapshot (e.g. the executor linkage unverified) is never consumed as
@@ -3055,11 +3079,16 @@ export function nativeInterruptionGateDInput(record) {
   // aggregate — terminal + marked claim — can coexist with a mismatched or
   // unverified executor; the named cause then rides the record and the
   // obligations layer keeps reporting its own per-fact state).
+  // POST-REVIEW FIX 2: a durable-owner identity conflict (the spawn
+  // acknowledgement's Root and the job's owner both resolvable and
+  // disagreeing) equally refuses the Child-attributed consumption — the
+  // snapshot is never established as THIS child's durable job under it.
   const durableEstablished = (durableAggregate === 'settled' || durableAggregate === 'unresolved')
     && (durableSnapshot && typeof durableSnapshot === 'object'
       ? /** @type {any} */ (durableSnapshot).executorLinkage === 'verified'
       : false)
-    && !durableSnapshotTorn;
+    && !durableSnapshotTorn
+    && !durableOwnerIdentityConflict;
   // The Companion outcome layer (codex round 1 — the cancelled-poll path):
   // the completion-shaped watch is frozen out of the interrupt case, so the
   // CompanIONS's REMOTE outcome is observed through the durable job's
@@ -3188,7 +3217,7 @@ export function nativeInterruptionGateDInput(record) {
   // evidence, never qualification credit). Join v2: when the final snapshot
   // is fenced out, the LATEST admissible pre-boundary sample grounds the
   // aggregate (the fenced snapshot's own value never leaks).
-  durableObligations: !durableCreditWithheld && !durableSnapshotTorn && (durableAggregate === 'settled' || durableAggregate === 'unresolved')
+  durableObligations: !durableCreditWithheld && !durableSnapshotTorn && !durableOwnerIdentityConflict && (durableAggregate === 'settled' || durableAggregate === 'unresolved')
     ? durableAggregate
     : settlementFallback.used === true && settlementFallback.sample !== null
       && (settlementFallback.sample.aggregate === 'settled' || settlementFallback.sample.aggregate === 'unresolved')

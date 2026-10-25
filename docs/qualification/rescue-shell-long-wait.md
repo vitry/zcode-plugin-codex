@@ -16171,3 +16171,124 @@ deleted after its run). No private rollout, preparation, auth, job body, credent
 user-configuration data entered the repository at any point in this round. Zero model turns
 were spent; the ZERO-findings re-review verdict is the reviewer's recorded result, not a
 re-run.
+
+> **Dated annotation (2026-10-25, the user-review round 2 — ONE P2 over the converged fix
+> bytes, fixed regression-first ON the final bytes; the fix, its tests and this annotation ride
+> ONE commit (no amend/rebase/force of the pushed branch); nothing above in §23.10–§23.16
+> reopened or rewritten — the frozen texts stand verbatim, this annotation is their round-2
+> pointer; zero live launches, zero model turns — the user CONFIRMED the defect is an OFFLINE
+> evidence-adjudication fault, not a production fault, so no live run was needed and none was
+> spent):**
+>
+> **The finding.** The join v2 COMPUTED the owning-Root CONFLICT — the spawn acknowledgement's
+> Root and the durable job's owner BOTH exact and resolvable and DISAGREEING
+> (`spawnIdentityJoin.owningRootBound === false`) — but nothing downstream CONSUMED it: the
+> durable-side evidence chain (the `durableEstablished` gate at the driver.mjs :3058 region,
+> the `durableObligations` final-snapshot branch and the pre-boundary sample settlement
+> fallback) stayed un-gated, and `evaluateNativeInterruptionSettlement` never saw the conflict.
+> The user INDEPENDENTLY reproduced the shape: the spawn belongs to Root A, the durable job
+> belongs to Root B, and the output carried `owningRootBound: false` beside
+> `oracle.qualified: true` — evidence with an EXPLICIT identity conflict was judged as passing.
+> (The prior rounds' tests pinned only the FLAG — the flag-only test asserted
+> `owningRootBound: false` and stopped there.)
+>
+> **The fix (offline, regression-first; the driver.mjs join + the release-qualification.mjs
+> oracle, both this commit's own scope).** The conflict now PROPAGATES from the join through
+> the oracle: (a) the join computes the named conflict state (`durableOwnerIdentityConflict`)
+> and gates EVERY durable-side credit consumer on it — `durableEstablished` (so the
+> durable-derived `companionOutcome` branches and the `terminalWinner` conjunct refuse), the
+> `durableObligations` final-snapshot branch, and the `settlementFallback` (the fallback never
+> fires under the conflict, with the named basis `durable-owner-identity-conflict` riding the
+> provenance block); (b) the oracle consumes the additive `spawnIdentityJoin` block and refuses
+> qualification with the NAMED reason **`owning-root-identity-conflict`** (surveyed against the
+> reason vocabulary — the owning-root/identity-conflict basis form of the existing
+> `host-activity-owning-root-unestablished`/`sample-identity-unbound` family). The DISTINCTION
+> is preserved exactly: conflict (both known, disagreeing → hard refuse) is never conflated
+> with one-side-unresolvable (null → the existing named-unestablished path, unchanged), and the
+> non-conflict keepers (exact match → bound; single-sided unknown → named-unestablished) stay
+> byte-identical. The observed per-sample facts stay admitted observation facts (never erased);
+> only the settlement CREDIT is gated. **No version bump, and why (the §23.14.5 precedent):**
+> the join stays v2 / the oracle stays v3 — the join v2 registration already named the
+> disagreement as the hard never-resolved mismatch ("a disagreement → false (the named
+> mismatch — never resolved)"), so the oracle's named refusal completes the REGISTERED
+> fail-closed semantics within the same stamps; the conflict-FREE persisted verdicts (F/I)
+> replay byte-identical, so no persisted verdict is re-stamped or re-interpreted.
+>
+> **THE DURABLE-SIDE CONSUMER SWEEP (the one-pass pass over every oracle conjunct that consumes
+> the owning-Root/durable-owner facts; no sibling may grant a positive under the conflict):**
+>
+> | # | Consumer → Gate-D surface | Disposition under the conflict |
+> | --- | --- | --- |
+> | 1 | `durableEstablished` → the `companionOutcome` durable branches (`terminal-result`, `survived-unsettled`) | **GATED (THIS fix)** — the conflict conjunct refuses establishment |
+> | 2 | `durableEstablished` → `terminalWinner` | **GATED (THIS fix)** — null under the conflict → `terminal-winner-unobserved` |
+> | 3 | the `durableObligations` final-snapshot branch | **GATED (THIS fix)** — null under the conflict → `durable-obligations-unobserved` |
+> | 4 | `settlementFallback` (`used`/`basis`) → the obligations fallback branch AND the `companionOutcome` fallback branch | **GATED (THIS fix)** — `used: false`, basis `durable-owner-identity-conflict` (the samples anchored to the conflict's own job id are foreign-owner observations) |
+> | 5 | the per-sample admission loop (`durableSamplesJoin.admitted`) | **Proven observation-only** — the admitted observation facts ride verbatim; under the conflict the fallback never draws on them (row 4), so they can ground no positive |
+> | 6 | `delivery.exactTargetMatch`/`aliasResolved` (the spawn-side target gate) | **Proven keeper** — the target gate is independent of the durable owner binding (the pre-existing pinned assertion stands; the conflict reason is not a delivery-layer reason, `layers.delivery` untouched) |
+> | 7 | `turnSettled`/`deliveryToSettlementMs`/`cleanupKill`/`naturalCompletionObserved`/`statusObservationTimeoutOnly` | **Not durable-owner-derived** — interrupt-side facts, unchanged |
+> | 8 | the `companionOutcome` `remoteTerminal`/`localProcessReaping` branches | **Not durable-owner-derived** — the watch/reaping observation surfaces (frozen null on the interrupt path by the registered design), unchanged |
+> | 9 | `survivalControl` | **Not durable-owner-derived** — the control's root-ownership fact is the launch rollout's owning-session identity, not the durable job owner; unchanged |
+> | 10 | the oracle `layers` booleans (`companion`, `durableObligations`) | **Refused via rows 1–3** — the nulled conjuncts drive the booleans false; the conflict reason itself needs no layer rewrite |
+>
+> No ungated positive-granting durable-side consumer remains.
+>
+> **RED→GREEN evidence (verbatim).** The new END-TO-END negative regression (spawn Root A +
+> durable Root B, BOTH identities exact and resolvable, through the REAL
+> `nativeInterruptionGateDInput` → `evaluateNativeInterruptionSettlement` on the otherwise
+> fully-qualifying record shape) — RED:
+> `AssertionError [ERR_ASSERTION]: conflicted evidence can never qualify` / `true !== false`
+> (the pre-fix verdict carried `qualified: true` with `owningRootBound: false` — the user's
+> exact reproduced shape). GREEN: `qualified: false`; the named
+> `owning-root-identity-conflict` reason; the conflicting conjuncts named
+> (`companion-outcome-unobserved`, `terminal-winner-unobserved`, `durable-obligations-unobserved`);
+> the keepers byte-identical (exact match → bound + qualified; one-sided unknown → the existing
+> path + qualified, both without the conflict reason). The flag-only test STAYS and GAINS the
+> qualification assertions (`qualified: false` + the named reason + the refused durable-side
+> conjuncts on the §23.13-round mismatch shape). Suite **941/941** (76 suites — 940 + 1 new).
+>
+> **F/I record replay (mandatory).** The F record `634289fd…` and the retained I record
+> `13aae0ca…` replay under the fixed join/oracle with the ENTIRE join+oracle output
+> BYTE-IDENTICAL to the pre-fix run (canonical replay digests: F `528b9934…` prefix == postfix;
+> I `ee23c1ff…` prefix == postfix — recorded from TRANSIENT replay runs whose copies were
+> disposable temp artifacts since deleted, so the digests are NOT independently re-derivable
+> offline; the substantive no-bump/byte-identity claim rests on the BY-CONSTRUCTION
+> conflict-free byte-identity plus the pinned `owningRootBound: true` facts for both records
+> (§23.12/§23.10), not on the transient digests) — both are conflict-free
+> (`spawnIdentityJoin: exact: true, owningRootBound: true, executorVerified: true`), so no
+> output byte changes.
+>
+> **Battery on this commit's bytes.** research **941/941, 76 suites** (exit 0), selection
+> **6/6** (exit 0), lint clean, typecheck clean, `node scripts/check-line-endings.mjs` →
+> *"LF line endings verified in 543 tracked files."*, `git diff --check` clean, the prohibited
+> diff `git diff dba2e8a --stat -- scripts/ hooks/ skills/ agents/ .codex-plugin/ marketplace/
+> docs/superpowers/specs/ package.json npm-shrinkwrap.json` **EMPTY**. The §23.16.1 convergence
+> statement and §23.16.2's zero-findings verdict stand as their rounds' records (round-scoped;
+> this user-review round 2 postdates them).
+>
+> **Dated annotation (2026-10-25, the fix's self-review — TWO non-blocking P3s over the
+> `0462f44` fix bytes, fixed into the SAME commit by `--amend` (new and unpushed; message
+> unchanged); nothing above reopened; zero live launches, zero model turns):**
+>
+> **P3-1 — the empty-string owner id (driver.mjs, the `durableOwnerSessionId` guard).** The
+> owner-id resolvability check was `typeof … === 'string'` only, so an EMPTY-string owner id
+> on a found job would classify as the CONFLICT (both sides "resolvable", disagreeing — hard
+> refuse) instead of UNRESOLVABLE, diverging from the registered "both resolvable" semantics
+> and the sibling guard style (the spawn ids require length > 0; the sample anchor is bounded
+> 1–128). Fixed TDD: the extended test asserts the empty-string owner id takes the named
+> -unestablished path (`owningRootBound: null`, NO conflict reason, the qualification path
+> unchanged) — RED under the pre-guard bytes
+> (`AssertionError [ERR_ASSERTION]: an empty-string owner id is unresolvable (never a conflict
+> side)` / `false !== null`), GREEN with the 1-line `length > 0` guard. The F/I records carry
+> nonempty owner ids, so their byte-identity is unaffected.
+>
+> **P3-2 — the transient replay digests (this annotation's F/I paragraph above).** The
+> canonical replay digests (`528b9934…`/`ee23c1ff…`) are NEW evidence with no prior pin, and
+> the replay copies were deleted temp artifacts — the paragraph now carries the clarifying
+> parenthetical: the substantive no-bump/byte-identity claim rests on the by-construction
+> conflict-free byte-identity plus the pinned `owningRootBound: true` facts for both records
+> (§23.12/§23.10), not on the transient digests.
+>
+> **Battery on the amended bytes.** research **941/941, 76 suites** (exit 0 — unchanged count:
+> the P3-1 empty-string owner-id assertions EXTEND the existing end-to-end test, no new test
+> function), selection **6/6** (exit 0), lint clean, typecheck clean, line-endings
+> LF (543 tracked files), `git diff --check` clean, the prohibited diff vs `dba2e8a` **EMPTY**.

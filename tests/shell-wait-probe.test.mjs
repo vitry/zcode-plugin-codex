@@ -10753,6 +10753,82 @@ process.exit(result.status ?? 1);
       assert.ok(anonymousVerdict.reasons.includes('delivery-target-unmatched'));
     });
 
+    test('an EXPLICIT durable-owner identity conflict refuses the durable-side evidence from qualifying (post-review fix 2)', () => {
+      // The user-review round-2 finding (2026-10-25, offline evidence
+      // adjudication): the join computed the owning-Root CONFLICT — the spawn
+      // acknowledgement's Root and the durable job's owner BOTH exact and
+      // resolvable and DISAGREEING (`owningRootBound: false`) — but nothing
+      // downstream consumed it, so the independently reproduced shape (spawn
+      // belongs to Root A, the durable job belongs to Root B) still carried
+      // `owningRootBound: false` beside `oracle.qualified: true`. The
+      // conflict is contradictory identity evidence: the durable-side chain
+      // is not provably THE interrupted child's job, so it can never ground
+      // a positive and the oracle refuses by name. The DISTINCTION is
+      // preserved: conflict (both known, disagreeing → hard refuse) is never
+      // conflated with one-side-unresolvable (the existing named
+      // -unestablished path), and the exact-match keeper is unchanged.
+      const spawnIdentityBlock = {
+        adjudicator: 'interrupt-partial-facts', version: 1, basis: 'raw-rollout-fixture-proof',
+        sourceRolloutsSha256: 'a'.repeat(64),
+        capture: { rolloutsCaptured: true, rolloutCount: 2, rolloutsFailureReason: null },
+        adjudication: 'supported',
+        spawnIdentity: { checked: true, exact: true, reason: null, childThreadId: CHILD_THREAD, parentThreadId: ROOT_THREAD },
+      };
+      const conflict = nativeInterruptionGateDInput(gateDRecord((record) => {
+        record.interrupt.partialFacts = spawnIdentityBlock;
+        // The durable job belongs to Root B — both identities EXACT and
+        // resolvable, and they DISAGREE.
+        record.child.durableSnapshot.job.projection.ownerSessionId = 'root-b-different-owner-session';
+      }));
+      assert.equal(conflict.spawnIdentityJoin.exact, true, 'premise: both identities are exact and resolvable');
+      assert.equal(conflict.spawnIdentityJoin.owningRootBound, false, 'the CONFLICT shape: both sides known and disagreeing');
+      const conflictVerdict = evaluateNativeInterruptionSettlement(conflict);
+      assert.equal(conflictVerdict.qualified, false, 'conflicted evidence can never qualify');
+      assert.ok(conflictVerdict.reasons.includes('owning-root-identity-conflict'), JSON.stringify(conflictVerdict.reasons), 'the refusal names the identity conflict');
+      // The conflicting conjuncts are named: the durable-side evidence chain
+      // refuses under the conflict (no sibling grants a positive).
+      assert.ok(conflictVerdict.reasons.includes('companion-outcome-unobserved'), JSON.stringify(conflictVerdict.reasons));
+      assert.ok(conflictVerdict.reasons.includes('terminal-winner-unobserved'), JSON.stringify(conflictVerdict.reasons));
+      assert.ok(conflictVerdict.reasons.includes('durable-obligations-unobserved'), JSON.stringify(conflictVerdict.reasons));
+      assert.equal(conflict.companionOutcome, null, 'the Companion outcome never joins from a foreign-owner job');
+      assert.equal(conflict.terminalWinner, null, 'the terminal winner is not consumed from a foreign-owner job');
+      assert.equal(conflict.durableObligations, null, 'the obligations aggregate is not consumed from a foreign-owner job');
+      // The exact-match keeper stays byte-identical: bound and qualified.
+      const boundKeeper = nativeInterruptionGateDInput(gateDRecord((record) => {
+        record.interrupt.partialFacts = spawnIdentityBlock;
+        record.child.durableSnapshot.job.projection.ownerSessionId = ROOT_THREAD;
+      }));
+      assert.equal(boundKeeper.spawnIdentityJoin.owningRootBound, true);
+      assert.equal(boundKeeper.companionOutcome, 'terminal-result');
+      assert.equal(boundKeeper.terminalWinner, 'succeeded');
+      assert.equal(boundKeeper.durableObligations, 'settled');
+      const boundVerdict = evaluateNativeInterruptionSettlement(boundKeeper);
+      assert.equal(boundVerdict.qualified, true, 'the exact-match keeper keeps its qualification');
+      assert.ok(!boundVerdict.reasons.includes('owning-root-identity-conflict'), JSON.stringify(boundVerdict.reasons));
+      // The one-sided-unknown keeper stays on the existing named
+      // -unestablished path (never conflated with the conflict).
+      const unknownKeeper = nativeInterruptionGateDInput(gateDRecord((record) => {
+        record.interrupt.partialFacts = spawnIdentityBlock;
+      }));
+      assert.equal(unknownKeeper.spawnIdentityJoin.owningRootBound, null, 'the durable-owner side is unresolvable (absent)');
+      const unknownVerdict = evaluateNativeInterruptionSettlement(unknownKeeper);
+      assert.equal(unknownVerdict.qualified, true, 'the one-sided-unknown keeper keeps the existing path');
+      assert.ok(!unknownVerdict.reasons.includes('owning-root-identity-conflict'), JSON.stringify(unknownVerdict.reasons));
+      // The EMPTY-STRING owner id is UNRESOLVABLE too (self-review P3: the
+      // sibling guards require a nonempty id — the spawn ids require
+      // length > 0, the sample anchor is bounded 1–128): it is never a
+      // RESOLVABLE side of a conflict, so it takes the same named
+      // -unestablished path, never the hard conflict refusal.
+      const emptyOwner = nativeInterruptionGateDInput(gateDRecord((record) => {
+        record.interrupt.partialFacts = spawnIdentityBlock;
+        record.child.durableSnapshot.job.projection.ownerSessionId = '';
+      }));
+      assert.equal(emptyOwner.spawnIdentityJoin.owningRootBound, null, 'an empty-string owner id is unresolvable (never a conflict side)');
+      const emptyOwnerVerdict = evaluateNativeInterruptionSettlement(emptyOwner);
+      assert.equal(emptyOwnerVerdict.qualified, true, 'the empty-string owner id keeps the existing unestablished path');
+      assert.ok(!emptyOwnerVerdict.reasons.includes('owning-root-identity-conflict'), JSON.stringify(emptyOwnerVerdict.reasons));
+    });
+
     test('a durable read completing at/after the cleanup boundary earns NO Gate D qualification credit (overall review fix 1)', () => {
       // The RECORDED I shape (report §21.2.3): the passive reader completed in
       // the SAME millisecond the observation cleanup boundary was recorded
@@ -27189,6 +27265,18 @@ describe('cleanup-boundary attribution for exit-code settlements (round-9 review
       }));
       assert.equal(mismatched.spawnIdentityJoin.owningRootBound, false, 'a foreign owner session is never bound');
       assert.equal(mismatched.delivery.exactTargetMatch, true, 'the target gate is independent of the durable owner binding');
+      // POST-REVIEW FIX 2 (2026-10-25, the user-review round-2 finding): the
+      // CONFLICT (both identities exact and resolvable, disagreeing) now
+      // PROPAGATES from the join through the oracle — the qualification is
+      // refused with the named owning-root identity-conflict reason and the
+      // durable-side conjuncts are refused (a flag-only pass is never
+      // enough).
+      const mismatchedVerdict = evaluateNativeInterruptionSettlement(mismatched);
+      assert.equal(mismatchedVerdict.qualified, false, 'the conflicted record can never qualify');
+      assert.ok(mismatchedVerdict.reasons.includes('owning-root-identity-conflict'), JSON.stringify(mismatchedVerdict.reasons));
+      assert.equal(mismatched.durableObligations, null, 'the durable-side chain is refused under the conflict');
+      assert.equal(mismatched.terminalWinner, null);
+      assert.equal(mismatched.companionOutcome, null);
       // (d) A legacy record without the partial-facts block keeps the gate
       // unestablished (never inferred).
       const legacy = nativeInterruptionGateDInput(fix2Record((record) => {
