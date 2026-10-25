@@ -15955,3 +15955,219 @@ entered the repository at any point in this round.
 > rebased bytes (research 940/940, selection 6/6, lint/typecheck clean, 543 files LF,
 > `git diff --check` clean, the prohibited diff vs `dba2e8a` EMPTY); the full close-out record
 > comes in a later commit.
+
+## 23.16 2026-10-25 the PR-final battery on the converged fix bytes (the interrupt-closure close-out 4; offline — zero model turns, zero live launches)
+
+The fix-review loop CONVERGED (the final codex re-review pass over the complete fix commit
+returned ZERO findings — §23.16.1). This section is the PR-final record that promise lands: the
+fresh-eyes verification of the complete fix commit (report-only, one pass), the FULL battery
+re-run ONCE on the FINAL bytes, the final pre-rebase identifier mapping, and the
+implementation-byte equality proof. It supersedes §23.15.2's historical counts (933/933, 75
+suites, pinned at `a07bbce9…`) with the byte-pinned **940/940, 76 suites**. NO code or test
+changes in this close-out; no plan-checkbox changes; zero live launches (the registered §23.12
+ledger stays exhausted 2/2); zero model turns.
+
+### 23.16.1 The fix-round convergence statement
+
+The user review returned 3 P2s (§23.13.1). The fix round was then re-reviewed by codex in
+successive passes, each pass over the complete fix-updated bytes; the loop ran FIVE passes and
+the loop CONVERGED:
+
+- **Rounds 1–4 each returned exactly ONE P2, each fixed test-first (RED→GREEN) by fixup into
+  the join-fix commit**, and each carries its own dated record: (1) the fenced-final placeholder
+  identity P2 — the two-arm fenced-final identity fix + 4 tests (929→933; §23.15.1, the report's
+  "codex round-2" record); (2) the scan-completeness P2 — when an unclassified cell coexists
+  with the recognized call, the admission's exactly-one conjunct and native settlement are
+  refused (`host-activity-call-scan-incomplete` / `ambiguous-cell-scan-incomplete-not-attributed`)
+  + 4 tests (933→937; the re-review round-3 dated annotation); (3) the call-ownership P2 — the
+  guard GENERALIZED to the full fail-closed abort-reason family (`ambiguous-call-linkage` and
+  `rollouts-overflow` joined to `unsupported-call-shape`) + 2 tests (937→939; the round-4 dated
+  annotation); (4) the survival-qualification P2 — the scan/ownership rejection gates the
+  survival delivery bound (the `scanCompletenessUnestablished` option) + 1 test (939→940; the
+  round-5 dated annotation).
+- **Round 5 — the final codex re-review pass over the complete fix commit — returned ZERO
+  findings.** No further fix rounds; nothing above reopened; the frozen text unchanged. The
+  bytes the loop converged on are exactly the bytes this section's battery pins (`164d2621…`).
+
+(The report's own annotation numbering labels the loop's P2 passes "round 2" through "round 5" —
+the fenced-final fix in §23.15.1, then the dated re-review round-3/4/5 annotations at
+§23.15.6+; the FINAL zero-findings pass is recorded HERE for the first time, closing each prior
+annotation's "the full close-out record comes in a later commit" pointer.)
+
+### 23.16.2 The fresh-eyes verification of the complete fix commit (report-only; one pass over the HEAD bytes)
+
+One fresh pass over the guard region (`driver.mjs` ~:5165–5460), the survival-extraction region
+(`evidence.mjs` ~:3160–3530), the sweep annotation and the grammar freeze:
+
+- **(a) The generalized scan-completeness guard (driver.mjs:5191–5196).** The predicate fires
+  exactly when the case is `rescue-interrupt`, the whole-case evidence status is not
+  `supported`, the inconclusive reason is in the covered family — `unsupported-call-shape` (an
+  unclassifiable cell body), `ambiguous-call-linkage` (conflicting call/response ownership),
+  `rollouts-overflow` (a truncated scan) — AND recognized interrupt calls exist
+  (`interruptInteraction.attempted === true`). The contract comment (:5165–5190) surveys the
+  family exhaustively ("these are the ONLY fail-closed scan reasons the observer emits") and
+  `rollouts-unavailable` is deliberately EXCLUDED with its rationale (:5185–5187: no scan ran
+  at all, so there are no observed facts to preserve and nothing to gate — the existing
+  no-rollout paths keep their behavior). The pure unsupported-cell case (no recognized call —
+  the round-3 keeper) and the all-classified cases (status `supported`) are untouched by the
+  predicate.
+- **(b) Every downstream consumer is gated.** Admission refused: `hostDeliveryAdmission` is
+  forced to `admitted: false` with the named reason `host-activity-call-scan-incomplete`
+  appended (:5210–5212) while the per-conjunct OBSERVED facts (the item join, the
+  identity/window/timing facts) ride verbatim (:5202–5206). Settlement refused: the named basis
+  `ambiguous-cell-scan-incomplete-not-attributed` (:5412), so no delivery-to-settlement latency
+  is measured. Survival bound unestablished: the guard state rides into
+  `extractSurvivalControlFacts` (:5286) through the new validated option
+  (`evidence.mjs:3243–3245`, boolean-or-null) whose bound conjunct
+  `options.scanCompletenessUnestablished !== true` (evidence.mjs:3506–3514) leaves
+  `deliveryBoundTag`/`settledDeliveryAtMs` null — the oracle's NAMED
+  `delivery-bound-unestablished` arm then refuses (`release-qualification.mjs:634–646`) with
+  `noCollateralQualified: false`; and `noCollateralQualified` is structurally NEVER true under
+  the guard (its only true path, release-qualification.mjs:731–734, requires
+  `activityAtDelivery`, computed only past the bound arm). The observed control emissions and
+  reads ride verbatim (never erased); the persisted `survivalControlInputs` carry the guard
+  state (`scanCompletenessUnestablished: true`, driver.mjs:5312) so an offline reader sees the
+  bound was withheld because the interaction was REJECTED, not because the control was
+  unobserved.
+- **(c) The sweep table matches.** The code-side compressed sweep at driver.mjs:5344–5367
+  explicitly defers the full table to the report's §23.15 annotation, and every disposition
+  matches the report's 14-row table (:15916–15931) item-for-item — rows 1–5 gated (the §19.4
+  admission, the settled chain, the latency, the survival verdict, the persisted inputs), rows
+  6–11 proven observation-only / refusal-facts / unobtainable, row 12 the durable-side join
+  blocks (not interaction-derived, gated in their own fixes), row 13 the frozen
+  `evaluateNativeInterruptionSettlement` (consumes only the join output; byte-unchanged through
+  all fix rounds), row 14 the status-wait/background case paths (the guard is
+  `input.case === 'rescue-interrupt'`-scoped by construction, driver.mjs:5191). "No ungated
+  positive-granting consumer remains" holds on the read.
+- **(d) The §23.2 frozen grammar is byte-unchanged from Task 2.**
+  `git diff 75e4b0e..HEAD -- tools/shell-wait-probe/evidence.mjs` (identically
+  `git diff 27e1e7b..HEAD …`) contains EXACTLY 4 hunks, ALL inside the survival-extraction
+  region (:3163 the JSDoc option type, :3196 the signature option type, :3243 the new
+  validated-option gate, :3503–3510 the bound-exclusion conjunct; 19 insertions / 2 deletions).
+  The frozen grammar region — the §23.2 freeze comment and `EMISSION_JUNCTION_WRAPPER_PATTERN`
+  (evidence.mjs:56–83) — is byte-unchanged from Task 2's `27e1e7b`: **the survival-site change
+  is the only evidence.mjs delta since Task 2.** Current module digests (informational):
+  `evidence.mjs` `df09f62aaf68d258d5dfc2a35e74dfbec08fe4e3ab5ac616b7941f09d820dee1`;
+  `driver.mjs` `1c5ae1e2365652a80ad2b723734cc038367e3badc338a309053b39397dd73220`.
+- **(e) Historical-claims FLAG (recorded here; no text corrected).** Three records assert
+  `evidence.mjs` unchanged and were TRUE at their own recorded bytes, but are now
+  HISTORICAL-BYTES claims: §23.13.1's self-review finding-2 annotation (~:15176
+  "`evidence.mjs` is unchanged, its digest `33b0f6ae…` still matches"), §23.14.1's finding-2
+  record (~:15399–15401 "…re-verified for this record: `git diff 75e4b0e..HEAD …` is 0 bytes"),
+  and §23.15.1's fresh-eyes item (~:15640–15643 "`evidence.mjs` byte-unchanged vs `75e4b0e` … 0
+  bytes … SHA-256 `33b0f6ae…` on both sides"). At HEAD `164d2621…` the diff vs `75e4b0e` is the
+  4 survival-region hunks above and the digest is `df09f62a…` — the round-4/5 survival-site fix
+  superseded them. Each spot is round-scoped (a dated annotation, "re-verified for this
+  record", "on the HEAD bytes"), so none asserts a currently-false UNPINNED present-tense
+  claim; per the §23.14.2/§23.15.4 discipline they read as historical bytes, the original texts
+  stand verbatim (never re-stamped), and THIS flag is their supersession pointer. The
+  §23.8/§23.10-era `33b0f6ae…` citations (e.g. :13847, :14590) are launch-tree provenance pins
+  over exact recorded trees and never were current-state claims — no flag needed there.
+
+**Fresh-eyes verdict:** the complete fix commit MATCHES its registered description on every
+element checked — the covered family and its exclusion, every gated downstream consumer
+(admission, settlement, survival bound, persisted inputs), the retained observed facts, the
+sweep correspondence, and the frozen-grammar integrity.
+
+### 23.16.3 The PR-final battery re-run (the plan Task-5 command list verbatim; every result verbatim; exit captured from `$?`)
+
+Worktree pins at battery time: `git rev-parse HEAD` →
+`164d262101bfdebf095a976c7f4dda72b2f80712`; the tracked tree was CLEAN (this battery ran BEFORE
+the close-out-4 docs were written; only the three untracked scratch files existed outside the
+tracked tree).
+
+| # | Gate command (plan Task-5 list) | Source | Verbatim result |
+| --- | --- | --- | --- |
+| 1 | `npm run test:shell-research` | worktree at `164d2621` | **ℹ tests 940 / ℹ suites 76 / ℹ pass 940 / ℹ fail 0 / ℹ cancelled 0 / ℹ skipped 0 / ℹ todo 0** (duration_ms 56662.2205), exit **0**, zero `✖` lines — §23.15.2's 933 + the round-3 scan-completeness guards' 4 tests + the round-4 call-ownership family's 2 tests + the round-5 survival-bound test = 940 |
+| 2 | `node --test tests/test-selection.test.mjs` | worktree at `164d2621` | **tests 6 / suites 0 / pass 6 / fail 0 / cancelled 0 / skipped 0 / todo 0** (duration_ms 37.202667), exit **0** |
+| 3 | `node --test tests/rescue-preparation.test.mjs tests/rescue-binding.test.mjs tests/rescue-route-planner.test.mjs` | worktree at `164d2621` | **tests 417 / suites 0 / pass 417 / fail 0 / cancelled 0 / skipped 0 / todo 0** (duration_ms 26138.3515), exit **0** |
+| 4 | `node --test tests/rescue-lifecycle.test.mjs tests/rescue-child-reconciliation.test.mjs tests/rescue-progress-relay.test.mjs` | worktree at `164d2621` | **tests 126 / suites 0 / pass 126 / fail 0 / cancelled 0 / skipped 0 / todo 0** (duration_ms 38805.519625), exit **0** |
+| 5 | `node --test tests/job-control.test.mjs tests/mcp-result.test.mjs` | worktree at `164d2621` | **tests 213 / suites 0 / pass 213 / fail 0 / cancelled 0 / skipped 0 / todo 0** (duration_ms 50944.477875), exit **0** |
+| 6 | `npm run lint` | worktree at `164d2621` | eslint clean, no findings (banner-only output), exit **0** |
+| 7 | `npm run typecheck` | worktree at `164d2621` | `tsc --noEmit` clean, no findings (banner-only output), exit **0** |
+| 8 | `node scripts/check-line-endings.mjs` | worktree at `164d2621` | *"LF line endings verified in 543 tracked files."*, exit **0** |
+| 9 | `git diff --check` | worktree at `164d2621` | no output (0 bytes), exit **0** |
+| 10 | prohibited diff `git diff dba2e8ad8534b5800fd1faff98ad904f492dcf1d --stat -- scripts/ hooks/ skills/ agents/ .codex-plugin/ marketplace/ docs/superpowers/specs/ package.json npm-shrinkwrap.json` | worktree at `164d2621` | **EMPTY** (0 bytes), exit **0** — the plan's "Prohibited diff expected EMPTY" holds on the PR-final bytes |
+| 11 | `npm test` | verification copy `/tmp/swverify.1auB4w` of the worktree HEAD `164d262101bfdeb…` (construction below) | **routine suite: ℹ tests 3397 / pass 3394 / fail 0 / cancelled 0 / skipped 3 / todo 0** (duration_ms 667887.551583); **marketplace suite: ℹ tests 2 / pass 2 / fail 0 / cancelled 0 / skipped 0 / todo 0** (duration_ms 18955.275167); combined **3399 tests / 3396 pass / 0 fail / 3 skipped / 0 cancelled**, exit **0** (captured verbatim from `$?`), **zero `✖` lines in the entire 3546-line log**. The 3 skips are the SAME three standing documented opt-in gates as §18.3/§22.2/§23.11.2/§23.13.2/§23.14.3/§23.15.2 (`﹣` SKIP lines recorded verbatim in the log): `codex-skills-unqualified` ×2 — *"installed marketplace skill crosses a real ephemeral Codex turn into ZCode"* (`Set ZCODE_CODEX_SKILLS_E2E=1…`) and *"installed Rescue uses one isolated native child for initial and choice continuations"* (`Set ZCODE_CODEX_RESCUE_E2E=1…`); `real-zcode-unqualified` — *"real ZCode discovery, two-turn session, read-only Companion, cancellation, model, and history import"* (`Set ZCODE_REAL_E2E=1…`) — the standing design, not new omissions |
+
+**Gate-11 copy construction (the §22.2 recipe, followed exactly):** `mktemp -d
+/tmp/swverify.XXXXXX` → `/tmp/swverify.1auB4w`; `git clone --no-local --no-hardlinks` of the
+worktree at `164d2621` (clone `rev-parse HEAD` = `164d262101bfdeb…`, `status --short` empty —
+the three untracked scratch files structurally excluded; `.git` present); a normal copied
+`node_modules` directory (`cp -R`, verified a real directory, not a symlink); the copy path
+carries no guarded identity word. **Byte-proof by the recorded manifest recipe (SHA-256
+manifests of ALL 543 tracked files, both sides; construction verbatim: `git ls-files -z | xargs
+-0 shasum -a 256 | awk '{print $1, $2}' | sort | shasum -a 256`):** the COPY-side and
+WORKTREE-side sorted-manifest digests are **IDENTICAL —
+`34f949240854560b40e1543eb30c84cde508907788a297a057fe80c37a1390dd`** — 543/543 tracked files
+byte-equal, with **NO in-flight-docs difference** (the same stronger form as
+§23.14.3/§23.15.2: this battery ran on a clean tracked tree before the close-out-4 docs
+existed). One attempt, one run, zero failures, no retries — no waiver needed.
+
+**The §22.2 named baseline limitation — did NOT strike on this clone:** the two historically
+lottery-coupled fixtures ran INSIDE the gate-11 routine run and PASSED on this clone path (zero
+`✖` lines; the `fixture must place target at canonical index 0` precondition never fired). For
+the record and matching the §23.13.2/§23.11.2/§23.14.3/§23.15.2 shape, the SAME bytes were also
+run in the worktree cwd: qualification (`tests/codex-rescue-qualification.test.mjs`)
+**162/162, exit 0** (duration_ms 5903.68175); e2e **46 tests / 44 pass / 2 skipped / 0 fail**
+(`tests/e2e/codex-skills-e2e.test.mjs`), exit **0**, and **16 tests / 15 pass / 1 skipped / 0
+fail** (`tests/e2e/real-zcode.test.mjs`), exit **0**. The §22.2 classification stands UNCHANGED
+as history; nothing here waives the limitation — this row is a first-attempt green whose clone
+path met the precondition. The copy, its manifests and the gate logs are disposable `/tmp`
+state (the logs under `/tmp/interrupt-closure-closeout4-gates/`); the copy was deleted after
+the run; nothing from it entered the repository.
+
+### 23.16.4 The FINAL PRE-REBASE IDENTIFIER mapping update (the §23.15 mapping superseded by the third fixup rebase; the earlier citations read as historical identifiers)
+
+The rounds-3/4/5 fixup + autosquash rebase mapped the round's commits a THIRD time
+(message-identical pairs, verified for this record via `git log` on both sides; the pre-rebase
+objects remain resolvable in the repository and were verified):
+
+| Previous final identifier (cited in §23.15 and its annotations) | Current identifier (the branch's history) | Content |
+| --- | --- | --- |
+| `d224efed8d83fb3d7e90a44269e8e31a59ae11e1` | `c9e4bfa00f638b1a4a12e71519f546452b52e62f` | the post-review join-fix commit — the FINAL rebased form carries ALL FIVE fix rounds (the identity wiring + the pre-boundary sample join + the integrity gate + the fenced-final arm + the generalized scan-completeness guard + the survival-bound gate; research 933→940), so the CURRENT form carries implementation bytes the previous form did not |
+| `a89d3d11af759d9bfa6670d8691c69ec3693b498` | `1770a9b7dffaca816b34f66116659e5d2fbff903` | the F-successor docs commit (record the fresh Gate-D capture) |
+| `02657bb8719bfbda7d2a01e62f3b3b8ef436352d` | `16d211239e0f8df3e6315f786071694da3b0b514` | the fix-round close-out docs commit (close-out 1) |
+| `3fb499bf6173b2f8636d00f90e0d847095a8d92f` | `d22e700c9e07603c61e57bd60ce7fad64508f769` | the close-out-2 docs commit (§23.14) |
+| `9663c2ffafc8bcefc32266006ed620154466afae` | `164d262101bfdebf095a976c7f4dda72b2f80712` | the close-out-3 docs commit (§23.15) — the PR-final HEAD this battery pins |
+
+The two INTERMEDIATE fix-commit identifiers the round-3/round-4 annotations cite as their fixup
+targets — `e448c923…` (round 3) and `9b5ebca0…` (round 4) — are message-identical earlier
+rebased forms of the SAME logical join-fix commit and also read as historical identifiers of
+`c9e4bfa0…`. The rebase changed implementation bytes as well as identifiers (the generalized
+scan-completeness guard and the survival-bound gate, 7 new tests — 933→940), so the §23.15.2
+battery (run at the twice-rebased bytes) is superseded (§23.16.5). Every earlier citation of
+`e448c923`/`9b5ebca0`/`d224efed`/`a89d3d11`/`02657bb8`/`3fb499bf`/`9663c2ff` reads as a
+HISTORICAL identifier for the same logical commit (message-identical pairs as verified above);
+no recorded claim is invalidated by the mapping alone — only the battery-bytes claims needed
+the §23.16.3 re-run (plus the §23.16.2(e) historical-bytes flag).
+
+### 23.16.5 The supersession line and the implementation-byte equality proof
+
+**§23.15.2's battery is SUPERSEDED-BY-NEW-BYTES** (recorded as this section; §23.15.2's
+original text stands verbatim, never re-stamped — the
+§22.2/§23.11.2/§23.13.2/§23.14.3/§23.15.5 discipline): its 11-gate table verified the
+twice-rebased bytes pinned at `a07bbce9…` (933/933, 75 suites); the rounds-3/4/5 fixup +
+autosquash rebase then changed the implementation bytes again (the scan-completeness guards,
+the survival-bound gate, and their tests — 933→940), so those counts are HISTORICAL for THEIR
+bytes and are no longer the branch's final-bytes record. §23.16.3's table above is the CURRENT
+PR-final record, pinned to HEAD `164d262101bfdebf095a976c7f4dda72b2f80712` — whose
+`tools/`/`tests/` bytes are the thrice-rebased fix commit `c9e4bfa0…`'s, proven by the equality
+check below.
+
+**Implementation-byte equality (verified at the closing commit):** the closing commit changes
+ONLY this report, so `git diff 164d2621..HEAD --stat -- tools/ tests/` is EMPTY at the commit —
+the bytes gates 1–11 verified ARE the branch's final implementation bytes (verified 0 bytes
+pre-commit; re-verified at the commit per the closing checklist below).
+
+### 23.16.6 Raw-data note for the close-out 4
+
+The round consumed no live case and produced no new raw observation data (the battery is an
+offline verification gate; the F record of §23.12 remains the last live-data artifact; the
+registered ledger stays exhausted 2/2). Its artifacts are this section — including the
+fresh-eyes verification and the historical-claims flag of §23.16.2 — and disposable `/tmp`
+state (the gate logs under `/tmp/interrupt-closure-closeout4-gates/`; the verification copy —
+deleted after its run). No private rollout, preparation, auth, job body, credential or
+user-configuration data entered the repository at any point in this round. Zero model turns
+were spent; the ZERO-findings re-review verdict is the reviewer's recorded result, not a
+re-run.
