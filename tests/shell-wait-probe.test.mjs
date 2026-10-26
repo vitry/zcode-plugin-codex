@@ -10829,6 +10829,148 @@ process.exit(result.status ?? 1);
       assert.ok(!emptyOwnerVerdict.reasons.includes('owning-root-identity-conflict'), JSON.stringify(emptyOwnerVerdict.reasons));
     });
 
+    test('the SUPPORTED-CASE linkage enters the same durable-owner conflict gate (post-review fix 3)', () => {
+      // The user-review round-3 finding (2026-10-26, offline evidence
+      // adjudication; independently reproduced by the user and a reviewer):
+      // driver.mjs derived the durable owning-Root binding ONLY from the
+      // §23.4 partial-facts recovery (`interrupt.partialFacts.spawnIdentity`)
+      // — the identity the successful (supported-case) whole-case analysis
+      // establishes rides `record.linkage` instead, so on every
+      // normally-analyzed record the conflict check was BYPASSED: the
+      // reproduced shape (linkage Root = A, durable job owner = B) carried
+      // `spawnIdentityJoin: null` beside `oracle.qualified: true`. The
+      // verified supported linkage is THE SAME identity evidence as the
+      // recovered spawn acknowledgement (both are exact Root/Child joins over
+      // the same run), so it enters the SAME conflict gate: both sides exact
+      // and resolvable and disagreeing → the same hard refusal
+      // (`owning-root-identity-conflict`), the same durable-side gating, and
+      // the same named-unestablished path when either side is unresolvable.
+      // The helper's default record IS the shape: the supported-case linkage
+      // (both ids) and NO partialFacts block.
+      const conflict = nativeInterruptionGateDInput(gateDRecord((record) => {
+        // The durable job belongs to Root B — the linkage's Root is
+        // ROOT_THREAD (the helper default). Both identities are exact,
+        // resolvable, and they DISAGREE.
+        record.child.durableSnapshot.job.projection.ownerSessionId = 'root-b-different-owner-session';
+      }));
+      assert.equal(conflict.spawnIdentityJoin.exact, true, 'the supported-case linkage is an exact registered identity source');
+      assert.equal(conflict.spawnIdentityJoin.owningRootBound, false, 'the CONFLICT shape: the linkage Root and the durable owner both known and disagreeing');
+      const conflictVerdict = evaluateNativeInterruptionSettlement(conflict);
+      assert.equal(conflictVerdict.qualified, false, 'linkage-vs-owner conflict is contradictory identity evidence and can never qualify');
+      assert.ok(conflictVerdict.reasons.includes('owning-root-identity-conflict'), JSON.stringify(conflictVerdict.reasons), 'the refusal names the identity conflict');
+      // The conflicting conjuncts are named: the durable-side evidence chain
+      // refuses under the conflict (no sibling grants a positive).
+      assert.ok(conflictVerdict.reasons.includes('companion-outcome-unobserved'), JSON.stringify(conflictVerdict.reasons));
+      assert.ok(conflictVerdict.reasons.includes('terminal-winner-unobserved'), JSON.stringify(conflictVerdict.reasons));
+      assert.ok(conflictVerdict.reasons.includes('durable-obligations-unobserved'), JSON.stringify(conflictVerdict.reasons));
+      assert.equal(conflict.companionOutcome, null, 'the Companion outcome never joins from a foreign-owner job');
+      assert.equal(conflict.terminalWinner, null, 'the terminal winner is not consumed from a foreign-owner job');
+      assert.equal(conflict.durableObligations, null, 'the obligations aggregate is not consumed from a foreign-owner job');
+      // The one-sided-unknown keepers are UNCHANGED by the union: an
+      // unresolvable durable-owner side (absent or empty) stays the
+      // named-unestablished path even with the exact supported linkage
+      // present — no new hard-refuse of unknowns.
+      const unknownKeeper = nativeInterruptionGateDInput(gateDRecord());
+      assert.equal(unknownKeeper.spawnIdentityJoin.exact, true, 'the supported-case linkage is exact');
+      assert.equal(unknownKeeper.spawnIdentityJoin.owningRootBound, null, 'the durable-owner side is unresolvable (absent)');
+      const unknownVerdict = evaluateNativeInterruptionSettlement(unknownKeeper);
+      assert.equal(unknownVerdict.qualified, true, 'the one-sided-unknown keeper keeps the existing path');
+      assert.ok(!unknownVerdict.reasons.includes('owning-root-identity-conflict'), JSON.stringify(unknownVerdict.reasons));
+    });
+
+    test('an identity-CONSISTENT supported linkage keeps the conflict-free qualification path unchanged (post-review fix 3 keeper)', () => {
+      // The consistency pin: the linkage Root EQUALS the durable owner →
+      // the union gate computes the bound keeper and the qualification path
+      // is byte-identical to the round-2 conflict-free keepers (the same
+      // positives publish, the verdict qualifies with no identity refusal).
+      const boundKeeper = nativeInterruptionGateDInput(gateDRecord((record) => {
+        record.child.durableSnapshot.job.projection.ownerSessionId = ROOT_THREAD;
+      }));
+      assert.equal(boundKeeper.spawnIdentityJoin.exact, true, 'the supported-case linkage is exact');
+      assert.equal(boundKeeper.spawnIdentityJoin.owningRootBound, true, 'the durable owner session is the linkage Root');
+      assert.equal(boundKeeper.companionOutcome, 'terminal-result');
+      assert.equal(boundKeeper.terminalWinner, 'succeeded');
+      assert.equal(boundKeeper.durableObligations, 'settled');
+      const boundVerdict = evaluateNativeInterruptionSettlement(boundKeeper);
+      assert.equal(boundVerdict.qualified, true, 'the identity-consistent keeper keeps its qualification');
+      assert.ok(!boundVerdict.reasons.includes('owning-root-identity-conflict'), JSON.stringify(boundVerdict.reasons));
+      assert.deepEqual(boundVerdict.reasons, [], 'a fully-established identity-consistent record carries no refusals');
+    });
+
+    test('BOTH exact Root sources are each checked and must agree with each other (post-review fix 3)', () => {
+      // The both-sources shape: the §23.4 spawn-recovery block AND the
+      // supported-case linkage both ride the record (only reachable for
+      // non-mapper records — the mapper never co-persists the two sources:
+      // the abort path persists the block beside an all-null linkage, the
+      // supported path persists the linkage with no block, and the mapper's
+      // own resolveInterruptIdentity guard nulls a disagreeing pair for the
+      // ADMISSION binding only). The union gate checks EACH source against
+      // the durable owner and checks the two sources against EACH OTHER:
+      // (a) both agree with each other and with the owner → the bound
+      // keeper; (b) both agree with each other, the owner disagrees → the
+      // conflict from either source refuses; (c) the two Root sources
+      // THEMSELVES disagree → contradictory identity evidence, the conflict
+      // refuses even when the owner matches one of them (a durable owner can
+      // match at most one of two disagreeing Roots — the provenance is
+      // undecidable); unresolvable sides never become conflict sides.
+      const spawnIdentityBlock = {
+        adjudicator: 'interrupt-partial-facts', version: 1, basis: 'raw-rollout-fixture-proof',
+        sourceRolloutsSha256: 'a'.repeat(64),
+        capture: { rolloutsCaptured: true, rolloutCount: 2, rolloutsFailureReason: null },
+        adjudication: 'supported',
+        spawnIdentity: { checked: true, exact: true, reason: null, childThreadId: CHILD_THREAD, parentThreadId: ROOT_THREAD },
+      };
+      const bothAgreeKeeper = nativeInterruptionGateDInput(gateDRecord((record) => {
+        record.interrupt.partialFacts = spawnIdentityBlock;
+        record.child.durableSnapshot.job.projection.ownerSessionId = ROOT_THREAD;
+      }));
+      assert.equal(bothAgreeKeeper.spawnIdentityJoin.exact, true);
+      assert.equal(bothAgreeKeeper.spawnIdentityJoin.owningRootBound, true, 'both sources agree with each other and with the owner');
+      const bothAgreeVerdict = evaluateNativeInterruptionSettlement(bothAgreeKeeper);
+      assert.equal(bothAgreeVerdict.qualified, true, 'the both-sources-agree keeper keeps its qualification');
+      assert.ok(!bothAgreeVerdict.reasons.includes('owning-root-identity-conflict'), JSON.stringify(bothAgreeVerdict.reasons));
+      // (b) The sources agree with each other; the durable owner disagrees
+      // with BOTH → the same hard refusal (either source's conflict refuses).
+      const ownerConflict = nativeInterruptionGateDInput(gateDRecord((record) => {
+        record.interrupt.partialFacts = spawnIdentityBlock;
+        record.child.durableSnapshot.job.projection.ownerSessionId = 'root-b-different-owner-session';
+      }));
+      assert.equal(ownerConflict.spawnIdentityJoin.owningRootBound, false);
+      const ownerConflictVerdict = evaluateNativeInterruptionSettlement(ownerConflict);
+      assert.equal(ownerConflictVerdict.qualified, false);
+      assert.ok(ownerConflictVerdict.reasons.includes('owning-root-identity-conflict'), JSON.stringify(ownerConflictVerdict.reasons));
+      // (c) The two Root sources THEMSELVES disagree (spawn recovery says
+      // ROOT_THREAD, the linkage says a foreign root) — the conflict fires
+      // even when the durable owner MATCHES one of them.
+      const crossSourceConflict = nativeInterruptionGateDInput(gateDRecord((record) => {
+        record.interrupt.partialFacts = spawnIdentityBlock;
+        record.linkage.parentThreadId = 'root-c-contradicting-linkage-root';
+        record.child.durableSnapshot.job.projection.ownerSessionId = ROOT_THREAD;
+      }));
+      assert.equal(crossSourceConflict.spawnIdentityJoin.owningRootBound, false, 'disagreeing Root sources are contradictory identity evidence');
+      const crossSourceVerdict = evaluateNativeInterruptionSettlement(crossSourceConflict);
+      assert.equal(crossSourceVerdict.qualified, false, 'the cross-source conflict refuses');
+      assert.ok(crossSourceVerdict.reasons.includes('owning-root-identity-conflict'), JSON.stringify(crossSourceVerdict.reasons));
+      // (d) The cross-source conflict fires regardless of the durable side's
+      // resolvability (the owner being unknown never resolves WHICH Root the
+      // record is about); unresolvable SIDES (an inexact block, a null
+      // linkage id) still never become conflict sides.
+      const crossSourceUnknownOwner = nativeInterruptionGateDInput(gateDRecord((record) => {
+        record.interrupt.partialFacts = spawnIdentityBlock;
+        record.linkage.parentThreadId = 'root-c-contradicting-linkage-root';
+      }));
+      assert.equal(crossSourceUnknownOwner.spawnIdentityJoin.owningRootBound, false);
+      const inexactBlock = nativeInterruptionGateDInput(gateDRecord((record) => {
+        record.interrupt.partialFacts = { ...spawnIdentityBlock, spawnIdentity: { checked: true, exact: false, reason: 'inexact-recovery', childThreadId: null, parentThreadId: null } };
+        record.child.durableSnapshot.job.projection.ownerSessionId = ROOT_THREAD;
+      }));
+      assert.equal(inexactBlock.spawnIdentityJoin.exact, true, 'the supported-case linkage stays exact beside the inexact block');
+      assert.equal(inexactBlock.spawnIdentityJoin.owningRootBound, true, 'the unresolvable recovery side is never a conflict side; the exact linkage binds');
+      const inexactVerdict = evaluateNativeInterruptionSettlement(inexactBlock);
+      assert.equal(inexactVerdict.qualified, true, 'an inexact recovery beside an exact consistent linkage keeps the qualification');
+      assert.ok(!inexactVerdict.reasons.includes('owning-root-identity-conflict'), JSON.stringify(inexactVerdict.reasons));
+    });
+
     test('a durable read completing at/after the cleanup boundary earns NO Gate D qualification credit (overall review fix 1)', () => {
       // The RECORDED I shape (report §21.2.3): the passive reader completed in
       // the SAME millisecond the observation cleanup boundary was recorded

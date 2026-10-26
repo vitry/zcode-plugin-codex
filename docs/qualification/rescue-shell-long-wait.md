@@ -16403,3 +16403,166 @@ re-run.
 > raw logs are disposable `/tmp` state under `/tmp/interrupt-closure-closeout5-gates/`; no
 > private rollout, preparation, auth, job body, credential or user-configuration data entered the
 > repository at any point in this round.
+>
+> **Dated annotation (2026-10-26, the user-review round-3 finding — ONE P2 in the durable-owner
+> identity gate, fixed by a NEW commit on the pushed branch; nothing above in §23.10–§23.16
+> reopened or rewritten — the frozen texts and the round-2 annotations above stand verbatim, this
+> annotation is their round-3 pointer; offline evidence adjudication — zero model turns, zero
+> live launches, the registered §23.12 ledger stays EXHAUSTED 2/2, so every verification below is
+> an offline replay/synthesis over retained or synthetic records, never a fresh installed trial):**
+>
+> **The finding (the user's round-3 P2, independently reproduced by the user and a reviewer).**
+> The join computed the durable owning-Root binding (`spawnIdentityJoin.owningRootBound`,
+> driver.mjs :2853 pre-fix) from the §23.4 partial-facts recovery ONLY
+> (`interrupt.partialFacts.spawnIdentity`). When the normal (supported-case) whole-case analysis
+> SUCCEEDS, the record's identity rides `record.linkage` instead and the partial-facts block is
+> never persisted (the mapper co-persists the two sources NEVER — the abort path persists the
+> block beside an all-null linkage; the supported path persists the linkage with no block), so on
+> every normally-analyzed record the round-2 conflict check was BYPASSED entirely: the reproduced
+> shape (linkage Root = A, durable owner = B) carried `spawnIdentityJoin: null` beside
+> `oracle.qualified: true`.
+>
+> **The fix (offline, regression-first; ONE new commit on `d66855e` — no amend/rebase/force of
+> the pushed branch).** The verified supported-case linkage enters the SAME conflict gate:
+> `linkageIdentityExact` (driver.mjs:2846-2849 — both linkage ids present and non-empty, the
+> exactness predicate the code already used for `persistedSpawnIdentityBound`) joins the exact
+> Root-source union (`spawnRecoveryRootThreadId`/`linkageRootThreadId`, :2872-2873), and
+> `owningRootBound` (:2888-2892) is computed over the UNION: any resolvable Root source that
+> disagrees with a resolvable durable owner → false (the conflict); the two Root sources
+> themselves disagreeing → false (cross-source conflict, :2886-2887); every comparison with an
+> unresolvable side → null (the named-unestablished path — no new hard-refuse of unknowns; the
+> empty-string owner id stays unresolvable per the round-2 P3-1 guard). The conflict state
+> `durableOwnerIdentityConflict` (:2922, unchanged expression) keeps gating EVERY durable-side
+> credit consumer — `durableEstablished` (:3136 region), the settlement fallback (the named basis
+> `durable-owner-identity-conflict`, :3110 region) and the `durableObligations` snapshot branch
+> (:3265 region) — and the oracle's ONE named refusal `owning-root-identity-conflict`
+> (release-qualification.mjs:937, the module BYTE-UNCHANGED this round) dominates every
+> qualification route under the new conflict sources exactly as it did under the round-2 source.
+> `persistedSpawnIdentityBound` (:2933) now cites the shared predicate (value unchanged), and the
+> sample-identity fenced-final arm that consumes it is untouched.
+>
+> **The source-agreement semantics — decided and registered here.** The exact Root sources are
+> checked EACH against the durable owner AND against EACH OTHER: (a) both sources agree with
+> each other and with the owner → the bound keeper; (b) both agree with each other, the owner
+> disagrees → the conflict (either source's disagreement refuses, source-symmetrically);
+> (c) the two Root sources THEMSELVES disagree → contradictory identity evidence → the conflict,
+> even when the durable owner matches one of them (a durable owner can match at most one of two
+> disagreeing Roots — the durable chain's provenance is undecidable) and regardless of the
+> durable side's resolvability (an unknown owner never resolves WHICH Root the record is about);
+> (d) any unresolvable side (a missing/inexact block, an all-null linkage, an absent/empty owner)
+> → null, the named-unestablished path. Mapper-reachability survey (pinned in the test): a
+> mapper-produced record NEVER carries both sources (the co-persistence shapes above), and the
+> mapper's own `resolveInterruptIdentity` guard nulls a disagreeing supported/independent pair
+> for the ADMISSION binding only — the record-level cross-check in the join is the authoritative
+> one for any record that does carry both, and it fails closed. **Provenance decision:** the
+> conflict's SOURCE distinction (spawn-recovery vs supported-linkage vs cross-source) is
+> registered HERE and in the join's comments — deliberately NOT as a second oracle reason and
+> NOT as a new `spawnIdentityJoin` output key: the oracle reason stays ONE
+> (`owning-root-identity-conflict`, the source adds no adjudicative information — every conflict
+> source refuses identically), and both retained F/I records replay a NON-NULL
+> `spawnIdentityJoin` block, so any added key would have broken the mandatory replay
+> byte-identity below. The oracle input contract is unchanged (same `spawnIdentityJoin` shape;
+> the conflict is derived INSIDE the join and published through the existing
+> `owningRootBound === false`).
+>
+> **No join-version bump and no oracle bump, and why (the round-2 rationale, unchanged).** The
+> fix completes join v2's own registered semantics — the durable owning-Root binding was
+> registered as "proven at record level by EXACT observed identity"; it now provably consumes
+> BOTH registered identity sources — and it completes the round-2 conflict refusal's coverage; it
+> grows no input contract and invents no vocabulary, so `NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION`
+> stays 2 and `NATIVE_INTERRUPTION_ORACLE_VERSION` stays 3 (the oracle module's bytes are
+> untouched this round). Bumping either constant would change every replayed output for no
+> adjudication-contract change.
+>
+> **RED→GREEN evidence (verbatim, the COMMITTED test bytes — re-quoted at the round's
+> self-review after the originally-recorded quote was found to come from an earlier draft of the
+> test; the reproduction below ran the EXACT committed `tests/shell-wait-probe.test.mjs` (SHA-256
+> `d6515c75dae60d3c1888582972ccb7a3c641cd17a37e955e9c9dc9560e12376e`, verified identical to
+> `git show 22db48d:tests/…`) against the PARENT implementation bytes `d66855e` in a throwaway
+> worktree, by name `--test-name-pattern="post-review fix 3"`: tests 3 / pass 0 / fail 3,
+> exit 1).** The finding's negative end-to-end test (the helper's default record IS the user's
+> exact shape: supported-case linkage both ids, no partialFacts block, durable owner set to a
+> foreign Root) fails at its FIRST assertion with the pre-fix bypass visible directly:
+>
+> `TypeError: Cannot read properties of null (reading 'exact')` at
+> `tests/shell-wait-probe.test.mjs:10856` — `conflict.spawnIdentityJoin.exact === true` cannot
+> even be evaluated because the pre-fix join publishes `spawnIdentityJoin: null` for a
+> linkage-only record — the conflict check never saw the supported linkage (the bypass
+> mechanism, pinned MORE directly than a value mismatch). The consistency-keeper test fails the
+> same way at its first assertion (the TypeError at :10889 — the pre-fix keeper's bound state is
+> likewise invisible for a linkage-only record). The both-sources test rides the one record
+> family that DOES publish a pre-fix join block (the partial-facts records): it passes the
+> agree-keeper and the owner-conflict pins (the round-2 refusal already on the parent bytes),
+> then fails exactly at the cross-source pin —
+> `AssertionError [ERR_ASSERTION]: disagreeing Root sources are contradictory identity
+> evidence` → `true !== false` (at :10950 — the two Root sources disagreeing did not conflict
+> pre-fix; the durable owner matched the spawn-recovery Root and the record qualified that
+> chain). GREEN (post-fix, by name: **tests 3 / pass 3 / fail 0**, exit 0): the conflict record
+> publishes
+> `spawnIdentityJoin { exact: true, owningRootBound: false, executorVerified: true }`,
+> `qualified: false` with `owning-root-identity-conflict` + `companion-outcome-unobserved` +
+> `terminal-winner-unobserved` + `durable-obligations-unobserved`, and
+> `companionOutcome`/`terminalWinner`/`durableObligations` all null; the consistency keeper
+> (linkage Root = owner) qualifies with `owningRootBound: true` and `reasons: []` byte-identical
+> to the round-2 conflict-free keepers; the both-sources group pins the agree-keeper, the
+> either-source owner conflict, the cross-source conflict (owner matching one source still
+> refuses; unknown owner included), and the inexact-recovery-side named-unestablished keeper.
+> Suite **944/944** (76 suites — 941 + 3 new).
+>
+> **F/I record replay (mandatory) — VERIFIED this round, prefix/postfix byte-diffed.** The F
+> record `634289fd64a87f73962f59e12216466b86f812dd0e703f4e99c2df21469ed5b7` (digest re-verified
+> against this annotation before the replay) and the retained I record
+> `13aae0ca41ba9ab25db1aeab33f97494e4563d1f685e6d75291233d064142549` replay under the fixed
+> join/oracle with the ENTIRE join+oracle output **BYTE-IDENTICAL** to the pre-fix run (the
+> pre-fix replay captured BEFORE the edit, the post-fix replay after; `diff` of the full
+> `{input, verdict}` serialization: zero bytes on both records — `gateDJoinVersion: 2`,
+> `spawnIdentityJoin {exact: true, owningRootBound: true, executorVerified: true}`, F 8 reasons /
+> I 11 reasons, both `qualified: false`, all preserved). The mechanism is by-construction: both
+> records are abort-path records (linkage all-null, identity from the partial-facts recovery,
+> adjudication `unsupported-call-shape`), so the union adds no resolvable source and the
+> conflict-gate inputs are unchanged. ANY delta was pre-committed as a STOP — none occurred.
+>
+> **The consumer sweep (one pass; no ungated consumer).** `record.linkage`'s join consumers are
+> exactly: the pre-existing `exactTargetEstablished` (Child id only, unchanged), the
+> `persistedSpawnIdentityBound` anchor (value unchanged, shared predicate now), and the NEW
+> union gate. `owningRootBound`'s only adjudicative consumer is the oracle's line-937 refusal;
+> the conflict state's consumers are the round-2 three (durableEstablished, the fallback basis,
+> the obligations snapshot branch), and the Companion/winner branches consume
+> `durableEstablished` — so every positive-granting path is gated under the new sources. The
+> sample-identity fenced-final arm consumes `persistedSpawnIdentityBound` (semantics unchanged).
+> `release-qualification.mjs`: `git diff` **EMPTY** this round. No other consumer of
+> `spawnIdentityJoin` exists outside the oracle and the tests (repo-wide grep).
+>
+> **Recorded non-blocking observation (prose only — NO behavior change this round; the
+> round's scope discipline holds).** The pre-existing `exactTargetEstablished` conjunct
+> (driver.mjs:2833-2834) accepts `typeof linkage.childThreadId === 'string'` WITHOUT a
+> `length > 0` guard, while the round-3 `linkageIdentityExact` demands both ids non-empty — a
+> pre-existing asymmetry between the two predicates (an empty-string linkage Child id would
+> satisfy `exactTargetEstablished`'s typeof arm but never the union gate's exactness), UNCHANGED
+> by this fix and out of its scope; recorded for a future hardening decision, never silently
+> tightened in a docs round.
+>
+> **The battery on the fix bytes** (the task's gate list; every result verbatim; exit captured,
+> no pipe truncation). Worktree pins at battery time: `git rev-parse HEAD` →
+> `d66855eb7962a8153ae67cb87d72293f0e3072e4` (the fix is UNCOMMITTED work on top; the tracked
+> tree carried exactly the two implementation files — the battery ran BEFORE the close-out docs
+> were written; the three untracked scratch files structurally outside).
+>
+> | # | Gate command | Verbatim result |
+> | --- | --- | --- |
+> | 1 | `npm run test:shell-research` | **ℹ tests 944 / ℹ suites 76 / ℹ pass 944 / ℹ fail 0 / ℹ cancelled 0 / ℹ skipped 0 / ℹ todo 0** (duration_ms 49667.623083), exit **0**, zero `✖` lines — the clean-bytes baseline re-verified at **941/941** immediately before the fix (stash-verified), + the 3 round-3 tests = 944 |
+> | 2 | `node --test tests/test-selection.test.mjs` | **tests 6 / suites 0 / pass 6 / fail 0 / cancelled 0 / skipped 0 / todo 0** (duration_ms 37.483334), exit **0** |
+> | 3 | the round-3 tests by name (`--test-name-pattern="post-review fix 3"`) | **tests 3 / pass 3 / fail 0** (duration_ms 334.177125), exit **0** |
+> | 4 | `npm run lint` | eslint clean, no findings, exit **0** |
+> | 5 | `npm run typecheck` | `tsc --noEmit` clean, no findings, exit **0** |
+> | 6 | `node scripts/check-line-endings.mjs` | *"LF line endings verified in 543 tracked files."*, exit **0** |
+> | 7 | `git diff --check` | no output (0 bytes), exit **0** |
+> | 8 | prohibited diff `git diff dba2e8ad8534b5800fd1faff98ad904f492dcf1d --stat -- scripts/ hooks/ skills/ agents/ .codex-plugin/ marketplace/ docs/superpowers/specs/ package.json npm-shrinkwrap.json` | **EMPTY** (0 bytes), exit **0** |
+>
+> **Round provenance.** This round consumed no live case and produced no new raw observation
+> data (offline evidence adjudication over the RETAINED F/I records and synthetic records; the
+> F record of §23.12 remains the last live-data artifact; the registered ledger stays exhausted
+> 2/2). Zero model turns were spent. The battery's raw logs and the replay prefix/postfix files
+> are disposable `/tmp` state under `/tmp/interrupt-closure-round3-gates/`; the three untracked
+> scratch files were untouched; no private rollout, preparation, auth, job body, credential or
+> user-configuration data entered the repository at any point in this round.

@@ -2832,6 +2832,21 @@ export function nativeInterruptionGateDInput(record) {
   // verdict).
   const exactTargetEstablished = interrupt.exactTargetMatch === true
     && (typeof (/** @type {any} */ (record).linkage)?.childThreadId === 'string' || spawnIdentityExact === true);
+  // POST-REVIEW FIX 3 (2026-10-26, the user-review round-3 finding): the
+  // SUPPORTED-CASE linkage (`record.linkage` — the Root/Child identity the
+  // successful whole-case analysis establishes, exact when both ids ride
+  // non-empty) is THE SAME identity evidence as the recovered spawn
+  // acknowledgement: both are exact Root/Child joins over the same run. The
+  // exact-identity gate below therefore consumes the UNION of the two
+  // registered sources — the §23.4 partial-facts recovery AND the
+  // supported-case linkage — so a normally-analyzed record can never bypass
+  // the durable-owner conflict check (the round-2 gate's scope was
+  // spawn-recovery-only; the reproduced shape — linkage Root A, durable
+  // owner B — rode `spawnIdentityJoin: null` beside `qualified: true`).
+  const linkageIdentityExact = typeof (/** @type {any} */ (record).linkage)?.childThreadId === 'string'
+    && (/** @type {any} */ (record).linkage).childThreadId.length > 0
+    && typeof (/** @type {any} */ (record).linkage)?.parentThreadId === 'string'
+    && (/** @type {any} */ (record).linkage).parentThreadId.length > 0;
   // The durable owning-Root binding, proven at record level by EXACT
   // observed identity (join v2): the snapshot's owner session must equal the
   // spawn acknowledgement's Root id. Either side absent → unestablished
@@ -2850,28 +2865,60 @@ export function nativeInterruptionGateDInput(record) {
   const durableExecutorVerified = durableSnapshot && typeof durableSnapshot === 'object'
     ? durableSnapshot.executorLinkage === 'verified'
     : false;
-  const spawnIdentityJoin = spawnIdentityBlock === null && !spawnIdentityExact
+  // The exact Root identities the record carries, from BOTH registered
+  // sources (the round-3 union): the §23.4 spawn-recovery block and the
+  // supported-case linkage. An inexact or missing side is UNRESOLVABLE
+  // (null) — never a conflict side.
+  const spawnRecoveryRootThreadId = spawnIdentityExact ? spawnIdentityBlock.parentThreadId : null;
+  const linkageRootThreadId = linkageIdentityExact ? (/** @type {any} */ (record).linkage).parentThreadId : null;
+  // Cross-source agreement (the round-3 registration): when BOTH exact Root
+  // sources ride the record and DISAGREE, the identity evidence itself is
+  // contradictory — the same conflict state as an owner disagreement, even
+  // before the durable side is compared (a durable owner could match at most
+  // one of them, so the durable chain's provenance is undecidable). The
+  // mapper-surveyed reachability: a mapper-produced record NEVER carries
+  // both sources (the abort path persists the partial-facts block beside an
+  // all-null linkage; the supported path persists the linkage with no block;
+  // the mapper's own resolveInterruptIdentity guard additionally nulls a
+  // disagreeing pair for the ADMISSION binding only — the record-level
+  // cross-check here is the authoritative one for any record that does
+  // carry both, and it fails closed).
+  const rootSourcesDisagree = spawnRecoveryRootThreadId !== null && linkageRootThreadId !== null
+    && spawnRecoveryRootThreadId !== linkageRootThreadId;
+  const owningRootBound = rootSourcesDisagree
+    ? false
+    : durableOwnerSessionId === null || !(spawnIdentityExact || linkageIdentityExact)
+      ? null
+      : durableOwnerSessionId === (spawnRecoveryRootThreadId ?? linkageRootThreadId);
+  const spawnIdentityJoin = spawnIdentityBlock === null && !spawnIdentityExact && !linkageIdentityExact
     ? null
     : {
-      exact: spawnIdentityExact,
-      owningRootBound: spawnIdentityExact && durableOwnerSessionId !== null
-        ? durableOwnerSessionId === spawnIdentityBlock.parentThreadId
-        : null,
+      exact: spawnIdentityExact || linkageIdentityExact,
+      owningRootBound,
       executorVerified: durableSnapshot && typeof durableSnapshot === 'object'
         ? durableExecutorVerified
         : null,
     };
   // POST-REVIEW FIX 2 (2026-10-25, the user-review round-2 finding): the
-  // CONFLICT shape — the spawn acknowledgement's Root and the durable job's
-  // owner BOTH exact and resolvable and DISAGREEING (the computed
-  // `owningRootBound === false`) — is contradictory identity evidence: the
-  // durable-side chain is not provably THE interrupted child's job. The
-  // conflict gates EVERY durable-side credit consumer below
+  // CONFLICT shape — a Root identity and the durable job's owner BOTH exact
+  // and resolvable and DISAGREEING (the computed `owningRootBound ===
+  // false`) — is contradictory identity evidence: the durable-side chain is
+  // not provably THE interrupted child's job. POST-REVIEW FIX 3
+  // (2026-10-26, the user-review round-3 finding): the Root side is the
+  // UNION of the registered sources — the recovered spawn acknowledgement
+  // AND the verified supported-case linkage (`record.linkage`) — so the
+  // normally-analyzed records enter the SAME conflict gate (either source's
+  // disagreement refuses; the two sources must also agree with each other).
+  // The conflict gates EVERY durable-side credit consumer below
   // (`durableEstablished`, the obligations snapshot branch and the
   // pre-boundary sample settlement fallback) and rides the join output for
-  // the oracle's NAMED refusal (`owning-root-identity-conflict`). One side
-  // unresolvable (null) stays the named-unestablished path — never conflated
-  // with the conflict; the exact-match keeper is unchanged.
+  // the oracle's NAMED refusal (`owning-root-identity-conflict` — ONE
+  // reason whatever the source; the conflict's source distinction is
+  // registered here, not as a second reason or a new output field, keeping
+  // the oracle input contract and every retained-record replay
+  // byte-identical). One side unresolvable (null) stays the
+  // named-unestablished path — never conflated with the conflict; the
+  // exact-match keeper is unchanged.
   const durableOwnerIdentityConflict = spawnIdentityJoin?.owningRootBound === false;
   // SIBLING-SWEEP NOTE (codex round-2 fix, §23.14): the fenced-out final read
   // (the unestablished placeholder with no job projection) leaves
@@ -2883,9 +2930,7 @@ export function nativeInterruptionGateDInput(record) {
   // The persisted exact spawn-identity binding — the record-level anchor that
   // SURVIVES the fenced placeholder (either the §23.4 partial-facts block or
   // the supported-case linkage): both ids present, exact.
-  const persistedSpawnIdentityBound = spawnIdentityExact === true
-    || (typeof (/** @type {any} */ (record).linkage)?.childThreadId === 'string' && /** @type {any} */ (record).linkage.childThreadId.length > 0
-      && typeof (/** @type {any} */ (record).linkage)?.parentThreadId === 'string' && /** @type {any} */ (record).linkage.parentThreadId.length > 0);
+  const persistedSpawnIdentityBound = spawnIdentityExact === true || linkageIdentityExact;
   const durableAggregate = durableSnapshot && typeof durableSnapshot === 'object' ? durableSnapshot.aggregate ?? null : null;
   const rawJobStatus = durableSnapshot?.job?.presence === 'found'
     && durableSnapshot?.job?.projection && typeof durableSnapshot.job.projection === 'object'
