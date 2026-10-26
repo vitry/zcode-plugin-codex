@@ -16566,3 +16566,120 @@ re-run.
 > are disposable `/tmp` state under `/tmp/interrupt-closure-round3-gates/`; the three untracked
 > scratch files were untouched; no private rollout, preparation, auth, job body, credential or
 > user-configuration data entered the repository at any point in this round.
+>
+> **Dated annotation (2026-10-26, the post-review-fix-3 PR-final battery — the interrupt-closure
+> close-out 6; offline — zero model turns, zero live launches, the registered §23.12 ledger stays
+> exhausted 2/2; no code or test changes and no plan-checkbox changes in this record; the
+> untracked scratch files untouched; this record rides ONE docs-only commit on the fix commit
+> `8160183` — no amend/rebase/force of the pushed branch; nothing above in §23.10–§23.16 reopened
+> or rewritten — the frozen texts and the round-2/round-3 annotations above stand verbatim, this
+> annotation is their round-3 close-out pointer):**
+>
+> **(i) The round-3 convergence statement.** The user's third PR review (the Spec axis) returned
+> ONE P2 over the close-out-5 bytes (the round-3 finding annotation above): the round-2 conflict
+> gate obtained the durable owning-Root identity from the §23.4 partial-facts recovery ONLY, so on
+> every normally-analyzed (supported-case) record — whose identity rides `record.linkage`, the two
+> sources never co-persisted — the gate was BYPASSED entirely (linkage Root = A, durable owner = B
+> → `qualified: true`). Fixed test-first ON the final bytes in the post-review-fix-3 commit
+> **`8160183`** (research 941→944): `linkageIdentityExact` joins the exact Root-source union
+> (spawn recovery + supported linkage), `owningRootBound` is computed over the UNION with the
+> `rootSourcesDisagree` cross-check (either source vs the durable owner → the conflict; the two
+> Root sources themselves disagreeing → the conflict regardless of the owner; every comparison
+> with an unresolvable side → the named-unestablished null), and the conflict state drives the
+> round-2 machinery UNCHANGED; `release-qualification.mjs` is BYTE-UNCHANGED (the ONE reason
+> `owning-root-identity-conflict`), the round rides 3 new tests, the mandatory F/I replay stayed
+> a 0-byte diff, and the versions are unchanged (join 2 / oracle 3). The fix's self-review
+> returned ONE non-blocking P3 (a docs fix only — the annotation's RED→GREEN quote was found to
+> come from an earlier draft of the test and was re-quoted verbatim from the COMMITTED test
+> bytes, SHA-256 `d6515c75dae60d3c1888582972ccb7a3c641cd17a37e955e9c9dc9560e12376e`), amended
+> into the SAME commit (new and unpushed). The codex gate over the amended commit `8160183`
+> returned **ZERO findings**. The fix-review loop is CONVERGED at `8160183`; this battery pins
+> those bytes as the branch's final-bytes record.
+>
+> **(ii) The battery on `8160183`** (every result verbatim; exit captured, no pipe truncation).
+> Worktree pins at battery time: `git rev-parse HEAD` →
+> `8160183c2148e82c5606c729f30e5942418d51e8`; the tracked tree was CLEAN (this battery ran
+> BEFORE the close-out-6 docs were written; only the three untracked scratch files existed
+> outside the tracked tree). THIS table SUPERSEDES the close-out-5 counts (941/941 at
+> `77660b8`) with the byte-pin — those counts are HISTORICAL for THEIR bytes, per the
+> §22.2/§23.11.2/§23.13.2/§23.14.3/§23.15.2/§23.16.3 discipline.
+>
+> | # | Gate command | Source | Verbatim result |
+> | --- | --- | --- | --- |
+> | 1 | `npm run test:shell-research` | worktree at `8160183` | **ℹ tests 944 / ℹ suites 76 / ℹ pass 944 / ℹ fail 0 / ℹ cancelled 0 / ℹ skipped 0 / ℹ todo 0** (duration_ms 78093.209917), exit **0**, zero `✖` lines — close-out-5's 941 + the 3 round-3 tests = 944 |
+> | 2 | `node --test tests/test-selection.test.mjs` | worktree at `8160183` | **tests 6 / suites 0 / pass 6 / fail 0 / cancelled 0 / skipped 0 / todo 0** (duration_ms 67.951625), exit **0** |
+> | 3 | `node --test tests/rescue-preparation.test.mjs tests/rescue-binding.test.mjs tests/rescue-route-planner.test.mjs` | worktree at `8160183` | **tests 417 / suites 0 / pass 417 / fail 0 / cancelled 0 / skipped 0 / todo 0** (duration_ms 34135.029625), exit **0** |
+> | 4 | `node --test tests/rescue-lifecycle.test.mjs tests/rescue-child-reconciliation.test.mjs tests/rescue-progress-relay.test.mjs` | worktree at `8160183` | **tests 126 / suites 0 / pass 126 / fail 0 / cancelled 0 / skipped 0 / todo 0** (duration_ms 45442.019583), exit **0** |
+> | 5 | `node --test tests/job-control.test.mjs tests/mcp-result.test.mjs` | worktree at `8160183` | **tests 213 / suites 0 / pass 213 / fail 0 / cancelled 0 / skipped 0 / todo 0** (duration_ms 56347.403625), exit **0** |
+> | 6 | the round-3 tests by name (`--test-name-pattern="post-review fix 3"` on `tests/shell-wait-probe.test.mjs`) | worktree at `8160183` | **tests 3 / suites 1 / pass 3 / fail 0 / cancelled 0 / skipped 0 / todo 0** (duration_ms 560.319209), exit **0** |
+> | 7 | `npm run lint` | worktree at `8160183` | eslint clean, no findings (banner-only output), exit **0** |
+> | 8 | `npm run typecheck` | worktree at `8160183` | `tsc --noEmit` clean, no findings (banner-only output), exit **0** |
+> | 9 | `node scripts/check-line-endings.mjs` then `git diff --check` | worktree at `8160183` | *"LF line endings verified in 543 tracked files."*, exit **0**; then no output (0 bytes), exit **0** |
+> | 10 | prohibited diff `git diff dba2e8ad8534b5800fd1faff98ad904f492dcf1d --stat -- scripts/ hooks/ skills/ agents/ .codex-plugin/ marketplace/ docs/superpowers/specs/ package.json npm-shrinkwrap.json` | worktree at `8160183` | **EMPTY** (0 bytes), exit **0** — the "Prohibited diff expected EMPTY" check holds on the post-review-fix-3 bytes |
+> | 11 | `npm test` | verification copy `/tmp/swverify.RdzPAs` of the worktree HEAD `8160183c2148…` (construction below) | **routine suite: ℹ tests 3397 / pass 3394 / fail 0 / cancelled 0 / skipped 3 / todo 0** (duration_ms 707790.921667); **marketplace suite: ℹ tests 2 / pass 2 / fail 0 / cancelled 0 / skipped 0 / todo 0** (duration_ms 15796.649709); combined **3399 tests / 3396 pass / 0 fail / 3 skipped / 0 cancelled**, exit **0** (captured verbatim from `$?`), **zero `✖` lines in the entire 3546-line log**. The 3 skips are the SAME three standing documented opt-in gates as §18.3/§22.2/§23.11.2/§23.13.2/§23.14.3/§23.15.2/§23.16.3 and close-out 5 (`﹣` SKIP lines recorded verbatim in the log): `codex-skills-unqualified` ×2 — *"installed marketplace skill crosses a real ephemeral Codex turn into ZCode"* (`Set ZCODE_CODEX_SKILLS_E2E=1 to spend authenticated Codex credits.`) and *"installed Rescue uses one isolated native child for initial and choice continuations"* (`Set ZCODE_CODEX_RESCUE_E2E=1 to qualify the runtime-observed native Rescue route.`); `real-zcode-unqualified` — *"real ZCode discovery, two-turn session, read-only Companion, cancellation, model, and history import"* (`Set ZCODE_REAL_E2E=1 on an authenticated macOS ZCode installation.`) — the standing design, not new omissions |
+>
+> **Gate-11 copy construction (the §22.2 recipe, followed exactly):** `mktemp -d
+> /tmp/swverify.XXXXXX` → `/tmp/swverify.RdzPAs`; `git clone --no-local --no-hardlinks` of the
+> worktree at `8160183` (clone `rev-parse HEAD` = `8160183c2148e82c5606c729f30e5942418d51e8`,
+> clone `status --short` empty — the three untracked scratch files structurally excluded; `.git`
+> present); a real copied `node_modules` directory (331 MB via `ditto`, a real directory, not a
+> symlink); the copy path carries no guarded identity word. **Byte-proof by the recorded manifest
+> recipe (SHA-256 manifests of ALL 543 tracked files, both sides; construction verbatim: `git
+> ls-files -z | xargs -0 shasum -a 256 | awk '{print $1, $2}' | sort | shasum -a 256`):** the
+> COPY-side and WORKTREE-side sorted-manifest digests are **IDENTICAL —
+> `94474874ab0bfe9bfee054ac690dc49452d03c75f51432d1a84fb8873d8c805b`** — 543/543 tracked files
+> byte-equal, with **NO in-flight-docs difference** (the same stronger form as
+> §23.14.3/§23.15.2/§23.16.3 and close-out 5: this battery ran on a clean tracked tree before
+> the close-out-6 docs existed). Stale verification copies from earlier timed-out attempts of
+> this close-out (`/tmp/swverify.jUl1C1`, `/tmp/swverify.pKnbeM`, the `/tmp/swverify.ANy7F4.*`
+> manifest fragments, and stale `/tmp/swverify-*` logs) were found and DELETED before this
+> round's copy was constructed — nothing from them was recorded or reused; this round's battery
+> is the fresh copy's runs only. One attempt, one run, zero failures, no retries — no waiver
+> needed. **The §22.2 named baseline limitation did NOT strike on this clone:** the two
+> historically lottery-coupled fixtures ran INSIDE the gate-11 routine run and PASSED on this
+> clone path (zero `✖` lines; the `fixture must place target at canonical index 0` precondition
+> never fired). For the record and matching the §23.13.2/§23.14.3/§23.15.2/§23.16.3/close-out-5
+> shape, the SAME bytes were also run in the worktree cwd: qualification
+> (`tests/codex-rescue-qualification.test.mjs`) **162/162, exit 0** (duration_ms 8477.143791);
+> e2e **46 tests / 44 pass / 2 skipped / 0 fail** (`tests/e2e/codex-skills-e2e.test.mjs`), exit
+> **0** (duration_ms 5686.198458), and **16 tests / 15 pass / 1 skipped / 0 fail**
+> (`tests/e2e/real-zcode.test.mjs`), exit **0** (duration_ms 2004.127583). The §22.2
+> classification stands UNCHANGED as history; nothing here waives the limitation — this row is
+> a first-attempt green whose clone path met the precondition. The copy, its manifests and the
+> gate logs are disposable `/tmp` state; nothing from them entered the repository.
+>
+> **(iii) The F/I byte-identity — cited, NOT re-run.** The mandatory replay paragraph of the
+> round-3 finding annotation above records the F record
+> `634289fd64a87f73962f59e12216466b86f812dd0e703f4e99c2df21469ed5b7` (digest re-verified there
+> before the replay) and the retained I record
+> `13aae0ca41ba9ab25db1aeab33f97494e4563d1f685e6d75291233d064142549` replaying under the fixed
+> join/oracle with the ENTIRE join+oracle output **BYTE-IDENTICAL** to the pre-fix run (the
+> prefix/postfix `diff` of the full `{input, verdict}` serialization: zero bytes on both records
+> — `gateDJoinVersion: 2`, `spawnIdentityJoin {exact: true, owningRootBound: true,
+> executorVerified: true}`, F 8 reasons / I 11 reasons, both `qualified: false`, all preserved;
+> by construction — both records are abort-path records whose union adds no resolvable source —
+> with ANY delta pre-committed as a STOP and none occurred). That verification was performed by
+> the fix's implementer and re-checked by the round's self-reviewer; THIS close-out spends no
+> replay re-run and no digest re-derivation — the round-scoped verifications stand as the
+> record.
+>
+> **(iv) The supersession line and the implementation-byte equality proof.** The close-out-5
+> battery (941/941, 76 suites, pinned at `77660b87b1accc3840e81a3b86058e0f8841614b`) is
+> **SUPERSEDED-BY-NEW-BYTES** (recorded as this annotation; the close-out-5 text stands
+> verbatim, never re-stamped — the §22.2/§23.11.2/§23.13.2/§23.14.3/§23.15.2/§23.16.3
+> discipline): the user-review round 3 then changed the implementation bytes (the
+> supported-case linkage union across `driver.mjs` and its three end-to-end tests — 941→944),
+> so those counts are HISTORICAL for THEIR bytes. THIS annotation's table above is the CURRENT
+> final-bytes record, pinned to HEAD `8160183c2148e82c5606c729f30e5942418d51e8`.
+> **Implementation-byte equality (verified at the closing commit):** the closing commit changes
+> ONLY this report, so `git diff 8160183..HEAD --stat -- tools/ tests/` is EMPTY at the commit —
+> the bytes gates 1–11 verified ARE the branch's final implementation bytes (verified 0 bytes
+> pre-commit; re-verified at the commit below).
+>
+> **Round provenance.** This round consumed no live case and produced no new raw observation
+> data (the battery is an offline verification gate; the F record of §23.12 remains the last
+> live-data artifact; the registered ledger stays exhausted 2/2). Zero model turns were spent.
+> The battery's raw logs are disposable `/tmp` state (the gate-11 npm-test log and the byte-proof
+> manifests under `/tmp`); the verification copy is deleted after the run; the three untracked
+> scratch files were untouched; no private rollout, preparation, auth, job body, credential or
+> user-configuration data entered the repository at any point in this round.
