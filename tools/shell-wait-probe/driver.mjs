@@ -2732,12 +2732,18 @@ export const INTERRUPT_PARTIAL_FACTS_VERSION = 1;
  * binding is proven by exact observed identity) and admits PRE-BOUNDARY
  * per-sample facts from the persisted `child.durableSamples` block when the
  * final snapshot is fenced out (the §23.5 fence, each sample independently).
- * Every join output embeds this version (`gateDJoinVersion`) so a v2
+ * v3 (2026-10-26 native-acceptance Task 2, report §24.4) is the relocated
+ * causal-contract input growth: the persisted admission block now carries the
+ * typed `acknowledgementAtResolution` fact (the §24.4 f2 submission-result
+ * shape) beside the REQUEST-side window conjunct, and the join exposes it
+ * additively in the delivery block — never a verdict change on any recorded
+ * input (the F/I replay proves the recorded verdicts byte-identical).
+ * Every join output embeds this version (`gateDJoinVersion`) so a v2/v3
  * adjudication can never be mistaken for a recorded v1 verdict or re-stamped
  * over one — old verdicts are preserved verbatim, and a record without
  * samples reproduces its recorded v1 verdict fields exactly.
  */
-export const NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION = 2;
+export const NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION = 3;
 
 /**
  * The whitelisted per-sample projection consumed by the offline Gate-D join
@@ -2794,7 +2800,7 @@ function buildAdmittedSample(summary, attemptIndex, completedAtMs, timingState, 
  * adjudicator.
  * @param {Record<string, any>} record the persisted case record
  * @returns {{ delivery: { delivered: boolean | null, exactTargetMatch: boolean | null, aliasResolved: boolean | null,
- *   terminalBeforeInterruptBasis: string, terminalBeforeInterrupt: boolean | null, deliverySent: boolean | null, previousStatusOnly: boolean, unreadableContinuation: boolean, pendingWindowConfirmed: boolean | null, hostActivityAdmitted: boolean | null }, turnSettled: boolean | null, deliveryToSettlementMs: number | null, companionOutcome: 'ceased' | 'terminal-result' | 'survived-unsettled' | null, durableObligations: 'settled' | 'unresolved' | null, cleanupKill: boolean, survivalControl: Record<string, unknown> | null, terminalWinner: 'succeeded' | 'failed' | 'cancelled' | null, naturalCompletionObserved: boolean, statusObservationTimeoutOnly: boolean, durableReadPostCleanupBoundary: boolean, durableReadBoundaryBasis: string | null, gateDJoinVersion: number, spawnIdentityJoin: { exact: boolean, owningRootBound: boolean | null, executorVerified: boolean | null } | null, durableSamplesJoin: { considered: boolean, boundaryRecorded: boolean, settlementFallback: { used: boolean, basis: string, sample: Record<string, unknown> | null }, admitted: Record<string, unknown>[], refused: { attemptIndex: number | null, reason: string }[] } }}
+ *   terminalBeforeInterruptBasis: string, terminalBeforeInterrupt: boolean | null, deliverySent: boolean | null, previousStatusOnly: boolean, unreadableContinuation: boolean, pendingWindowConfirmed: boolean | null, hostActivityAdmitted: boolean | null, acknowledgementAtResolution: string | null }, turnSettled: boolean | null, deliveryToSettlementMs: number | null, companionOutcome: 'ceased' | 'terminal-result' | 'survived-unsettled' | null, durableObligations: 'settled' | 'unresolved' | null, cleanupKill: boolean, survivalControl: Record<string, unknown> | null, terminalWinner: 'succeeded' | 'failed' | 'cancelled' | null, naturalCompletionObserved: boolean, statusObservationTimeoutOnly: boolean, durableReadPostCleanupBoundary: boolean, durableReadBoundaryBasis: string | null, gateDJoinVersion: number, spawnIdentityJoin: { exact: boolean, owningRootBound: boolean | null, executorVerified: boolean | null } | null, durableSamplesJoin: { considered: boolean, boundaryRecorded: boolean, settlementFallback: { used: boolean, basis: string, sample: Record<string, unknown> | null }, admitted: Record<string, unknown>[], refused: { attemptIndex: number | null, reason: string }[] } }}
  */
 export function nativeInterruptionGateDInput(record) {
   if (!record || typeof record !== 'object') throw invalidCaseInput('the Gate D join needs the persisted case record.');
@@ -3250,6 +3256,16 @@ export function nativeInterruptionGateDInput(record) {
       // The §19.4 admission: a record without the block fails closed.
       hostActivityAdmitted: interrupt.hostDelivery && typeof interrupt.hostDelivery === 'object'
         ? interrupt.hostDelivery.admitted === true
+        : null,
+      // Join v3 (report §24.4, native-acceptance Task 2): the persisted typed
+      // acknowledgement shape rides the delivery block additively — a
+      // host-side SUBMISSION-RESULT fact (f2) that never by itself claims
+      // Child receipt or processing and never flips a conjunct here. A record
+      // without the fact (every retained I/F-era block) stays null.
+      acknowledgementAtResolution: interrupt.hostDelivery && typeof interrupt.hostDelivery === 'object'
+        ? (typeof interrupt.hostDelivery.acknowledgementAtResolution === 'string'
+          ? interrupt.hostDelivery.acknowledgementAtResolution
+          : null)
         : null,
     },
     turnSettled: typeof interrupt.settled === 'boolean' ? interrupt.settled : null,
@@ -5488,7 +5504,18 @@ export function mapShellWaitLiveFacts(input, held, evidence, codexVersion, rollo
     // P2-2 round-20 fix: a terminal observed previous status is never an
     // interrupted-turn outcome — the interrupt landed on an already-terminal
     // Child, so neither settlement nor a surviving-turn claim is attributed.
-    else if (deliveryAttributionGuard === 'previous-status-terminal') interruptSettledBasis = 'previous-status-terminal-no-interruption-claim';
+    // §24.4 family (10) (native-acceptance Task 2): the TOLERATED
+    // already-dead labels (`not_found`/`shutdown` — the pinned wrapper's
+    // ThreadNotFound/InternalAgentDied tolerance returns SUCCESS for them,
+    // report §24.2) are named separately: the tolerated send is a host-side
+    // submission result, never a Child resolution
+    // (`already-dead-tolerance-not-a-resolution`); the other terminal labels
+    // keep the round-20 basis.
+    else if (deliveryAttributionGuard === 'previous-status-terminal') {
+      interruptSettledBasis = interruptInteraction.previousStatus === 'not_found' || interruptInteraction.previousStatus === 'shutdown'
+        ? 'already-dead-tolerance-not-a-resolution'
+        : 'previous-status-terminal-no-interruption-claim';
+    }
     // Exact-target requirement (P2-1 round-2 fix): chronological ordering
     // alone never establishes interruption. A successful delivery to ANOTHER
     // agent while the observed Child is pending — even when that Child later
@@ -5601,6 +5628,27 @@ export function mapShellWaitLiveFacts(input, held, evidence, codexVersion, rollo
       // precisely, never treated as proof of observation cancellation.
       interruptSettled = false;
       interruptSettledBasis = 'turn-interrupted-pending-observation-survives';
+    }
+    // §24.4 family (10) (native-acceptance Task 2): the ADMITTED host-side
+    // submission (f2 — the send returned after the enqueue, the item joined)
+    // with NO f4 Child resolution of ANY class ever joining is the
+    // registered enqueued-but-unresolved shape: it never credits, and the
+    // basis names exactly that (an enqueue fact is never a Child
+    // receipt/processing claim — §24.2). Codex P2 review fix on this
+    // fallback: every RESOLUTION class is checked first — settlement,
+    // exit-code completion, cancellation, NONTERMINAL resolution and
+    // explicit terminate. When any of them joined, the observation resolved
+    // and the shape is NOT an unresolved submission: the plain
+    // unavailable-settlement basis stands while the resolution facts ride
+    // the record (the acknowledgement is measured against the joined closing
+    // stamp), and the admission/attribution chain classifies them per §24.4.
+    else if (hostDeliveryAdmission?.admitted === true
+      && interruptInteraction.settledAfterCall.atMs === null
+      && interruptInteraction.cancelledAfterCall.atMs === null
+      && interruptInteraction.completedAfterCall.atMs === null
+      && interruptInteraction.resolvedNonterminalAfterCall.atMs === null
+      && interruptInteraction.resolvedExplicitStopAfterCall.atMs === null) {
+      interruptSettledBasis = 'submission-enqueued-unresolved';
     } else interruptSettledBasis = 'settlement-unavailable';
   }
   const interruptPendingIntervalMs = interruptInteraction.attempted

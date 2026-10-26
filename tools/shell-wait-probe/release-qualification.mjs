@@ -817,9 +817,20 @@ export const RESPONSIVENESS_BOUND_MS = 60_000;
  * when the final snapshot is fenced out — the oracle's own logic is
  * byte-unchanged, and the bump marks every v3 adjudication so it can never
  * be mistaken for a recorded v1/v2 verdict (old verdicts stand as history;
- * report §19.2/§19.9 re-adjudication continuity).
+ * report §19.2/§19.9 re-adjudication continuity). v4 (2026-10-26
+ * native-acceptance Task 2, report §24.4) is the RELOCATED causal contract:
+ * the [poll start, resolution) window conjunct binds to the REQUEST (the
+ * call's cross-rollout timestamp/bounds witness) instead of the item emission
+ * stamp, the emission stamp's relation to the resolution is the recorded
+ * `acknowledgementAtResolution` typed fact that never fails the admission by
+ * itself, and the two §24.4 contradiction guards stay — the delivery
+ * conjuncts below are unchanged in form (the admission verdict they consume
+ * is the relocated one) and the bump marks every v4 adjudication. The F/I
+ * retained-record replay under v4 must reproduce the recorded v3 verdicts
+ * byte-identically (`qualified: false` on both — the §24.4 falsification
+ * duty); old verdicts stand as history.
  */
-export const NATIVE_INTERRUPTION_ORACLE_VERSION = 3;
+export const NATIVE_INTERRUPTION_ORACLE_VERSION = 4;
 
 /**
  * The §16.3/§16.6 Gate-D native-delivery/settlement aggregation over

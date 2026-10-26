@@ -17115,3 +17115,207 @@ fixture coordination-marker candidate — only if Tasks 2/3 demonstrate its reco
 proof (Tasks 2/3); (4) the actual installed event-field completeness and scan completeness on a fresh capture — N's own
 measured outcomes (Task 4); (5) native turn/cell responsiveness under the admitted contract — N's own measured
 outcome, against the unchanged 60000-ms comparison (Task 4).
+
+### 24.10 2026-10-26 native-acceptance Task 2: the §24.4 relocated causal contract implemented offline — the RED→GREEN regression, the counterexample matrix, join v3 / oracle v4 versioning and the byte-identical F/I replay (offline; zero model turns, zero live launches)
+
+Task 2 of [the native-acceptance plan](../superpowers/plans/2026-10-26-rescue-shell-wait-native-acceptance.md), executed
+2026-10-26 in the same worktree (branch `docs/rescue-shell-wait-native-acceptance`) on top of Task 1's closed commit
+`352fc7ce78cf63757a249ffa0b24713e335af9fb`. Fully offline throughout: zero model turns, zero `ZCODE_SHELL_WAIT_E2E=1`
+runs, zero host launches; every test injects fake fixture/driver dependencies. This section is ADDITIVE — §24.1–§24.9
+stand byte-unchanged, and nothing below rewrites any past verdict.
+
+**What existed versus the delta.** The preregistration of §24.4 was already fully in place (Task 1, report-only), and the
+production predicates it names were already implemented: the §19.4 admission set, the settlement-attribution guard chain,
+the owning-Root conflict union gate, the sample fallback cause discipline and the unknown-vs-conflict semantics all
+existed and kept their behavior. The Task-2 delta is exactly the registered correction, in four files:
+(evidence.mjs) the admission's conjunct 4 RELOCATED — the `[poll start, resolution)` window test now binds to the
+REQUEST through the extractor's cross-rollout timestamp/bounds witness (the `pendingBeforeCall` fact), the item emission
+stamp's relation to the resolution is the RECORDED typed fact `acknowledgementAtResolution`
+(`"at" | "after" | "before" | "unestablishable"`, same epoch-ms rollout-event clock, earliest attributable closing
+stamp; evidence.mjs:3070-3155, JSDoc :2714-2747), the OLD closing comparisons are RETIRED — not inverted, no `>=`→`>`
+flip — and the two contradiction guards STAY (`host-activity-pre-call-timing`, `host-activity-outside-pending-window`);
+(driver.mjs) the offline Gate-D join exposes the typed fact additively in the delivery block (driver.mjs:3265-3271) and
+the settlement chain gains the two NEW §24.4 family-(10) bases — the tolerated already-dead send
+(`already-dead-tolerance-not-a-resolution` for the pinned `not_found`/`shutdown` labels, driver.mjs:5511-5518) and the
+admitted-but-unresolved enqueue (`submission-enqueued-unresolved` when the f2 admission held and no f4 resolution ever
+joined, driver.mjs:5634-5640); (release-qualification.mjs) the oracle version bump with the relocated-contract
+registration (release-qualification.mjs:810-833); (tests) the new focused suite and the registration/selection updates
+below. No new helper module was created: the relocation lives inside evidence.mjs, whose module-init bytes are ALREADY
+an `EXECUTING_OBSERVER_PROVENANCE` digest input (the v5 construction, driver.mjs:69-86), so the observer digest moves
+with these bytes without any digest-input growth — the plan's "no helper merely to satisfy the file list" rule.
+
+#### The RED evidence (the registered gap, reproduced BEFORE the correction)
+
+The new suite's first test reproduces the F-record shape end to end on the REAL pipeline —
+`extractInterruptInteraction` → `admitInterruptHostDelivery` → `mapShellWaitLiveFacts` → `runShellWaitCase` (the REAL
+serializer, record reloaded from disk) → `nativeInterruptionGateDInput` → `evaluateNativeInterruptionSettlement` — with
+the host activity item's stamp EQUAL to the native-cancellation marker's stamp (the §24.3 equality, here
+`2026-10-06T00:00:12.000Z` on both). Against the unmodified HEAD bytes the run FAILED at the first contract assertion:
+
+    AssertionError: the at-resolution acknowledgement admits through identity/timing:
+      ["host-activity-after-settlement"]  —  false !== true
+
+i.e. the OLD conjunct 4 read the item stamp as an at-resolution EMISSION and refused the admission
+(`admitted: false`, reason `host-activity-after-settlement`), failing closed BY DESIGN on the physically expected shape —
+exactly the §24.4 registered gap. The paired without-proof control (the same stamp shape WITHOUT a pending request)
+already failed closed (`host-activity-without-pending-observation`) and stayed green through the change.
+
+#### The GREEN correction and the counterexample matrix
+
+After the §24.4-relocation implementation the full suite is GREEN, and every §24.4 non-crediting family is reproduced
+offline through the same real pipeline, each failing closed under its registered name (tests/shell-wait-native-interruption.test.mjs,
+22 tests, all passing):
+
+- Acknowledgement at resolution WITH independent pending-request proof: f2 admits (`acknowledgementAtResolution: "at"`),
+  the window conjunct reads the request, and the f4 native cancellation settles THROUGH the marker
+  (`native-cancellation-settlement-after-delivery`, latency = resolution − call on the ONE clock) — never through the
+  item. WITHOUT the proof: refused (`host-activity-without-pending-observation`), oracle keeps
+  `host-activity-unadmitted`.
+- Request before poll start → `host-activity-without-pending-observation` + `settlement-unavailable`; prior natural
+  completion → `post-completion-delivery-not-attributed` + oracle `terminal-before-interrupt`; prior NONTERMINAL
+  resolution → the same request-window refusal (f3 closes on any resolution); completion concurrent with an UNORDERABLE
+  request (untimed cross-rollout) → window unproven, fail-closed.
+- Stale/foreign/cross-Root target → `host-activity-agent-thread-mismatch`; a prior-interruption stale status keeps
+  `previous-status-terminal-no-interruption-claim`; the durable-owner/cross-source conflict → `owning-root-identity-conflict`
+  through BOTH identity sources, the sample fallback (`durable-owner-identity-conflict` basis) and the final oracle,
+  with the sample still riding as an observation fact and one-side-unresolvable staying the named-unestablished path.
+- Rejected → `delivery-rejected`/`delivery-not-established`; unsent/unobserved → `delivery-dispatch-unestablished`;
+  unreadable continuation → `unparseable-continuation-settlement-unknown` + oracle `unreadable-continuation`.
+- Duplicate interruption → `multiple-delivery-attempts-not-attributed` + `host-activity-call-count-not-one`; wrapped
+  (code-mode) call id → `host-activity-wrapped-interrupt-unjoinable`; truncated/ambiguous scan → the REAL
+  `inspectShellWaitEvidence` aborts `unsupported-call-shape` and the mapper overlays `host-activity-call-scan-incomplete`
+  with the basis `ambiguous-cell-scan-incomplete-not-attributed` (one recognized interrupt is never "exactly one" while
+  an unclassified cell could hold another — recognized facts ride as observations, never credit).
+- Incompatible/absent clocks → `ordering-unbound-not-attributed` with `timingBasis: "unavailable"` (the held monotonic
+  clock never joins epoch stamps); explicit cell terminate → window-closing evidence only,
+  `explicit-cell-termination-not-attributed`, zero latency; budget cleanup → `budget-cleanup-termination-not-attributed`
+  + `settlementCleanupGenerated: true`; genuine later SessionEnd → the join-level cause discipline (the sample's
+  `stopCause: "session-end"` rides verbatim, the Gate-D winner conjunct is never flipped by a sample, the interrupt block
+  stays unattributed).
+- Unknown-vs-conflict: an unavailable Child id keeps `agentThreadIdMatch: null` with
+  `host-activity-child-identity-unestablished` — an unavailable field is never folded into a boolean.
+
+#### Version names and the F/I replay (the falsification duty)
+
+- Join: `NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION` 2 → **3** (driver.mjs:2746 — the delivery block carries the typed
+  `acknowledgementAtResolution` fact). Oracle: `NATIVE_INTERRUPTION_ORACLE_VERSION` 3 → **4**
+  (release-qualification.mjs:833 — the §24.4 relocated window contract). The shared `RELEASE_QUALIFICATION_VERSION` 1
+  family stamp is unchanged. A committed replay-mechanism test pins that a legacy §19.4-era block (no acknowledgement
+  fact — the retained-record shape) joins with the fact `null` and replays its persisted verdict fields unchanged under
+  the v4 stamp.
+- **The retained-record replay, executed 2026-10-26 on the exact bytes:** both records re-verified byte-identical to the
+  §24.1 citations — F `634289fd64a87f73962f59e12216466b86f812dd0e703f4e99c2df21469ed5b7`,
+  I `13aae0ca41ba9ab25db1aeab33f97494e4563d1f685e6d75291233d064142549` — then replayed offline under join v3 / oracle v4.
+  Result: `qualified: false` on BOTH with the recorded reasons BYTE-IDENTICAL (F: the 8 reasons of §23.12.7; I: the 11
+  reasons of the §24.6 re-adjudication), the recorded `settledBasis` strings preserved verbatim, every layer boolean
+  unchanged (F/I: delivery false, turnSettlement false, companion true, durableObligations true, noCollateral false), and
+  the only deltas are the preregistered additive ones — `gateDJoinVersion` 3, `nativeInterruptionOracleVersion` 4, and
+  `delivery.acknowledgementAtResolution: null` (the legacy blocks carry no acknowledgement fact; replay GAINS no request,
+  timing fact or physical duty). No missing evidence to name: both cited records existed and replayed.
+
+#### The grammar decision — DEFERRED, with the registered reason
+
+The bounded lexical binding-and-equal-sink whitelist (§24.6's investigation candidate) is NOT implemented. Reasons,
+registered: (1) the ONLY offline evidence for the wrapper family is the withheld F/I bodies — digest-only identity
+anchors (`36c90344…` 2 lines/228 bytes; `be3b9a1c…` 217 bytes), unreconstructable by §24.3's own registration — so there
+are NO real bodies to freeze an accepted grammar and its bounds against, and a whitelist built without them would be
+speculation about unknown live content (the plan forbids adding grammar for unknown live content without its own offline
+evidence and complete negative family); (2) the scan gap does NOT block the registered OFFLINE measurement — the
+fail-closed settlement refusal (`ambiguous-cell-scan-incomplete-not-attributed`) and the load-bearing complete-scan
+conjunct stand unchanged, so the smaller change (relocation only) is the registered correction; (3) §24.8's
+`readiness-cutoff-exceeded` stays a LIVE-schedule name — the readiness cutoff is an instrument schedule fact first
+executable by Task 3's wired choreography, and no live machinery was built in this offline task. If Task 3/N produces a
+retained real wrapper body, the candidate grammar gets its own offline RED→GREEN cycle and negative family before any
+adoption — never a post-hoc expansion.
+
+#### Gates and registration
+
+`node --test tests/shell-wait-native-interruption.test.mjs` 22/22; `node --test tests/test-selection.test.mjs` 6/6;
+`npm run test:shell-research` **966/966 pass, 76 suites** (baseline 944/944 + the new 22), exit 0; `npm run lint` exit 0;
+`npm run typecheck` exit 0; `git diff --check` clean; `node scripts/check-line-endings.mjs` exit 0 (545 tracked files).
+The new suite is registered literally in `shellResearchEntries` (tools/run-test-suite.mjs:15-18) and
+tests/test-selection.test.mjs asserts BOTH shell entries, routine exclusion, disjoint MCP selection and the
+duplicate/missing-entry failures; the probe suite's spawned-self-test pins now assert the two-entry selection with the
+guarded-marker + native-file totals. The five MCP research entries are unchanged. The diff touches ONLY:
+tools/shell-wait-probe/{evidence,driver,release-qualification}.mjs, tools/run-test-suite.mjs,
+tests/{shell-wait-probe,shell-wait-native-interruption,test-selection}.test.mjs and this report — no prohibited path.
+
+**Handed to Task 3:** the wired live choreography for the NEW facts (the acknowledgement shape and the relocated window
+riding a REAL persisted record), the measurement-cutoff persistence per §24.8, the `readiness-cutoff-exceeded` outcome's
+instrument arm, and the pre-live review duty of the changed executable bytes (this section's citations are the review
+input).
+
+**Amendment (2026-10-26, the codex gate's P2 finding on the `submission-enqueued-unresolved` fallback — fixed RED→GREEN
+in this same commit):** the fallback originally keyed on the f2 admission alone, so a pending poll that resolved after
+the interrupt with a completed NONTERMINAL result (the live-handle `{session_id}` shape) recorded
+`submission-enqueued-unresolved` beside `acknowledgementAtResolution: "after"` measured against that very closing stamp
+— claiming "no f4 resolution joined" while an observed resolution rode the record. The regression test
+(tests/shell-wait-native-interruption.test.mjs, `an OBSERVED nonterminal resolution after the call is never an
+unresolved submission`) failed RED on the amended bytes' predecessor with exactly that basis, and the fix narrows the
+fallback to require NO resolution fact of ANY class joined (settlement, cancellation, exit-code completion, nonterminal,
+explicit terminate — driver.mjs:5634-5651): an observed resolution keeps the plain `settlement-unavailable` outcome with
+its resolution facts riding (an observed nonterminal response is a resolution fact, never a settlement — the round-1
+rule), and the unresolved-submission name is reserved for the genuinely never-resolved enqueue. Totals after the fix:
+the focused suite is 23/23, and the full shell-research suite is 967/967 pass, 76 suites, exit 0 (the one added test);
+the probe suite's spawned-self-test total is pinned at 24 (the guarded marker + the native file's 23 registered tests).
+
+**Amendment (2026-10-26, the PR #73 user spec-review round, finding 1 — the grammar deferral EXECUTED; fixed RED→GREEN
+in the Task-2 fixup):** the deferral above gave "no real bodies" as its first reason, but the plan's Task-2 bullet
+explicitly authorized reproducing the concrete finite recognition gap offline using isolated SYNTHETIC/
+fixture-controlled bodies — the deferral's reason did not cover the synthetic path, and the reviewer reproduced the
+gap directly (the same wrapper call shape: a binding named `r` parses, a binding named `result` is refused). The
+investigation was therefore executed now, offline, exactly per the plan discipline: the reviewer's repro was
+reproduced FIRST as RED evidence on the pre-fix bytes through the REAL extractor/scan pipeline
+(`parseCallStatements` → `inspectShellWaitEvidence`: the `result` body returns null and the whole-case scan aborts
+`unsupported-call-shape`, while the byte-identical `r` body parses — the refused cell's excerpt carries the N-family
+structural signature: `inputLines: 2` (one content line + the trailing-newline artifact), 78 synthetic bytes,
+`bodyType: string`); the grammar was FROZEN BEFORE implementation (the `BOUND_RESULT_WRAPPER_PATTERN` freeze comment,
+evidence.mjs); and the implementation is the §23.2 emission-junction whole-body family with exactly ONE generalized
+dimension — the binding identifier — grounded in the synthetic reproduction of the retained structural anchors
+(NON-`r` binding, bound-await, literal-object argument, equal text-binding sink, single statement):
+
+- **The frozen grammar** (all bounds finite and checkable): ONE content line (+ the optional trailing-newline
+  artifact), `const <name> = await tools.(exec_command|write_stdin)(<literal-object>); text(<name>);?` with the §23.2
+  junction tolerances carried verbatim (head/argument/declaration junctions zero tolerance; the three emission
+  junctions space/tab runs of length 0–8, 0 = canonical); `<name>` = `[A-Za-z_][A-Za-z0-9_]{0,63}` (1–64 chars, the
+  existing `WRAPPED_TOOL_NAME` identifier bound) EXCLUDING the pinned `r` spelling, which stays EXCLUSIVELY governed
+  by the unchanged pinned patterns — their accepted set is byte-identical, and the recognition union admits `r` plus
+  every bounded non-`r` name; the argument is ONE single-line literal object ≤ 4096 chars through the SAME unchanged
+  `parseWrapperArguments` (raw directives and the existing argument validators preserved — no eval, no general AST
+  interpreter, no permissive substring search, no unbounded variable grammar); the sink is the EQUAL text-binding
+  ONLY (the equality is structural — the pattern backreference — so a mismatched sink can never match); directive
+  ABSENT; a whole-body match failing its argument decode falls through to the unchanged per-line machinery (the
+  §23.2 rule).
+- **The complete negative family — 18 registered shapes through the REAL scan** (tests/shell-wait-native-
+  interruption.test.mjs): mismatched sink binding; dynamic template/identifier/call-expression arguments; unknown
+  property/String/stringify tails; `let` declaration; over-64-char name; `$`/leading-digit names; a valid directive
+  (the family registers with directive absent); interior newline (same-line rule); trailing blank line; over-limit
+  argument (> 4096); truncated emission; hidden trailing statement; hidden second awaited call — every one still
+  aborts `unsupported-call-shape` with the body withheld, and the §24.10 fail-closed chain
+  (`host-activity-call-scan-incomplete` → `ambiguous-cell-scan-incomplete-not-attributed`) is re-proven unchanged
+  for a refused candidate riding beside recognized facts.
+- **The GREEN pipeline evidence:** the identical causal shape whose launch/poll cells are anchored wrapper cells
+  reaches the marker settlement (`native-cancellation-settlement-after-delivery`, `deliveryToSettlementMs` 5000,
+  `acknowledgementAtResolution` "at") through the REAL extractor → mapper → serializer → reload → join → oracle
+  chain, with a control differential proving the `r` form and the `result` form produce IDENTICAL verdict fields
+  (the binding spelling is never a verdict input). The probe suite's parser-seam matrix pins the name rule
+  (64 admitted / 65 refused, charset, `r` exclusivity), the per-junction 0/8/9 bounds, the same-line rule, the
+  decode fall-through, the unchanged preparation/directive paths, and the shape-diagnostic mirror agreement
+  (schema v1 fields and enums unchanged; the mirrors follow the widened parser per their contract — the
+  `const <bounded-name>` head prefix now diagnoses the arguments/output stages downstream of the skeleton exactly
+  like the pinned `r` head).
+- **Versioning (the existing scheme):** NO join/oracle bump — this is extractor-side recognition growth with zero
+  join/oracle output change; legacy persisted records replay byte-identically (the pinned F/I replay re-proves it on
+  the new bytes), and the executing-observer provenance digest moves with the changed evidence.mjs bytes
+  automatically (the v5 construction). `SHAPE_DIAGNOSTIC_SCHEMA_VERSION` stays 1 (the frozen §15.1 schema; only the
+  mirrors' tracked-parser response widened).
+- **The grounding boundary, explicit:** the synthetic grounding does NOT prove conformance with the historical F/I/N
+  wrapper bodies — the digest-only anchors (`36c90344…`, `be3b9a1c…`, `35d62ac0…`) remain the only historical link;
+  the grammar is admitted for FORWARD recognition on future authorized captures, never as a retroactive claim about
+  the withheld bytes, and a future authorized case would measure the real cells.
+- **Gates on the amendment bytes:** the focused native suite 96/96 pass, 0 failed, 0 cancelled, clean self-exit
+  (92 + the 4 new registered tests); `node --test tests/shell-wait-probe.test.mjs` and `npm run test:shell-research`
+  re-run on the final rebased bytes (counts in the §24.14 addendum); lint, typecheck, `git diff --check`,
+  `node scripts/check-line-endings.mjs` — all exit 0. The Task-2 fixup diff touches ONLY:
+  tools/shell-wait-probe/{evidence,shape-diagnostic}.mjs, tests/{shell-wait-native-interruption,shell-wait-probe}.test.mjs
+  and this report — no prohibited path.

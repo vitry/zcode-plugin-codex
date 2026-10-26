@@ -81,6 +81,72 @@ const WRAPPER_PATTERN = /^const r = await tools\.(exec_command|write_stdin)\((\{
 // the unchanged per-line machinery (it only ever ADMITS a fully validated
 // frozen body; every other body keeps its existing verdict and diagnostics).
 const EMISSION_JUNCTION_WRAPPER_PATTERN = /^const r = await tools\.(exec_command|write_stdin)\((\{[^\n]{1,4096}?\})\);[ \t]*text[ \t]{0,8}\([ \t]{0,8}r[ \t]{0,8}\);?[ \t]*\r?\n?$/u;
+// The native-acceptance review round's ANCHORED BOUNDED-NAME wrapper family
+// (frozen 2026-10-26 BEFORE implementation — the §23.2 discipline carried;
+// report §24.11 amendment): the §23.2 emission-junction whole-body family
+// with exactly ONE generalized dimension — the binding identifier — grounded
+// in the SYNTHETIC reproduction of the retained structural anchors (§24.3 /
+// N's complete shape diagnostic: a NON-`r` binding name, a bound-await head,
+// a literal-object argument, an equal text-binding sink, a single statement;
+// the reviewer's repro: the same call parses with `r`, refuses `result`).
+// Accepted form, ONE content line (+ the optional trailing-newline artifact),
+// anchored over the RAW directive-prefixed input (no strip-first bypass):
+//
+//   const <name> = await tools.(exec_command|write_stdin)(<literal-object>);
+//       [ \t]* text[ \t]{0,8}([ \t]{0,8}<name>[ \t]{0,8});?[ \t]*\r?\n?
+//
+// Bounds, all finite and checkable:
+// - <name>: `[A-Za-z_][A-Za-z0-9_]{0,63}` (1–64 chars, the existing
+//   WRAPPED_TOOL_NAME identifier bound) EXCLUDING the pinned `r` spelling via
+//   the leading lookahead — `r` stays EXCLUSIVELY governed by the unchanged
+//   pinned patterns above, so their accepted set is byte-identical and the
+//   recognition union admits `r` plus every bounded non-`r` name (e.g.
+//   `result`, the reviewer's repro binding).
+// - tool: exactly {exec_command, write_stdin} (the §23.2 frozen set; no
+//   anchor extends it to `wait` in the binding+sink family).
+// - <literal-object>: ONE single-line literal object ≤ 4096 chars decoded by
+//   the SAME unchanged `parseWrapperArguments` (raw directives and the
+//   existing argument validators preserved — no new decoder, no eval, no
+//   general AST interpreter, no permissive substring search, no unbounded
+//   variable grammar).
+// - Junctions: head/argument/declaration junctions copied VERBATIM from the
+//   §23.2 family (zero tolerance); the three emission junctions keep the
+//   §23.2 relaxation exactly (space/tab runs, length 0–8; 0 = canonical).
+// - Sink: `text(<name>)` — the EQUAL text-binding sink ONLY (the anchors'
+//   equal text-binding tail class); `text(JSON.stringify(<name>))` and every
+//   other tail stays rejected (the stringify tail remains exclusive to the
+//   pinned `r` WRAPPER family, unrelaxed). The equality is STRUCTURAL (the
+//   backreference `\1`) — a mismatched sink can never match.
+// - Directive: ABSENT (a directive-led body keeps the existing rules; the
+//   `^const` anchor cannot match behind a directive line).
+// - The statement must be the cell's complete content (single statement, no
+//   interior newline, no trailing blank content line); a whole-body match
+//   failing its argument decode falls through to the unchanged per-line
+//   machinery (the §23.2 rule) — every previously-admitted body keeps its
+//   verdict, every unsupported form keeps its fail-closed verdict with the
+//   body withheld.
+//
+// Negative family (each fail-closed under its existing named diagnostics):
+// mismatched sink identifiers; dynamic arguments (template literals,
+// identifiers, call expressions, spreads); hidden extra calls/statements;
+// the private preparation frame (its own recognized path, unchanged); unknown
+// tails (property access, String(), stringify under relaxed spacing); invalid
+// directives AND valid directives (this family registers with directive
+// absent); over-limit (> 4096) and truncated input; multi-statement bodies;
+// `let`/`var` declarations; names over 64 chars, with a leading digit, or
+// containing any character outside [A-Za-z0-9_].
+//
+// GROUNDING BOUNDARY, explicit: the family is grounded by the offline
+// SYNTHETIC reproduction only (the plan's Task-2 bullet: isolated synthetic/
+// fixture-controlled bodies). It does NOT prove conformance with the
+// historical F/I/N wrapper bodies — the digest-only anchors (`36c90344…`/
+// `be3b9a1c…`/`35d62ac0…`) remain the only historical link; a future
+// authorized case would measure the real cells. No join/oracle version bump:
+// extractor-side recognition growth with zero join/oracle output change —
+// legacy persisted records replay byte-identically (the pinned F/I replay
+// re-proves it on the new bytes), and the executing-observer provenance
+// digest moves with these bytes automatically (the v5 construction).
+const BOUND_RESULT_WRAPPER_PATTERN = /^const (?!(?:r) = await )([A-Za-z_][A-Za-z0-9_]{0,63}) = await tools\.(exec_command|write_stdin)\((\{[^\n]{1,4096}?\})\);[ \t]*text[ \t]{0,8}\([ \t]{0,8}\1[ \t]{0,8}\);?[ \t]*\r?\n?$/u;
 // The installed 0.160.1 host additionally observes the inline wrapper form
 // `text(await tools.<tool>({...}));` (first live observation 2026-10-06, Task 4
 // Case 0: `text(await tools.exec_command({cmd:"cat …",max_output_tokens:20000}));`).
@@ -726,6 +792,16 @@ export function parseCallStatements(event) {
     // never returns null from here: the unchanged per-line machinery below
     // renders the existing verdict for the same bytes (fail closed for the
     // frozen family, admitted for an already-supported shape).
+  }
+  // The anchored bounded-name family (the freeze comment above): the SAME
+  // whole-body recognition for the NON-`r` structural-anchor bindings, tried
+  // after the pinned family with the identical fall-through rule.
+  const boundResultBody = BOUND_RESULT_WRAPPER_PATTERN.exec(source);
+  if (boundResultBody) {
+    const value = parseWrapperArguments(boundResultBody[3]);
+    if (value) return [{ kind: boundResultBody[2], value, directive: null, wrapped: true }];
+    // Identical fall-through: an argument over the bound or undecodable keeps
+    // the unchanged per-line verdict for the same bytes.
   }
   let prefix = '';
   const directive = DIRECTIVE_PATTERN.exec(source);
@@ -2711,7 +2787,8 @@ const HOST_ACTIVITY_ITEM_BOUND = 64;
  * `SubAgentActivity(kind=interrupted)` item to THE ONE interrupt call and to
  * the exact pending Child, through supported host evidence only.
  *
- * Conjuncts (report §19.4; every conjunct required, no fallback interaction):
+ * Conjuncts (report §19.4 as RELOCATED by §24.4, native-acceptance Task 2;
+ * every conjunct required, no fallback interaction):
  *   (1) exactly ONE interrupt-shaped call (`interaction.callCount === 1`);
  *   (2) exactly ONE matching interrupted-kind item in the OWNING ROOT's
  *       rollout whose `id` equals that call's id (direct call-id join —
@@ -2719,10 +2796,11 @@ const HOST_ACTIVITY_ITEM_BOUND = 64;
  *       authoritative);
  *   (3) the item's `agent_thread_id` equals the exact pending Child id as
  *       returned by the spawn acknowledgement;
- *   (4) the item occurs in the OWNING ROOT's rollout (its `thread_id` is the
- *       Root's AND it lives in that rollout), ordered strictly inside the
- *       confirmed pending window [attributable poll start, resolution) and
- *       before natural completion;
+ *   (4) the REQUEST (f1's call-side attributable position) sits strictly
+ *       inside the confirmed pending window [attributable poll start,
+ *       resolution) — the §24.4 window relocation: the extractor's
+ *       cross-rollout timestamp/bounds witness (`pendingBeforeCall`), never
+ *       the item's emission stamp;
  *   (5) the item is timed (`completed_at_ms` finite and positive; the
  *       pinned deserialization default 0 and absent stamps are UNTIMED —
  *       never zero);
@@ -2733,18 +2811,31 @@ const HOST_ACTIVITY_ITEM_BOUND = 64;
  * The emission timestamp (`completed_at_ms`) is strictly AFTER the dispatch
  * (interrupt_agent.rs emits after the interrupt returns): it bounds the
  * dispatch from above and is never read as the dispatch instant, never as a
- * settlement-latency endpoint by itself (§19.6).
+ * settlement-latency endpoint by itself (§19.6). Its relation to the
+ * resolution instant is RECORDED as the typed `acknowledgementAtResolution`
+ * shape (`at`/`after`/`before`/`unestablishable`, same epoch-ms rollout-event
+ * clock, compared against the earliest attributable closing stamp) — a
+ * host-side SUBMISSION-RESULT fact that never fails the admission by itself
+ * and never by itself claims Child receipt or processing (§24.4 f2: any
+ * processing claim requires f4's independent resolution evidence).
  *
  * Counterexamples each fail the admission with their stable named reason:
  * item absent (Legacy-mode rollout, older binary, truncated rollout); kind
  * Started/Completed/any other value; agent_thread_id matching a
  * sibling/unrelated/self agent; duplicate items for one call id; id join
  * missing; item in a foreign rollout (including a same-shaped copy in the
- * Child's own rollout); rejected dispatch; unobserved outcome; emission
- * outside the pending window or after settlement; untimed item; item without
- * a pending observation; more than one delivery attempt; a Root final
- * message, gate release or cleanup fact offered as the item (structurally
- * inadmissible — only the registered shape is scanned).
+ * Child's own rollout); rejected dispatch; unobserved outcome; an emission
+ * stamp strictly BEFORE its own call's attributable bound
+ * (`host-activity-pre-call-timing`) or before the attributable poll start
+ * (`host-activity-outside-pending-window`) — the two §24.4 contradiction
+ * guards that STAY; request outside/unestablished in the pending window;
+ * untimed item; item without a pending observation; more than one delivery
+ * attempt; a Root final message, gate release or cleanup fact offered as the
+ * item (structurally inadmissible — only the registered shape is scanned).
+ * The RETIRED comparison: the old conjunct-4 emission-vs-window ordering
+ * (`host-activity-after-settlement`/`-after-resolution`/
+ * `-after-explicit-stop`) is retired, NOT inverted — the §24.4 preregistration
+ * forbids the `>=`→`>` flip; the emission stamp carries no window conjunct.
  *
  * @param {unknown} rollouts
  * @param {ReturnType<typeof extractInterruptInteraction>} interaction the
@@ -2768,6 +2859,7 @@ const HOST_ACTIVITY_ITEM_BOUND = 64;
  *   agentThreadIdMatch: boolean | null,
  *   rootRolloutOwned: boolean | null,
  *   insidePendingWindow: boolean | null,
+ *   acknowledgementAtResolution: 'at' | 'after' | 'before' | 'unestablishable' | null,
  *   timed: boolean | null,
  *   completedAtMs: number | null,
  *   admitted: boolean | null,
@@ -2812,6 +2904,7 @@ export function admitInterruptHostDelivery(rollouts, interaction, options) {
       agentThreadIdMatch: null,
       rootRolloutOwned: null,
       insidePendingWindow: null,
+      acknowledgementAtResolution: null,
       timed: null,
       completedAtMs: null,
       admitted: null,
@@ -2898,6 +2991,7 @@ export function admitInterruptHostDelivery(rollouts, interaction, options) {
       agentThreadIdMatch: null,
       rootRolloutOwned: null,
       insidePendingWindow: null,
+      acknowledgementAtResolution: null,
       timed: null,
       completedAtMs: null,
       admitted: false,
@@ -2919,6 +3013,7 @@ export function admitInterruptHostDelivery(rollouts, interaction, options) {
       agentThreadIdMatch: null,
       rootRolloutOwned: null,
       insidePendingWindow: null,
+      acknowledgementAtResolution: null,
       timed: null,
       completedAtMs: null,
       admitted: false,
@@ -2949,6 +3044,7 @@ export function admitInterruptHostDelivery(rollouts, interaction, options) {
       agentThreadIdMatch: null,
       rootRolloutOwned: null,
       insidePendingWindow: null,
+      acknowledgementAtResolution: null,
       timed: null,
       completedAtMs: null,
       admitted: false,
@@ -3047,14 +3143,27 @@ export function admitInterruptHostDelivery(rollouts, interaction, options) {
   // Conjunct 5: the emission timing (finite positive above; null otherwise).
   const timed = joinedItem !== null ? joinedItem.completedAtMs !== null : null;
   if (joinedItem !== null && timed !== true) reasons.push('host-activity-untimed');
-  // Conjunct 4b: the emission is ordered strictly inside the confirmed
-  // pending window [attributable poll start, resolution) and before natural
-  // completion. Untimed items keep the ordering unestablished (their own
-  // reason already failed the admission); an observed window with an
+  // Conjunct 4 (RELOCATED, report §24.4 native-acceptance Task 2): the
+  // [attributable poll start, resolution) window test binds to the REQUEST —
+  // f1's call-side attributable position, proven by the extractor's
+  // cross-rollout timestamp/bounds witness (`pendingBeforeCall`: the pending
+  // stamp ≤ the call stamp on the ONE epoch-ms rollout-event clock, or the
+  // bounds-eligible span, or the same-rollout index witness) with every
+  // attributable resolution provably at/after the call or still outstanding.
+  // The OLD conjunct-4b comparison — the ITEM EMISSION stamp against the
+  // window closing — is RETIRED, not inverted: the F record proved the host
+  // emits the submission-result item AT the resolution instant (equality to
+  // the millisecond, §24.3), so the old comparison failed closed BY DESIGN on
+  // the physically expected shape. The emission stamp's relation to the
+  // resolution is now the RECORDED typed fact `acknowledgementAtResolution`,
+  // and only the two contradiction guards STAY on it: strictly before its own
+  // call's attributable bound (`host-activity-pre-call-timing` — dispatched
+  // before the dispatch) and strictly before the attributable poll start
+  // (`host-activity-outside-pending-window`). An observed window with an
   // unestablishable start stays unestablished, never approximated.
   /** @type {boolean | null} */
   let insidePendingWindow = null;
-  if (joinedItem !== null && timed === true) {
+  if (joinedItem !== null) {
     if (interaction.pendingBeforeCall.observed !== true) {
       insidePendingWindow = false;
       reasons.push('host-activity-without-pending-observation');
@@ -3062,41 +3171,53 @@ export function admitInterruptHostDelivery(rollouts, interaction, options) {
       insidePendingWindow = null;
       reasons.push('host-activity-window-unestablished');
     } else {
-      const completedAtMs = /** @type {number} */ (joinedItem.completedAtMs);
-      // Codex round 5: the emission must satisfy BOTH window bounds — its
-      // own dispatch's lower timing bound first. `completed_at_ms` is an
-      // EMISSION stamp that bounds the dispatch from ABOVE (§19.4/§19.6):
-      // an emission strictly BEFORE the call's attributable time is
-      // contradictory (dispatched before the dispatch) — named
-      // unestablished, never admitted.
-      if (interaction.callAtMs !== null && completedAtMs < interaction.callAtMs) {
-        insidePendingWindow = false;
-        reasons.push('host-activity-pre-call-timing');
-      } else if (completedAtMs < /** @type {number} */ (interaction.pendingBeforeCall.atMs)) {
-        insidePendingWindow = false;
-        reasons.push('host-activity-outside-pending-window');
-      } else if ((interaction.settledAfterCall.atMs !== null && completedAtMs >= interaction.settledAfterCall.atMs)
-        || (interaction.completedAfterCall.atMs !== null && completedAtMs >= interaction.completedAfterCall.atMs)) {
-        insidePendingWindow = false;
-        reasons.push('host-activity-after-settlement');
-      } else if (interaction.resolvedNonterminalAfterCall.atMs !== null
-        && completedAtMs >= interaction.resolvedNonterminalAfterCall.atMs) {
-        // Codex round 1: the registered [poll start, resolution) window
-        // closes on ANY resolution — a nonterminal resolution ends it exactly
-        // like a settlement; an emission at/after it is outside, named.
-        insidePendingWindow = false;
-        reasons.push('host-activity-after-resolution');
-      } else if (interaction.resolvedExplicitStopAfterCall.atMs !== null
-        && completedAtMs >= interaction.resolvedExplicitStopAfterCall.atMs) {
-        // Codex round 4: an attributable EXPLICIT cell termination closes the
-        // window too (the observation demonstrably resolved before the
-        // emission) — a window-closing bound ONLY, never native-settlement
-        // credit (the round-10 alternate-ender classification stands).
-        insidePendingWindow = false;
-        reasons.push('host-activity-after-explicit-stop');
-      } else {
-        insidePendingWindow = true;
+      insidePendingWindow = true;
+      if (timed === true) {
+        const completedAtMs = /** @type {number} */ (joinedItem.completedAtMs);
+        // Codex round 5 guard (STAYS): the emission must satisfy its own
+        // dispatch's lower timing bound. `completed_at_ms` is an EMISSION
+        // stamp that bounds the dispatch from ABOVE (§19.4/§19.6): an
+        // emission strictly BEFORE the call's attributable time is
+        // contradictory (dispatched before the dispatch) — named, never
+        // admitted.
+        if (interaction.callAtMs !== null && completedAtMs < interaction.callAtMs) {
+          reasons.push('host-activity-pre-call-timing');
+        } else if (completedAtMs < /** @type {number} */ (interaction.pendingBeforeCall.atMs)) {
+          // Codex round-5 lower-bound guard (STAYS): an emission stamp before
+          // the attributable poll start contradicts the window the request
+          // demonstrably sits in.
+          reasons.push('host-activity-outside-pending-window');
+        }
       }
+    }
+  }
+  // The §24.4 typed acknowledgement shape: the admitted item's emission stamp
+  // versus the EARLIEST attributable closing stamp of the observed window
+  // (settlement, exit-code completion, nonterminal resolution, explicit stop
+  // — all on the SAME epoch-ms rollout-event clock; the Root-side item stamp
+  // vs the Child-side resolution stamp is that clock's established
+  // cross-rollout precedent, §24.3). Purely a RECORDED fact: `at` is the
+  // registered submission-result-at-resolution shape, `after`/`before` are
+  // observations, and an unavailable closing stamp (the window never
+  // observably closed) stays `unestablishable`. None of them fails the
+  // admission; none of them by itself claims Child receipt or processing.
+  /** @type {'at' | 'after' | 'before' | 'unestablishable' | null} */
+  let acknowledgementAtResolution = null;
+  if (joinedItem !== null && timed === true) {
+    const completedAtMs = /** @type {number} */ (joinedItem.completedAtMs);
+    const closingStamps = [
+      interaction.settledAfterCall?.atMs,
+      interaction.completedAfterCall?.atMs,
+      interaction.resolvedNonterminalAfterCall?.atMs,
+      interaction.resolvedExplicitStopAfterCall?.atMs,
+    ].filter((stamp) => typeof stamp === 'number');
+    if (closingStamps.length === 0) {
+      acknowledgementAtResolution = 'unestablishable';
+    } else {
+      const resolutionAtMs = Math.min(...closingStamps);
+      acknowledgementAtResolution = completedAtMs === resolutionAtMs
+        ? 'at'
+        : completedAtMs > resolutionAtMs ? 'after' : 'before';
     }
   }
   const admitted = reasons.length === 0;
@@ -3113,6 +3234,7 @@ export function admitInterruptHostDelivery(rollouts, interaction, options) {
     agentThreadIdMatch,
     rootRolloutOwned,
     insidePendingWindow,
+    acknowledgementAtResolution,
     timed,
     completedAtMs: joinedItem?.completedAtMs ?? null,
     admitted,

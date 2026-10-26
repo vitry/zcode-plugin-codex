@@ -19,6 +19,20 @@ import { discoverTestEntries, selectTestEntries } from '../tools/run-test-suite.
 
 const suiteCliPath = fileURLToPath(new URL('../tools/run-test-suite.mjs', import.meta.url));
 const shellEntry = 'tests/shell-wait-probe.test.mjs';
+const nativeInterruptionEntry = 'tests/shell-wait-native-interruption.test.mjs';
+// The registered shell-research selection is TWO files (native-acceptance
+// Task 2, report §24.10): this one — which under the guard env contributes
+// EXACTLY the guarded marker — and the native-interruption contract file,
+// whose every top-level test registers. The spawned-suite totals pinned below
+// are that marker (1) plus the native file's registered test count (23 at
+// this registration), so a wrong selection (an extra or missing entry) or a
+// silently skipped contract test still breaks them.
+const shellSuiteSpawnedTestTotal = 24;
+/** @param {number} count */
+const suiteCountPattern = (count) => new RegExp(`ℹ tests ${count}\\r?\\n`);
+/** @param {number} count */
+const suitePassPattern = (count) => new RegExp(`ℹ pass ${count}\\r?\\n`);
+const suiteFailZeroPattern = /ℹ fail 0\r?\n/;
 const repositoryRoot = fileURLToPath(new URL('..', import.meta.url));
 
 /** @param {string} value */
@@ -230,42 +244,42 @@ function spawnSuiteWithPresetNodeOptions(presetNodeOptions) {
 }
 
 if (process.env[selfTestGuard] === '1') {
-  test('guarded re-entry: the suite selected exactly this shell research entry', async () => {
+  test('guarded re-entry: the suite selected exactly the two registered shell research entries', async () => {
     assert.equal(process.env[selfTestGuard], '1');
-    assert.deepEqual(selectTestEntries(await discoverTestEntries(), 'shell-research'), [shellEntry]);
+    assert.deepEqual(selectTestEntries(await discoverTestEntries(), 'shell-research'), [nativeInterruptionEntry, shellEntry]);
   });
 } else {
-  test('the shell-research suite selects exactly the shell wait probe entry and exits zero', () => {
+  test('the shell-research suite selects exactly the two registered shell research entries and exits zero', () => {
     const result = spawnSync(process.execPath, [suiteCliPath, 'shell-research'], {
       encoding: 'utf8',
       env: suiteChildEnv(),
     });
     assert.equal(result.error, undefined);
     assert.equal(result.status, 0, result.stderr);
-    // Exactly one selected test ran, it passed, and it is this file's guarded
-    // marker: a wrong selection (extra entries or none) breaks these counts.
-    assert.match(result.stdout, /guarded re-entry: the suite selected exactly this shell research entry/);
-    assert.match(result.stdout, /ℹ tests 1\r?\n/);
-    assert.match(result.stdout, /ℹ pass 1\r?\n/);
-    assert.match(result.stdout, /ℹ fail 0\r?\n/);
+    // The guarded marker ran beside the native-contract file's tests and all
+    // passed: a wrong selection (extra entries or none) breaks these counts.
+    assert.match(result.stdout, /guarded re-entry: the suite selected exactly the two registered shell research entries/);
+    assert.match(result.stdout, suiteCountPattern(shellSuiteSpawnedTestTotal));
+    assert.match(result.stdout, suitePassPattern(shellSuiteSpawnedTestTotal));
+    assert.match(result.stdout, suiteFailZeroPattern);
   });
 
   test('a whole-token quoted reporter flag is replaced instead of duplicated', () => {
     const result = spawnSuiteWithPresetNodeOptions('"--test-reporter=tap"');
     assert.equal(result.error, undefined);
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /ℹ tests 1\r?\n/);
-    assert.match(result.stdout, /ℹ pass 1\r?\n/);
-    assert.match(result.stdout, /ℹ fail 0\r?\n/);
+    assert.match(result.stdout, suiteCountPattern(shellSuiteSpawnedTestTotal));
+    assert.match(result.stdout, suitePassPattern(shellSuiteSpawnedTestTotal));
+    assert.match(result.stdout, suiteFailZeroPattern);
   });
 
   test('a quoted destination value containing spaces is stripped completely', () => {
     const result = spawnSuiteWithPresetNodeOptions(`--test-reporter-destination="${join(tmpdir(), 'test reports.txt')}" --test-reporter=tap`);
     assert.equal(result.error, undefined);
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /ℹ tests 1\r?\n/);
-    assert.match(result.stdout, /ℹ pass 1\r?\n/);
-    assert.match(result.stdout, /ℹ fail 0\r?\n/);
+    assert.match(result.stdout, suiteCountPattern(shellSuiteSpawnedTestTotal));
+    assert.match(result.stdout, suitePassPattern(shellSuiteSpawnedTestTotal));
+    assert.match(result.stdout, suiteFailZeroPattern);
   });
 
   test('an unrelated quoted value containing spaces survives byte-for-byte', async () => {
@@ -280,9 +294,9 @@ if (process.env[selfTestGuard] === '1') {
       const result = spawnSuiteWithPresetNodeOptions(`--require="${probePath}" --test-reporter=tap`);
       assert.equal(result.error, undefined);
       assert.equal(result.status, 0, result.stderr);
-      assert.match(result.stdout, /ℹ tests 1\r?\n/);
+      assert.match(result.stdout, suiteCountPattern(shellSuiteSpawnedTestTotal));
       // The required module ran, proving the quoted value reached the child
-      // byte-for-byte; the suite still selected exactly this entry.
+      // byte-for-byte; the suite still selected exactly the registered entries.
       assert.match(result.stderr, /NOPT_PRESERVED/);
     } finally {
       await rm(temporaryRoot, { recursive: true, force: true });
@@ -293,36 +307,36 @@ if (process.env[selfTestGuard] === '1') {
     const result = spawnSuiteWithPresetNodeOptions('--test_reporter=tap');
     assert.equal(result.error, undefined);
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /ℹ tests 1\r?\n/);
-    assert.match(result.stdout, /ℹ pass 1\r?\n/);
-    assert.match(result.stdout, /ℹ fail 0\r?\n/);
+    assert.match(result.stdout, suiteCountPattern(shellSuiteSpawnedTestTotal));
+    assert.match(result.stdout, suitePassPattern(shellSuiteSpawnedTestTotal));
+    assert.match(result.stdout, suiteFailZeroPattern);
   });
 
   test('a space-separated underscore reporter alias is replaced with its value', () => {
     const result = spawnSuiteWithPresetNodeOptions('--test_reporter tap');
     assert.equal(result.error, undefined);
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /ℹ tests 1\r?\n/);
-    assert.match(result.stdout, /ℹ pass 1\r?\n/);
-    assert.match(result.stdout, /ℹ fail 0\r?\n/);
+    assert.match(result.stdout, suiteCountPattern(shellSuiteSpawnedTestTotal));
+    assert.match(result.stdout, suitePassPattern(shellSuiteSpawnedTestTotal));
+    assert.match(result.stdout, suiteFailZeroPattern);
   });
 
   test('a quoted underscore reporter alias is replaced', () => {
     const result = spawnSuiteWithPresetNodeOptions('"--test_reporter=tap"');
     assert.equal(result.error, undefined);
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /ℹ tests 1\r?\n/);
-    assert.match(result.stdout, /ℹ pass 1\r?\n/);
-    assert.match(result.stdout, /ℹ fail 0\r?\n/);
+    assert.match(result.stdout, suiteCountPattern(shellSuiteSpawnedTestTotal));
+    assert.match(result.stdout, suitePassPattern(shellSuiteSpawnedTestTotal));
+    assert.match(result.stdout, suiteFailZeroPattern);
   });
 
   test('an underscore destination alias with a quoted spaced value is stripped', () => {
     const result = spawnSuiteWithPresetNodeOptions(`--test_reporter_destination="${join(tmpdir(), 'test reports.txt')}" --test_reporter=tap`);
     assert.equal(result.error, undefined);
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /ℹ tests 1\r?\n/);
-    assert.match(result.stdout, /ℹ pass 1\r?\n/);
-    assert.match(result.stdout, /ℹ fail 0\r?\n/);
+    assert.match(result.stdout, suiteCountPattern(shellSuiteSpawnedTestTotal));
+    assert.match(result.stdout, suitePassPattern(shellSuiteSpawnedTestTotal));
+    assert.match(result.stdout, suiteFailZeroPattern);
   });
 
   test('an unknown suite still fails closed with the existing message', () => {
@@ -3925,9 +3939,16 @@ if (process.env[selfTestGuard] === '1') {
         'the private string literal must never survive the classification');
       assert.equal(JSON.stringify(facts).includes(CANARY_BINDING), false,
         'the binding spelling must never survive the classification');
-      // Diagnosis/admission separation pinned on this noncanonical synthetic
-      // binding: the existing grammar rejects the whole cell.
-      assert.equal(parseCallStatements({ payload: { type: 'custom_tool_call', input: pinnedRaw } }), null);
+      // Diagnosis/admission separation pinned on a STILL-REFUSED positively
+      // classified shape (native-acceptance review round: the frozen bounded-
+      // name family now admits the canonical `alias` binding, so the
+      // separation pin moves to the MISMATCHED sink — the classifier still
+      // projects every syntax relation while the parser refuses the cell).
+      const mismatched = `${pinnedRaw.replace(`text(${CANARY_BINDING})`, 'text(otherBinding)')}`;
+      const mismatchedFacts = inspectCallShape(mismatched);
+      assert.equal(mismatchedFacts.bindingEquality, 'not-equal', 'the relation is positively classified');
+      assert.equal(parseCallStatements({ payload: { type: 'custom_tool_call', input: mismatched } }), null,
+        'the mismatched sink stays refused — diagnosis is never admission');
     });
 
     // The §15.1 eight-record synthetic alternative set. The canonical control
@@ -3956,15 +3977,16 @@ if (process.env[selfTestGuard] === '1') {
         'the falsifiability control must stay inside the already-admitted family');
     });
 
-    test('record 2 S-binding: a changed binding keeps every syntax fact identical and reports the wrapper stage the pinned grammar fails at', () => {
+    test('record 2 S-binding: a changed bounded binding keeps every syntax fact identical and the frozen bounded-name family admits it (the native-acceptance review round)', () => {
       const changed = 'const responseText = await tools.exec_command({cmd:"synthetic-command-text"}); text(responseText);';
       const facts = inspectCallShape(changed);
-      const expected = { ...canonicalFacts, parserStage: 'wrapper' };
+      const expected = { ...canonicalFacts, parserStage: 'parse-accepted' };
       assert.deepEqual(facts, expected,
-        'identical syntax/decision facts apart from the parserStage diagnosis (WRAPPER_PATTERN pins the r spelling)');
+        'identical syntax/decision facts apart from the parserStage diagnosis (the frozen bounded-name family admits the canonical bounded binding)');
       assert.equal(facts.bindingEquality, 'equal', 'the binding relation holds without the spelling');
       assert.equal(JSON.stringify(facts).includes('responseText'), false, 'no binding spelling may survive');
-      assert.equal(parseCallStatements(event(changed)), null);
+      assert.notEqual(parseCallStatements(event(changed)), null,
+        'the frozen bounded-name family admits the canonical bounded non-r binding (report §24.11 amendment)');
     });
 
     test('record 3 S-tail-missing: the emission tail is absent and the output stage diagnosis fires', () => {
@@ -5541,7 +5563,11 @@ if (process.env[selfTestGuard] === '1') {
       ...overrides,
     });
     const unknownCellRollouts = (body) => [[meta(PARENT)], [childMeta(), scriptCell('cell-1', body)]];
-    const unknownBody = `const ${CANARY_BINDING} = await tools.exec_command({cmd:"${CANARY_CMD}"}); text(${CANARY_BINDING});`;
+    // STILL-REFUSED positively classified body (native-acceptance review
+    // round: the canonical bounded-name wrapper now PARSES, so the seam
+    // fixtures use the mismatched-sink form — every closed fact identical
+    // except the refused admission and the mechanical output-stage mirror).
+    const unknownBody = `const ${CANARY_BINDING} = await tools.exec_command({cmd:"${CANARY_CMD}"}); text(secretOtherName);`;
 
     test('with both gates the unsupported-call-shape excerpt gains the closed shape block and the verdict stays fail-closed', () => {
       const result = inspectShellWaitEvidence(evidenceInput(unknownCellRollouts(unknownBody), {
@@ -5563,7 +5589,8 @@ if (process.env[selfTestGuard] === '1') {
       assert.equal(excerpt.shape.tool, 'exec_command');
       assert.equal(excerpt.shape.tail, 'text-binding');
       assert.equal(excerpt.shape.wholeInputConsumed, true);
-      assert.equal(excerpt.shape.parserStage, 'wrapper');
+      assert.equal(excerpt.shape.parserStage, 'output',
+        'the mechanical mirror pins the skeleton-head output stage (the mismatched sink the grammar refuses)');
       const serialized = JSON.stringify(result);
       assert.equal(serialized.includes(CANARY_CMD), false, 'the private string content must never survive');
       assert.equal(serialized.includes(CANARY_BINDING), false, 'the binding spelling must never survive');
@@ -5636,7 +5663,7 @@ if (process.env[selfTestGuard] === '1') {
       // WHOLE (the closed statementCount survives); at sixteen the fixed
       // minimal marker is all that fits. Every tier stays parseable within
       // the 2048-char excerpt budget and never truncates mid-JSON.
-      const statement = `const longBindingName = await tools.exec_command({cmd:"${'z'.repeat(120)}"}); text(longBindingName);`;
+      const statement = `const longBindingName = await tools.exec_command({cmd:"${'z'.repeat(120)}"}); text(otherLongSink);`;
       const shapeAt = (count) => {
         const body = Array.from({ length: count }, () => statement).join('\n');
         const result = inspectShellWaitEvidence(evidenceInput(unknownCellRollouts(body), {
@@ -5699,7 +5726,7 @@ if (process.env[selfTestGuard] === '1') {
       // classification coverage stays 'complete', and the persisted block
       // now carries the explicit serialization marker inside the 2048
       // algebra.
-      const statement = `const longBindingName = await tools.exec_command({cmd:"${'z'.repeat(120)}"}); text(longBindingName);`;
+      const statement = `const longBindingName = await tools.exec_command({cmd:"${'z'.repeat(120)}"}); text(otherLongSink);`;
       const body = Array.from({ length: 8 }, () => statement).join('\n');
       const result = inspectShellWaitEvidence(evidenceInput(unknownCellRollouts(body), {
         unclassifiedStructuralDiagnostic: true,
@@ -5874,7 +5901,8 @@ if (process.env[selfTestGuard] === '1') {
         unclassifiedShapeDiagnostic: true,
       }));
       const cellExcerpt = JSON.parse(cellResult.inconclusive.excerpt.text);
-      assert.equal(cellExcerpt.shape.parserStage, 'wrapper');
+      assert.equal(cellExcerpt.shape.parserStage, 'output',
+        'the custom-tool-cell context keeps the mechanical output-stage diagnosis for the refused sink');
     });
   });
 
@@ -9874,6 +9902,7 @@ process.exit(result.status ?? 1);
         agentThreadIdMatch: true,
         rootRolloutOwned: true,
         insidePendingWindow: true,
+        acknowledgementAtResolution: 'unestablishable',
         timed: true,
         completedAtMs: EMISSION_MS,
         admitted: true,
@@ -9990,18 +10019,23 @@ process.exit(result.status ?? 1);
       assert.ok(admission.reasons.includes('host-activity-without-pending-observation'));
     });
 
-    test('an emission ordered outside the pending window or after settlement fails the ordering conjunct', () => {
+    test('an emission stamp strictly before the poll start or its own call stays a named contradiction (the §24.4 guards)', () => {
+      // §24.4 (native-acceptance Task 2): the WINDOW conjunct reads the
+      // REQUEST position (the extractor's pendingBeforeCall witness); the
+      // emission stamp keeps only its TWO contradiction guards. A stamp
+      // before the poll start is also before the call (07.0) — the more
+      // specific contradictory-timing reason fires (still fail-closed).
       const before = admit(admissionRollouts({ completedAtMs: POLL_START_MS - 1 }));
       assert.equal(before.admission.admitted, false);
-      assert.equal(before.admission.insidePendingWindow, false);
-      // Codex round 5: that shape is ALSO before the call (07.0) — the more
-      // specific contradictory-timing reason fires (still fail-closed).
+      assert.equal(before.admission.insidePendingWindow, true, 'the REQUEST-side window holds; the guard rides as its named reason');
       assert.ok(before.admission.reasons.includes('host-activity-pre-call-timing'), JSON.stringify(before.admission.reasons));
-      // Settlement order: the same rollouts with an accepted same-cell
-      // continuation issued BEFORE the delivery whose native marker resolves
-      // the pending window BEFORE the emission — the item landed after the
-      // window's resolution (poll 02.0 → call 07.0 → marker 09.0 → emission
-      // 09.5).
+      // §24.4: the submission-result item AT/AFTER the window's resolution is
+      // the recorded acknowledgement shape — the OLD after-settlement
+      // rejection is retired, not inverted (the emission stamp carries no
+      // window conjunct). Ordering: poll 02.0 → call 07.0 → marker 09.0 →
+      // emission 09.5 admits as f2 with `acknowledgementAtResolution:
+      // "after"`; settlement credit is never granted THROUGH the item (the
+      // f4 Child resolution carries it — asserted at the mapper level).
       const rollouts = admissionRollouts({ completedAtMs: Date.parse('2026-10-06T00:00:09.500Z') });
       rollouts[1].push(
         fnCall('wait', 'outer-2', { cell_id: 'cell-1' }, '2026-10-06T00:00:06.000Z'),
@@ -10010,19 +10044,19 @@ process.exit(result.status ?? 1);
       const after = admit(rollouts);
       assert.equal(after.interaction.pendingBeforeCall.observed, true);
       assert.equal(after.interaction.settledAfterCall.atMs, Date.parse('2026-10-06T00:00:09.000Z'));
-      assert.equal(after.admission.admitted, false);
-      assert.equal(after.admission.insidePendingWindow, false);
-      assert.ok(after.admission.reasons.includes('host-activity-after-settlement'));
+      assert.equal(after.admission.admitted, true, 'the at/after acknowledgement shape admits through identity/timing');
+      assert.equal(after.admission.insidePendingWindow, true, 'the request sits strictly inside [poll start, resolution)');
+      assert.equal(after.admission.acknowledgementAtResolution, 'after', 'the emission stamp is recorded AFTER the resolution stamp');
+      assert.deepEqual(after.admission.reasons, [], 'no contradiction guard fires on the recorded shape');
     });
 
-    test('a nonterminal poll resolution closes the pending window exactly like a terminal one (codex round 1)', () => {
+    test('a nonterminal resolution is recorded as the window-closing fact the acknowledgement is measured against (codex round 1)', () => {
       // The registered window is [attributable poll start, RESOLUTION) —
-      // whatever the resolution's terminality. A live-handle completed
-      // response (no exit code) that resolves the interrupted poll AFTER the
-      // delivery closes the window: an emission at/after it is named
-      // outside, never admitted through the resolution's nonterminality.
-      // Ordering: poll 02.0 → interrupt 07.0 → nonterminal resolution 09.0 →
-      // emission 09.5.
+      // whatever the resolution's terminality. §24.4 (native-acceptance
+      // Task 2): the closing stamp (terminal or not) is what the typed
+      // acknowledgement is compared against; the emission stamp itself no
+      // longer carries a window conjunct. Ordering: poll 02.0 → interrupt
+      // 07.0 → nonterminal resolution 09.0 → emission 09.5.
       const rollouts = admissionRollouts({ completedAtMs: Date.parse('2026-10-06T00:00:09.500Z') });
       rollouts[1].push(
         fnCall('wait', 'outer-live', { cell_id: 'cell-1' }, '2026-10-06T00:00:08.000Z'),
@@ -10034,21 +10068,23 @@ process.exit(result.status ?? 1);
       assert.equal(interaction.completedAfterCall.atMs, null, 'a nonterminal resolution is not an exit-code completion');
       assert.notEqual(interaction.resolvedNonterminalAfterCall.atMs, null,
         'the nonterminal resolution is recorded as the window-closing fact');
-      assert.equal(admission.admitted, false);
-      assert.equal(admission.insidePendingWindow, false);
-      assert.ok(admission.reasons.includes('host-activity-after-resolution'), JSON.stringify(admission.reasons));
-      // Controls unchanged: an emission STRICTLY inside the window admits,
-      // and a TERMINAL resolution keeps the named after-settlement bound.
+      assert.equal(admission.admitted, true, 'the identity/timing conjuncts hold; the stamp shape is recorded, never a rejection');
+      assert.equal(admission.insidePendingWindow, true, 'the request sits strictly inside [poll start, resolution)');
+      assert.equal(admission.acknowledgementAtResolution, 'after', 'the emission is recorded against the EARLIEST closing stamp (the nonterminal one)');
+      // Controls unchanged: the plain inside shape records no closing stamp,
+      // and a TERMINAL resolution keeps its settlement classification.
       const inside = admit(admissionRollouts());
       assert.equal(inside.admission.admitted, true);
+      assert.equal(inside.admission.acknowledgementAtResolution, 'unestablishable', 'no observable closing stamp: the shape stays unestablishable');
       const terminalRollouts = admissionRollouts({ completedAtMs: Date.parse('2026-10-06T00:00:12.500Z') });
       terminalRollouts[1].push(
         fnCall('wait', 'outer-native', { cell_id: 'cell-1' }, '2026-10-06T00:00:09.000Z'),
         fnOutput('outer-native', markerOutput, Date.parse('2026-10-06T00:00:12.000Z')),
       );
       const afterTerminal = admit(terminalRollouts);
-      assert.equal(afterTerminal.admission.admitted, false);
-      assert.ok(afterTerminal.admission.reasons.includes('host-activity-after-settlement'), JSON.stringify(afterTerminal.admission.reasons));
+      assert.equal(afterTerminal.admission.admitted, true);
+      assert.equal(afterTerminal.admission.acknowledgementAtResolution, 'after',
+        'the at/after submission-result shape is recorded, never a window rejection');
     });
 
     test('an untimed event keeps timing unestablished and is never treated as timed — zero stays untimed', () => {
@@ -10074,12 +10110,15 @@ process.exit(result.status ?? 1);
       assert.ok(negative.admission.reasons.includes('host-activity-untimed'));
     });
 
-    test('an explicit cell termination closes the admission window without native credit (codex round 4)', () => {
+    test('an explicit cell termination is a recorded closing stamp, never native credit (codex round 4)', () => {
       // The codex ordering: interrupt 07.0, explicit `wait({terminate:true})`
-      // resolution 09.0, activity emission 10.0 — the emission lands AFTER an
-      // attributable resolution of the interrupted observation and must be
-      // named outside (the explicit stop NEVER grants native settlement —
-      // the round-10 alternate-ender guard stays).
+      // resolution 09.0, activity emission 10.0. §24.4 (native-acceptance
+      // Task 2): the explicit stop stays a WINDOW-CLOSING bound only — the
+      // typed acknowledgement records the emission against it (`after`), the
+      // admission holds on its identity/timing conjuncts, and the mapper's
+      // settlement chain refuses native-settlement credit for the explicit
+      // ender (`explicit-cell-termination-not-attributed`, asserted at the
+      // mapper level in the shell-wait suite's round-10 tests).
       const rollouts = admissionRollouts({ completedAtMs: Date.parse('2026-10-06T00:00:10.000Z') });
       rollouts[1].push(
         fnCall('wait', 'term-1', { session_id: 5, cell_id: 'cell-1', terminate: true }, '2026-10-06T00:00:08.000Z'),
@@ -10093,10 +10132,10 @@ process.exit(result.status ?? 1);
       assert.equal(interaction.settledAfterCall.atMs, null, 'an explicit stop is never a settlement');
       assert.equal(interaction.resolvedExplicitStopAfterCall.atMs, Date.parse('2026-10-06T00:00:09.000Z'),
         'the attributable explicit-stop resolution is recorded as the window-closing fact');
-      assert.equal(admission.admitted, false);
-      assert.equal(admission.insidePendingWindow, false);
-      assert.ok(admission.reasons.includes('host-activity-after-explicit-stop'), JSON.stringify(admission.reasons));
-      // An emission STRICTLY before the explicit stop stays inside the window.
+      assert.equal(admission.admitted, true);
+      assert.equal(admission.insidePendingWindow, true, 'the request-side window conjunct holds');
+      assert.equal(admission.acknowledgementAtResolution, 'after', 'the emission is recorded against the explicit-stop closing stamp');
+      // An emission STRICTLY before the explicit stop records `before`.
       const beforeRollouts = admissionRollouts();
       beforeRollouts[1].push(
         fnCall('wait', 'term-2', { session_id: 5, cell_id: 'cell-1', terminate: true }, '2026-10-06T00:00:08.000Z'),
@@ -10106,23 +10145,27 @@ process.exit(result.status ?? 1);
         ], '2026-10-06T00:00:09.000Z'),
       );
       const before = admit(beforeRollouts);
-      assert.equal(before.admission.admitted, true, 'an emission before the explicit stop stays inside');
+      assert.equal(before.admission.admitted, true, 'an emission before the explicit stop records the before shape');
+      assert.equal(before.admission.acknowledgementAtResolution, 'before');
       assert.equal(before.interaction.explicitTerminateAfterCall.atMs, Date.parse('2026-10-06T00:00:09.000Z'),
         'the explicit ender stays separately classified (never native credit)');
     });
 
     test('an emission timestamped BEFORE its interrupt call is contradictory and named-unestablished (codex round 5)', () => {
       // The codex ordering: poll 02.0, call 07.0, emission 03.0 — the
-      // emission is INSIDE [poll start, resolution) but BEFORE its own
+      // emission is inside [poll start, resolution) but BEFORE its own
       // dispatch (completed_at_ms bounds the dispatch from above per §19.4/
       // §19.6, so an emission strictly earlier than the call is contradictory
-      // evidence). Named `host-activity-pre-call-timing`, never admitted.
+      // evidence). §24.4 keeps this guard: named
+      // `host-activity-pre-call-timing`, never admitted — while the
+      // REQUEST-side window conjunct itself still holds.
       const contradictory = admit(admissionRollouts({ completedAtMs: Date.parse('2026-10-06T00:00:03.000Z') }));
       assert.equal(contradictory.admission.admitted, false);
-      assert.equal(contradictory.admission.insidePendingWindow, false);
+      assert.equal(contradictory.admission.insidePendingWindow, true, 'the request window holds; the stamp guard rides as its named reason');
       assert.ok(contradictory.admission.reasons.includes('host-activity-pre-call-timing'), JSON.stringify(contradictory.admission.reasons));
       // Controls: inside [call, resolution) admits; an emission after an
-      // attributable resolution keeps its existing named bound.
+      // attributable resolution records the typed after shape (the retired
+      // window rejection is never re-derived from the closing stamps).
       const inside = admit(admissionRollouts());
       assert.equal(inside.admission.admitted, true);
       const afterRollouts = admissionRollouts({ completedAtMs: Date.parse('2026-10-06T00:00:09.500Z') });
@@ -10134,8 +10177,8 @@ process.exit(result.status ?? 1);
         ], '2026-10-06T00:00:09.000Z'),
       );
       const after = admit(afterRollouts);
-      assert.equal(after.admission.admitted, false);
-      assert.ok(after.admission.reasons.includes('host-activity-after-explicit-stop'), JSON.stringify(after.admission.reasons));
+      assert.equal(after.admission.admitted, true);
+      assert.equal(after.admission.acknowledgementAtResolution, 'after', 'the recorded closing stamp shapes the acknowledgement, never a rejection');
     });
 
     test('previous_status remains a pre-dispatch snapshot only: it never grounds the admission window or settlement', () => {
@@ -10505,12 +10548,15 @@ process.exit(result.status ?? 1);
     });
 
     test('the interruption oracle carries its own version beside the unchanged family stamp', () => {
-      // v3 = the join input-contract growth (2026-10-23 post-review fix,
-      // PR #72 review findings 1-2: the recovered spawn identity and the
-      // pre-boundary sample consumption) — the oracle's own logic is
-      // byte-unchanged; v1 was the §16.5/§16.6 freeze and v2 the §19.4
-      // admission conjunct (the §19.9 v1/v2 precedent mechanism).
-      assert.equal(NATIVE_INTERRUPTION_ORACLE_VERSION, 3);
+      // v4 = the §24.4 relocated causal contract (2026-10-26 native-acceptance
+      // Task 2: the window conjunct binds to the REQUEST, the emission stamp's
+      // relation to the resolution is the recorded
+      // `acknowledgementAtResolution` shape, the two contradiction guards
+      // stay) — the delivery conjuncts are unchanged in form; v3 was the join
+      // input-contract growth (PR #72 review findings 1-2), v2 the §19.4
+      // admission conjunct, v1 the §16.5/§16.6 freeze (the §19.9 precedent
+      // mechanism: old verdicts stand as history).
+      assert.equal(NATIVE_INTERRUPTION_ORACLE_VERSION, 4);
       assert.equal(RELEASE_QUALIFICATION_VERSION, 1, 'the shared exact-terminal/layer family stamp stays unchanged');
       const verdict = evaluateNativeInterruptionSettlement({
         delivery: {
@@ -10670,6 +10716,7 @@ process.exit(result.status ?? 1);
         agentThreadIdMatch: true,
         rootRolloutOwned: true,
         insidePendingWindow: true,
+        acknowledgementAtResolution: 'before',
         timed: true,
         completedAtMs: EMISSION_MS,
         admitted: true,
@@ -10730,6 +10777,7 @@ process.exit(result.status ?? 1);
         unreadableContinuation: false,
         pendingWindowConfirmed: true,
         hostActivityAdmitted: true,
+        acknowledgementAtResolution: null,
         terminalBeforeInterruptBasis: 'admitted-open-pending-window',
       });
       assert.equal(input.turnSettled, true);
@@ -15708,7 +15756,18 @@ process.exit(result.status ?? 1);
         assert.match(String(facts.inconclusive?.reason ?? ''), /not an active turn/u,
           'the interrupt landed on a non-active (terminal) Child: the honest inconclusive reason is recorded');
         assert.equal(facts.interrupt.settled, null, 'a terminal previous status is never an interrupted-turn outcome');
-        assert.match(String(facts.interrupt.settledBasis ?? ''), /previous-status-terminal/u);
+        // §24.4 family (10) (native-acceptance Task 2): the TOLERATED
+        // already-dead labels (`not_found`/`shutdown` — the pinned wrapper's
+        // ThreadNotFound/InternalAgentDied tolerance returns SUCCESS for them,
+        // report §24.2) are named as the tolerated-send shape — the send
+        // returned, but it is not a Child resolution; every other terminal
+        // label keeps the round-20 basis.
+        const status = typeof terminalStatus === 'string' ? terminalStatus : Object.keys(terminalStatus)[0];
+        if (status === 'shutdown' || status === 'not_found') {
+          assert.equal(facts.interrupt.settledBasis, 'already-dead-tolerance-not-a-resolution');
+        } else {
+          assert.match(String(facts.interrupt.settledBasis ?? ''), /previous-status-terminal/u);
+        }
         assert.equal(facts.interrupt.previousStatusTerminal, true);
       });
     }
@@ -25585,15 +25644,33 @@ describe('cleanup-boundary attribution for exit-code settlements (round-9 review
       rejected(`${launchBody()} text( JSON.stringify(r) );`, 'stringify tail is not relaxed (inner)');
     });
 
-    test('the binding stays pinned to r with the equality tail; other names and tails stay rejected', () => {
-      rejected(`const out = await tools.exec_command({cmd:"x"}); text (out);`, 'changed binding/sink name');
-      rejected(`const responseText = await tools.exec_command({cmd:"x"}); text(responseText);`, 'changed binding, canonical emission');
-      rejected(`let r = await tools.exec_command({cmd:"x"}); text (r);`, 'let declaration');
-      rejected(`var r = await tools.exec_command({cmd:"x"}); text (r);`, 'var declaration');
+    test('the equality tail and declaration keyword stay pinned; bounded non-r names are admitted by the frozen anchored family with the identical call value', () => {
+      // NATIVE-ACCEPTANCE REVIEW ROUND (report §24.11 amendment): the frozen
+      // bounded-name family admits canonical bounded non-`r` bindings with
+      // EXACTLY the §23.2 junction tolerances and the SAME call-value parse —
+      // the differential control proves the spelling never changes the value.
+      const canonicalR = parseCallStatements(event(`const r = await tools.exec_command({cmd:"x"}); text(r);`));
+      assert.deepEqual(parseCallStatements(event(`const out = await tools.exec_command({cmd:"x"}); text (out);`)), canonicalR,
+        'the bounded non-r form reaches the identical call value (same decoder, same verdict)');
+      assert.deepEqual(parseCallStatements(event(`const responseText = await tools.exec_command({cmd:"x"}); text(responseText);`)), canonicalR,
+        'the canonical-emission bounded form likewise');
+      assert.deepEqual(parseCallStatements(event(`const _tmp2 = await tools.exec_command({cmd:"x"}); text(_tmp2);`)), canonicalR,
+        'underscore-led and digit-carrying names are bounded names too');
+      assert.equal(admittedKind(`const ${'a'.repeat(64)} = await tools.exec_command({cmd:"x"}); text(${'a'.repeat(64)});`), 'exec_command',
+        'the name bound is 64 characters (the existing WRAPPED_TOOL_NAME bound), admitted at the bound');
+      // The pinned `r` spelling stays admitted through the UNCHANGED pinned
+      // family, and everything that was refused stays refused.
+      assert.equal(admittedKind(`${launchBody()} text (r);`), 'exec_command', 'the pinned r family is unchanged');
       rejected(`${launchBody()} text (q);`, 'mismatched emission binding');
-      rejected(`${launchBody()} text (r.status);`, 'computed field access tail');
-      rejected(`${launchBody()} text (String(r));`, 'String() tail');
-      rejected(`${launchBody()} text (JSON.stringify(r));`, 'stringify tail under relaxed spacing');
+      rejected(`let result = await tools.exec_command({cmd:"x"}); text (result);`, 'let declaration');
+      rejected(`var r = await tools.exec_command({cmd:"x"}); text (r);`, 'var declaration');
+      rejected(`const result = await tools.exec_command({cmd:"x"}); text (result.status);`, 'computed field access tail');
+      rejected(`const result = await tools.exec_command({cmd:"x"}); text (String(result));`, 'String() tail');
+      rejected(`const result = await tools.exec_command({cmd:"x"}); text (JSON.stringify(result));`, 'stringify tail under the anchored family');
+      rejected(`const result = await tools.exec_command({cmd:"x"}); text (${'a'.repeat(65)});`, 'over-bound binding name');
+      rejected(`const 1result = await tools.exec_command({cmd:"x"}); text (1result);`, 'leading digit in the name');
+      rejected(`const re$sult = await tools.exec_command({cmd:"x"}); text (re$sult);`, 'dollar character outside the bounded name grammar');
+      rejected(`const résultat = await tools.exec_command({cmd:"x"}); text (résultat);`, 'non-ASCII character outside the bounded name grammar');
     });
 
     test('non-literal, dynamic and multi-statement cell bodies stay rejected (per-statement ownership preserved)', () => {
@@ -25752,6 +25829,132 @@ describe('cleanup-boundary attribution for exit-code settlements (round-9 review
       const excerptText = JSON.stringify(result.inconclusive.excerpt);
       assert.equal(excerptText.includes(CANARY_CMD), false, 'the unclassified excerpt keeps withholding the body content');
       assert.equal(excerptText.includes('text          (r)'), false, 'the raw over-bound body never echoes into the excerpt');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Native-acceptance review round (PR #73, 2026-10-26): the §24.10 grammar
+  // deferral EXECUTED as the frozen ANCHORED BOUNDED-NAME wrapper family
+  // (report §24.11 amendment; BOUND_RESULT_WRAPPER_PATTERN in evidence.mjs).
+  // The §23.2 emission-junction whole-body family with exactly ONE generalized
+  // dimension — the binding identifier — grounded in the SYNTHETIC
+  // reproduction of the retained structural anchors (NON-`r` binding,
+  // bound-await, literal-object argument, equal text-binding sink, single
+  // statement). Synthetic grounding does NOT prove conformance with the
+  // historical F/I/N bodies (digest-only anchors). The pattern EXCLUDES the
+  // pinned `r` spelling (which stays exclusively governed by the unchanged
+  // pinned patterns, so their accepted set is byte-identical) and admits
+  // bounded non-`r` names with the identical call-value parse. OFFLINE
+  // pipeline tests through the SAME `parseCallStatements` seam; the
+  // shape-diagnostic mirrors diagnose the widened parser (schema v1 enums
+  // unchanged).
+  // -------------------------------------------------------------------------
+  describe('native-acceptance review round: the frozen anchored bounded-name wrapper family (report §24.11 amendment)', async () => {
+    const { parseCallStatements } = await import('../tools/shell-wait-probe/evidence.mjs');
+    const { inspectCallShape } = await import('../tools/shell-wait-probe/shape-diagnostic.mjs');
+
+    const event = (input) => ({ payload: { type: 'custom_tool_call', name: 'exec', call_id: 'cell-1', input } });
+    const anchoredBody = (name, tool = 'exec_command', argument = '{cmd:"x"}', emission = null) =>
+      `const ${name} = await tools.${tool}(${argument}); text${emission === null ? `(${name})` : emission.replace(/NAME/gu, name)};`;
+    /** @param {string} input @returns {string} the admitted single call's kind */
+    const admittedKind = (input) => {
+      const calls = parseCallStatements(event(input));
+      assert.notEqual(calls, null, `the anchored family must admit: ${input.slice(0, 72)}`);
+      assert.equal(calls.length, 1, 'the anchored family is exactly ONE statement per cell');
+      return calls[0].kind;
+    };
+    /** @param {string} input */
+    const rejected = (input, label = input) => {
+      assert.equal(parseCallStatements(event(input)), null, `unsupported form must stay fail-closed: ${label.slice(0, 72)}`);
+    };
+
+    test('the reviewer repro differential: r and result parse to the IDENTICAL call value through the same decoder (the spelling is never a verdict input)', () => {
+      const rValue = parseCallStatements(event('const r = await tools.exec_command({cmd:"x"}); text(r);'));
+      const resultValue = parseCallStatements(event('const result = await tools.exec_command({cmd:"x"}); text(result);'));
+      assert.deepEqual(resultValue, rValue, 'the anchored family reaches the identical call value as the pinned r form');
+      assert.deepEqual(resultValue, [{ kind: 'exec_command', value: { cmd: 'x' }, directive: null, wrapped: true }]);
+      // The write_stdin tool member admits the same way (the §23.2 frozen set).
+      assert.equal(admittedKind('const result = await tools.write_stdin({session_id:5,chars:"",yield_time_ms:60000}); text(result);'), 'write_stdin');
+      rejected('const result = await tools.wait({cell_id:"c"}); text(result);', 'tool outside the frozen anchored set');
+    });
+
+    test('the name rule: bounded identifier grammar 1-64 chars, letters/digits/underscore, r stays exclusively on the pinned family', () => {
+      assert.equal(admittedKind(anchoredBody('x')), 'exec_command', 'a 1-char non-r name');
+      assert.equal(admittedKind(anchoredBody('_private1')), 'exec_command', 'underscore-led digit-carrying name');
+      assert.equal(admittedKind(anchoredBody('a'.repeat(64))), 'exec_command', 'the 64-char upper bound admitted');
+      rejected(anchoredBody('a'.repeat(65)), 'a 65-char name over the bound');
+      rejected(anchoredBody('1result'), 'leading digit');
+      rejected(anchoredBody('re-sult'), 'hyphen outside the grammar');
+      rejected(anchoredBody('réultat'), 'non-ASCII outside the grammar');
+      // The pinned `r` spelling stays admitted through the UNCHANGED pinned
+      // family (EMISSION_JUNCTION / WRAPPER), never through the anchored one.
+      assert.equal(admittedKind('const r = await tools.exec_command({cmd:"x"}); text (r);'), 'exec_command');
+    });
+
+    test('the §23.2 junction tolerances carry over exactly: per-junction 0/8 admitted, 9 rejected; head/argument junctions keep zero tolerance', () => {
+      const eight = ' '.repeat(8);
+      const nine = ' '.repeat(9);
+      assert.equal(admittedKind(`const result = await tools.exec_command({cmd:"x"}); text${eight}(${eight}result${eight});`), 'exec_command',
+        'a full-bound run at all three emission junctions');
+      rejected(`const result = await tools.exec_command({cmd:"x"}); text${nine}(result);`, 'ws1 length 9');
+      rejected(`const result = await tools.exec_command({cmd:"x"}); text(${nine}result);`, 'ws2 length 9');
+      rejected(`const result = await tools.exec_command({cmd:"x"}); text(result${nine});`, 'ws3 length 9');
+      rejected(`const  result = await tools.exec_command({cmd:"x"}); text(result);`, 'head binding spacing (zero tolerance)');
+      rejected(`const result= await tools.exec_command({cmd:"x"}); text(result);`, 'head assignment spacing (zero tolerance)');
+      rejected(`const result = await tools .exec_command({cmd:"x"}); text(result);`, 'member-access spacing (zero tolerance)');
+      rejected(`const result = await tools.exec_command ({cmd:"x"}); text(result);`, 'call-paren spacing (zero tolerance)');
+      rejected(`const result = await tools.exec_command( {cmd:"x"} ); text(result);`, 'argument-object junction spacing (zero tolerance)');
+      rejected(`const result = await tools.exec_command({cmd:"x"}) ; text(result);`, 'declaration semicolon spacing (zero tolerance)');
+      rejected(`const result = await tools.exec_command({cmd:"x"}); text\n(result);`, 'newline inside the emission head junction');
+    });
+
+    test('the same-line rule, trailing artifacts, decode fall-through and multi-statement bodies keep their existing semantics', () => {
+      rejected(`const result = await tools.exec_command({cmd:"x"});\ntext(result);`, 'declaration and emission on separate lines');
+      assert.deepEqual(parseCallStatements(event(`const result = await tools.exec_command({cmd:"x"}); text(result);\n`)),
+        parseCallStatements(event('const result = await tools.exec_command({cmd:"x"}); text(result);')),
+        'the trailing-newline artifact is admitted');
+      rejected('const result = await tools.exec_command({cmd:"x"}); text(result);\n\n', 'a real trailing blank line');
+      rejected('const result = await tools.exec_command({cmd:"x"', 'truncated declaration');
+      rejected('const result = await tools.exec_command({cmd:"x"}); text(result', 'truncated emission');
+      rejected('const result = await tools.exec_command({cmd:"x"}); text(result);}', 'trailing brace');
+      rejected('const result = await tools.exec_command({cmd:"x"}); text(result); console.log("x");', 'hidden trailing statement');
+      rejected('text (x); const result = await tools.exec_command({cmd:"x"}); text(result);', 'extra leading statement');
+      rejected('const result = await tools.exec_command({cmd:"x"}); text(result); const poll2 = await tools.write_stdin({session_id:5,chars:""}); text(poll2);',
+        'hidden second awaited call');
+      // A whole-body match failing its argument decode falls through to the
+      // unchanged per-line machinery and stays fail-closed (the §23.2 rule).
+      rejected('const result = await tools.exec_command({cmd:`x`}); text(result);', 'undecodable template argument falls through fail-closed');
+      // The preparation frame keeps its own recognized path (never relaxed).
+      const preparation = 'text(await tools.write_stdin({session_id:5,chars:JSON.stringify({version:5})+"\\n"}));';
+      assert.equal(parseCallStatements(event(preparation))?.[0]?.kind, 'write_stdin', 'the preparation path is unchanged');
+      rejected('// @exec: not-json\nconst result = await tools.exec_command({cmd:"x"}); text(result);', 'raw invalid directive');
+      rejected('// @exec: {"yield_time_ms": 3600000}\nconst result = await tools.exec_command({cmd:"x"}); text(result);',
+        'a valid directive does not join the anchored family');
+    });
+
+    test('the shape-diagnostic mirror agrees with the widened parser: parse-accepted for canonical anchored bodies, the closed facts unchanged', () => {
+      const body = 'const result = await tools.exec_command({cmd:"x"}); text(result);';
+      assert.deepEqual(inspectCallShape(body), {
+        version: 1,
+        coverage: 'complete',
+        statements: [{ head: 'bound-await', tool: 'exec_command', argument: 'literal-object', lexical: 'complete', tail: 'text-binding' }],
+        statementCount: 1,
+        tool: 'exec_command',
+        head: 'bound-await',
+        tail: 'text-binding',
+        bindingEquality: 'equal',
+        parserStage: 'parse-accepted',
+        directive: 'absent',
+        wholeInputConsumed: true,
+      }, 'the mirror diagnoses the widened parser (schema v1 fields/enums unchanged)');
+      assert.equal(parseCallStatements(event(body)) !== null, true, 'the mirror agreement: the real parser admits the same body');
+      // The mismatched sink: positively classified relation, refused admission.
+      const mismatched = inspectCallShape('const result = await tools.exec_command({cmd:"x"}); text(other);');
+      assert.equal(mismatched.bindingEquality, 'not-equal');
+      assert.equal(parseCallStatements(event('const result = await tools.exec_command({cmd:"x"}); text(other);')), null);
+      // A generalized head with a MISSING tail diagnoses the OUTPUT stage
+      // (downstream of the wrapper skeleton), like the pinned r form.
+      assert.equal(inspectCallShape('const result = await tools.exec_command({cmd:"x"});').parserStage, 'output');
     });
   });
 
@@ -27224,8 +27427,8 @@ describe('cleanup-boundary attribution for exit-code settlements (round-9 review
     }
 
     test('the join carries its own versioned identity (the §19.9 v1/v2 precedent mechanism)', () => {
-      assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 2, 'join v2 = the identity wiring + pre-boundary sample consumption (v1 was the unversioned recorded behavior)');
-      assert.equal(NATIVE_INTERRUPTION_ORACLE_VERSION, 3, 'oracle v3 = the join input-contract growth (v1 freeze, v2 admission conjunct, §19.9 precedent)');
+      assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 3, 'join v3 = the §24.4 relocated causal-contract input growth (v2 identity wiring + samples; v1 unversioned recorded behavior)');
+      assert.equal(NATIVE_INTERRUPTION_ORACLE_VERSION, 4, 'oracle v4 = the §24.4 relocated window contract (v3 join growth, v2 admission conjunct, v1 freeze, §19.9 precedent)');
       const joined = nativeInterruptionGateDInput(fix2Record());
       assert.equal(joined.gateDJoinVersion, NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 'the join output marks its own version');
       const verdict = evaluateNativeInterruptionSettlement(joined);
@@ -27359,7 +27562,7 @@ describe('cleanup-boundary attribution for exit-code settlements (round-9 review
       const withoutSamples = nativeInterruptionGateDInput(fix2Record((record) => {
         delete record.child.durableSamples;
       }));
-      assert.equal(withoutSamples.gateDJoinVersion, 2, 'the output is marked as the new join version — never re-stamped as the old one');
+      assert.equal(withoutSamples.gateDJoinVersion, 3, 'the output is marked as the new join version — never re-stamped as the old one');
       assert.deepEqual(withoutSamples.durableSamplesJoin, {
         considered: false,
         boundaryRecorded: true,
