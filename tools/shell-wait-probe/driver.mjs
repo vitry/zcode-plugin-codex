@@ -23,7 +23,7 @@ import { mkdir, readdir, readFile, lstat, stat, writeFile } from 'node:fs/promis
 import { isAbsolute, join, relative, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { PUBLIC_RESULT_SENTINEL, SURVIVAL_CONTROL_LINE_COUNT, captureVerifiedProcessIdentity, createShellWaitFixture, inspectVerifiedProcessIdentity, releaseCompletionGate, survivalControlPromptDirective, terminateVerifiedProcess } from './fixture.mjs';
+import { PUBLIC_RESULT_SENTINEL, SURVIVAL_CONTROL_CADENCE_MS, SURVIVAL_CONTROL_LINE_COUNT, captureVerifiedProcessIdentity, createShellWaitFixture, inspectVerifiedProcessIdentity, releaseCompletionGate, survivalControlPromptDirective, terminateVerifiedProcess } from './fixture.mjs';
 import { renderRescueLauncherCommand } from '../../scripts/lib/rescue-launcher-command.mjs';
 import { runProcess } from '../../scripts/lib/process.mjs';
 import { codexLaunch } from '../../scripts/lib/tool-launch.mjs';
@@ -1073,6 +1073,20 @@ function buildCaseRecord(caseInput, fixture, liveFacts, /** @type {'executed' | 
         : {}),
       ...(typeof liveFacts.interrupt?.cleanupBoundaryAtMs === 'number' ? { cleanupBoundaryAtMs: liveFacts.interrupt.cleanupBoundaryAtMs } : {}),
       ...(typeof liveFacts.interrupt?.cancelledAtMs === 'number' ? { cancelledAtMs: liveFacts.interrupt.cancelledAtMs } : {}),
+      // §24.4 f1/f3 + §24.8 (native-acceptance Task 3, schema-additive): the
+      // relocated window witness inputs and the measurement-cutoff instant
+      // persist ONLY when the live facts carried them — legacy records stay
+      // byte-identical — so the offline Gate-D join re-verifies the
+      // request-side witness and the pre-cutoff fence after fixture disposal.
+      ...(typeof liveFacts.interrupt?.callAtMs === 'number' ? { callAtMs: liveFacts.interrupt.callAtMs } : {}),
+      ...(typeof liveFacts.interrupt?.callNotBeforeMs === 'number' ? { callNotBeforeMs: liveFacts.interrupt.callNotBeforeMs } : {}),
+      ...(typeof liveFacts.interrupt?.callNotAfterMs === 'number' ? { callNotAfterMs: liveFacts.interrupt.callNotAfterMs } : {}),
+      ...(typeof liveFacts.interrupt?.pendingBeforeCallAtMs === 'number' ? { pendingBeforeCallAtMs: liveFacts.interrupt.pendingBeforeCallAtMs } : {}),
+      ...(typeof liveFacts.interrupt?.measurementCutoffAtMs === 'number' ? { measurementCutoffAtMs: liveFacts.interrupt.measurementCutoffAtMs } : {}),
+      // Codex gate round-8 finding 1: the hold-deadline overrun fact persists
+      // beside the anchored cutoff (schema-additive; legacy records stay
+      // byte-identical).
+      ...(typeof liveFacts.interrupt?.holdDeadlineOverrunMs === 'number' ? { holdDeadlineOverrunMs: liveFacts.interrupt.holdDeadlineOverrunMs } : {}),
       ...(typeof liveFacts.interrupt?.completedBeforeCallMs === 'number' ? { completedBeforeCallMs: liveFacts.interrupt.completedBeforeCallMs } : {}),
       ...(typeof liveFacts.interrupt?.completedAfterCallMs === 'number' ? { completedAfterCallMs: liveFacts.interrupt.completedAfterCallMs } : {}),
     },
@@ -1117,6 +1131,18 @@ function buildCaseRecord(caseInput, fixture, liveFacts, /** @type {'executed' | 
         verifiedTerminated: typeof liveFacts.held?.processTermination?.verifiedTerminated === 'boolean' ? liveFacts.held.processTermination.verifiedTerminated : null,
         codexTerminated: typeof liveFacts.held?.processTermination?.codexTerminated === 'boolean' ? liveFacts.held.processTermination.codexTerminated : null,
       },
+      // Task 3 (the §24.7 local-identity row, schema-additive): the eager
+      // process-identity establishment facts persist ONLY when the live facts
+      // carried them — legacy records stay byte-identical.
+      ...(/** @type {any} */ (liveFacts.held)?.processIdentity !== undefined
+        ? { processIdentity: /** @type {any} */ (liveFacts.held).processIdentity }
+        : {}),
+      // Codex gate P2 fix 3 (schema-additive): the named post-release
+      // late/missing facts persist ONLY when the live facts carried them —
+      // legacy records stay byte-identical.
+      ...(/** @type {any} */ (liveFacts.held)?.postRelease !== undefined
+        ? { postRelease: /** @type {any} */ (liveFacts.held).postRelease }
+        : {}),
     },
     // R3 background lifecycle: the measured Child-side settlement facts behind
     // the Root acknowledgement (the launched-Child acknowledgement is never
@@ -1139,12 +1165,29 @@ function buildCaseRecord(caseInput, fixture, liveFacts, /** @type {'executed' | 
       ...(/** @type {any} */ (liveFacts.child)?.durableSnapshot !== undefined
         ? { durableSnapshot: redactDurableSnapshotForRecord(/** @type {any} */ (liveFacts.child).durableSnapshot, fixture) }
         : {}),
+      // Codex gate fix A (2026-10-26; completed by the round-3 read arm): the
+      // latest completed strictly-pre-cutoff authoritative snapshot persists
+      // beside the final one (same bounded redaction) ONLY when the live
+      // facts carried it — every other record keeps the persisted schema
+      // byte-identical.
+      ...(/** @type {any} */ (liveFacts.child)?.preCutoffDurableSnapshot !== undefined
+        ? { preCutoffDurableSnapshot: redactDurableSnapshotForRecord(/** @type {any} */ (liveFacts.child).preCutoffDurableSnapshot, fixture) }
+        : {}),
       // 2026-10-23 interrupt-closure Task 3 (report §23.5): the pre-cleanup
       // sampling block persists beside the snapshot (same bounded redaction —
       // the summaries' reason texts and duty layers can embed private paths)
       // ONLY when the live facts carried it.
       ...(/** @type {any} */ (liveFacts.child)?.durableSamples !== undefined
         ? { durableSamples: redactDurableSnapshotForRecord(/** @type {any} */ (liveFacts.child).durableSamples, fixture) }
+        : {}),
+      // Codex gate round-11 finding 3: the ONE shared read ledger persists
+      // beside the sampling block — the retained record itself carries the
+      // combined §24.8 attempt accounting (attempts, named cap refusals,
+      // unpaced account-only claims) and the strictly increasing paced start
+      // stream — ONLY when the live facts carried it. Numbers only: no
+      // redaction surface.
+      ...(/** @type {any} */ (liveFacts.child)?.durableReadLedger !== undefined
+        ? { durableReadLedger: /** @type {any} */ (liveFacts.child).durableReadLedger }
         : {}),
     },
     // R3 status-wait live flow: the observed launch acknowledgement and the
@@ -1278,6 +1321,15 @@ function pathWithin(root, path) {
   return descendant === '' || (descendant !== '..' && !descendant.startsWith(`..${sep}`) && !isAbsolute(descendant));
 }
 
+// Codex gate round 17 (finding 1): the default exit watcher's SCHEDULED
+// natural-deadline rejection carries this identity marker so the §24.8
+// post-release section converts THAT identified rejection (and only it) to
+// the named missing-exit outcome. Module-private by design: no injected
+// watcher can manufacture it, and every other watcher failure — an identity
+// inspection error, an unexpected rejection, the unscheduled legacy-timeout
+// expiry — throws unmarked and propagates as a real failure.
+const plannedExitDeadlineExpiry = Symbol('plannedExitDeadlineExpiry');
+
 
 /**
  * Bounded host/gate lifecycle for one held observation turn. The completion
@@ -1295,7 +1347,20 @@ export async function runHeldHostTurn(input) {
   // timeline value and budget comparison is a difference on this one clock.
   // Instrument tests can inject a deterministic `now` instead.
   const now = input.now ?? (() => performance.now());
+  // The WALL clock (native-acceptance Task 3): every epoch-ms fact that must
+  // stay comparable to the §23.5 sampling instants and the rollout event
+  // timestamps — the §24.8 measurement cutoff, like the existing cleanup
+  // boundary — reads THIS clock. The injectable seam keeps the same contract
+  // as `now`: production uses Date.now(); tests drive a deterministic clock.
+  const wallClockNow = input.wallClockNow ?? Date.now;
   const releaseGate = input.releaseGate ?? releaseCompletionGate;
+  // Codex gate round-21 finding 2: the natural-exit watcher's OWN completion
+  // instant (stamped when the default watcher returns the observed absence
+  // and, via the exitWait settlement hop, for injected watchers too),
+  // compared against the planned observation endpoint in the §24.8
+  // post-release section — race order is never deadline evidence.
+  /** @type {number | null} */
+  let naturalExitCompletedAtWallMs = null;
   const captureProcessIdentity = input.captureProcessIdentity ?? (async () => {
     return captureVerifiedProcessIdentity(/** @type {string} */ (input.processPath), /** @type {string} */ (input.processNonce));
   });
@@ -1308,12 +1373,29 @@ export async function runHeldHostTurn(input) {
     return observed;
   });
   const waitForProcessExit = input.waitForProcessExit ?? (async (expected, phase) => {
-    const deadline = now() + (phase === 'natural' ? 10_000 : 5_000);
+    // Codex gate round-15 finding 2: on the SCHEDULED (armed §24.8) path the
+    // natural-exit watcher is bound to the PLANNED OBSERVATION ENDPOINT — not
+    // the shorter legacy 10-second timeout — so a lawful natural exit inside
+    // the observation window is waited for and observed, never cut off and
+    // terminated at the legacy deadline. Every other phase and unscheduled
+    // turn keep the legacy timeout.
+    const scheduledNaturalDeadlineMs = phase === 'natural' && input.measurementCutoffSchedule === true && holdDeadlineMs !== null
+      ? holdDeadlineMs + MEASUREMENT_CUTOFF_AFTER_HOLD_MS + OBSERVATION_TEARDOWN_AFTER_CUTOFF_MS
+      : null;
+    const deadline = scheduledNaturalDeadlineMs ?? now() + (phase === 'natural' ? 10_000 : 5_000);
     while (now() < deadline) {
       if (await readProcessIdentity(expected) === undefined) return;
       await sleep(50);
     }
-    throw new Error(`the exact fake-ZCode process remained alive during ${phase}`);
+    // Codex gate round-17 finding 1: only the SCHEDULED natural deadline
+    // expiry (the planned observation endpoint) carries the identity marker —
+    // the §24.8 post-release section converts THAT rejection to the named
+    // missing-exit outcome. An inspection failure inside the loop rejects
+    // with the supplier's own unmarked error and propagates as a real
+    // failure; the unscheduled legacy-timeout expiry stays unmarked too.
+    const deadlineError = new Error(`the exact fake-ZCode process remained alive during ${phase}`);
+    if (scheduledNaturalDeadlineMs !== null) /** @type {any} */ (deadlineError)[plannedExitDeadlineExpiry] = true;
+    throw deadlineError;
   });
   const terminateProcessIdentity = input.terminateProcessIdentity ?? (async (expected) => {
     return terminateVerifiedProcess(/** @type {any} */ (expected), { readIdentity: readProcessIdentity, waitForExit: (expectedIdentity, phase) => waitForProcessExit(expectedIdentity, phase) });
@@ -1357,6 +1439,27 @@ export async function runHeldHostTurn(input) {
     // precisely so it is comparable to the rollout event timestamps the
     // interrupt interaction's cancellation/settlement facts carry.
     cleanupBoundaryAtMs: null,
+    // Codex gate round-8 finding 1: the hold-deadline crossing overrun (a
+    // final hold tick resuming late) — recorded as a named fact when the
+    // schedule is armed; the cutoff itself is ANCHORED to the scheduled
+    // deadline and never extended by it.
+    holdDeadlineOverrunMs: null,
+    // §24.8 (native-acceptance Task 3): the MEASUREMENT CUTOFF — the
+    // hold-deadline wall-clock crossing + {@link MEASUREMENT_CUTOFF_AFTER_HOLD_MS},
+    // computed BEFORE the fixture completion gate is released and persisted on
+    // the held record (and from there on the case record) BEFORE planned
+    // observation teardown. It is INDEPENDENT of any termination-initiation
+    // boundary: a no-kill run still records the cutoff, and a recorded cutoff
+    // never implies a kill. Null until the schedule arms at the hold deadline;
+    // runs that end before the gate (early exit, budget expiry, failure) keep
+    // null — the cutoff is a property of the held-to-deadline observation.
+    measurementCutoffAtMs: null,
+    // Task 3 (the §24.7 local-identity row, wired): the EXACT fixture-owned
+    // process identity establishment — eager (concurrent with the held
+    // phase), so the verified nonce/start-identity/ancestry fact exists
+    // BEFORE any disappearance and the record keeps the establishment facts
+    // instead of an unestablishable post-exit capture.
+    identityEstablished: { established: false, capturedAtElapsedMs: null, basis: null },
   };
   // Codex round-4/round-5 review fixes: the boundary records the EARLIEST
   // termination initiation across every site — the wrapper's cleanup
@@ -1385,6 +1488,25 @@ export async function runHeldHostTurn(input) {
   // sampling never observes past the boundary and never delays cleanup).
   /** @type {ReturnType<typeof startDurableSampling> | null} */
   let durableSampling = null;
+  // Codex gate round-10 finding 2: the ONE shared read ledger paces EVERY
+  // durable-read consumer — the §23.5 passive sampler AND the authoritative
+  // pre-cutoff read arm — so the registered ≥1000-ms read cadence holds
+  // GLOBALLY (never two starts at the same instant) and the §24.8 attempt
+  // accounting covers the combined arm. Hoisted so the exit-path finally can
+  // attach it to the record's childSettlement block on EVERY exit path.
+  /** @type {{ lastStartAtMs: number | null, attempts: number, starts: number[], attemptsRefusedAtCap: number, unpacedAttempts: number, samplerQueuedSinceMs: number | null, armQueuedSinceMs: number | null }} */
+  const durableReadLedger = { lastStartAtMs: null, attempts: 0, starts: [], attemptsRefusedAtCap: 0, unpacedAttempts: 0, samplerQueuedSinceMs: null, armQueuedSinceMs: null };
+  // Codex gate round-14 finding 2: the §24.8 post-release diagnostics — the
+  // named late/missing collection facts (release-edge read, settlement-arm
+  // read, Root result, natural exit, window-end refresh) — are HOISTED to
+  // turn scope (the same pattern as the round-5 snapshot carriers): a Root
+  // result that REJECTS after the facts were recorded throws past the
+  // post-release block, and the outer catch's FAILURE record must carry
+  // whatever was already recorded before the throw. The armed post-release
+  // section fills this object; unscheduled turns leave it empty (and the
+  // failure shape omits it entirely, keeping their schema byte-identical).
+  /** @type {Record<string, string>} */
+  const postRelease = {};
   const recordTerminationInitiation = () => {
     if (budgetAbortIsTeardown) return;
     const initiatedAtMs = Date.now();
@@ -1409,22 +1531,117 @@ export async function runHeldHostTurn(input) {
     budgetController.abort();
     clearInterval(budgetTimer);
   }, 50);
+  // The bounded wait resolves on the INJECTED sleep (so instrument tests run
+  // their schedules deterministically — native-acceptance Task 3) and is
+  // settled EARLY by the budget abort: a budget expiry during a held wait no
+  // longer needs the old rejection path because every await site re-checks
+  // its own condition after the wait (the loop conditions and the post-race
+  // branches). Same lifecycle outcomes, no rejecting promise to leak.
   /** @param {number} ms */
-  const abortableSleep = async (ms) => new Promise((resolve, reject) => {
-    const timer = setTimeout(resolve, ms);
-    budgetController.signal.addEventListener('abort', () => { clearTimeout(timer); reject(new Error('held turn aborted')); }, { once: true });
-  });
+  const abortableSleep = async (ms) => {
+    const waited = Promise.resolve(sleep(ms)).then(() => {}, () => {});
+    const aborted = new Promise((resolve) => {
+      if (budgetController.signal.aborted) resolve(undefined);
+      else budgetController.signal.addEventListener('abort', () => resolve(undefined), { once: true });
+    });
+    await Promise.race([waited, aborted]);
+  };
+  // Task 3 (the §24.7 local-identity row): the EXACT fixture-owned process
+  // identity is established EAGERLY — concurrent with the held phase, never
+  // lazily at cleanup — so the verified identity (marker nonce + start
+  // identity + ancestry, never the PID alone) exists BEFORE any disappearance
+  // and the record can prove "identity verified, then gone" instead of an
+  // unestablishable post-exit capture. The marker may legitimately not exist
+  // yet right after the launch closure returns: a confirmed-absence capture
+  // is retried until the marker appears or the turn ends; every OTHER capture
+  // error is recorded as the named basis and stops the establishment (never a
+  // business failure, never a cleanup delay — the task is detached).
+  // Hoisted shared slots (also used by the try body below).
+  /** @type {{ result: Promise<{ code: number | null, stdout: string, stderr: string }>, terminate?: () => Promise<void> } | undefined} */
+  let control;
+  /** @type {unknown} */
+  let identity;
+  const noteIdentityEstablished = () => {
+    cleanup.identityEstablished.established = true;
+    cleanup.identityEstablished.capturedAtElapsedMs = Math.round(now() - startMs);
+    cleanup.identityEstablished.basis = 'marker-nonce-start-ancestry-verified';
+  };
+  // The turn's end synchronously names an establishment that never succeeded
+  // (the eager task settles on its own microtasks afterwards) — the record
+  // never carries a null basis on a completed turn.
+  budgetController.signal.addEventListener('abort', () => {
+    if (cleanup.identityEstablished.established !== true) {
+      cleanup.identityEstablished.basis ??= 'turn-ended-before-identity-establishment';
+    }
+  }, { once: true });
+  const identityEstablishment = (async () => {
+    for (;;) {
+      if (budgetController.signal.aborted) {
+        cleanup.identityEstablished.basis ??= 'turn-ended-before-identity-establishment';
+        return;
+      }
+      if (identity !== undefined) return; // a synchronized capture site won the race
+      try {
+        const captured = await captureProcessIdentity();
+        if (identity === undefined) {
+          identity = captured;
+          noteIdentityEstablished();
+        }
+        return;
+      } catch (error) {
+        if (/** @type {any} */ (error)?.code === 'ZCODE_SHELL_WAIT_PROCESS_EXITED') {
+          // Codex gate round-7 finding 1: a CONFIRMED PERMANENT DISAPPEARANCE
+          // (the marker exists and validates, but the process has exited) is
+          // never launch readiness that might still arrive — retrying burns
+          // the experiment budget on a process that can never be captured and
+          // misreports budget exhaustion after Root has returned. Stop with
+          // the named process-exit basis; the gate-branch fallback surfaces
+          // the named failure. Codex gate round-8 finding 3: a capture that
+          // was PENDING while cleanup captured and established the identity
+          // can reject with this code AFTER the successful establishment —
+          // recheck before writing any failure metadata, or the record would
+          // carry `established: true` beside the failure basis.
+          if (cleanup.identityEstablished.established !== true) {
+            cleanup.identityEstablished.basis = 'identity-unestablished-process-exited';
+          }
+          return;
+        }
+        if (/** @type {any} */ (error)?.code === 'ZCODE_SHELL_WAIT_MARKER_ABSENT') {
+          // Confirmed absence right now — the marker may still appear (the
+          // process may not have launched yet); the basis names it until a
+          // capture succeeds or the turn ends.
+          cleanup.identityEstablished.basis ??= 'marker-absent-at-capture-time';
+          await abortableSleep(25);
+          continue; // the marker may still appear; the loop re-checks the signal
+        }
+        // Codex gate round-8 finding 3: the generic capture-error branch
+        // carries the same protection — a late rejection never overwrites a
+        // successful establishment.
+        if (cleanup.identityEstablished.established !== true) {
+          cleanup.identityEstablished.basis = `identity-capture-failed: ${error instanceof Error ? error.message : String(error)}`;
+        }
+        return;
+      }
+    }
+  })().catch(() => { /* the detached establishment never fails the held turn */ });
   // Hoisted so the exit `finally` can attach the §23.5 sampling block to the
   // answer's childSettlement on EVERY exit path (the finally runs after the
   // abort that stops the sampler).
   /** @type {HeldTurnRecord | undefined} */
   let answer;
+  // Hoisted snapshot carriers (codex gate round-5 finding 1): the preserved
+  // pre-cutoff authoritative snapshot and the joined refresh, so the outer
+  // catch can preserve them onto the FAILURE record — a rejecting Root
+  // result must never destroy independently established winner/duty
+  // evidence.
+  /** @type {Record<string, unknown> | undefined} */
+  let preCutoffSnapshot;
+  /** @type {{ remoteTerminal: boolean | null, localProcessReaping: 'natural-exit-observed' | 'cleanup-terminated' | null, durableObligations: 'settled' | 'unresolved' | null } | null} */
+  let refreshedLayers = null;
+  /** @type {Record<string, unknown> | undefined} */
+  let refreshedSnapshot;
   try {
 
-  /** @type {{ result: Promise<{ code: number | null, stdout: string, stderr: string }>, terminate?: () => Promise<void> }} */
-  let control;
-  /** @type {unknown} */
-  let identity;
   const safeReleaseGate = async () => {
     if (cleanup.releasedGate) return;
     try {
@@ -1444,12 +1661,29 @@ export async function runHeldHostTurn(input) {
     if (identity === undefined) {
       try {
         identity = await captureProcessIdentity();
+        // Codex gate round-6 finding: a successful CLEANUP-time capture is an
+        // identity establishment like any other — the eager worker may still
+        // be parked in its absent-marker retry (or already exited on the
+        // turn's abort) when cleanup captures and terminates the verified
+        // process. Without this note the record could carry
+        // `verifiedProcessTerminated: true` beside
+        // `identityEstablished.established: false` and an absence basis — a
+        // contradictory pair. The note is idempotent and its basis can never
+        // be overwritten by the worker's `??=` absence/abort bases.
+        noteIdentityEstablished();
       } catch (error) {
         // Confirmed absence (marker never appeared, process already gone)
         // means there is nothing to signal. Marker CORRUPTION — a malformed
         // PID or mismatched nonce — is recorded as incomplete cleanup and the
         // unverified PID is never signalled.
-        if (/** @type {any} */ (error)?.code !== 'ZCODE_SHELL_WAIT_MARKER_ABSENT') cleanup.errors.push(error);
+        const captureCode = /** @type {any} */ (error)?.code;
+        if (captureCode === 'ZCODE_SHELL_WAIT_PROCESS_EXITED') {
+          // The process is confirmed gone: nothing to signal, and the basis
+          // names the disappearance (never a cleanup error).
+          cleanup.identityEstablished.basis ??= 'identity-unestablished-process-exited';
+          return;
+        }
+        if (captureCode !== 'ZCODE_SHELL_WAIT_MARKER_ABSENT') cleanup.errors.push(error);
         return;
       }
     }
@@ -1509,6 +1743,159 @@ export async function runHeldHostTurn(input) {
     // is established, never at the hold's end and never after a termination
     // branch has started. Options are bounded: only smaller caps are
     // injectable; the interval floor and both ceilings are frozen constants.
+    // Codex gate round-10 finding 2: the shared ledger alone is not enough — two
+    // consumers that each "wait for the floor then stamp" can still wake on
+    // the same tick and start at the same instant (the repro: 1000, 1000,
+    // 2000, 2000). Every consumer therefore claims its start through THIS one
+    // paced stream: wait until the ledger floor has elapsed on the consumer's
+    // own clock, re-evaluating after every wait, and then — in the same
+    // synchronous continuation as the final re-check — stamp the ledger. The
+    // synchronous stamp makes the claim atomic (the event loop serializes the
+    // claimers), so no two starts ever share an instant and every consecutive
+    // pair is ≥1000 ms apart, globally across both consumers. `deadlineAtMs`
+    // bounds the wait: a slot that cannot free before the deadline (typically
+    // the armed measurement cutoff) is refused as `null` — no attempt is
+    // burned and no read starts past the fence.
+    /**
+     * @param {() => number} clockNow the claiming consumer's read clock
+     * @param {(ms: number) => Promise<void>} paceSleep an abort-aware sleep
+     * @param {number | null} deadlineAtMs refuse the slot at/after this instant
+     * @param {(() => boolean) | null} shouldAbort bail out (return null) when this turns true
+     * @param {boolean} reserveFloorOnce bypass the ≥1000-ms floor for THIS
+     *   one claim — §24.8's REGISTERED exception (the arm's reserved final
+     *   pull-in read, codex gate round-9 finding 2). Even a reserved claim
+     *   never shares an instant with another start: it waits only until the
+     *   clock reads strictly after the ledger's last start, and it stamps the
+     *   same ledger (the attempt accounting covers it).
+     * @param {number} paceChunkMs the pacing chunk cap: the §23.5 sampler
+     *   schedules each inter-attempt delay as ONE wait of the registered
+     *   remainder (its contract forbids sub-floor scheduled waits), while the
+     *   post-release arm keeps ≤100 ms chunks so its wait stages stay keyable
+     *   on sleep sizes.
+     * @param {boolean} accountOnly count the attempt in the shared ledger and
+     *   enforce the combined ceiling, but neither move the paced floor nor
+     *   join the paced `starts` stream — the ONE-SHOT scheduled reads
+     *   (settlement-watch reads, the window-end refresh; codex gate round-11
+     *   finding 2) are cap-accounted without perturbing the paced cadence.
+     * @param {'sampler' | 'arm' | null} queueKind the consumer kind for FAIR
+     *   access to the shared stream (codex gate round-12 finding 1): a
+     *   queued claimant registers its wait and is served before a YOUNGER
+     *   claimant of the other kind may claim — the authoritative arm can no
+     *   longer be starved behind renewed sampler claims. Null (account-only
+     *   claims) skips the queue entirely. Fairness is an ORDERING rule only:
+     *   the global ≥1000-ms spacing and the ≤600 combined ceiling stay
+     *   intact.
+     * @returns {Promise<number | null>} the claimed start instant, or null
+     */
+    const claimSharedReadSlot = async (clockNow, paceSleep, deadlineAtMs, shouldAbort, reserveFloorOnce = false, paceChunkMs = 100, accountOnly = false, queueKind = null) => {
+      // Codex gate round-11 finding 1: the claim keeps re-reading the ledger
+      // after EVERY pacing chunk and grants only when the floor is actually
+      // satisfied — under normal timers a 100 ms chunk must never buy a start
+      // (the round-10 one-chunk `reWaited` produced repeated sub-floor gaps
+      // and same-millisecond double starts while the arms competed). A
+      // scheduler that resolves EARLIER than requested — detected by clock
+      // progress below the request, the §23.5 pathological case — is bounded
+      // to the registered named-shortfall two-wait shape, so the stream never
+      // spins on an instant scheduler, and the atomic stamp still keeps every
+      // start instant distinct.
+      let earlyScheduler = false;
+      /** this claim's queue registration instant (set once, at its first wait) */
+      let queuedSinceMs = null;
+      /** @type {() => void} */
+      const clearQueueRegistration = () => {
+        if (queueKind === 'sampler') durableReadLedger.samplerQueuedSinceMs = null;
+        else if (queueKind === 'arm') durableReadLedger.armQueuedSinceMs = null;
+      };
+      for (;;) {
+        if (shouldAbort !== null && shouldAbort()) {
+          clearQueueRegistration();
+          return null;
+        }
+        // Codex gate round-11 finding 2: the combined ≤600 ceiling is enforced
+        // ATOMICALLY at the shared claim — checked here (fast fail) and again
+        // in the SAME synchronous continuation as the stamp (no await between
+        // the re-check and the grant), so no consumer — sampler, arm,
+        // settlement-watch read, or window-end refresh — can start a read
+        // past the registered combined attempts. A refused read is NAMED on
+        // the ledger.
+        if (durableReadLedger.attempts >= DURABLE_SAMPLING_MAX_ATTEMPTS) {
+          durableReadLedger.attemptsRefusedAtCap += 1;
+          clearQueueRegistration();
+          return null;
+        }
+        const nowMs = clockNow();
+        if (deadlineAtMs !== null && nowMs >= deadlineAtMs) {
+          clearQueueRegistration();
+          return null;
+        }
+        const lastStartMs = durableReadLedger.lastStartAtMs;
+        const earliestStartMs = accountOnly
+          ? Number.NEGATIVE_INFINITY
+          : reserveFloorOnce
+            ? (lastStartMs === null ? Number.NEGATIVE_INFINITY : lastStartMs + 1)
+            : (lastStartMs === null ? Number.NEGATIVE_INFINITY : lastStartMs + DURABLE_SAMPLING_MIN_INTERVAL_MS);
+        const waitMs = earliestStartMs - nowMs;
+        // Codex gate round-12 finding 1: fair access — register this claim's
+        // wait ONCE (at its first wait) and yield the slot to an OLDER
+        // claimant of the other kind. The younger claimant keeps pacing and
+        // re-checking; the older one's grant (or bail) clears its
+        // registration, so the queue always drains — no starvation, no
+        // deadlock.
+        if (queueKind !== null && queuedSinceMs === null) {
+          queuedSinceMs = nowMs;
+          if (queueKind === 'sampler') durableReadLedger.samplerQueuedSinceMs = queuedSinceMs;
+          else durableReadLedger.armQueuedSinceMs = queuedSinceMs;
+        }
+        const otherSinceMs = queueKind === 'sampler'
+          ? durableReadLedger.armQueuedSinceMs
+          : durableReadLedger.samplerQueuedSinceMs;
+        // Codex gate round-13: the RESERVED final read is not blocked by
+        // fairness when the older floor-paced claimant cannot legally run
+        // before credit closes — its next legal slot (the shared ledger
+        // floor's next opening) falls at/after the measurement cutoff, so
+        // yielding would spend the reserve on nothing and lose the legitimate
+        // terminal winner. The reserve proceeds within the final pre-cutoff
+        // stretch; the global floor and the combined cap stay intact for
+        // everyone else. Codex gate round-21 finding 1 (OVERTURNING the
+        // round-20 withdrawal): the reviewer's deterministic repro (both
+        // consumers at the registered 1000-ms cadence, 200-ms reads, a
+        // 100-ms observation offset) lands the sampler's next legal slot
+        // INSIDE the final stretch — sampler/reserve starts at
+        // release+9900/+9901, completions at +10100/+10101 — where yielding
+        // spends the reserve (a +9400 success left the preserved snapshot
+        // `running` and `terminalWinner` null). The completion-window
+        // protection is REQUIRED and restored: the reserve proceeds when
+        // the older claimant's next legal slot is too close to the cutoff
+        // for the reserve to also complete strictly before it.
+        const otherCannotRunBeforeCutoff = reserveFloorOnce
+          && deadlineAtMs !== null
+          && lastStartMs !== null
+          && lastStartMs + 2 * DURABLE_SAMPLING_MIN_INTERVAL_MS > deadlineAtMs;
+        const mustYield = !otherCannotRunBeforeCutoff
+          && otherSinceMs !== null && queuedSinceMs !== null && otherSinceMs < queuedSinceMs;
+        if ((waitMs <= 0 || earlyScheduler) && !mustYield) {
+          if (durableReadLedger.attempts >= DURABLE_SAMPLING_MAX_ATTEMPTS) {
+            durableReadLedger.attemptsRefusedAtCap += 1;
+            clearQueueRegistration();
+            return null;
+          }
+          const startedAtMs = clockNow();
+          durableReadLedger.attempts += 1;
+          clearQueueRegistration();
+          if (accountOnly) {
+            durableReadLedger.unpacedAttempts += 1;
+          } else {
+            durableReadLedger.lastStartAtMs = startedAtMs;
+            durableReadLedger.starts.push(startedAtMs);
+          }
+          return startedAtMs;
+        }
+        const cappedWaitMs = deadlineAtMs !== null ? Math.min(Math.max(waitMs, 1), deadlineAtMs - nowMs) : Math.max(waitMs, 1);
+        const requestedMs = Math.max(1, Math.min(paceChunkMs, Math.ceil(cappedWaitMs)));
+        await paceSleep(requestedMs);
+        if (clockNow() - nowMs < requestedMs - 5) earlyScheduler = true;
+      }
+    };
     if (input.sampleDurableSnapshots && typeof input.readDurableSnapshot === 'function') {
       const requested = input.sampleDurableSnapshots === true ? {} : input.sampleDurableSnapshots;
       /** @param {unknown} value */
@@ -1524,9 +1911,30 @@ export async function runHeldHostTurn(input) {
         intervalMs: Math.max(DURABLE_SAMPLING_MIN_INTERVAL_MS, finiteNumber(/** @type {any} */ (requested).intervalMs) ? /** @type {any} */ (requested).intervalMs : DURABLE_SAMPLING_MIN_INTERVAL_MS),
         maxAttempts: Math.max(1, Math.min(DURABLE_SAMPLING_MAX_ATTEMPTS, finiteNumber(/** @type {any} */ (requested).maxAttempts) ? Math.floor(/** @type {any} */ (requested).maxAttempts) : DURABLE_SAMPLING_MAX_ATTEMPTS)),
         maxSummaries: Math.max(1, Math.min(DURABLE_SAMPLING_MAX_SUMMARIES, finiteNumber(/** @type {any} */ (requested).maxSummaries) ? Math.floor(/** @type {any} */ (requested).maxSummaries) : DURABLE_SAMPLING_MAX_SUMMARIES)),
+        // §24.8 (native-acceptance Task 3): the sampler stops AT the armed
+        // measurement cutoff (reads never start past it; a completion at/after
+        // it is the named post-cutoff limit) on the SAME injectable wall clock
+        // the cutoff is computed on.
+        cutoffAtMs: input.measurementCutoffSchedule === true ? () => cleanup.measurementCutoffAtMs : null,
+        readClockNow: wallClockNow,
+        ledger: durableReadLedger,
+        claimSlot: claimSharedReadSlot,
       });
     }
     timeline.launchedAtElapsedMs = Math.round(now() - startMs);
+    // Codex gate round-20 finding 2: the Root result's OWN completion
+    // instant is stamped (below, inside the EXISTING settlement handler —
+    // never a new .then hop, which would shift the fake-clock drain
+    // ordering) the moment the promise settles, on the SAME injectable wall
+    // clock the planned observation endpoint derives from — independent of
+    // promise-race order. A delayed final window tick can let a result
+    // completing AFTER the endpoint win the race (a reproduced result at
+    // endpoint+267 ms) and be accepted in-window without the required
+    // `postRelease.rootResult` deadline-miss diagnostic; the stamped instant
+    // makes the in-window decision deadline evidence, never race order (the
+    // SAME discipline as the durable-read carriers' on-time predicate).
+    /** @type {{ settled: boolean, completedAtMs: number | null }} */
+    const rootResultStamp = { settled: false, completedAtMs: null };
     /** @type {Promise<{ kind: 'result', value: { code: number | null, stdout: string, stderr: string } } | { kind: 'error', error: unknown }>} */
     const resultOutcome = Promise.resolve(control.result).then(
       (value) => ({ kind: /** @type {'result'} */ ('result'), value }),
@@ -1540,11 +1948,21 @@ export async function runHeldHostTurn(input) {
     // lifecycle evidence.
     resultOutcome.then(
       (outcome) => {
+        // Codex gate round-20 finding 2: the completion instant rides THIS
+        // existing settlement handler (no new .then hop — the extra hop
+        // shifted the fake-clock drain ordering and flaked the cutoff
+        // anchor premise by one millisecond).
+        rootResultStamp.settled = true;
+        rootResultStamp.completedAtMs = wallClockNow();
         if (outcome.kind === 'result' && timeline.rootAcknowledgementAtElapsedMs === null) {
           timeline.rootAcknowledgementAtElapsedMs = Math.round(now() - startMs);
         }
       },
-      () => { /* a rejecting host result carries no acknowledgement */ },
+      () => {
+        rootResultStamp.settled = true;
+        rootResultStamp.completedAtMs = wallClockNow();
+        /* a rejecting host result carries no acknowledgement */
+      },
     );
     /** @type {Promise<{ kind: 'held' } | { kind: 'gate-error', error: unknown }>} */
     const gateOutcome = Promise.resolve().then(() => input.waitForGate(budgetController.signal)).then(
@@ -1597,7 +2015,11 @@ export async function runHeldHostTurn(input) {
         // read STARTS before the watch (the observation is sampled as early
         // as possible) and its layer is finished below, always before the
         // settlement cleanup.
-        const durableRead = startDurableSnapshotRead(input);
+        // Codex gate round-11 finding 2: the watch read claims through the
+        // shared stream — the combined ≤600 ceiling is enforced atomically
+        // for it as well (account-only: its scheduled instant is its own).
+        const durableReadClaim = await claimSharedReadSlot(wallClockNow, abortableSleep, null, null, false, 100, true);
+        const durableRead = durableReadClaim === null ? undefined : startDurableSnapshotRead(input);
         /** @type {{ observed: boolean, basis: string | null } | null} */
         let childSettlement = null;
         // Codex round 5 (finding 2): a REJECTED watch is its own named fact —
@@ -1699,7 +2121,10 @@ export async function runHeldHostTurn(input) {
           // verified deadline, BEFORE the Status cleanup — when a reader is
           // supplied; its aggregate grounds the durable settlement layer
           // exactly like the other orderings.
-          const durableRead = startDurableSnapshotRead(input);
+          // Codex gate round-11 finding 2: cap-accounted through the shared
+          // stream (account-only; see the gate-first site).
+          const durableReadClaim = await claimSharedReadSlot(wallClockNow, abortableSleep, null, null, false, 100, true);
+          const durableRead = durableReadClaim === null ? undefined : startDurableSnapshotRead(input);
           const { settlementLayers, durableSnapshot } = await buildDurableSettlementLayer(null, durableRead, budgetExpired, budgetController.signal, cleanup);
           answer = {
             endedBeforeGate: false,
@@ -1745,7 +2170,13 @@ export async function runHeldHostTurn(input) {
         // budget/cleanup-boundary fence. The early-exit classification itself
         // is unchanged; no reader supplied → the named null-supplier contract
         // (no childSettlement block, exactly like the other gating sites).
-        const durableRead = typeof input.readDurableSnapshot === 'function' ? startDurableSnapshotRead(input) : null;
+        // Codex gate round-11 finding 2: cap-accounted through the shared
+        // stream (account-only; see the gate-first site).
+        const durableRead = typeof input.readDurableSnapshot !== 'function'
+          ? null
+          : (await claimSharedReadSlot(wallClockNow, abortableSleep, null, null, false, 100, true)) === null
+            ? null
+            : startDurableSnapshotRead(input);
         const joined = durableRead !== null
           ? await buildDurableSettlementLayer(null, durableRead, budgetExpired, budgetController.signal, cleanup)
           : null;
@@ -1757,7 +2188,27 @@ export async function runHeldHostTurn(input) {
         };
       }
     } else {
-      identity = await captureProcessIdentity();
+      // Task 3 (§24.7 local-identity row): the eager establishment ran
+      // concurrently with the held phase — await it here (the worker's
+      // gate-reached marker implies the fake process launched, so the marker
+      // exists by now) and keep the prior direct-capture semantics when the
+      // establishment could not capture (the same throw-on-absence contract).
+      await identityEstablishment;
+      if (identity === undefined) {
+        try {
+          identity = await captureProcessIdentity();
+          noteIdentityEstablished();
+        } catch (error) {
+          if (/** @type {any} */ (error)?.code === 'ZCODE_SHELL_WAIT_PROCESS_EXITED') {
+            // Codex gate round-7 finding 1: the confirmed permanent
+            // disappearance surfaces as the NAMED process-exit failure —
+            // never as budget exhaustion (the establishment stopped; the
+            // basis above already carries the process-exit name).
+            throw new Error(`the verified worker process exited before identity capture: ${error instanceof Error ? error.message : String(error)}`);
+          }
+          throw error;
+        }
+      }
       if (input.waitForObservation) {
         await input.waitForObservation(budgetController.signal);
         timeline.observationDetectedAtElapsedMs = Math.round(now() - startMs);
@@ -1802,7 +2253,24 @@ export async function runHeldHostTurn(input) {
       // pending sleep per iteration. After the first consumption the loop
       // awaits only real ticks, so budget cancellation stays effective.
       let earlyResultConsumed = false;
-      while (now() < holdDeadline && !budgetExpired) {
+      // Codex gate round-8 finding 1 (as completed by the round-10 finding 1):
+      // BOTH scheduled endpoints anchor to ONE hold-deadline wall-clock anchor
+      // — the CURRENT wall reading PROJECTED onto the SCHEDULED deadline by
+      // the remaining monotonic distance, snapshotted right after the gate
+      // resolves (before the hold loop can oversleep). A final hold tick
+      // resuming late (the reproduced 6-second oversleep) can never push the
+      // cutoff past the registered hold-deadline-plus-10000-ms schedule, and
+      // neither can any interleaved drift: the anchor is the scheduled
+      // deadline expressed on the wall clock, full stop. The loop's own
+      // condition call still captures the crossing overrun as the named fact.
+      let holdDeadlineOverrunMs = 0;
+      const holdDeadlineWallMs = wallClockNow() + (holdDeadline - now());
+      for (;;) {
+        const current = now();
+        if (current >= holdDeadline || budgetExpired) {
+          holdDeadlineOverrunMs = Math.max(0, current - holdDeadlineMs);
+          break;
+        }
         const tick = abortableSleep(Math.min(100, Math.max(1, holdDeadline - now()))).then(() => null, () => null);
         if (input.statusDeadlineFlow === true && !earlyResultConsumed) {
           const winner = await Promise.race([
@@ -1827,7 +2295,10 @@ export async function runHeldHostTurn(input) {
         // Codex round 1: the durable snapshot is SAMPLED HERE — at the
         // verified deadline, BEFORE the Status cleanup — when a reader is
         // supplied (the same before-cleanup ordering as every other path).
-        const durableRead = startDurableSnapshotRead(input);
+        // Codex gate round-11 finding 2: cap-accounted through the shared
+        // stream (account-only; see the gate-first site).
+        const durableReadClaim = await claimSharedReadSlot(wallClockNow, abortableSleep, null, null, false, 100, true);
+        const durableRead = durableReadClaim === null ? undefined : startDurableSnapshotRead(input);
         const { settlementLayers, durableSnapshot } = await buildDurableSettlementLayer(null, durableRead, budgetExpired, budgetController.signal, cleanup);
         answer = {
           endedBeforeGate: false,
@@ -1846,8 +2317,628 @@ export async function runHeldHostTurn(input) {
       } else {
         if (statusDeadlineOutcome !== null && statusDeadlineOutcome.kind === 'error') throw statusDeadlineOutcome.error;
         if (budgetExpired) throw new Error('the held observation reached the experiment budget before gate release');
+      // §24.8 (native-acceptance Task 3): the measurement cutoff is computed
+      // AT the hold-deadline crossing, on the WALL clock (comparable to every
+      // §23.5 sampling instant), BEFORE the completion gate is released and
+      // long before teardown — the cutoff fact persists on the record even
+      // when no termination boundary ever exists. Arming is schedule-scoped
+      // (MEASUREMENT_CUTOFF_ENABLED_CASES via the executor); a flag that
+      // arrived for an unregistered shape changes nothing.
+      if (input.measurementCutoffSchedule === true) {
+        // Codex gate round-8 finding 1: BOTH scheduled endpoints derive from
+        // ONE hold-deadline anchor — the SCHEDULED deadline (holdDeadlineMs),
+        // never a post-oversleep wall reading. A final hold tick that resumes
+        // late advances the wall clock past the deadline; arming from the
+        // delayed reading would silently extend measurement credit past the
+        // registered hold-deadline-plus-10000-ms window (a reproduced
+        // 6-second oversleep placed the cutoff one second after planned
+        // teardown). The wall reading is therefore corrected by the monotonic
+        // overrun, the corrected cutoff is the persisted fence (reads past it
+        // are fenced exactly as the registration requires), and the overrun
+        // itself rides the record as a named fact.
+        cleanup.measurementCutoffAtMs = Math.max(1, (holdDeadlineWallMs ?? wallClockNow()) + MEASUREMENT_CUTOFF_AFTER_HOLD_MS);
+        if (holdDeadlineOverrunMs > 0) cleanup.holdDeadlineOverrunMs = holdDeadlineOverrunMs;
+      }
       const processAliveWhileHeld = await readProcessIdentity(identity) !== undefined;
       await safeReleaseGate();
+      // §24.8 scheduled post-release section (codex gate P2 fixes 2–4): with
+      // the armed measurement-cutoff schedule the post-release operations are
+      // RACED against the PLANNED observation end (hold deadline + 15000 ms —
+      // fix 3: never the much larger experiment budget, which a delayed Root
+      // result or read could otherwise borrow); an operation still pending at
+      // the endpoint is preserved as a NAMED late/missing fact, never
+      // silently absorbed. The authoritative durable snapshot is REFRESHED at
+      // the window's end (fix 2) so the earlier gate-release-time read can
+      // never mask duties that settled during the added measurement window —
+      // the refreshed read's OWN completion instant decides its credit under
+      // the existing §24.8 fence (a post-cutoff completion is the named
+      // fenced observation and the pre-cutoff samples adjudicate through the
+      // existing settlement fallback). The answer is built only AFTER the
+      // section (fix 4) so budget expiry occurring inside it propagates onto
+      // the returned record and the mapper's budget-expired classification.
+      // The watcher arm never coexists with the armed schedule (the
+      // registered interrupt case has no completion-shaped watch).
+      if (input.measurementCutoffSchedule === true && holdDeadlineMs !== null) {
+        const observationEndMs = holdDeadlineMs + MEASUREMENT_CUTOFF_AFTER_HOLD_MS + OBSERVATION_TEARDOWN_AFTER_CUTOFF_MS;
+        // Codex gate round-14 finding 2: the diagnostics object itself is
+        // HOISTED to turn scope (the same pattern as the round-5 snapshot
+        // carriers) — a Root result that REJECTS after these facts were
+        // recorded throws past this block, and the outer catch's failure
+        // record must carry whatever abandonment diagnostics were already
+        // recorded before the throw.
+        // The bounded post-release window itself (§24.8 (7)–(9)): ONE
+        // concurrent wait advances the shared clock to the planned observation
+        // end (the passive sampler keeps reading through it at the ≥1000-ms
+        // floor; the held phase ends AT the endpoint). Teardown is NOT a kill:
+        // no cleanup boundary is recorded here (the recorder stays inert —
+        // nothing is terminated) and budget expiry always wins immediately.
+        // Every post-release operation races THIS wait — the endpoint is a
+        // fixed deadline on the shared clock, never a clock jump.
+        // Codex gate round-3 finding 1: a post-release operation can REJECT
+        // before the endpoint; cleanup and the exit finally then abort the
+        // shared signal while `budgetExpired` stays false — this loop (and
+        // the refresh arm below) must observe the abort and exit promptly
+        // instead of spinning on an `abortableSleep` that now resolves
+        // immediately.
+        let windowEnded = false;
+        const observationWindow = (async () => {
+          while (now() < observationEndMs && !budgetExpired && !budgetController.signal.aborted) {
+            await abortableSleep(Math.min(100, Math.max(1, Math.round(observationEndMs - now()))));
+          }
+          windowEnded = true;
+        })();
+        /** @template T @param {Promise<T>} operation @returns {Promise<{ kind: 'done', value: T } | { kind: 'error', error: unknown } | { kind: 'endpoint' }>} */
+        const withinObservationWindow = (operation) => Promise.race([
+          operation.then(
+            (/** @type {T} */ value) => ({ kind: /** @type {'done'} */ ('done'), value }),
+            (/** @type {unknown} */ error) => ({ kind: /** @type {'error'} */ ('error'), error }),
+          ),
+          observationWindow.then(() => ({ kind: /** @type {'endpoint'} */ ('endpoint') })),
+        ]);
+        // Codex gate fix B (2026-10-26): the refreshed authoritative read
+        // ARMS during the window's final lead ({@link
+        // OBSERVATION_REFRESH_LEAD_MS} before the planned end) so a healthy
+        // read completes WITHIN the observation window; a read still pending
+        // at the endpoint is abandoned there (the round-3 losing-read
+        // discipline: never awaited past the endpoint, never consuming budget
+        // beyond it) with the named missing-read fact and the named
+        // unestablished placeholder riding in its place. The arm is created
+        // BEFORE the post-release races so it always gets its lead even when
+        // the Root result consumes the whole window, and its lead-time read
+        // makes the endpoint decision deterministic (the read has settled or
+        // it is genuinely stalled). The lead is post-cutoff by construction,
+        // so the refreshed read remains the fenced final observation either
+        // way. Codex gate round-3 finding 1: the arm observes the shared
+        // signal and NEVER starts its read after an abort (cleanup or
+        // teardown) — it resolves to null instead, and the join below skips
+        // the refreshed slot entirely.
+        let /** @type {Promise<NonNullable<ReturnType<typeof startDurableSnapshotRead>> | null> | null} */ refreshArm = null;
+        // Codex gate round-14 finding 1: the refresh's READ HANDLE is captured
+        // the moment the arm creates it, so the endpoint outcome can be
+        // LATCHED (below) at the window's end — before any cleanup whose
+        // awaits could let a pending refresh finish and rewrite its mutable
+        // `state.settled`.
+        let /** @type {any} */ refreshReadHandle = null;
+        if (typeof input.readDurableSnapshot === 'function') {
+          refreshArm = (async () => {
+            while (observationEndMs - now() > OBSERVATION_REFRESH_LEAD_MS && !budgetExpired && !budgetController.signal.aborted) {
+              await abortableSleep(Math.min(100, Math.max(1, Math.round(observationEndMs - OBSERVATION_REFRESH_LEAD_MS - now()))));
+            }
+            // A shared-signal abort WITHOUT budget expiry is cleanup or
+            // teardown (a failure path, or the exit finally): the refreshed
+            // read never starts after it — the arm resolves to null instead
+            // and the join below skips the refreshed slot entirely. Budget
+            // expiry is NOT this case: the budget timer sets `budgetExpired`
+            // BEFORE aborting, and the read below still starts and joins
+            // under the budget fence (the pre-existing expiry contract).
+            if (budgetController.signal.aborted && !budgetExpired) return null;
+            // Codex gate round-11 finding 2: the window-end refresh claims
+            // through the shared stream too — the combined ≤600 ceiling is
+            // enforced atomically for it as well (account-only: the refresh's
+            // scheduled instant is its own, never a paced-cadence member).
+            // No cutoff deadline here: the refresh is post-cutoff BY
+            // CONSTRUCTION and must stay the fenced final observation.
+            const refreshClaimMs = await claimSharedReadSlot(wallClockNow, abortableSleep, null, null, false, 100, true);
+            if (refreshClaimMs === null) return null;
+            refreshReadHandle = startDurableSnapshotRead(input, wallClockNow);
+            return refreshReadHandle;
+          })();
+        }
+        // (fix 3) the early authoritative read and the pre-cutoff settlement
+        // read arm — created and started CONCURRENTLY with the observation window
+        // and the post-release races (codex gate round-4 finding 2: serializing
+        // them behind the Root result and natural-exit waits would start every
+        // authoritative read past the measurement cutoff whenever Root returns
+        // late, even when the job settled earlier and the passive samples
+        // observed it). Codex gate fix A (2026-10-26): completed carriers whose
+        // OWN completion instant sits strictly before the measurement cutoff are
+        // PRESERVED as the record's pre-cutoff authoritative snapshot — the
+        // winner-credible evidence the always-post-cutoff window-end refresh can
+        // never provide. The reads are stamped on the SAME injectable wall clock
+        // the cutoff is computed on, and the offline join re-verifies the
+        // pre-cutoff fence from the snapshot's own instant (the driver records;
+        // the join adjudicates).
+        const cutoffAtMs = cleanup.measurementCutoffAtMs;
+        /** @param {{ snapshot: Record<string, unknown>, completedAtMs: number } | null} carrier @returns {boolean} whether a strictly-pre-cutoff carrier was preserved */
+        const preservePreCutoffCarrier = (carrier) => {
+          if (carrier === null || (cutoffAtMs !== null && carrier.completedAtMs >= cutoffAtMs)) return false;
+          preCutoffSnapshot = { ...carrier.snapshot, completedAtMs: carrier.completedAtMs };
+          return true;
+        };
+        // Codex gate round-18 finding 1 + round-19 finding 2 (the CARRIER
+        // SWEEP): the planned observation endpoint on the WALL clock — the
+        // same clock every post-release read's own completion instant is
+        // stamped on.
+        const plannedEndpointWallMs = cutoffAtMs !== null ? cutoffAtMs + OBSERVATION_TEARDOWN_AFTER_CUTOFF_MS : null;
+        // The ON-TIME predicate shared by EVERY post-release read carrier
+        // (the release-edge read, the settlement-arm reads — the reserved
+        // pull-in read included — and the window-end refresh): a read counts
+        // as settled-within-the-window ONLY when its OWN carrier-stamped
+        // completion instant is strictly before the planned endpoint.
+        // `state.settled` alone is a latch-time flag that event-loop delays
+        // can rewrite after the endpoint (the reproduced 267 ms
+        // post-endpoint completions): an at/after-endpoint completion is a
+        // deadline miss and keeps its named diagnostic, exactly like a read
+        // still pending at the endpoint.
+        /** @param {{ state: { settled: boolean, carrier: { completedAtMs: number } | null } } | null | undefined} read @returns {boolean} whether the read settled with its own completion strictly before the planned endpoint */
+        const readSettledBeforePlannedEndpoint = (read) => read != null && read.state.settled
+          && (plannedEndpointWallMs === null
+            || (read.state.carrier?.completedAtMs ?? Number.POSITIVE_INFINITY) < plannedEndpointWallMs);
+        // Codex gate round-10 finding 2: even the release-edge read claims its
+        // start through the shared stream — the §23.5 sampler may have started
+        // a read at the same release instant, and two starts at one instant is
+        // exactly the global-cadence violation the shared ledger exists to
+        // close. The claim waits out the shared floor first (abort- and
+        // cutoff-aware).
+        const earlyClaimMs = await claimSharedReadSlot(
+          wallClockNow,
+          abortableSleep,
+          cutoffAtMs,
+          () => budgetExpired || budgetController.signal.aborted,
+          false,
+          100,
+          false,
+          'arm',
+        );
+        if (process.env.R16DBG) console.error('R16DBG early claim', earlyClaimMs);
+        if (earlyClaimMs !== null) {
+          const earlyRead = startDurableSnapshotRead(input, wallClockNow);
+          if (earlyRead !== undefined) {
+            const earlyRace = await withinObservationWindow(earlyRead.promise);
+            if (process.env.R16DBG) console.error('R16DBG early race', earlyRace.kind, 'settled', earlyRead.state.settled);
+            if (earlyRace.kind === 'error') throw earlyRace.error;
+            // Codex gate round-19 finding 2 (carrier sweep, release-edge):
+            // preservation requires the read's OWN completion instant to be
+            // strictly before the planned endpoint — `state.settled` alone
+            // let a post-endpoint completion (the delayed final window tick)
+            // select preservation, whose own cutoff check then silently
+            // discarded the post-cutoff carrier WITHOUT the named
+            // `earlyDurableRead` fact. An at/after-endpoint completion (or a
+            // read still pending at the endpoint) is the deadline miss.
+            if (earlyRead.state.settled && earlyRead.state.carrier !== null && readSettledBeforePlannedEndpoint(earlyRead)) {
+              preservePreCutoffCarrier(earlyRead.state.carrier);
+            } else if (!budgetExpired) {
+              postRelease.earlyDurableRead = 'durable-read-pending-at-planned-observation-end';
+            }
+          }
+        }
+          const preCutoffReadArm = (async () => {
+          // Codex gate round-3 finding 2: the gate-release read is captured
+          // ONCE — a job that settles LATER but still strictly before the
+          // measurement cutoff would leave NO authoritative terminal snapshot
+          // (this read observed `running`; the window-end refresh is
+          // post-cutoff by construction; samples never carry the winner). The
+          // pre-cutoff settlement read arm therefore keeps taking authoritative
+          // reads at the registered ≥1000-ms read floor while window time
+          // remains before the cutoff, PRESERVING THE LATEST completed
+          // strictly-pre-cutoff snapshot. It stops early once the preserved
+          // snapshot positively observes the settlement, and it never starts a
+          // read at/after the cutoff (equality included), past the observation
+          // endpoint, past budget expiry, or after a shared-signal abort
+          // (round-3 finding 1). The pacing sleeps stay ≤100 ms so post-release
+          // wait stages remain keyable on sleep sizes.
+          // Codex gate round-10 finding 2: the arm runs whenever durable reads
+          // are wired at all — the release-edge read's claim (not the read
+          // object) decides whether that FIRST read happened, and the arm's
+          // own claims pace every later one.
+          if (typeof input.readDurableSnapshot === 'function') {
+            /** @param {Record<string, unknown> | undefined} snapshot @returns {boolean} whether the snapshot positively observes the durable settlement */
+            const observesSettlement = (snapshot) => {
+              if (snapshot === null || typeof snapshot !== 'object') return false;
+              // Codex gate round-4 finding 3: settlement observation requires
+              // AUTHORITY and INTEGRITY — the aggregate positively established
+              // (settled or unresolved) and the partition fingerprint positively
+              // equal, and the executor linkage positively verified — before a
+              // terminal job projection may stop the arm. A
+              // torn read (a terminal projection beside `unestablished` /
+              // `snapshotEqual: false`) or an unverified-executor read keeps
+              // the arm reading: the join refuses such snapshots, so stopping
+              // on one would trade a recoverable later consistent success for
+              // an unusable observation. A snapshot WITHOUT a passive block is
+              // not positively torn and still stops the arm (the join credits
+              // it).
+              const aggregate = /** @type {any} */ (snapshot).aggregate;
+              if (aggregate !== 'settled' && aggregate !== 'unresolved') return false;
+              if (/** @type {any} */ (snapshot).executorLinkage !== 'verified') return false;
+              const passive = /** @type {any} */ (snapshot).passive;
+              if (passive !== null && typeof passive === 'object' && passive.snapshotEqual === false) return false;
+              const projection = /** @type {any} */ (snapshot).job?.presence === 'found'
+                && /** @type {any} */ (snapshot).job?.projection && typeof /** @type {any} */ (snapshot).job.projection === 'object'
+                ? /** @type {any} */ (snapshot).job.projection
+                : null;
+              const status = projection?.status ?? null;
+              return status === 'succeeded' || status === 'failed' || status === 'cancelled'
+                || aggregate === 'settled';
+            };
+            /** @type {() => boolean} */
+            const settlementObserved = () => preCutoffSnapshot !== undefined && observesSettlement(preCutoffSnapshot);
+            let pullInArmed = true;
+            let nextReadDueMs = now() + DURABLE_SAMPLING_MIN_INTERVAL_MS;
+            for (;;) {
+              if (budgetExpired || budgetController.signal.aborted || settlementObserved()) break;
+              if (cutoffAtMs !== null && wallClockNow() >= cutoffAtMs) break;
+              if (now() >= observationEndMs) break;
+              // Codex gate round-10 finding 2: the arm's OWN pace target stays
+              // in this loop's monotonic domain; the GLOBAL ≥1000-ms cadence
+              // against the §23.5 sampler (and the early read) is enforced by
+              // the shared claim right before the start — the start instant is
+              // whatever slot the one paced stream hands over, never a hand
+              // computed here. The §24.8 attempt ceiling covers the combined
+              // arm through the same ledger the claim stamps.
+              if (durableReadLedger.attempts >= DURABLE_SAMPLING_MAX_ATTEMPTS) break;
+              // Pace at the read floor; pull the final read in FRONT of the
+              // cutoff so a settlement landing in the last floor-sized stretch
+              // is still observed strictly before credit closes. Codex gate
+              // round-7 finding 2: the pull-in reserves HALF the remaining
+              // pre-cutoff stretch for the read and its completion —
+              // scheduling it exactly at the cutoff would place it behind the
+              // fence check, which would skip it and leave only the (always
+              // post-cutoff) window-end refresh: a finish in the last stretch
+              // kept a running snapshot and lost the winner. The floor-paced
+              // reads are untouched; only the final pull-in compresses, and a
+              // read still STARTS strictly before the cutoff (its completion
+              // is what the pre-cutoff fence judges).
+              // Codex gate round-9 finding 2: the pull-in applies AT MOST ONCE
+              // — one reserved final read. Every other read keeps the
+              // registered ≥1000-ms floor cadence: repeated halving compressed
+              // every subsequent read (950, 475, 237, 119 milliseconds — down
+              // to 1) and violated the frozen read cadence in §24.8. After the
+              // reserved read the floor cadence resumes and the loop's own
+              // entry checks close the arm at the cutoff.
+              // Codex gate round-10 finding 2: the reserve fires only INSIDE
+              // the final floor-sized stretch, and the floor pace HANDS CONTROL
+              // BACK the moment the window crosses into that stretch — a
+              // decision taken at the loop top alone would race the fence: the
+              // floor pace itself walks the clock into the final stretch, and
+              // the next loop top can already sit past the cutoff, so the
+              // reserve never fires and a finish in the last stretch loses its
+              // winner. The reserved read paces to the midpoint of the REMAINING
+              // stretch from hand-off (never to the floor due) and claims
+              // through the same shared stream, fenced at the cutoff.
+              let reservedPullIn = false;
+              const floorPaceUntilMs = nextReadDueMs;
+              while (now() < floorPaceUntilMs && !budgetExpired && !budgetController.signal.aborted
+                && (cutoffAtMs === null || wallClockNow() < cutoffAtMs)) {
+                await abortableSleep(Math.max(1, Math.min(100, Math.round(floorPaceUntilMs - now()))));
+                if (pullInArmed && cutoffAtMs !== null && cutoffAtMs - wallClockNow() <= DURABLE_SAMPLING_MIN_INTERVAL_MS) break;
+              }
+              if (pullInArmed && cutoffAtMs !== null && cutoffAtMs - wallClockNow() <= DURABLE_SAMPLING_MIN_INTERVAL_MS) {
+                const pullInTargetMs = now() + Math.max(1, Math.floor((cutoffAtMs - wallClockNow()) / 2));
+                while (now() < pullInTargetMs && !budgetExpired && !budgetController.signal.aborted
+                  && (cutoffAtMs === null || wallClockNow() < cutoffAtMs)) {
+                  await abortableSleep(Math.max(1, Math.min(100, Math.round(pullInTargetMs - now()))));
+                }
+                pullInArmed = false;
+                reservedPullIn = true;
+              }
+              if (budgetExpired || budgetController.signal.aborted || settlementObserved()) break;
+              if (cutoffAtMs !== null && wallClockNow() >= cutoffAtMs) break;
+              if (now() >= observationEndMs) break;
+              // Codex gate round-10 finding 2: claim the start through the
+              // shared paced stream — the sampler may own the immediate slot,
+              // and the claim waits out the shared floor (abort-aware, fenced
+              // at the cutoff) before this read starts. A refused claim means
+              // the fence or a boundary closed first: stop claiming. The one
+              // RESERVED pull-in read (round-9 finding 2) bypasses the floor
+              // — §24.8's registered cadence exception — but still claims
+              // through the same ledger and never shares an instant.
+              const claimedStartMs = await claimSharedReadSlot(
+                wallClockNow,
+                abortableSleep,
+                cutoffAtMs,
+                () => budgetExpired || budgetController.signal.aborted,
+                reservedPullIn,
+                100,
+                false,
+                'arm',
+              );
+              if (claimedStartMs === null
+                || budgetExpired || budgetController.signal.aborted || settlementObserved()
+                || (cutoffAtMs !== null && wallClockNow() >= cutoffAtMs)
+                || now() >= observationEndMs) break;
+              const settlementRead = startDurableSnapshotRead(input, wallClockNow);
+              if (settlementRead === undefined) break;
+              const settlementRace = await withinObservationWindow(settlementRead.promise);
+              if (settlementRace.kind === 'error') throw settlementRace.error;
+              if (settlementRace.kind === 'endpoint') {
+                // Codex gate round-12 finding 2: a settlement-arm read still
+                // pending at the planned observation end is a NAMED
+                // collection failure — the same discipline as the early-read
+                // and refresh branches — never a silent abandonment.
+                postRelease.settlementArmRead = 'durable-read-pending-at-planned-observation-end';
+                break;
+              }
+              if (settlementRead.state.settled && settlementRead.state.carrier !== null && readSettledBeforePlannedEndpoint(settlementRead)) {
+                preservePreCutoffCarrier(settlementRead.state.carrier);
+              } else if (!budgetExpired) {
+                // Codex gate round-19 finding 2 (carrier sweep, settlement
+                // arm — the reserved pull-in read included): preservation
+                // requires the read's OWN completion instant to be strictly
+                // before the planned endpoint — `state.settled` alone let a
+                // post-endpoint completion (the delayed final window tick)
+                // select preservation, whose own cutoff check then silently
+                // discarded the post-cutoff carrier WITHOUT the named
+                // `settlementArmRead` fact. An at/after-endpoint completion
+                // (or a read still pending at the endpoint) is the deadline
+                // miss; the arm is done either way.
+                postRelease.settlementArmRead = 'durable-read-pending-at-planned-observation-end';
+                break;
+              }
+              nextReadDueMs = now() + DURABLE_SAMPLING_MIN_INTERVAL_MS;
+            }
+          }
+          })();
+          // The arm self-bounds (cutoff/endpoint/budget/abort) and cannot reject
+          // (its reads map supplier failures to named unestablished snapshots);
+          // the detached-phase guard keeps that invariant from ever becoming an
+          // unhandled rejection while the post-release races run below.
+          preCutoffReadArm.catch(() => {});
+        // (fix 3) the Root result.
+        const resultRace = await withinObservationWindow(resultOutcome);
+        // Codex gate round-14 finding 1: the refresh outcome is LATCHED the
+        // moment the window ends — the races below (Root missing at the
+        // endpoint) await the RECORDED termination cleanup, whose awaits can
+        // let a refresh pending at the endpoint FINISH and rewrite its
+        // mutable `state.settled`; the latched value never rewrites the
+        // recorded deadline-miss fact. (The late completion's data still
+        // rides the fenced observation placeholder.)
+        let refreshSettledAtEndpoint = false;
+        let refreshEndpointLatchTaken = false;
+        /** @type {() => void} */
+        const latchRefreshEndpointOutcome = () => {
+          if (refreshEndpointLatchTaken) return;
+          refreshEndpointLatchTaken = true;
+          // Codex gate round-18 finding 1: `state.settled` alone is the WRONG
+          // predicate — event-loop work can delay the final window tick past
+          // the planned endpoint, letting the refresh FINISH after the
+          // endpoint but BEFORE this latch runs (a reproduced 267 ms
+          // post-endpoint completion); the settled flag then took the on-time
+          // join branch and erased the required late-read fact. Codex gate
+          // round-19 finding 2: the SAME predicate now sweeps every
+          // post-release read carrier (the release-edge read and the
+          // settlement-arm reads join the refresh) — the read's carrier
+          // stamps its OWN completion instant on the SAME wall clock the
+          // planned endpoint derives from (cutoff + teardown): the
+          // deadline-miss fact rides whenever that instant is at/after the
+          // endpoint — scheduling delays cannot rewrite it.
+          refreshSettledAtEndpoint = readSettledBeforePlannedEndpoint(refreshReadHandle);
+        };
+        // Codex gate round-15 finding 1: the latch fires ONCE, at the FIRST window-end
+        // crossing — the Root-missing-at-endpoint branch AND the natural-exit-expiry
+        // branch each await termination cleanup, and a refresh finishing during
+        // EITHER cleanup must never rewrite the latched outcome. Paths that
+        // never cross an endpoint (Root returned inside the window) latch at
+        // the window's true end, after the observation-window await below.
+        let /** @type {{ code: number | null, stdout: string, stderr: string } | undefined} */ outcomeValue;
+        if (resultRace.kind === 'endpoint') {
+          if (!budgetExpired) {
+            // Codex gate round-15 finding 1: the window ends HERE for this
+            // path too — latch BEFORE the termination cleanup below.
+            latchRefreshEndpointOutcome();
+            postRelease.rootResult = 'root-result-missing-at-planned-observation-end';
+            // Codex gate fix C (2026-10-26): Root is STILL RUNNING at the
+            // planned endpoint. The exit finally's abort is pure watcher
+            // teardown (the recorder is inert there), but the real launch
+            // forwards that shared abort to runProcess — the fixture-owned
+            // host would be terminated UNRECORDED (no cleanup boundary,
+            // `codexTerminated: false`) and fixture disposal could race the
+            // unawaited kill. The REGISTERED termination cleanup therefore
+            // runs HERE — inside the turn, with the cleanup-boundary recorder
+            // active (this is the recorded cleanup path, never a hidden
+            // reconcile), so the record carries the true termination boundary
+            // and the termination is awaited before any disposal. The
+            // fixture-owned seams only: the exact-identity terminate signals
+            // the captured marker identity and `control.terminate` the
+            // launched handle — never an ambient process.
+            await runTerminationCleanup();
+          }
+        } else if (resultRace.kind === 'error') {
+          throw resultRace.error;
+        } else {
+          const outcome = /** @type {{ kind: 'result' | 'error', value?: { code: number | null, stdout: string, stderr: string }, error?: unknown }} */ (resultRace.value);
+          if (outcome.kind === 'error') throw outcome.error;
+          // Codex gate round-20 finding 2: the race-order 'done' is never
+          // deadline evidence — the result's OWN stamped completion instant
+          // decides. A result completing at/after the planned observation
+          // endpoint (the delayed final window tick let it win the race) is
+          // NOT in-window: the required `postRelease.rootResult`
+          // deadline-miss diagnostic rides; the result's data still rides as
+          // an observation (outcomeValue below), never re-rolled into
+          // in-window credit.
+          if (!budgetExpired && plannedEndpointWallMs !== null && rootResultStamp.settled
+            && (rootResultStamp.completedAtMs ?? Number.POSITIVE_INFINITY) >= plannedEndpointWallMs) {
+            postRelease.rootResult = 'root-result-missing-at-planned-observation-end';
+          }
+          outcomeValue = outcome.value;
+        }
+        // (fix 3) the natural-exit wait.
+        const exitWait = waitForProcessExit(identity, 'natural');
+        // Codex gate round-21 finding 2: the watcher's OWN completion instant
+        // is stamped the moment the watcher settles (injected watchers
+        // included — the default watcher stamps itself in its absence
+        // return), so the post-release comparison sees the watcher's real
+        // completion instant rather than race order.
+        exitWait.then(() => {
+          if (naturalExitCompletedAtWallMs === null) naturalExitCompletedAtWallMs = wallClockNow();
+        }, () => {
+          if (naturalExitCompletedAtWallMs === null) naturalExitCompletedAtWallMs = wallClockNow();
+        });
+        // Codex gate round-16: on the scheduled path the DEFAULT exit
+        // watcher's natural deadline IS the planned observation endpoint —
+        // its rejection at that deadline is the EXPECTED missing-exit
+        // outcome (named below), never a turn failure; the losing watch's
+        // rejection is swallowed in the bounded join. Injected watchers and
+        // unscheduled turns keep the strict rejection contract.
+        const exitWatcherBoundToEndpoint = input.waitForProcessExit === undefined
+          && input.measurementCutoffSchedule === true
+          && holdDeadlineMs !== null;
+        const exitRace = await withinObservationWindow(exitWait);
+        let exitEndedAtEndpoint = false;
+        if (exitRace.kind === 'error') {
+          // Codex gate round-17 finding 1: ONLY the IDENTIFIED planned-deadline
+          // expiry (the default watcher's marker-carrying natural-deadline
+          // rejection) converts to the named missing-exit outcome; any other
+          // watcher failure — an identity inspection error, an unexpected
+          // rejection — propagates as a real failure through the existing
+          // failure chain (never silently converted into an early termination
+          // with the error erased).
+          const plannedExpiry = /** @type {any} */ (exitRace.error)?.[plannedExitDeadlineExpiry] === true;
+          if (!exitWatcherBoundToEndpoint || !plannedExpiry) throw exitRace.error;
+          postRelease.naturalExit = 'natural-exit-unobserved-at-planned-observation-end';
+          exitEndedAtEndpoint = true;
+        }
+        if (exitRace.kind === 'endpoint') {
+          exitEndedAtEndpoint = true;
+        }
+        // Codex gate round-23 finding: race order is never deadline evidence
+        // on the SUCCESSFUL exit branch either. When the final observation-
+        // window tick is delayed, the in-flight identity inspection can
+        // return absence AFTER the planned endpoint but BEFORE that tick —
+        // the exit race resolves `done`, and only `endpoint` was handled
+        // above, so the stamped `naturalExitCompletedAtWallMs` (stamped at
+        // the exitWait settlement hop above, the DEFAULT watcher included)
+        // was recorded but never compared with `plannedEndpointWallMs` and
+        // the required missing-exit fact was silently lost (a reproduced
+        // absence ~390 ms past the endpoint). The watcher's OWN completion
+        // instant decides — at/after the planned endpoint records the same
+        // named diagnostic (the same discipline as the round-20 result-race
+        // comparison above); the observed absence still rides as an
+        // observation.
+        if (exitRace.kind === 'done' && !budgetExpired && plannedEndpointWallMs !== null
+          && (naturalExitCompletedAtWallMs ?? Number.POSITIVE_INFINITY) >= plannedEndpointWallMs) {
+          postRelease.naturalExit = 'natural-exit-unobserved-at-planned-observation-end';
+        }
+        if (exitEndedAtEndpoint && !budgetExpired) {
+          // Codex gate round-15 finding 1 + round-17 finding 2: the window ends
+          // HERE for BOTH deadline outcomes (the endpoint branch AND the
+          // watcher-deadline-won planned-expiry path) — latch the refresh
+          // outcome BEFORE the termination cleanup below, so a refresh that
+          // finishes during that cleanup never rewrites the latched pending
+          // outcome and the deadline-miss fact survives.
+          latchRefreshEndpointOutcome();
+          if (postRelease.naturalExit === undefined) {
+            postRelease.naturalExit = 'natural-exit-unobserved-at-planned-observation-end';
+          }
+          // Codex gate round-3 finding 5: when this endpoint leaves the
+          // verified fixture process ALIVE (Root returned late; the host
+          // never exited), the turn must not return with the fixture still
+          // running and the losing watch still pending past disposal. The
+          // REGISTERED termination cleanup therefore runs and is awaited
+          // here — the recorded exact-identity terminate (and the launched
+          // handle), the cleanup-boundary recorder active, the fixture-owned
+          // seams only, never a hidden reconcile — and the losing wait is
+          // then joined under the shared-signal bound, so it cannot outlive
+          // fixture disposal.
+          if (await readProcessIdentity(identity) !== undefined) {
+            await runTerminationCleanup();
+            // Codex gate round-23 finding 2: the losing wait's second join is
+            // bounded by the planned observation endpoint — a stalled watcher
+            // (an injected seam that never settles) must not extend the turn
+            // to the much larger experiment budget; the turn returns at/near
+            // the planned endpoint even when the watcher never settles.
+            const exitJoinBoundMs = plannedEndpointWallMs !== null
+              ? Math.max(0, plannedEndpointWallMs - wallClockNow())
+              : 0;
+            await Promise.race([
+              exitWatcherBoundToEndpoint ? exitWait.catch(() => {}) : exitWait,
+              abortableSleep(exitJoinBoundMs),
+            ]);
+          }
+        }
+
+        // Round-4 finding 2: join the concurrent pre-cutoff read arm. It
+        // self-bounded at the measurement cutoff (or earlier), so this join
+        // never extends the observation past the planned endpoint.
+        await preCutoffReadArm;
+        // Codex gate fix B (2026-10-26): the refreshed authoritative read's
+        // arm was created above, BEFORE the post-release races, so it already
+        // holds its lead-time read by the time the window ends.
+        // The window may still have time left when every operation finished
+        // early: the held phase always ends AT the planned observation end.
+        // (fix 4) the answer below is built only after this await, so budget
+        // expiry occurring inside the window propagates onto the returned
+        // record and the mapper's budget-expired classification.
+        await observationWindow;
+        void windowEnded;
+        timeline.endedAtElapsedMs = Math.round(now() - startMs);
+        // Codex gate round-14 finding 1: for the paths that LIVED past the
+        // races (Root returned inside the window), the window's true end is
+        // HERE — re-latch now, after every join-able operation and before the
+        // mutable state is inspected. The endpoint path keeps its earlier
+        // latch (taken before the termination cleanup): a completion during
+        // that cleanup never rewrites the deadline-miss fact.
+        if (resultRace.kind !== 'endpoint') {
+          latchRefreshEndpointOutcome();
+        }
+
+        // (fix 2) the refreshed authoritative snapshot.
+        if (refreshArm !== null) {
+          const refreshedRead = await refreshArm;
+          if (refreshedRead !== null && (budgetExpired || refreshSettledAtEndpoint)) {
+            // Budget expiry keeps the pre-fix join contract (the budget fence
+            // inside decides credit); a read that already completed within
+            // the window joins directly — no race, no ordering dependence.
+            const joined = await buildDurableSettlementLayer(null, refreshedRead, budgetExpired, budgetController.signal, cleanup);
+            refreshedLayers = joined.settlementLayers;
+            refreshedSnapshot = joined.durableSnapshot;
+          } else if (refreshedRead !== null) {
+            // The refreshed read is still pending AT the planned endpoint:
+            // the turn ends here with the named missing-read fact; the
+            // outstanding read is NEVER awaited (a late resolution may update
+            // only the placeholder's non-authoritative `sampledAggregate`).
+            postRelease.refreshedDurableRead = 'durable-read-pending-at-planned-observation-end';
+            refreshedLayers = { remoteTerminal: null, localProcessReaping: null, durableObligations: null };
+            /** @type {{ aggregate: string, reasons: string[], sampledAggregate: string | null }} */
+            const refreshedPlaceholder = {
+              aggregate: 'unestablished',
+              reasons: ['durable-read-pending-at-planned-observation-end'],
+              sampledAggregate: null,
+            };
+            refreshedRead.promise.then(
+              (late) => {
+                refreshedPlaceholder.sampledAggregate = late !== null && typeof late === 'object' && late.snapshot !== null && typeof late.snapshot === 'object' && late.snapshot.aggregate !== undefined ? /** @type {string} */ (late.snapshot.aggregate) : null;
+              },
+              () => { refreshedPlaceholder.sampledAggregate = 'read-failed'; },
+            );
+            refreshedSnapshot = refreshedPlaceholder;
+          }
+        }
+        answer = {
+          endedBeforeGate: false,
+          // (fix 4) read AFTER the section: expiry occurring inside it rides
+          // the returned record and the mapper's budget-expired classification.
+          budgetExpired,
+          identity,
+          processAliveWhileHeld,
+          result: outcomeValue,
+          cleanup,
+          timeline,
+          ...(typeof input.readDurableSnapshot === 'function'
+            ? { childSettlement: { observed: false, basis: null, layers: /** @type {any} */ (refreshedLayers), ...(refreshedSnapshot === undefined ? {} : { durableSnapshot: refreshedSnapshot }), ...(preCutoffSnapshot === undefined ? {} : { preCutoffDurableSnapshot: preCutoffSnapshot }) } }
+            : {}),
+          ...(Object.keys(postRelease).length > 0 ? { postRelease } : {}),
+        };
+      } else {
       const outcome = await resultOutcome;
       if (outcome.kind === 'error') throw outcome.error;
       await waitForProcessExit(identity, 'natural');
@@ -1871,7 +2962,10 @@ export async function runHeldHostTurn(input) {
       // 2026-10-21 evidence-closure Task 2: the passive durable snapshot read
       // starts before the after-join watch and its layer is finished below,
       // always before the settlement cleanup.
-      const durableRead = startDurableSnapshotRead(input);
+      // Codex gate round-11 finding 2: cap-accounted through the shared
+      // stream (account-only; see the gate-first site).
+      const durableReadClaim = await claimSharedReadSlot(wallClockNow, abortableSleep, null, null, false, 100, true);
+      const durableRead = durableReadClaim === null ? undefined : startDurableSnapshotRead(input);
       if (afterJoinSettlementWatch !== null) {
         // P2-2 round-5 fix: background settlement for EITHER ordering. The
         // gate won the race — the fake peer reached its gate before Root
@@ -1964,6 +3058,7 @@ export async function runHeldHostTurn(input) {
             : {}),
         };
       }
+      } // — the unscheduled post-release flows end (the armed §24.8 section above owns its own answer construction) —
       }
     }
   } catch (error) {
@@ -1985,6 +3080,18 @@ export async function runHeldHostTurn(input) {
           result: undefined,
           cleanup,
           timeline,
+          // Codex gate round-5 finding 1: completed authoritative snapshot
+          // carriers ride the FAILURE record — a rejecting Root result must
+          // not destroy independently established winner/duty evidence (the
+          // exit finally merges the §23.5 samples into this same block).
+          ...(preCutoffSnapshot !== undefined || refreshedSnapshot !== undefined
+            ? { childSettlement: { observed: false, basis: null, layers: /** @type {any} */ (refreshedLayers), ...(refreshedSnapshot === undefined ? {} : { durableSnapshot: refreshedSnapshot }), ...(preCutoffSnapshot === undefined ? {} : { preCutoffDurableSnapshot: preCutoffSnapshot }) } }
+            : {}),
+          // Codex gate round-14 finding 2: the §24.8 post-release diagnostics
+          // recorded BEFORE the throw ride the FAILURE record too — a
+          // rejecting Root result must not erase the abandonment facts the
+          // release-edge and settlement-arm branches already recorded.
+          ...(Object.keys(postRelease).length > 0 ? { postRelease } : {}),
           failure: error,
         };
     if (!budgetExpired) {
@@ -2041,6 +3148,29 @@ export async function runHeldHostTurn(input) {
           durableSamples: samples,
         };
       }
+      // Codex gate round-10 finding 2: the ONE shared read ledger — every
+      // durable-read start of BOTH consumers — rides the childSettlement block
+      // beside the samples: the record itself carries the combined §24.8
+      // accounting (≤600 attempts) and the strictly increasing, ≥1000-ms-spaced
+      // global read stream.
+      if (durableReadLedger.attempts > 0 || durableReadLedger.attemptsRefusedAtCap > 0) {
+        const ledgerView = {
+          attempts: durableReadLedger.attempts,
+          lastStartAtMs: durableReadLedger.lastStartAtMs,
+          starts: [...durableReadLedger.starts],
+          attemptsRefusedAtCap: durableReadLedger.attemptsRefusedAtCap,
+          unpacedAttempts: durableReadLedger.unpacedAttempts,
+        };
+        if (answer.childSettlement && typeof answer.childSettlement === 'object') {
+          /** @type {any} */ (answer.childSettlement).durableReadLedger = ledgerView;
+        } else {
+          /** @type {any} */ (answer).childSettlement = {
+            observed: false,
+            basis: answer.failure !== undefined ? 'held-turn-failed-before-settlement-observation' : null,
+            durableReadLedger: ledgerView,
+          };
+        }
+      }
     }
   }
 }
@@ -2052,16 +3182,20 @@ export async function runHeldHostTurn(input) {
  * converted into a NAMED unestablished snapshot — never a business failure.
  *
  * Codex round 5 (finding 4): the read promise is wrapped AT START — the
- * completion instant (`completedAtMs`, Date.now, the same wall clock as the
- * held cleanup boundary) is stamped when the read ITSELF resolves, in a
- * carrier independent of any consumer await. A read that resolves long
- * before its consumer joins keeps its true completion instant, so the
- * settlement fence can distinguish "completed before the boundary" from
- * "joined after the boundary".
+ * completion instant (`completedAtMs`, the injected `clockNow`, defaulting to
+ * the same wall clock as the held cleanup boundary) is stamped when the read
+ * ITSELF resolves, in a carrier independent of any consumer await. A read that
+ * resolves long before its consumer joins keeps its true completion instant,
+ * so the settlement fence can distinguish "completed before the boundary" from
+ * "joined after the boundary". The scheduled §24.8 section passes the
+ * turn's injectable `wallClockNow` so its reads' instants are comparable to
+ * the cutoff computed on that same clock (production `Date.now()` — identical
+ * behavior by default).
  * @param {{ readDurableSnapshot?: () => Promise<Record<string, unknown>> }} input
+ * @param {() => number} clockNow
  * @returns {{ promise: Promise<{ snapshot: Record<string, unknown>, completedAtMs: number }>, state: { settled: boolean, carrier: { snapshot: Record<string, unknown>, completedAtMs: number } | null } } | undefined}
  */
-function startDurableSnapshotRead(input) {
+function startDurableSnapshotRead(input, clockNow = Date.now) {
   if (typeof input.readDurableSnapshot !== 'function') return undefined;
   // Codex round 6 (finding 2): the completion state is queryable
   // SYNCHRONOUSLY once the read settles. When the budget has already fired
@@ -2079,7 +3213,7 @@ function startDurableSnapshotRead(input) {
   const supplier = /** @type {() => Promise<Record<string, unknown>>} */ (input.readDurableSnapshot);
   /** @type {Promise<{ snapshot: Record<string, unknown>, completedAtMs: number }>} */
   const promise = new Promise((resolve) => { resolve(supplier()); }).then(
-    (snapshot) => { state.settled = true; state.carrier = { snapshot, completedAtMs: Date.now() }; return state.carrier; },
+    (snapshot) => { state.settled = true; state.carrier = { snapshot, completedAtMs: clockNow() }; return state.carrier; },
     (error) => {
       state.settled = true;
       state.carrier = {
@@ -2087,7 +3221,7 @@ function startDurableSnapshotRead(input) {
           aggregate: 'unestablished',
           reasons: [error instanceof Error ? error.message : String(error)],
         },
-        completedAtMs: Date.now(),
+        completedAtMs: clockNow(),
       };
       return state.carrier;
     },
@@ -2328,15 +3462,45 @@ function isDurableIdentityUnobservedResult(result) {
  *   maxAttempts: number,
  *   maxSummaries: number,
  *   terminatedAlready?: boolean,
+ *   cutoffAtMs?: (() => number | null) | null,
+ *   readClockNow?: () => number,
+ *   ledger?: { lastStartAtMs: number | null, attempts: number, starts?: number[], attemptsRefusedAtCap?: number, unpacedAttempts?: number, samplerQueuedSinceMs?: number | null, armQueuedSinceMs?: number | null } | null,
+ *   claimSlot?: ((clockNow: () => number, paceSleep: (ms: number) => Promise<void>, deadlineAtMs: number | null, shouldAbort: (() => boolean) | null, reserveFloorOnce?: boolean, paceChunkMs?: number, accountOnly?: boolean, queueKind?: 'sampler' | 'arm' | null) => Promise<number | null>) | null,
  * }} input
+ *   `ledger` (codex gate round-10 finding 2): the SHARED read ledger — one
+ *   paced stream for every durable-read consumer (this sampler AND the
+ *   authoritative pre-cutoff read arm). `lastStartAtMs` is the latest read
+ *   start across BOTH consumers (this loop's interval recompute honors it,
+ *   so the registered ≥1000-ms read cadence holds globally — never two
+ *   starts at the same instant), and `attempts` counts the COMBINED read
+ *   attempts so §24.8's ≤600-attempts/32-summaries accounting covers the
+ *   combined arm. Null/absent keeps the sampler's private accounting.
+ *   `claimSlot` (codex gate round-10 finding 2): the shared stream's claim
+ *   function — every start is CLAIMED through it (abort-aware, fenced at
+ *   the cutoff, atomic), so the sampler's start never collides with an arm
+ *   start. Null/absent keeps the sampler's private stamping.
  *   `terminatedAlready` (codex backfill review): the held turn's earliest
  *   termination-initiation boundary was recorded BEFORE the sampler could
  *   start (the shared budget can expire while `input.launch()` is pending).
  *   No attempt may run past it — the skipped start is the named
  *   `durable-sampling-skipped-termination-already-recorded` omission.
+ *   `cutoffAtMs` (native-acceptance Task 3, §24.8; post-wait re-check per the
+ *   self-review P3 fix): the measurement cutoff getter — the fence is
+ *   evaluated BEFORE the interval wait, RE-CHECKED after it (so no read ever
+ *   STARTS at/after the cutoff, even when the wait straddles the armed
+ *   value), and an in-flight read COMPLETING at/after it is the named
+ *   post-cutoff limit (`durable-read-completed-at-or-after-measurement-cutoff`
+ *   omission; the summary still rides as an observation fact; the offline
+ *   fence refuses its credit) with the sampler stopping under the named
+ *   `durable-sampling-stopped-at-measurement-cutoff` reason. Null/absent
+ *   keeps the prior behavior (the pre-Task-3 schedules carry no cutoff).
+ *   `readClockNow` (native-acceptance Task 3): the sampler's own read clock
+ *   for start/completion instants and the interval math — production
+ *   `Date.now()`, injectable for deterministic schedule tests. The instants
+ *   stay on ONE clock with the cutoff value.
  * @returns {{ state: Record<string, any>, stopAtTerminationBoundary: () => void, stateSnapshot: () => Record<string, any> }}
  */
-function startDurableSampling({ supplier, signal, sleep, intervalMs, maxAttempts, maxSummaries, terminatedAlready = false }) {
+function startDurableSampling({ supplier, signal, sleep, intervalMs, maxAttempts, maxSummaries, terminatedAlready = false, cutoffAtMs = null, readClockNow = Date.now, ledger = null, claimSlot = null }) {
   /** @type {Record<string, any>} */
   const state = {
     version: DURABLE_SAMPLING_VERSION,
@@ -2390,7 +3554,7 @@ function startDurableSampling({ supplier, signal, sleep, intervalMs, maxAttempts
     // round 1) and is removed.
     state.baselineOmittedReason = 'durable-identity-unobserved';
   };
-  /** @param {'durable-sampling-stopped-at-termination-boundary' | 'durable-sampling-stopped-at-shared-signal'} reason */
+  /** @param {'durable-sampling-stopped-at-termination-boundary' | 'durable-sampling-stopped-at-shared-signal' | 'durable-sampling-stopped-at-measurement-cutoff'} reason */
   const stop = (reason) => {
     if (stopped) return;
     stopped = true;
@@ -2473,12 +3637,51 @@ function startDurableSampling({ supplier, signal, sleep, intervalMs, maxAttempts
     };
   };
   (async () => {
+    /** @type {number | null} */
     let lastStartAtMs = null;
+    // Codex gate round-10 finding 2: the shared ledger's last start (this
+    // sampler's or the authoritative arm's — whoever read last) paces the
+    // interval recompute, so the registered ≥1000-ms read cadence holds
+    // GLOBALLY across both consumers.
+    const floorWaitMs = () => {
+      const effectiveLastStartMs = (ledger ? (ledger.lastStartAtMs ?? lastStartAtMs) : lastStartAtMs) ?? 0;
+      return Math.max(0, effectiveLastStartMs + intervalMs - readClockNow());
+    };
+    // Codex gate round-10 finding 2: the claim's pace sleep races the stop so
+    // a boundary or teardown during a cross-consumer wait (an arm claim moved
+    // the shared ledger's floor) is honored immediately — cleanup is never
+    // delayed by the shared stream.
+    /** @param {number} paceMs */
+    const samplerPaceSleep = async (paceMs) => {
+      await Promise.race([
+        Promise.resolve(sleep(paceMs)).then(() => {}, () => {}),
+        stoppedPromise,
+      ]);
+    };
     // The aggregate of the most recent non-probe read — the transition key
     // for the retention mechanism below (a summary whose aggregate differs
     // from this is a state TRANSITION, pinned by the ledger).
     let lastAggregate = null;
-    while (!stopped && state.attemptCount < maxAttempts) {
+    /** @returns {number | null} the armed measurement cutoff, when recorded */
+    const sampledCutoff = () => {
+      if (cutoffAtMs === null) return null;
+      const value = cutoffAtMs();
+      return typeof value === 'number' && Number.isFinite(value) ? value : null;
+    };
+    while (!stopped && (ledger ? ledger.attempts : state.attemptCount) < maxAttempts) {
+      // §24.8 (native-acceptance Task 3): no read STARTS at/after the
+      // measurement cutoff — the credit fence is closed there by name. The
+      // fence is evaluated BEFORE the interval wait and RE-CHECKED after it
+      // (the self-review P3 fix): a wait that straddles the armed cutoff
+      // stops the sampler without starting the read, closing the ~one-interval
+      // drift window the pre-wait check alone leaves open; the after-read
+      // backstop below keeps catching a read that STARTED before the cutoff
+      // but COMPLETED at/after it.
+      const fenceBeforeStart = sampledCutoff();
+      if (fenceBeforeStart !== null && readClockNow() >= fenceBeforeStart) {
+        stop('durable-sampling-stopped-at-measurement-cutoff');
+        break;
+      }
       if (lastStartAtMs !== null) {
         // Clause 2: the next read starts no earlier than the previous start
         // plus the registered floor. The scheduled wait races the stop so a
@@ -2490,28 +3693,60 @@ function startDurableSampling({ supplier, signal, sleep, intervalMs, maxAttempts
         // and never a busy wait (cleanup is never delayed). With the
         // production default scheduler (a real setTimeout) the re-check finds
         // the floor already honored and re-waits nothing.
-        let waitMs = Math.max(0, lastStartAtMs + intervalMs - Date.now());
+        let waitMs = floorWaitMs();
         if (waitMs > 0) {
           await Promise.race([
             Promise.resolve(sleep(waitMs)).then(() => {}, () => {}),
             stoppedPromise,
           ]);
         }
-        waitMs = Math.max(0, lastStartAtMs + intervalMs - Date.now());
+        waitMs = floorWaitMs();
         if (waitMs > 0) {
           await Promise.race([
             Promise.resolve(sleep(waitMs)).then(() => {}, () => {}),
             stoppedPromise,
           ]);
-          waitMs = Math.max(0, lastStartAtMs + intervalMs - Date.now());
+          waitMs = floorWaitMs();
           if (waitMs > 0) state.intervalShortfalls += 1;
         }
       }
       if (stopped) break;
+      // The post-wait fence re-check (self-review P3 fix): the wait above may
+      // have straddled the armed cutoff — re-evaluate BEFORE the attempt is
+      // counted or `startedAtMs` is stamped, so no read ever starts at/after
+      // the cutoff (the after-read backstop remains for a pre-cutoff START
+      // with an at/after-cutoff COMPLETION).
+      const fenceAfterWait = sampledCutoff();
+      if (fenceAfterWait !== null && readClockNow() >= fenceAfterWait) {
+        stop('durable-sampling-stopped-at-measurement-cutoff');
+        break;
+      }
+      // Codex gate round-10 finding 2: the start is CLAIMED through the
+      // shared read stream — the same paced ledger the authoritative arm
+      // claims through — so the sampler's start never collides with an
+      // arm start and the global ≥1000-ms cadence holds. The claim's
+      // deadline is the armed cutoff: a slot that cannot free before the
+      // fence is refused (no attempt burned, no read past the fence), and
+      // the sampler stops with the registered cutoff basis. A `null` from
+      // the abort escape is the boundary stop (already recorded there).
+      const claimedStartMs = claimSlot !== null
+        ? await claimSlot(readClockNow, samplerPaceSleep, sampledCutoff(), () => stopped, false, Number.POSITIVE_INFINITY, false, 'sampler')
+        : readClockNow();
+      if (claimedStartMs === null) {
+        if (stopped) break;
+        // Codex gate round-11 finding 2: a null claim is either the cutoff
+        // fence or the COMBINED ≤600 ceiling (enforced atomically inside the
+        // shared claim for every consumer). The combined-cap exit is named by
+        // the ledger's refusal count and the sampler's own attempt-cap fact —
+        // never by the cutoff basis.
+        if (ledger !== null && ledger.attempts >= DURABLE_SAMPLING_MAX_ATTEMPTS) break;
+        stop('durable-sampling-stopped-at-measurement-cutoff');
+        break;
+      }
+      const startedAtMs = claimedStartMs;
+      lastStartAtMs = startedAtMs;
       const attemptIndex = state.attemptCount + 1;
       state.attemptCount = attemptIndex;
-      const startedAtMs = Date.now();
-      lastStartAtMs = startedAtMs;
       inFlightAttemptIndex = attemptIndex;
       let result;
       try {
@@ -2523,7 +3758,7 @@ function startDurableSampling({ supplier, signal, sleep, intervalMs, maxAttempts
       }
       inFlightAttemptIndex = null;
       if (stopped) break; // the stop already recorded the abandonment; the late result is discarded
-      const completedAtMs = Date.now();
+      const completedAtMs = readClockNow();
       if (isDurableIdentityUnobservedResult(result)) {
         // BEFORE identity: an establishment probe — counted, named through the
         // registered baseline omission, never a sample summary (clause 1).
@@ -2581,6 +3816,17 @@ function startDurableSampling({ supplier, signal, sleep, intervalMs, maxAttempts
       }
       state.summaries.push(summarize(result, attemptIndex, startedAtMs, completedAtMs, state.baseline.attemptIndex === attemptIndex, isTransition));
       lastAggregate = incomingAggregate;
+      // §24.8 (native-acceptance Task 3): a read COMPLETING at/after the
+      // measurement cutoff is the named post-cutoff limit — the summary rides
+      // as an observation fact with zero settlement credit (the offline fence
+      // refuses it by name), the omission names the limit, and the sampler
+      // stops: no further read may run past the cutoff.
+      const fenceAfterRead = sampledCutoff();
+      if (fenceAfterRead !== null && completedAtMs >= fenceAfterRead) {
+        namedOmission({ attemptIndex, reason: 'durable-read-completed-at-or-after-measurement-cutoff' });
+        stop('durable-sampling-stopped-at-measurement-cutoff');
+        break;
+      }
     }
     if (!stopped && state.attemptCount >= maxAttempts) {
       // Clause 4: reads beyond the attempt cap are omitted by name.
@@ -2738,12 +3984,39 @@ export const INTERRUPT_PARTIAL_FACTS_VERSION = 1;
  * shape) beside the REQUEST-side window conjunct, and the join exposes it
  * additively in the delivery block — never a verdict change on any recorded
  * input (the F/I replay proves the recorded verdicts byte-identical).
- * Every join output embeds this version (`gateDJoinVersion`) so a v2/v3
+ * v4 (2026-10-26 native-acceptance Task 3, report §24.8/§24.11) is the
+ * wired-schedule input growth: the persisted `interrupt.measurementCutoffAtMs`
+ * (the §24.8 measurement cutoff, computed by the live held turn at the
+ * hold-deadline crossing) becomes the SECOND credit fence beside the cleanup
+ * boundary — pre-fence samples/read completions keep credit; at/after the
+ * operative fence they are refused by name — and the delivery block exposes
+ * the relocated window witness inputs (`relocatedWindowInputs`) additively.
+ * Every new fence input is SCHEMA-ADDITIVE: a record without the field (every
+ * retained I/F-era block) leaves the fence inert and reproduces its recorded
+ * verdict fields exactly — old records never gain an unrecorded timing fact
+ * or physical duty through replay.
+ * v5 (2026-10-26, the codex gate on the Task-3 fix bytes, §24.11; completed
+ * by the same-day round-3 fixes) is the pre-cutoff winner-preservation
+ * growth: the persisted `child.preCutoffDurableSnapshot` (the held turn's
+ * LATEST completed read whose own completion instant sits strictly before
+ * the measurement cutoff — the gate-release read and any later settlement
+ * read the pre-cutoff arm captured) grounds the terminal winner under the
+ * SAME authority gates as the final snapshot PLUS its own
+ * strictly-pre-fence completion instant AND its own owning-Root binding
+ * (a foreign-owner preserved snapshot never credits; an ownerless final
+ * placeholder never bypasses that check), and joins the
+ * latest-creditable-evidence selection for the Companion and obligations
+ * layers beside the latest credit-eligible sample, because the window-end
+ * refresh is post-cutoff by construction and can never carry the winner.
+ * The cause discipline stands: the winner is never fed from a sample; a
+ * record without the field (every legacy record and every unscheduled
+ * path) leaves the arm inert byte-identically.
+ * Every join output embeds this version (`gateDJoinVersion`) so a v2/v3/v4/v5
  * adjudication can never be mistaken for a recorded v1 verdict or re-stamped
  * over one — old verdicts are preserved verbatim, and a record without
  * samples reproduces its recorded v1 verdict fields exactly.
  */
-export const NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION = 3;
+export const NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION = 5;
 
 /**
  * The whitelisted per-sample projection consumed by the offline Gate-D join
@@ -2800,7 +4073,7 @@ function buildAdmittedSample(summary, attemptIndex, completedAtMs, timingState, 
  * adjudicator.
  * @param {Record<string, any>} record the persisted case record
  * @returns {{ delivery: { delivered: boolean | null, exactTargetMatch: boolean | null, aliasResolved: boolean | null,
- *   terminalBeforeInterruptBasis: string, terminalBeforeInterrupt: boolean | null, deliverySent: boolean | null, previousStatusOnly: boolean, unreadableContinuation: boolean, pendingWindowConfirmed: boolean | null, hostActivityAdmitted: boolean | null, acknowledgementAtResolution: string | null }, turnSettled: boolean | null, deliveryToSettlementMs: number | null, companionOutcome: 'ceased' | 'terminal-result' | 'survived-unsettled' | null, durableObligations: 'settled' | 'unresolved' | null, cleanupKill: boolean, survivalControl: Record<string, unknown> | null, terminalWinner: 'succeeded' | 'failed' | 'cancelled' | null, naturalCompletionObserved: boolean, statusObservationTimeoutOnly: boolean, durableReadPostCleanupBoundary: boolean, durableReadBoundaryBasis: string | null, gateDJoinVersion: number, spawnIdentityJoin: { exact: boolean, owningRootBound: boolean | null, executorVerified: boolean | null } | null, durableSamplesJoin: { considered: boolean, boundaryRecorded: boolean, settlementFallback: { used: boolean, basis: string, sample: Record<string, unknown> | null }, admitted: Record<string, unknown>[], refused: { attemptIndex: number | null, reason: string }[] } }}
+ *   terminalBeforeInterruptBasis: string, terminalBeforeInterrupt: boolean | null, deliverySent: boolean | null, previousStatusOnly: boolean, unreadableContinuation: boolean, pendingWindowConfirmed: boolean | null, hostActivityAdmitted: boolean | null, acknowledgementAtResolution: string | null, relocatedWindowInputs: { callAtMs: number | null, callNotBeforeMs: number | null, callNotAfterMs: number | null, pendingBeforeCallAtMs: number | null } }, turnSettled: boolean | null, deliveryToSettlementMs: number | null, companionOutcome: 'ceased' | 'terminal-result' | 'survived-unsettled' | null, durableObligations: 'settled' | 'unresolved' | null, cleanupKill: boolean, survivalControl: Record<string, unknown> | null, terminalWinner: 'succeeded' | 'failed' | 'cancelled' | null, naturalCompletionObserved: boolean, statusObservationTimeoutOnly: boolean, durableReadPostCleanupBoundary: boolean, durableReadBoundaryBasis: string | null, measurementCutoffAtMs: number | null, gateDJoinVersion: number, spawnIdentityJoin: { exact: boolean, owningRootBound: boolean | null, executorVerified: boolean | null } | null, durableSamplesJoin: { considered: boolean, boundaryRecorded: boolean, settlementFallback: { used: boolean, basis: string, sample: Record<string, unknown> | null }, admitted: Record<string, unknown>[], refused: { attemptIndex: number | null, reason: string }[] } }}
  */
 export function nativeInterruptionGateDInput(record) {
   if (!record || typeof record !== 'object') throw invalidCaseInput('the Gate D join needs the persisted case record.');
@@ -2973,11 +4246,26 @@ export function nativeInterruptionGateDInput(record) {
   const cleanupBoundaryAtMs = typeof interrupt.cleanupBoundaryAtMs === 'number'
     ? interrupt.cleanupBoundaryAtMs
     : null;
+  // Join v4 (native-acceptance Task 3, §24.8): the MEASUREMENT CUTOFF — the
+  // second credit fence beside the cleanup boundary (f5: each read's OWN
+  // completion instant versus the explicit measurement cutoff AND the
+  // earliest recorded termination-initiation boundary). Schema-additive: a
+  // record without the field leaves the fence arm inert (the retained F/I
+  // replay stays byte-identical). The operative fence is the EARLIEST
+  // recorded closing instant.
+  const measurementCutoffAtMs = typeof interrupt.measurementCutoffAtMs === 'number' && Number.isFinite(interrupt.measurementCutoffAtMs)
+    ? interrupt.measurementCutoffAtMs
+    : null;
+  const creditFenceCandidates = [cleanupBoundaryAtMs, measurementCutoffAtMs].filter((value) => value !== null);
+  const creditFenceAtMs = creditFenceCandidates.length > 0 ? Math.min(...creditFenceCandidates) : null;
+  const creditFenceIsCutoff = creditFenceAtMs !== null
+    && measurementCutoffAtMs !== null
+    && creditFenceAtMs === measurementCutoffAtMs;
   const durableTimingEstablished = typeof durableCompletedAtMs === 'number' && Number.isFinite(durableCompletedAtMs);
-  const durableReadAtOrAfterBoundary = cleanupBoundaryAtMs !== null
+  const durableReadAtOrAfterBoundary = creditFenceAtMs !== null
     && durableTimingEstablished
-    && /** @type {number} */ (durableCompletedAtMs) >= cleanupBoundaryAtMs;
-  const durableReadTimingUnestablished = cleanupBoundaryAtMs !== null && !durableTimingEstablished;
+    && /** @type {number} */ (durableCompletedAtMs) >= creditFenceAtMs;
+  const durableReadTimingUnestablished = creditFenceAtMs !== null && !durableTimingEstablished;
   const durableSnapshotTorn = durableSnapshot && typeof durableSnapshot === 'object'
     && /** @type {any} */ (durableSnapshot).passive !== null && typeof /** @type {any} */ (durableSnapshot).passive === 'object'
     ? /** @type {any} */ (durableSnapshot).passive.snapshotEqual === false
@@ -3080,15 +4368,20 @@ export function nativeInterruptionGateDInput(record) {
         sampleRefusals.push({ attemptIndex, reason: 'sample-timing-unestablished' });
         continue;
       }
-      if (cleanupBoundaryAtMs === null) {
-        // No recorded boundary: the fence is unestablishable — the sample
-        // rides as an observation fact with its fence state named, never as
-        // substitute credit.
+      if (creditFenceAtMs === null) {
+        // No recorded fence (neither a cleanup boundary nor a measurement
+        // cutoff): the fence is unestablishable — the sample rides as an
+        // observation fact with its fence state named, never as substitute
+        // credit. (The legacy name is kept for replay byte-stability.)
         sampleAdmissions.push(buildAdmittedSample(summary, attemptIndex, completedAtMs, 'boundary-unrecorded', false));
         continue;
       }
-      if (/** @type {number} */ (completedAtMs) >= cleanupBoundaryAtMs) {
-        sampleRefusals.push({ attemptIndex, reason: 'sample-at-or-after-boundary' });
+      if (/** @type {number} */ (completedAtMs) >= creditFenceAtMs) {
+        // Join v4 (§24.8): at/after the operative credit fence — the earliest
+        // recorded closing instant, the measurement cutoff included — the
+        // sample is refused BY NAME with zero settlement credit (equality
+        // included: the cutoff itself closes credit).
+        sampleRefusals.push({ attemptIndex, reason: creditFenceIsCutoff ? 'sample-at-or-after-measurement-cutoff' : 'sample-at-or-after-boundary' });
         continue;
       }
       // The integrity gate is a POSITIVE proof (self-review finding 1): only
@@ -3107,19 +4400,6 @@ export function nativeInterruptionGateDInput(record) {
   const fallbackSample = creditSamples.length > 0
     ? creditSamples.reduce((latest, sample) => (sample.completedAtMs > latest.completedAtMs ? sample : latest), creditSamples[0])
     : null;
-  const settlementFallback = durableSamplesBlock === null
-    ? { used: false, basis: 'no-samples-persisted', sample: null }
-    // POST-REVIEW FIX 2: under the durable-owner identity conflict the
-    // pre-boundary samples (anchored to the conflict's own job id) are
-    // foreign-owner observations — the settlement fallback never fires on
-    // them, with the named basis riding the provenance block.
-    : durableOwnerIdentityConflict
-      ? { used: false, basis: 'durable-owner-identity-conflict', sample: null }
-      : durableCreditWithheld && fallbackSample !== null
-        ? { used: true, basis: 'final-snapshot-fenced-pre-boundary-sample', sample: fallbackSample }
-        : durableCreditWithheld
-          ? { used: false, basis: 'no-admissible-pre-boundary-sample', sample: null }
-          : { used: false, basis: 'final-snapshot-not-fenced', sample: null };
   // Codex round 2: the job's winner/executor evidence is consumable ONLY
   // from a POSITIVELY observed durable snapshot — an unestablished or torn
   // snapshot (e.g. the executor linkage unverified) is never consumed as
@@ -3140,6 +4420,111 @@ export function nativeInterruptionGateDInput(record) {
       : false)
     && !durableSnapshotTorn
     && !durableOwnerIdentityConflict;
+  // Join v5 (codex gate fix A, 2026-10-26, the §24.8 scheduled path;
+  // completed by the round-3 fixes): the preserved PRE-CUTOFF authoritative
+  // snapshot — the held turn's LATEST completed read whose OWN completion
+  // instant sits strictly before the measurement cutoff (the gate-release
+  // read, and any later settlement read the pre-cutoff arm captured). The
+  // window-end refresh is post-cutoff BY CONSTRUCTION, so without this
+  // preserved snapshot the record never carries a pre-cutoff authoritative
+  // read and a verified pre-cutoff terminal winner (the lawful
+  // natural-completion `succeeded`) could never be credited. It grounds the
+  // winner ONLY under the SAME authority gates as the final snapshot
+  // (positive aggregate, positively verified executor linkage, untorn) PLUS
+  // the pre-cutoff fence on its OWN completion instant — strictly before the
+  // operative credit fence; the cutoff closes credit at equality, unchanged.
+  // It is an AUTHORITATIVE typed snapshot, never a sample: the cause
+  // discipline (the winner is never fed from a sample) is untouched. A record
+  // without the field (every legacy record and every unscheduled path)
+  // leaves this arm inert — the v4 behavior is byte-identical there.
+  const preCutoffSnapshot = child.preCutoffDurableSnapshot ?? null;
+  const preCutoffAggregate = preCutoffSnapshot && typeof preCutoffSnapshot === 'object' ? preCutoffSnapshot.aggregate ?? null : null;
+  const preCutoffJobProjection = preCutoffSnapshot?.job?.presence === 'found'
+    && preCutoffSnapshot?.job?.projection && typeof preCutoffSnapshot.job.projection === 'object'
+    ? preCutoffSnapshot.job.projection
+    : null;
+  const preCutoffRawJobStatus = preCutoffJobProjection?.status ?? null;
+  const preCutoffJobStatus = preCutoffRawJobStatus === 'succeeded' || preCutoffRawJobStatus === 'failed' || preCutoffRawJobStatus === 'cancelled'
+    ? preCutoffRawJobStatus
+    : null;
+  const preCutoffCompletedAtMs = preCutoffSnapshot && typeof preCutoffSnapshot === 'object'
+    ? /** @type {any} */ (preCutoffSnapshot).completedAtMs ?? null
+    : null;
+  const preCutoffTimingEstablished = typeof preCutoffCompletedAtMs === 'number' && Number.isFinite(preCutoffCompletedAtMs);
+  const preCutoffSnapshotTorn = preCutoffSnapshot && typeof preCutoffSnapshot === 'object'
+    && /** @type {any} */ (preCutoffSnapshot).passive !== null && typeof /** @type {any} */ (preCutoffSnapshot).passive === 'object'
+    ? /** @type {any} */ (preCutoffSnapshot).passive.snapshotEqual === false
+    : false;
+  // Round-3 finding 4: the preserved snapshot's OWN owner is validated
+  // against the observed Root — INDEPENDENTLY of the final snapshot (an
+  // ownerless final placeholder binds nobody and must never bypass this):
+  // a resolvable foreign owner, or contradictory Root identity sources,
+  // refuses the preserved arm entirely (never credited on any layer).
+  const preCutoffOwnerSessionId = typeof preCutoffJobProjection?.ownerSessionId === 'string' && preCutoffJobProjection.ownerSessionId.length > 0
+    ? preCutoffJobProjection.ownerSessionId
+    : null;
+  const preCutoffOwnerConflict = rootSourcesDisagree
+    || (preCutoffOwnerSessionId !== null && (spawnIdentityExact || linkageIdentityExact)
+      && preCutoffOwnerSessionId !== (spawnRecoveryRootThreadId ?? linkageRootThreadId));
+  const preCutoffEstablished = (preCutoffAggregate === 'settled' || preCutoffAggregate === 'unresolved')
+    && (preCutoffSnapshot && typeof preCutoffSnapshot === 'object'
+      ? /** @type {any} */ (preCutoffSnapshot).executorLinkage === 'verified'
+      : false)
+    && !preCutoffSnapshotTorn
+    && !preCutoffOwnerConflict
+    && preCutoffTimingEstablished
+    && creditFenceAtMs !== null
+    && /** @type {number} */ (preCutoffCompletedAtMs) < creditFenceAtMs;
+  // Round-3 finding 3: the admitted preserved snapshot is ONE creditable
+  // evidence source beside the latest credit-eligible sample; the LATEST of
+  // the two by its OWN completion instant (the authoritative preserved
+  // snapshot wins ties) grounds the Companion and obligations LAYER facts
+  // when the final read is fenced out — the older running sample never
+  // masks a later pre-cutoff settlement. Cause discipline unchanged: samples
+  // still never feed the winner conjunct.
+  const preCutoffEvidence = preCutoffEstablished
+    ? { aggregate: /** @type {'settled' | 'unresolved'} */ (preCutoffAggregate), jobStatus: preCutoffJobStatus, completedAtMs: /** @type {number} */ (preCutoffCompletedAtMs) }
+    : null;
+  // Codex gate round-19 finding 1: the settlement fallback guard consumes
+  // BOTH identity conflicts — the final snapshot's (as before) AND the
+  // PRESERVED snapshot's resolvable foreign-owner conflict (round-3 finding
+  // 4's predicate): the preserved snapshot is the authoritative pre-cutoff
+  // read of THE job the §23.5 samples are anchored to, so when its owner
+  // resolvably contradicts the observed Root, those anchored samples are the
+  // same contradictory identity evidence — they can never receive
+  // settlement-layer credit through the fallback while the final snapshot
+  // is an ownerless fenced placeholder (owningRootBound null). The named
+  // basis rides the durableSamplesJoin provenance block.
+  const settlementFallback = durableSamplesBlock === null
+    ? { used: false, basis: 'no-samples-persisted', sample: null }
+    // POST-REVIEW FIX 2: under the durable-owner identity conflict the
+    // pre-boundary samples (anchored to the conflict's own job id) are
+    // foreign-owner observations — the settlement fallback never fires on
+    // them, with the named basis riding the provenance block.
+    : durableOwnerIdentityConflict
+      ? { used: false, basis: 'durable-owner-identity-conflict', sample: null }
+      : preCutoffOwnerConflict
+        ? { used: false, basis: 'preserved-owner-identity-conflict', sample: null }
+        : durableCreditWithheld && fallbackSample !== null
+          ? { used: true, basis: 'final-snapshot-fenced-pre-boundary-sample', sample: fallbackSample }
+          : durableCreditWithheld
+            ? { used: false, basis: 'no-admissible-pre-boundary-sample', sample: null }
+            : { used: false, basis: 'final-snapshot-not-fenced', sample: null };
+  const fallbackEvidence = settlementFallback.used === true && settlementFallback.sample !== null
+    ? {
+      aggregate: settlementFallback.sample.aggregate === 'settled' || settlementFallback.sample.aggregate === 'unresolved' ? settlementFallback.sample.aggregate : null,
+      jobStatus: settlementFallback.sample.jobStatus === 'succeeded' || settlementFallback.sample.jobStatus === 'failed' || settlementFallback.sample.jobStatus === 'cancelled'
+        ? settlementFallback.sample.jobStatus
+        : null,
+      completedAtMs: typeof settlementFallback.sample.completedAtMs === 'number' && Number.isFinite(settlementFallback.sample.completedAtMs)
+        ? settlementFallback.sample.completedAtMs
+        : null,
+    }
+    : null;
+  const latestCreditableEvidence = preCutoffEvidence !== null && (fallbackEvidence === null
+    || (/** @type {number} */ (preCutoffEvidence.completedAtMs)) >= (/** @type {number} */ (fallbackEvidence.completedAtMs)))
+    ? preCutoffEvidence
+    : fallbackEvidence;
   // The Companion outcome layer (codex round 1 — the cancelled-poll path):
   // the completion-shaped watch is frozen out of the interrupt case, so the
   // CompanIONS's REMOTE outcome is observed through the durable job's
@@ -3154,7 +4539,20 @@ export function nativeInterruptionGateDInput(record) {
   // an at/after-boundary durable read publishes no Companion evidence (the
   // independently observed watch/reaping branches keep their own mapper-level
   // cleanup attribution).
-  if (settlementLayers?.remoteTerminal === true) companionOutcome = 'terminal-result';
+  // Codex gate round-8 finding 2: a QUALIFIED completion whose rollout event
+  // time sits at/after the armed measurement cutoff is retained as an
+  // observation (completedAfterCallMs rides the record) but grounds NO
+  // Companion-layer credit (§24.4 f5: pre-cutoff + pre-boundary credit only):
+  // the remote-terminal derivation is withheld and the latest creditable
+  // pre-cutoff evidence decides below.
+  // Codex gate round-10 finding 1: a MISSING completion instant (an
+  // unstamped terminal response) withholds the Companion-layer credit exactly
+  // like a post-cutoff one — the timing must PROVE strictly-pre-cutoff
+  // settlement before the remote-terminal derivation credits.
+  const completionPostCutoff = measurementCutoffAtMs !== null
+    && (typeof interrupt.completedAfterCallMs !== 'number'
+      || interrupt.completedAfterCallMs >= measurementCutoffAtMs);
+  if (settlementLayers?.remoteTerminal === true && !completionPostCutoff) companionOutcome = 'terminal-result';
   else if (jobStatus !== null && durableEstablished && !durableCreditWithheld) companionOutcome = 'terminal-result';
   else if (settlementLayers?.localProcessReaping === 'natural-exit-observed') companionOutcome = 'ceased';
   // Codex round 3: the survived-unsettled classification is equally
@@ -3162,17 +4560,14 @@ export function nativeInterruptionGateDInput(record) {
   // published only on a POSITIVELY verified executor linkage.
   else if (durableAggregate === 'unresolved' && durableEstablished && !durableCreditWithheld) companionOutcome = 'survived-unsettled';
   // POST-REVIEW FIX (join v2): a fenced-out final snapshot does not orphan
-  // the pre-boundary observations — the latest admissible pre-boundary
-  // sample grounds the Companion remote-outcome LAYER fact (never the
-  // fenced snapshot's own value). The winner conjunct is deliberately NOT
-  // fed from the sample (the cause discipline above).
-  else if (settlementFallback.used === true && settlementFallback.sample !== null) {
-    const sample = settlementFallback.sample;
-    const sampleJobStatus = sample.jobStatus === 'succeeded' || sample.jobStatus === 'failed' || sample.jobStatus === 'cancelled'
-      ? sample.jobStatus
-      : null;
-    if (sampleJobStatus !== null) companionOutcome = 'terminal-result';
-    else if (sample.aggregate === 'unresolved') companionOutcome = 'survived-unsettled';
+  // the pre-boundary observations — the LATEST creditable evidence (the
+  // admitted preserved snapshot or the latest admissible pre-boundary
+  // sample, round-3 finding 3) grounds the Companion remote-outcome LAYER
+  // fact (never the fenced snapshot's own value). The winner conjunct is
+  // deliberately NOT fed from the sample (the cause discipline above).
+  else if (latestCreditableEvidence !== null) {
+    if (latestCreditableEvidence.jobStatus !== null) companionOutcome = 'terminal-result';
+    else if (latestCreditableEvidence.aggregate === 'unresolved') companionOutcome = 'survived-unsettled';
   }
   const completedBeforeCall = typeof interrupt.completedBeforeCallMs === 'number';
   const settledBasis = typeof interrupt.settledBasis === 'string' ? interrupt.settledBasis : null;
@@ -3267,7 +4662,22 @@ export function nativeInterruptionGateDInput(record) {
           ? interrupt.hostDelivery.acknowledgementAtResolution
           : null)
         : null,
+      // Join v4 (native-acceptance Task 3, §24.4 f1/f3): the persisted
+      // relocated window witness inputs ride the delivery block additively —
+      // the call's attributable instant and bounds plus the attributable
+      // pending start, so the offline reader can re-verify the request-side
+      // cross-rollout timestamp/bounds witness. Null inputs stay null (a
+      // legacy record without the fields joins null — never invented).
+      relocatedWindowInputs: {
+        callAtMs: typeof interrupt.callAtMs === 'number' ? interrupt.callAtMs : null,
+        callNotBeforeMs: typeof interrupt.callNotBeforeMs === 'number' ? interrupt.callNotBeforeMs : null,
+        callNotAfterMs: typeof interrupt.callNotAfterMs === 'number' ? interrupt.callNotAfterMs : null,
+        pendingBeforeCallAtMs: typeof interrupt.pendingBeforeCallAtMs === 'number' ? interrupt.pendingBeforeCallAtMs : null,
+      },
     },
+    // Join v4 (§24.8): the persisted measurement cutoff the fence consumed —
+    // null on every legacy record (the fence arm inert).
+    measurementCutoffAtMs,
     turnSettled: typeof interrupt.settled === 'boolean' ? interrupt.settled : null,
     deliveryToSettlementMs: typeof interrupt.deliveryToSettlementMs === 'number' ? interrupt.deliveryToSettlementMs : null,
     companionOutcome,
@@ -3276,25 +4686,34 @@ export function nativeInterruptionGateDInput(record) {
   // for an unverified executor — or withheld by the overall-review
   // pre-boundary fence (an at/after-boundary durable read is cleanup-time
   // evidence, never qualification credit). Join v2: when the final snapshot
-  // is fenced out, the LATEST admissible pre-boundary sample grounds the
-  // aggregate (the fenced snapshot's own value never leaks).
+  // is fenced out, the LATEST creditable evidence grounds the aggregate —
+  // the admitted preserved snapshot or the latest admissible pre-boundary
+  // sample (round-3 finding 3), never the fenced snapshot's own value.
   durableObligations: !durableCreditWithheld && !durableSnapshotTorn && !durableOwnerIdentityConflict && (durableAggregate === 'settled' || durableAggregate === 'unresolved')
     ? durableAggregate
-    : settlementFallback.used === true && settlementFallback.sample !== null
-      && (settlementFallback.sample.aggregate === 'settled' || settlementFallback.sample.aggregate === 'unresolved')
-      ? settlementFallback.sample.aggregate
+    : latestCreditableEvidence !== null
+      && (latestCreditableEvidence.aggregate === 'settled' || latestCreditableEvidence.aggregate === 'unresolved')
+      ? latestCreditableEvidence.aggregate
       : null,
     // The cleanup boundary is a mapper-level fact (the settled resolution's
     // own timestamp at/after the earliest recorded boundary): the join never
     // re-derives it from coarse kill flags.
     cleanupKill: interrupt.settlementCleanupGenerated === true,
     survivalControl: /** @type {any} */ (record).survivalControl ?? null,
-    // CAUSE DISCIPLINE (join v2): the terminal winner is consumed ONLY from
-    // the final durable snapshot — never from a sample (a session-end or
-    // otherwise non-interrupt-caused sample winner stays an OBSERVED fact in
+    // CAUSE DISCIPLINE (join v2; extended by join v5, codex gate fix A):
+    // the terminal winner is consumed ONLY from an AUTHORITATIVE typed
+    // durable snapshot fenced pre-cutoff/pre-boundary — the final snapshot
+    // when it itself keeps credit, or (§24.8 scheduled path) the preserved
+    // pre-cutoff snapshot when its own completion instant proves the
+    // pre-cutoff fence AND its own owner binds to the observed Root
+    // (round-3 finding 4: the final snapshot's binding is never reused for
+    // this check) — NEVER from a sample (a session-end or otherwise
+    // non-interrupt-caused sample winner stays an OBSERVED fact in
     // the durableSamplesJoin provenance block, and this conjunct is never
     // flipped by it).
-    terminalWinner: durableEstablished && !durableCreditWithheld ? jobStatus : null,
+    terminalWinner: durableEstablished && !durableCreditWithheld
+      ? jobStatus
+      : preCutoffEstablished ? preCutoffJobStatus : null,
     // Join v2 provenance (schema-additive): the join's own version, the
     // record-level spawn-identity join proof, and the per-sample admission
     // evaluation (admitted observation blocks with their fence state and
@@ -3318,7 +4737,7 @@ export function nativeInterruptionGateDInput(record) {
     // only when the boundary exists and the timing is proven).
     durableReadPostCleanupBoundary: durableReadAtOrAfterBoundary,
     durableReadBoundaryBasis: durableReadAtOrAfterBoundary
-      ? 'budget-cleanup-termination-not-attributed'
+      ? (creditFenceIsCutoff ? 'durable-read-at-or-after-measurement-cutoff' : 'budget-cleanup-termination-not-attributed')
       : durableReadTimingUnestablished ? 'durable-read-timing-unestablished' : null,
     // The natural-completion guard: a natural completion basis whose winner
     // was recorded `cancelled` is the misclassification the oracle blocks.
@@ -3327,6 +4746,50 @@ export function nativeInterruptionGateDInput(record) {
     statusObservationTimeoutOnly: false,
   };
 }
+
+/**
+ * The §24.8 frozen schedule (native-acceptance Task 1, report §24.8; wired by
+ * Task 3): the MEASUREMENT CUTOFF sits at the hold deadline + 10000 ms —
+ * strictly AFTER the gate release (which happens AT the hold deadline), so
+ * the bounded read/collection interval after an in-budget natural finish is
+ * exactly the gate-release→cutoff window. The 10000-ms interval exceeds the
+ * ≥1000-ms read floor + read duration, so a finish at/after the release still
+ * gets a pre-cutoff read. OBSERVATION bounds only — never a production
+ * timeout, never a detector or ceiling change.
+ */
+export const MEASUREMENT_CUTOFF_AFTER_HOLD_MS = 10_000;
+
+/**
+ * The §24.8 planned observation teardown: hold deadline + 15000 ms = the
+ * measurement cutoff + 5000 ms — a fixed bounded grace in which the cutoff
+ * fact (and any pre-cutoff settlement read) is persisted on the record
+ * BEFORE the observation is torn down. Never a manufactured termination
+ * boundary: teardown is not a kill and records no cleanup boundary of its own.
+ */
+export const OBSERVATION_TEARDOWN_AFTER_CUTOFF_MS = 5_000;
+
+/**
+ * The scheduled §24.8 window-end refresh lead (codex gate fix, 2026-10-26):
+ * the refreshed authoritative durable read STARTS this many ms BEFORE the
+ * planned observation end (hold deadline + 15000 ms), so a healthy read —
+ * sized by the §23.5 ≥1000-ms read floor — completes WITHIN the observation
+ * window and can be joined at the endpoint, while a read still pending at the
+ * endpoint is abandoned there with the named missing-read fact and never
+ * awaited past it. The lead is frozen at one read floor and is POST-cutoff by
+ * construction (15000 − 1000 = 14000 > 10000), so the refreshed read's
+ * §24.8 fence outcome is unchanged by it: it still starts and completes after
+ * the measurement cutoff and earns no credit of its own.
+ */
+export const OBSERVATION_REFRESH_LEAD_MS = 1_000;
+
+/**
+ * The closed map of cases whose registered design arms the §24.8 measurement
+ * -cutoff schedule in {@link runHeldHostTurn} (the §20.8 producer-map
+ * precedent, like {@link DURABLE_SAMPLING_ENABLED_CASES}): the interrupt
+ * case's frozen schedule. Every other case keeps its exact prior held-turn
+ * behavior (no cutoff fact, no post-cutoff grace, schema unchanged).
+ */
+export const MEASUREMENT_CUTOFF_ENABLED_CASES = Object.freeze(new Set(['rescue-interrupt']));
 
 /**
  * The registered per-case stdout-capture requirement (2026-10-21
@@ -3372,6 +4835,24 @@ export const STDOUT_CAPTURE_REQUIRED_CASES = Object.freeze(new Set(['rescue-inte
 export const WRAPPED_INTERRUPT_REQUIRED_CASES = Object.freeze(new Set());
 
 /**
+ * The frozen §16.4 control-design facts a DECLARED survival-control run
+ * requires on the fixture's recorded declaration (native-acceptance Task 3,
+ * the preflight arm): the fixture writes its control script from THESE
+ * constants and records the same facts, so a fixture whose declaration is
+ * absent or disagrees is the WRONG INSTRUMENT — rejected before any launch
+ * (the record could never bind the exact control bytes after disposal
+ * otherwise). The observed exit/line facts stay the live reader's §16.4
+ * facts; this block is the DECLARED design only.
+ */
+export const SURVIVAL_CONTROL_DECLARATION_FACTS = Object.freeze({
+  selector: SURVIVAL_CONTROL_SELECTOR_VALUE,
+  lineCount: SURVIVAL_CONTROL_LINE_COUNT,
+  cadenceMs: SURVIVAL_CONTROL_CADENCE_MS,
+  designedExitCode: 0,
+  emissionTagClock: 'control-process-monotonic-elapsed-ms-since-start',
+});
+
+/**
  * The live-launch preflight (2026-10-21 evidence-closure Task 3, the Exit
  * clause): BEFORE any host launch, verify that every observer the
  * registered case design REQUIRES is actually armed on the fixture. A known
@@ -3387,7 +4868,17 @@ export const WRAPPED_INTERRUPT_REQUIRED_CASES = Object.freeze(new Set());
  *     ACTUAL prepared seam (the fixture-generated handle present and its
  *     preload file on disk).
  * Cases without registered Task-3 observers are not blocked by them.
- * @param {{ case: string, survivalControlSelector: string | null, fixture: any }} input
+ * Native-acceptance Task 3 (report §24.8/§24.11) adds the §24.8 choreography
+ * arm: (4) a run that DECLARES the §24.8 completion-gate artifacts rejects
+ * when they are absent on disk — the gate release could never happen, so
+ * absence at preflight is never runtime measurement; (5) a declared
+ * survival-control run rejects when the fixture's recorded control
+ * declaration is absent or disagrees with the frozen
+ * {@link SURVIVAL_CONTROL_DECLARATION_FACTS} — the wrong instrument can never
+ * anchor the §16.4 emission-tag machinery. Runtime facts (model obedience,
+ * pending state, retained host-event fields) stay facts the trial must
+ * establish — never preflight-guessed booleans.
+ * @param {{ case: string, survivalControlSelector: string | null, fixture: any, gateArtifacts?: { completionGatePath?: string, completionGateReachedPath?: string } }} input
  * @param {{ lstat?: typeof import('node:fs/promises').lstat, wrappedInterruptRequiredCases?: readonly string[] }} [dependencies]
  * @returns {Promise<{ ok: boolean, reason: string | null }>}
  */
@@ -3442,6 +4933,37 @@ export async function evaluateLiveLaunchPreflight(input, dependencies = {}) {
       return { ok: false, reason: 'the registered stdout capture preload is absent (the exact-output observer is known absent)' };
     }
   }
+  // (4) The §24.8 choreography artifacts (native-acceptance Task 3): a run
+  // that DECLARES the completion-gate seam requires both gate files on disk
+  // BEFORE the launch — the fixture worker polls the gate and the held turn
+  // releases it, so an absent gate is a known-absent choreography artifact,
+  // never a runtime measurement. Undeclared (undefined paths) stays neutral.
+  const gateArtifacts = input.gateArtifacts ?? null;
+  if (gateArtifacts !== null && typeof gateArtifacts === 'object') {
+    for (const [name, gatePath] of [['completion gate', gateArtifacts.completionGatePath], ['completion gate reached marker', gateArtifacts.completionGateReachedPath]]) {
+      if (typeof gatePath !== 'string' || gatePath.length === 0) continue;
+      const gateStats = await lstat(gatePath).catch(() => null);
+      if (gateStats === null || !gateStats.isFile()) {
+        return { ok: false, reason: `the declared §24.8 ${name} artifact is absent (the gate-release choreography is known absent)` };
+      }
+    }
+  }
+  // (5) The declared survival control's fixture DECLARATION (native-acceptance
+  // Task 3): the fixture root is disposed after the run, so the binding to
+  // the exact control-script bytes lives only in the recorded declaration —
+  // an absent declaration, or one disagreeing with the frozen §16.4 design
+  // facts, is the wrong instrument, rejected before any launch.
+  if (input.survivalControlSelector !== null && input.survivalControlSelector !== undefined) {
+    const declaration = fixture.record?.survivalControl;
+    if (!declaration || typeof declaration !== 'object') {
+      return { ok: false, reason: 'the declared survival-control run has no fixture control declaration (the §16.4 control anchor is known absent)' };
+    }
+    for (const [fact, expected] of Object.entries(SURVIVAL_CONTROL_DECLARATION_FACTS)) {
+      if (/** @type {any} */ (declaration)[fact] !== expected) {
+        return { ok: false, reason: `the declared survival-control fixture declaration disagrees with the frozen control sizing (${fact}) — the wrong instrument` };
+      }
+    }
+  }
   return { ok: true, reason: null };
 }
 
@@ -3477,6 +4999,7 @@ export async function evaluateLiveLaunchPreflight(input, dependencies = {}) {
  *   waitForChildSettlementAfterJoin?: (signal: AbortSignal) => Promise<{ observed: boolean, basis: string | null }>,
  *   readDurableSnapshot?: () => Promise<Record<string, unknown>>,
  *   sampleDurableSnapshots?: boolean | { intervalMs?: number, maxAttempts?: number, maxSummaries?: number },
+ *   measurementCutoffSchedule?: boolean,
  *   statusDeadlineFlow?: boolean,
  *   captureProcessIdentity?: () => Promise<unknown>,
  *   readProcessIdentity?: (identity: unknown) => Promise<unknown>,
@@ -3485,6 +5008,7 @@ export async function evaluateLiveLaunchPreflight(input, dependencies = {}) {
  *   releaseGate?: (gatePath: string) => Promise<void>,
  *   sleep?: (ms: number) => Promise<void>,
  *   now?: () => number,
+ *   wallClockNow?: () => number,
  * }} HeldTurnInput
  * @typedef {{
  *   clock: 'held-turn-monotonic-elapsed-ms',
@@ -3500,7 +5024,7 @@ export async function evaluateLiveLaunchPreflight(input, dependencies = {}) {
  *   endedBeforeGate: boolean,
  *   rootAcknowledged?: boolean,
  *   statusDeadlineReached?: boolean,
- *   childSettlement?: { observed: boolean, basis: string | null, layers?: { remoteTerminal: boolean | null, localProcessReaping: 'natural-exit-observed' | 'cleanup-terminated' | null, durableObligations: 'settled' | 'unresolved' | null }, durableSnapshot?: Record<string, unknown>, durableSamples?: Record<string, unknown> } | null,
+ *   childSettlement?: { observed: boolean, basis: string | null, layers?: { remoteTerminal: boolean | null, localProcessReaping: 'natural-exit-observed' | 'cleanup-terminated' | null, durableObligations: 'settled' | 'unresolved' | null }, durableSnapshot?: Record<string, unknown>, preCutoffDurableSnapshot?: Record<string, unknown>, durableSamples?: Record<string, unknown> } | null,
  *   budgetExpired: boolean,
  *   identity: unknown,
  *   processAliveWhileHeld: boolean | null,
@@ -3513,7 +5037,11 @@ export async function evaluateLiveLaunchPreflight(input, dependencies = {}) {
  *     nativeInterruptionClaimed: false,
  *     errors: unknown[],
  *     cleanupBoundaryAtMs: number | null,
+ *     measurementCutoffAtMs: number | null,
+ *     holdDeadlineOverrunMs: number | null,
+ *     identityEstablished: { established: boolean, capturedAtElapsedMs: number | null, basis: string | null },
  *   },
+ *   postRelease?: Record<string, string>,
  *   timeline: HeldTurnTimeline,
  *   failure?: unknown,
  * }} HeldTurnRecord
@@ -4471,7 +5999,16 @@ async function executeDefaultLiveCaseBody({ input, fixture }) {
   // preflight runs BEFORE any host launch — a registered required observer
   // that is known absent rejects the case at zero model turns with its named
   // reason, never a burned live label on an unobservable run.
-  const preflight = await evaluateLiveLaunchPreflight({ case: input.case, survivalControlSelector: input.survivalControlSelector, fixture });
+  const preflight = await evaluateLiveLaunchPreflight({
+    case: input.case,
+    survivalControlSelector: input.survivalControlSelector,
+    fixture,
+    // §24.8 (native-acceptance Task 3): the choreography artifacts this
+    // executor prepared are DECLARED to the preflight, so an absent gate file
+    // (a failed preparation) is rejected before any launch instead of being
+    // discovered as a runtime failure.
+    gateArtifacts: { completionGatePath: gatePath, completionGateReachedPath: gateReachedPath },
+  });
   if (preflight.ok !== true) {
     throw invalidCaseInput(`shell-wait live-launch preflight rejected the case before launch: ${preflight.reason}`);
   }
@@ -4679,6 +6216,13 @@ async function executeDefaultLiveCaseBody({ input, fixture }) {
       // precedent); the frozen defaults (1000-ms floor, 600 attempts, 32
       // summaries) need no override here.
       ...(DURABLE_SAMPLING_ENABLED_CASES.has(input.case) ? { sampleDurableSnapshots: {} } : {}),
+      // §24.8 (native-acceptance Task 3): the frozen measurement-cutoff
+      // schedule arms for the registered case(s) — the cutoff is computed at
+      // the hold-deadline crossing, the sampler stops at it, and the held
+      // phase extends to the post-cutoff teardown deadline. The closed map is
+      // the ONE definition site; every other case keeps its exact prior
+      // held-turn behavior.
+      ...(MEASUREMENT_CUTOFF_ENABLED_CASES.has(input.case) ? { measurementCutoffSchedule: true } : {}),
     } : {}),
     // P2-1 round-7 fix: the Status deadline flow is OBSERVATION-ONLY — the
     // background launch reserves a queued job and the Status query measures
@@ -5071,6 +6615,15 @@ export function mapShellWaitLiveFacts(input, held, evidence, codexVersion, rollo
     ...(held?.childSettlement && typeof held.childSettlement === 'object' && held.childSettlement.durableSnapshot !== undefined
       ? { durableSnapshot: held.childSettlement.durableSnapshot }
       : {}),
+    // Codex gate fix A (2026-10-26, §24.8 scheduled path; completed by the
+    // round-3 read arm): the LATEST completed strictly-pre-cutoff
+    // authoritative read rides beside the final one — winner-credible
+    // evidence the always-post-cutoff final read can never provide. Mirrored
+    // ONLY when the held record carried it: every other path keeps its
+    // mapping schema byte-identical.
+    ...(held?.childSettlement && typeof held.childSettlement === 'object' && held.childSettlement.preCutoffDurableSnapshot !== undefined
+      ? { preCutoffDurableSnapshot: held.childSettlement.preCutoffDurableSnapshot }
+      : {}),
     // 2026-10-23 interrupt-closure Task 3 (report §23.5): the pre-cleanup
     // sampling block (attempts, baseline, ≤32 per-read summaries with their
     // own started/completed instants, named omissions) mirrors ONLY when the
@@ -5081,6 +6634,16 @@ export function mapShellWaitLiveFacts(input, held, evidence, codexVersion, rollo
     // own completion instant against the recorded cleanup boundary.
     ...(held?.childSettlement && typeof held.childSettlement === 'object' && held.childSettlement.durableSamples !== undefined
       ? { durableSamples: held.childSettlement.durableSamples }
+      : {}),
+    // Codex gate round-11 finding 3: the ONE shared read ledger (the combined
+    // §24.8 attempt accounting and the strictly increasing, ≥1000-ms-spaced
+    // paced start stream, plus the named cap refusals and the unpaced
+    // account-only claims) mirrors ONLY when the held record carried it —
+    // records from runs without the schedule keep the mapping schema
+    // byte-identical. The projection is bounded (≤600 starts) and carries no
+    // private material.
+    ...(held?.childSettlement && typeof held.childSettlement === 'object' && /** @type {any} */ (held.childSettlement).durableReadLedger !== undefined
+      ? { durableReadLedger: /** @type {any} */ (held.childSettlement).durableReadLedger }
       : {}),
   };
   // P2-1 round-6 fix: the settled-background exemption enforces the
@@ -5395,6 +6958,13 @@ export function mapShellWaitLiveFacts(input, held, evidence, codexVersion, rollo
       controlExitPremature: survivalControlFacts.controlExitPremature ?? null,
       controlExitCode: survivalControlFacts.controlExitCode ?? null,
       completionBeforeDeliveryObserved: survivalControlFacts.completionBeforeDeliveryObserved ?? null,
+      // §24.8 readiness arm (native-acceptance Task 3): the preregistered
+      // readiness facts ride the persisted observation block — the
+      // readiness-floor observation and the named readiness-cutoff-exceeded
+      // outcome (a live model-obedience fact, never readiness proof either
+      // way, report §24.5). Closed booleans/integers, never raw rollout text.
+      readinessFloor: survivalControlFacts.readinessFloor,
+      readinessCutoffExceeded: survivalControlFacts.readinessCutoffExceeded,
       // CODEX ROUND-4 FIX (§23.15): the persisted inputs carry the
       // scan/ownership rejection state — an offline reader can see the bound
       // was withheld because the interaction's ownership/completeness was
@@ -5475,6 +7045,24 @@ export function mapShellWaitLiveFacts(input, held, evidence, codexVersion, rollo
   // itself represent completion or termination, so survival is UNKNOWN and
   // the trial stays inconclusive.
   const interruptUnreadableContinuationObserved = (interruptInteraction.unparseableBoundResponses ?? 0) > 0;
+  // §24.8 (native-acceptance Task 3): the held turn's measurement cutoff —
+  // computed at the hold-deadline crossing, persisted on the record BEFORE
+  // teardown, and independent of any termination-initiation boundary. Rides
+  // the interrupt facts (the offline Gate-D fence's input) for every mapping
+  // branch when the held record carried it, and — codex gate round-4
+  // finding 1 — fences the NATIVE SETTLEMENT credit itself: a resolution
+  // whose rollout event time sits at/after the armed cutoff retained as a
+  // named observation (§24.4 f5: pre-cutoff + pre-boundary credit only).
+  const measurementCutoffAtMs = typeof held?.cleanup?.measurementCutoffAtMs === 'number' && Number.isFinite(held.cleanup.measurementCutoffAtMs)
+    ? held.cleanup.measurementCutoffAtMs
+    : null;
+  // §24.8 (codex gate round-8 finding 1): the hold-deadline crossing overrun
+  // — a final hold tick resuming late — rides the interrupt facts as a named
+  // observation (the cutoff itself was ANCHORED to the scheduled deadline,
+  // never extended by the overrun).
+  const holdDeadlineOverrunMs = typeof held?.cleanup?.holdDeadlineOverrunMs === 'number' && Number.isFinite(held.cleanup.holdDeadlineOverrunMs)
+    ? held.cleanup.holdDeadlineOverrunMs
+    : null;
   let interruptSettled = null;
   let interruptSettledBasis = null;
   if (interruptInteraction.attempted) {
@@ -5549,6 +7137,22 @@ export function mapShellWaitLiveFacts(input, held, evidence, codexVersion, rollo
       && interruptInteraction.completedAfterCall.atMs >= cleanupBoundaryAtMs) {
       interruptSettledBasis = 'budget-cleanup-termination-not-attributed';
     }
+    // §24.4 f5 (codex gate round-4 finding 1): the MEASUREMENT CUTOFF is the
+    // settlement fence's second endpoint — an exit-code completion whose
+    // rollout event time sits at/after the armed cutoff (equality included)
+    // is retained as a named observation (completedAfterCall rides the
+    // record) but grounds no turn-settlement credit and no responsiveness
+    // latency.
+    // Codex gate round-10 finding 1: the fence covers a MISSING completion
+    // instant too — an unstamped qualified terminal response rides as an
+    // uncredited observation (completedAfterCall stays absent) and grounds
+    // no turn-settlement credit and no responsiveness latency.
+    else if (interruptCompletionQualified
+      && measurementCutoffAtMs !== null
+      && (interruptInteraction.completedAfterCall.atMs === null
+        || interruptInteraction.completedAfterCall.atMs >= measurementCutoffAtMs)) {
+      interruptSettledBasis = 'measurement-cutoff-settlement-not-attributed';
+    }
     else if (interruptCompletionQualified) {
       interruptSettled = true;
       interruptSettledBasis = 'terminal-observation-after-delivery';
@@ -5594,6 +7198,17 @@ export function mapShellWaitLiveFacts(input, held, evidence, codexVersion, rollo
     // latency (the round-19 semantics). A genuinely native cancellation in a
     // run with NO cleanup kill keeps full credit. The overall budget-expired
     // inconclusive verdict below is unchanged.
+    // §24.4 f5 (codex gate round-4 finding 1): the same cutoff fence bounds
+    // the NATIVE CANCELLATION settlement — a cancellation marker whose
+    // rollout event time sits at/after the armed cutoff (equality included)
+    // is retained as a named observation (cancelledAtMs rides the record)
+    // but grounds no turn-settlement credit and no responsiveness latency.
+    else if (interruptInteraction.pendingBeforeCall.observed === true
+      && interruptInteraction.cancelledAfterCall.atMs !== null
+      && measurementCutoffAtMs !== null
+      && interruptInteraction.cancelledAfterCall.atMs >= measurementCutoffAtMs) {
+      interruptSettledBasis = 'measurement-cutoff-settlement-not-attributed';
+    }
     else if (interruptInteraction.pendingBeforeCall.observed === true
       && interruptInteraction.cancelledAfterCall.atMs !== null
       && settlementPrecedesCleanupBoundary(interruptInteraction.cancelledAfterCall.atMs, held)) {
@@ -5701,6 +7316,27 @@ export function mapShellWaitLiveFacts(input, held, evidence, codexVersion, rollo
     ? held.cleanup.cleanupBoundaryAtMs
     : null;
   const interruptCancelledAtMs = interruptInteraction.cancelledAfterCall.atMs;
+  // Task 3 (the §24.7 local-identity row): the eager establishment facts —
+  // mirrored ONLY when the held record carried them (legacy held shapes keep
+  // the mapping schema byte-identical). The basis is FREE TEXT that may embed
+  // a capture failure's raw error (e.g. an EACCES message naming the private
+  // process-marker path — codex gate P2 fix 1): it passes through the SAME
+  // redaction + length bound as the cleanup errors before it can reach the
+  // persisted record.
+  const identityEstablishedRecord = held?.cleanup?.identityEstablished && typeof held.cleanup.identityEstablished === 'object'
+    ? /** @type {any} */ (held.cleanup.identityEstablished)
+    : null;
+  const processIdentity = identityEstablishedRecord !== null
+    ? {
+      established: identityEstablishedRecord.established === true,
+      capturedAtElapsedMs: typeof identityEstablishedRecord.capturedAtElapsedMs === 'number'
+        ? identityEstablishedRecord.capturedAtElapsedMs
+        : null,
+      basis: typeof identityEstablishedRecord.basis === 'string'
+        ? (fixture ? redactPrivatePaths(identityEstablishedRecord.basis, fixture) : identityEstablishedRecord.basis)
+        : null,
+    }
+    : undefined;
   const interruptFacts = {
     requested: input.case === 'rescue-interrupt',
     attempted: interruptInteraction.attempted,
@@ -5741,12 +7377,24 @@ export function mapShellWaitLiveFacts(input, held, evidence, codexVersion, rollo
     ...(interruptInteraction.attempted ? {
       pendingWindowObserved: interruptInteraction.pendingBeforeCall.observed === true,
       settlementCleanupGenerated: settledDeliveryCleanupGenerated === true,
+      // §24.4 f1/f3 (native-acceptance Task 3): the relocated window
+      // comparison's REQUEST-side witness inputs persist schema-additively so
+      // the offline reader can re-verify the cross-rollout timestamp/bounds
+      // witness after fixture disposal — the call's attributable instant and
+      // bounds, and the attributable pending start. Absent facts stay absent
+      // (never zero, never inferred).
+      ...(interruptInteraction.callAtMs !== null ? { callAtMs: interruptInteraction.callAtMs } : {}),
+      ...(interruptInteraction.callNotBeforeMs !== null ? { callNotBeforeMs: interruptInteraction.callNotBeforeMs } : {}),
+      ...(interruptInteraction.callNotAfterMs !== null ? { callNotAfterMs: interruptInteraction.callNotAfterMs } : {}),
+      ...(interruptInteraction.pendingBeforeCall.atMs !== null ? { pendingBeforeCallAtMs: interruptInteraction.pendingBeforeCall.atMs } : {}),
       ...(hostDeliveryAdmission !== null ? { hostDelivery: hostDeliveryAdmission } : {}),
     } : {}),
     ...(interruptInteraction.completedBeforeCall.atMs !== null ? { completedBeforeCallMs: interruptInteraction.completedBeforeCall.atMs } : {}),
     ...(interruptInteraction.completedAfterCall.atMs !== null ? { completedAfterCallMs: interruptInteraction.completedAfterCall.atMs } : {}),
     ...(interruptCleanupBoundaryAtMs !== null ? { cleanupBoundaryAtMs: interruptCleanupBoundaryAtMs } : {}),
     ...(interruptCancelledAtMs !== null ? { cancelledAtMs: interruptCancelledAtMs } : {}),
+    ...(measurementCutoffAtMs !== null ? { measurementCutoffAtMs } : {}),
+    ...(holdDeadlineOverrunMs !== null ? { holdDeadlineOverrunMs } : {}),
   };
   // The §23.4 abort-case layer exposure (2026-10-23 interrupt-closure Task
   // 2): when the evidence COLLECTION completed (real rollouts are in hand)
@@ -5976,6 +7624,17 @@ export function mapShellWaitLiveFacts(input, held, evidence, codexVersion, rollo
         processTermination,
         cleanupComplete,
         timeline: heldTimeline,
+        // Task 3 (the §24.7 local-identity row): the eager identity
+        // establishment facts mirror ONLY when the held record carried them
+        // — records from held shapes without the block keep the mapping
+        // schema byte-identical.
+        ...(processIdentity !== undefined ? { processIdentity } : {}),
+        // Codex gate P2 fix 3: the named late/missing post-release facts ride
+        // the held block when the armed §24.8 section recorded any — their
+        // absence means every raced operation completed within the window.
+        ...(/** @type {any} */ (held)?.postRelease !== undefined && /** @type {any} */ (held)?.postRelease !== null
+          ? { postRelease: /** @type {any} */ (held).postRelease }
+          : {}),
       },
       child: childSettlementFacts,
       ...(waitPolicyObservation !== null ? { waitPolicyObservation } : {}),
@@ -6108,6 +7767,16 @@ export function mapShellWaitLiveFacts(input, held, evidence, codexVersion, rollo
       processTermination,
       cleanupComplete,
       timeline: heldTimeline,
+      // Task 3: the identity-establishment facts ride the fall-through branch
+      // too when the held record carried them (the executor's failure path
+      // maps whatever held record survived).
+      ...(processIdentity !== undefined ? { processIdentity } : {}),
+      // Codex gate P2 fix 3: the post-release facts ride the fall-through
+      // branch too (the executor's failure path maps whatever held record
+      // survived).
+      ...(/** @type {any} */ (held)?.postRelease !== undefined && /** @type {any} */ (held)?.postRelease !== null
+        ? { postRelease: /** @type {any} */ (held).postRelease }
+        : {}),
     },
     child: childSettlementFacts,
     ...(waitPolicyObservation !== null ? { waitPolicyObservation } : {}),
@@ -6198,7 +7867,7 @@ const defaultLiveExecutor = /** @type {any} */ (executeDefaultLiveCase);
  *   hostResult?: { exitCode?: number | null, companionProcessExit?: number | null, sentinelMatched?: boolean | null, terminalStdoutChecked?: boolean | null, resultCheck?: string | null, resultCheckLabel?: string | null, exactTerminalMatch?: { matched: boolean | null, reason: string | null }, stdoutCapture?: { status: string, reason: string | null, byteCount: number | null, captureSha256: string | null, exitCode: number | null, closureObservationVersion: number | null } },
  *   linkage?: { checked?: boolean | null, mode?: 'rescue' | 'root' | null, rootThreadId?: string | null, childThreadId?: string | null, parentThreadId?: string | null, companionLaunchCount?: number | null, companionSendCount?: number | null, originalHandleChecked?: boolean | null },
  *   observations?: { outerReturns?: number | null, modelCalls?: number | null, rootJoins?: number | null, decisiveWallMs?: number | null, pollWallTimesMs?: (number | null)[] | null, pollStartedAtElapsedMs?: number | null, holdDeadlineElapsedMs?: number | null, remainingLifetimeMs?: number | null, remainingLifetimeBasis?: 'hold-deadline-at-poll-start' | 'unavailable' | null, pendingInnerAtEnd?: boolean | null },
- *   interrupt?: { requested?: boolean, attempted?: boolean | null, family?: 'v2' | 'v1' | null, wrappedInterrupt?: boolean | null, delivered?: boolean | null, rejection?: string | null, previousStatus?: string | null, previousStatusTerminal?: boolean | null, callCount?: number | null, orderingBound?: boolean, target?: { kind: 'agent-id' | 'task-name' | 'unknown' | null, value: string | null, suppressed: boolean, chars: number | null } | null, exactTargetMatch?: boolean | null, exactTargetMatchBasis?: string | null, settled?: boolean | null, settledBasis?: string | null, pendingIntervalMs?: number | null, deliveryToSettlementMs?: number | null, timingBasis?: 'rollout-event-timestamps' | 'unavailable' | null, missingPrerequisite?: string | null, pendingWindowObserved?: boolean, settlementCleanupGenerated?: boolean, unreadableContinuationObserved?: boolean, hostDelivery?: Record<string, unknown>, partialFacts?: Record<string, unknown>, cleanupBoundaryAtMs?: number, cancelledAtMs?: number, completedBeforeCallMs?: number, completedAfterCallMs?: number },
+ *   interrupt?: { requested?: boolean, attempted?: boolean | null, family?: 'v2' | 'v1' | null, wrappedInterrupt?: boolean | null, delivered?: boolean | null, rejection?: string | null, previousStatus?: string | null, previousStatusTerminal?: boolean | null, callCount?: number | null, orderingBound?: boolean, target?: { kind: 'agent-id' | 'task-name' | 'unknown' | null, value: string | null, suppressed: boolean, chars: number | null } | null, exactTargetMatch?: boolean | null, exactTargetMatchBasis?: string | null, settled?: boolean | null, settledBasis?: string | null, pendingIntervalMs?: number | null, deliveryToSettlementMs?: number | null, timingBasis?: 'rollout-event-timestamps' | 'unavailable' | null, missingPrerequisite?: string | null, pendingWindowObserved?: boolean, settlementCleanupGenerated?: boolean, unreadableContinuationObserved?: boolean, hostDelivery?: Record<string, unknown>, partialFacts?: Record<string, unknown>, callAtMs?: number, callNotBeforeMs?: number, callNotAfterMs?: number, pendingBeforeCallAtMs?: number, cleanupBoundaryAtMs?: number, cancelledAtMs?: number, measurementCutoffAtMs?: number, holdDeadlineOverrunMs?: number, completedBeforeCallMs?: number, completedAfterCallMs?: number },
  *   held?: {
  *     endedBeforeGate?: boolean | null,
  *     statusDeadlineReached?: boolean,
@@ -6208,6 +7877,8 @@ const defaultLiveExecutor = /** @type {any} */ (executeDefaultLiveCase);
  *     cleanupErrors?: { count: number, reasons: string[] },
  *     processTermination?: { verifiedTerminated?: boolean | null, codexTerminated?: boolean | null },
  *     cleanupComplete?: boolean | null,
+ *     processIdentity?: { established: boolean, capturedAtElapsedMs: number | null, basis: string | null },
+ *     postRelease?: Record<string, string>,
  *   },
  *   child?: {
  *     settlement?: { observed: boolean, basis: string | null } | null,
@@ -6215,6 +7886,7 @@ const defaultLiveExecutor = /** @type {any} */ (executeDefaultLiveCase);
  *     settlementDetectedAtElapsedMs?: number | null,
  *     settlementLayers?: { remoteTerminal: boolean | null, localProcessReaping: 'natural-exit-observed' | 'cleanup-terminated' | null, durableObligations: 'settled' | 'unresolved' | null },
  *     durableSnapshot?: Record<string, unknown>,
+ *     preCutoffDurableSnapshot?: Record<string, unknown>,
  *   },
  *   statusQuery?: Record<string, unknown> | null,
  *   collection?: { rolloutCount?: number | null, childToolCallCount?: number | null, truncated?: boolean },

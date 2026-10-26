@@ -38,7 +38,7 @@ import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { survivalControlShellCommand } from './evidence.mjs';
+import { SURVIVAL_CONTROL_READINESS_FLOOR_LINE_INDEX, survivalControlShellCommand } from './evidence.mjs';
 import {
   CAPTURE_DIRECTORY_VARIABLE,
   CAPTURE_ENTRY_VARIABLE,
@@ -131,7 +131,7 @@ export function survivalControlPromptDirective(scriptPath) {
   return 'Also, inside this same turn: perform the following five steps strictly in this order, and never skip ahead. '
     + 'STEP 1: spawn the Rescue child exactly as this turn\'s Rescue instructions otherwise require, and copy the EXACT full agent id from its spawn acknowledgement — that id is retained verbatim as the only permitted interrupt target. '
     + `STEP 2: immediately after the child launch, launch the fixture-owned progress program exactly once with exec_command on its own handle — run exactly \`${survivalControlShellCommand(scriptPath)}\` with yield_time_ms 1000 and no other arguments — and afterwards never observe it with Status, never send it characters, and never stop or kill it. `
-    + 'STEP 3: coordinate readiness through the control clock: read the progress program\'s output on its own handle with bounded empty-input write_stdin calls (each yield_time_ms 1000), every read requiring a fresh progress line beyond everything previously read, and repeat until one read returns a line whose index is at least 40 — the readiness floor, approximately 80 seconds after the control\'s start at the declared 2000-ms cadence. The floor is an observer-coordination approximation of the child\'s own poll-start window, recorded as such: it is NOT an observation of the child\'s poll, which stays child-owned and is never driven from this turn. '
+    + `STEP 3: coordinate readiness through the control clock: read the progress program's output on its own handle with bounded empty-input write_stdin calls (each yield_time_ms 1000), every read requiring a fresh progress line beyond everything previously read, and repeat until one read returns a line whose index is at least ${SURVIVAL_CONTROL_READINESS_FLOOR_LINE_INDEX} — the readiness floor, approximately 80 seconds after the control's start at the declared 2000-ms cadence. The floor is an observer-coordination approximation of the child's own poll-start window, recorded as such: it is NOT an observation of the child's poll, which stays child-owned and is never driven from this turn. `
     + 'STEP 4: read the progress program\'s output once more on its own handle (an empty-input write_stdin with yield_time_ms 1000) and require a fresh progress line whose line index is still below the program\'s line count — the bounded §16.4 pre-delivery read, ordered before the interrupt. '
     + 'STEP 5: only then deliver the exactly-one interrupt_agent call carrying the EXACT full agent id copied from the spawn acknowledgement — never a shortened, paraphrased, or guessed target. '
     + 'After the interrupt has settled, read the progress program\'s output one final time on its own handle and include every control read verbatim in your final report. '
@@ -1369,7 +1369,13 @@ export async function captureVerifiedProcessIdentity(processPath, processNonce) 
       : coded('ZCODE_SHELL_WAIT_MARKER_INVALID', `the exact fake-ZCode process marker is corrupt: ${error instanceof Error ? error.message : String(error)}`);
   }
   const observed = await inspectVerifiedProcessIdentity(marker.pid, processNonce);
-  if (!observed) throw coded('ZCODE_SHELL_WAIT_MARKER_ABSENT', 'the exact fake-ZCode process exited before identity capture');
+  // Codex gate round-7 finding 1: an EXISTING, nonce-valid marker whose
+  // process has exited is a CONFIRMED PERMANENT DISAPPEARANCE — never launch
+  // readiness that might still arrive. It carries its own code so the
+  // driver's identity retry loop can stop retrying (and name the failure)
+  // instead of treating the disappearance as an absent marker and burning
+  // the experiment budget on a process that can never be captured.
+  if (!observed) throw coded('ZCODE_SHELL_WAIT_PROCESS_EXITED', 'the exact fake-ZCode process exited before identity capture');
   if (observed.ppid !== marker.ppid) throw coded('ZCODE_SHELL_WAIT_MARKER_INVALID', 'the exact fake-ZCode parent identity mismatch');
   return observed;
 }

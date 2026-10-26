@@ -17319,3 +17319,985 @@ dimension — the binding identifier — grounded in the synthetic reproduction 
   `node scripts/check-line-endings.mjs` — all exit 0. The Task-2 fixup diff touches ONLY:
   tools/shell-wait-probe/{evidence,shape-diagnostic}.mjs, tests/{shell-wait-native-interruption,shell-wait-probe}.test.mjs
   and this report — no prohibited path.
+
+### 24.11 2026-10-26 native-acceptance Task 3: the registered acceptance choreography wired into the live executor — the §24.8 measurement cutoff, eager process identity, the readiness arm, the join v4 cutoff fence and the extended preflight (offline; zero model turns, zero live launches)
+
+Task 3 of [the native-acceptance plan](../superpowers/plans/2026-10-26-rescue-shell-wait-native-acceptance.md), executed
+2026-10-26 in the same worktree (branch `docs/rescue-shell-wait-native-acceptance`) on top of Task 2's closed commit
+`4a36161c63183c4e7e62bfe9fa98af6ba37890bb`. Fully offline throughout: zero model turns, zero `ZCODE_SHELL_WAIT_E2E=1`
+runs, zero host launches, no ambient process interaction; every test injects fake fixture/driver/clock dependencies and
+proves the INSTRUMENT only (a fake-host pass proves the instrument, not native delivery). This section is ADDITIVE —
+§24.1–§24.10 stand byte-unchanged, nothing below rewrites any past verdict, and the plan file's checkboxes are untouched.
+
+**What existed versus the delta.** Task 1/2 closed the contract registration and the offline causal correction (the
+relocated window, the typed `acknowledgementAtResolution` fact, join v3/oracle v4, the F/I replay), and the production
+predicates the §24.7 duty table names were already implemented: the §23.5 passive sampler and its pre-boundary offline
+fence, the durable settlement readers, the survival-control reader/oracle, and the four existing preflight checks. The
+Task-3 delta wires the REGISTERED CHOREOGRAPHY through the actual live executor and the persisted record, in five files
+(driver.mjs, evidence.mjs, fixture.mjs, the two shell suites):
+
+- **The §24.8 measurement cutoff, computed by the live held turn and persisted BEFORE teardown**
+  (driver.mjs:3565/:3574/:3583 — the frozen constants `MEASUREMENT_CUTOFF_AFTER_HOLD_MS` 10000 and
+  `OBSERVATION_TEARDOWN_AFTER_CUTOFF_MS` 5000 over the closed producer map `MEASUREMENT_CUTOFF_ENABLED_CASES` =
+  {rescue-interrupt}; the stamp driver.mjs:1972 — `cleanup.measurementCutoffAtMs = wallClockNow() +
+  MEASUREMENT_CUTOFF_AFTER_HOLD_MS` at the hold-deadline crossing, BEFORE the fixture completion gate is released; the
+  post-cutoff teardown grace driver.mjs:2102 — the held phase extends to hold deadline + 15000 ms, so the cutoff fact
+  and any pre-cutoff read persist on the record before teardown). The cutoff is defined INDEPENDENTLY of any
+  termination-initiation boundary: a no-kill run records the cutoff and no cleanup boundary (the §24.3 F shape),
+  teardown records no boundary of its own, and the schedule flag is inert for every unregistered case (schema
+  unchanged, no grace added). The wall clock is injectable (`wallClockNow`, driver.mjs:1319 — production `Date.now()`)
+  so the cutoff lands on the SAME clock as every §23.5 sampling instant and the record's `Date.now` cleanup boundary.
+- **The passive sampler stops AT the cutoff** (driver.mjs:1631-1632 — the cutoff getter and the injectable read clock
+  threaded into `startDurableSampling`; the pre-wait fence driver.mjs:2653-2656, the POST-WAIT RE-CHECK
+  driver.mjs:2692-2695 — added by the self-review P3 fix, so an interval wait that STRADDLES the armed cutoff stops the
+  sampler WITHOUT starting the read, closing the ~one-interval drift window a pre-wait check alone leaves open — and
+  the after-read completion backstop driver.mjs:2777-2778): no read STARTS at/after the cutoff (the fence is evaluated
+  before the interval wait AND re-checked after it, before the attempt is counted or stamped); a read that STARTED
+  strictly before the cutoff and COMPLETED at/after it — equality included — rides as an observation summary with the
+  named omission `durable-read-completed-at-or-after-measurement-cutoff` (zero settlement credit) and stops the sampler
+  with the named `durable-sampling-stopped-at-measurement-cutoff` reason. Both fences are sampler-tested: the straddle
+  test drives a read whose held interval wait is released past the armed cutoff (assert: no read starts — attemptCount
+  stays at the pre-cutoff reads, every summary strictly pre-cutoff, the completion backstop never fired) and the
+  backstop test drives a read whose completion stamp lands EXACTLY on the cutoff (assert: the named omission rides with
+  that attempt index, the at-cutoff observation fact persists, and no attempt runs after it); on the pre-fix bytes both
+  fail RED (the drifted read started — attemptCount 2 — and the backstop omission was absent). The ≥1000-ms floor, the
+  600-attempt/32-summary ceilings and the boundary/shared-signal stops are byte-unchanged.
+- **Join v3 → v4 — the cutoff is the SECOND offline credit fence** (driver.mjs:2935; the fence
+  driver.mjs:3176 — the operative fence is the EARLIEST recorded closing instant among the cleanup boundary and the
+  persisted `interrupt.measurementCutoffAtMs`): pre-fence samples/read completions keep credit; at/after the operative
+  fence they are refused BY NAME (`sample-at-or-after-measurement-cutoff` driver.mjs:3300, equality included; the
+  fenced final read's basis `durable-read-at-or-after-measurement-cutoff` driver.mjs:3545). The §24.8 settlement
+  selection is wired: when the final read is fenced out, the LATEST positively-consistent pre-fence sample grounds the
+  obligations/Companion LAYER facts (the fallback basis `final-snapshot-fenced-pre-boundary-sample` unchanged); the
+  winner conjunct is never fed from a sample; the cause discipline is untouched. **The oracle stays v4** (Task 3 grows
+  only the JOIN input contract). **Schema-additive inertness** is the falsification duty: every new fence input
+  (`measurementCutoffAtMs`, the window inputs) is absent on every retained I/F-era record, and a record without the
+  fields reproduces its recorded verdict fields exactly — the committed replay-mechanism tests
+  (tests/shell-wait-probe.test.mjs, the fix2 record family) and the new legacy-replay test
+  (tests/shell-wait-native-interruption.test.mjs, "a legacy record without the cutoff field replays with the fence
+  inert") pin this on the changed bytes.
+- **The relocated window witness inputs persist** (driver.mjs:6112-6119 — `callAtMs`, `callNotBeforeMs`,
+  `callNotAfterMs`, `pendingBeforeCallAtMs` from the SAME extractor projection the admission consumed, attempted runs
+  only; driver.mjs:1085-1091 — the serializer persists each only when the live facts carried it; driver.mjs:3485 —
+  the join exposes them additively as `delivery.relocatedWindowInputs`), so the §24.4 f1/f3 request-side witness is
+  re-verifiable offline after fixture disposal.
+- **Process identity established BEFORE disappearance** (driver.mjs:1493 — the eager establishment task started before
+  the launch closure: `captureVerifiedProcessIdentity` (marker nonce + start identity + ancestry, never the PID alone)
+  retried only through the confirmed-absence code until the marker appears or the turn ends, every other capture error
+  a named basis, the task detached and never failing the turn; driver.mjs:1397 — the held cleanup block carries
+  `identityEstablished { established, capturedAtElapsedMs, basis }`; driver.mjs:6055 + driver.mjs:1134/:6356/:6492 —
+  the mapper projects and the serializer persists `held.processIdentity` on EVERY mapping branch). The gate-first
+  branch awaits the establishment instead of capturing lazily (the prior throw-on-absence semantics preserved); the
+  §24.7 named-unobservable status of the REAL Companion's local reaping is unchanged — this wires the DECLARED
+  fixture-owned identity the duty table requires.
+- **The §24.8 readiness arm** (evidence.mjs:3219 — the registered floor constant
+  `SURVIVAL_CONTROL_READINESS_FLOOR_LINE_INDEX` = 40; evidence.mjs:3638 — `readinessFloor { observed,
+  highestPreRequestLineIndex }` and `readinessCutoffExceeded` computed from the SAME parsed read events, ordering by
+  the pre-request invoked/responded stamps the qualifying pre-delivery read already requires; the named
+  `readiness-cutoff-exceeded` outcome fires only when the control reached its DESIGNED END with the loop unfilled, and
+  stays null without a request stamp — never guessed): the facts ride the whitelisted `survivalControlInputs` block
+  (driver.mjs:5736) beside the versioned verdict. The fixture directive now renders the floor from the constant —
+  directive bytes verified IDENTICAL before/after (the instruction hashes cannot move). The §24.5 coordination-marker
+  candidate stays UNADOPTED (its four binding constraints never discharged); the control oracle is byte-unchanged.
+- **Preflight extension** (driver.mjs:3638 `SURVIVAL_CONTROL_DECLARATION_FACTS`; driver.mjs:3738/:3750/:3754): a
+  declared §24.8 completion-gate seam now rejects absent gate artifacts
+  (`the declared §24.8 completion gate artifact is absent…`), and a declared survival-control run rejects a fixture
+  whose recorded control declaration is absent or disagrees with the frozen §16.4 design facts (selector/lineCount/
+  cadenceMs/designedExitCode/emissionTagClock) — the wrong instrument, rejected before any launch. The live executor
+  now DECLARES its prepared gate artifacts to the preflight (driver.mjs:4799). Preflight still never guesses runtime
+  facts: model obedience, pending state and retained host-event fields stay facts the trial must establish.
+
+**The RED→GREEN evidence.** The 16 new tests failed against the unmodified Task-2 bytes for exactly the registered
+gaps (first failure: `AssertionError: the cutoff was computed at the hold-deadline crossing … 'undefined' !==
+'number'`; the readiness facts `Cannot read properties of undefined (reading 'observed')`; the preflight arms
+ReferenceError on the not-yet-imported fs helper — the arms themselves absent). After the implementation the focused
+suite is 39/39. The new coverage: the §24.4 window inputs + §24.8 cutoff through the REAL executor path on
+serialize→reload (success, independently-recovered partial-facts/abort, error, and early-exit paths); the cutoff fence
+at the join (pre-cutoff sample credit, at-cutoff/post-cutoff refusal by name, the fenced final read, legacy inertness);
+the fake-host schedule test (cutoff stamped at the wall-clock hold crossing, reads stopped at it, teardown held to
+hold+15000, NO cleanup boundary manufactured); the identity tests (capture strictly before the natural-exit wait;
+early-exit establishment with the disappeared process never signalled; the named never-established basis); the
+readiness facts (ready vs readiness-cutoff-exceeded vs unestablishable-null) riding the persisted control block into
+the oracle; the extended preflight matrix; and (self-review P3 fix) the two §24.8 sampler-fence tests — a read whose
+interval wait STRADDLES the armed cutoff stops WITHOUT starting (the post-wait fence re-check), and a read completing
+EXACTLY at the cutoff rides as the named post-cutoff limit with sampling stopped (the completion backstop) — both
+reproduced RED against the pre-fix bytes (the drifted read started, attemptCount 2; the backstop omission absent). The
+probe suite's pinned fixtures were updated ONLY where Task 3
+additively changed pinned shapes: the spawned-self-test total 24 → 40 (16 new registered tests), the join-version pins
+3 → 4, one delivery-block `deepEqual` gained the additive `relocatedWindowInputs` key, and the armed-preflight stub now
+records the declaration the new check requires.
+
+**Separate correlation, unchanged and re-proven through the record:** remote outcome, local process cessation, durable
+duties and guard/binding state keep their separate layers and stop causes on the persisted record (the new
+serialize→reload session-end test: the genuine `session-end` cause rides the samples verbatim, the winner is consumed
+ONLY from the final snapshot with its own cause, the interrupt block stays unattributed, and a safely guarded running
+job is reported as the actual result — unresolved obligations, survived Companion — never folded into the interrupt; no
+hidden cancel/reconcile call exists on any path).
+
+**Preflight additions (what is now rejected pre-launch, zero model turns):** (4) a declared §24.8 completion-gate seam
+with either gate artifact absent on disk; (5a) a declared survival-control run whose fixture records no control
+declaration; (5b) a declaration disagreeing with the frozen §16.4 control design facts (wrong instrument). The
+pre-existing arms (wrapped-reliance, control script, partition basis, stdout-capture seam/preload) are unchanged.
+
+**Layers precisely blocked (exact reasons; carried, not new):** (1) LOCAL PROCESS REAPING for the REAL Companion
+remains the registered named-unobservable `null` (§19.9 codex round 3 / §24.7): the completion-shaped watch is frozen
+out of the interrupt case, the Child's post-abort rollout carries no Companion exit, and the fixture identity watch
+tracks the host process — Gate D's companion layer qualifies through the remote outcome alone (the pinned contract);
+Task 3's eager establishment covers the DECLARED fixture-owned identity only. (2) SCAN COMPLETENESS remains OPEN
+instrument-side (§24.6): the bounded lexical whitelist was correctly DEFERRED in Task 2 for lack of real wrapper
+bodies, so if N's capture again contains an unclassified cell, native settlement attribution is refused by name
+(`ambiguous-cell-scan-incomplete-not-attributed`) — a doomed live case is not spent to re-learn this; the Trial-1
+diagnostic flags stay the registered collection surface. (3) The §24.5 coordination-marker candidate stays
+unregistered (recognition surface + non-interference proof never produced) — the §16.4 control-clock choreography is
+the wired readiness path, with the floor/artifact never readiness proof either way. (4) The installed event-field
+completeness and native responsiveness remain N's own measured outcomes (Task 4).
+
+**Gates (executed 2026-10-26 on the exact implementation bytes, re-executed after the self-review P3 fix):** `node --test
+tests/shell-wait-native-interruption.test.mjs` **39/39**; `node --test tests/shell-wait-probe.test.mjs` **944/944**
+(one pinned-total update, zero failures); `node --test tests/test-selection.test.mjs` **6/6**; `npm run
+test:shell-research` **983/983 pass, 76 suites, zero failures/skips, exit 0** (baseline 967 + the 16 new registered
+tests); `npm run lint` exit 0; `npm run typecheck` exit 0; `git diff --check` clean; `node
+scripts/check-line-endings.mjs` exit 0 (545 tracked files). The diff touches ONLY:
+tools/shell-wait-probe/{driver,evidence,fixture}.mjs, tests/{shell-wait-native-interruption,shell-wait-probe}.test.mjs
+and this report — no prohibited path, no production file, no plan-file checkbox.
+
+**Handed to Task 4 (the pre-launch freeze):** the executable instrument now computes and persists the §24.8 cutoff,
+stops its reads at it, establishes the fixture identity before disappearance, names the readiness outcome, and refuses
+known-absent choreography pre-launch; N's freeze records the recomputed executing-observer digest (driver.mjs,
+evidence.mjs, fixture.mjs all changed bytes — the §20.7 duty), the exact invocation (the Task-4 command shape is
+unchanged — no new flag was added), and the §24.11 blocked-layer list above as the registered limits the adjudication
+reads from the record.
+
+**Amendment (2026-10-26, the codex gate's four P2 findings on the Task-3 bytes — fixed RED→GREEN in this same commit):**
+(1) IDENTITY-CAPTURE REDACTION — the establishment `basis` is free text that can embed a capture failure's raw
+filesystem error (an `EACCES` message names the private process-marker path) and was the one new free-text field that
+bypassed `redactPrivatePaths`; the mapper now applies the SAME redaction + 512-char bound used for cleanup errors
+(driver.mjs, the `processIdentity` projection) before the facts reach `buildCaseRecord`, regression-tested with an
+injected `EACCES` message carrying the marker path through serialize→reload (the persisted record carries `<redacted>`,
+no private path, the bound respected). (2) AUTHORITATIVE-SNAPSHOT REFRESH — the final durable snapshot was taken at the
+gate release, so duties settling DURING the added post-release window were invisible to the join (the reviewer's
+deterministic repro: a stale unfenced `unresolved` snapshot masked a pre-cutoff `settled` sample and the join reported
+unresolved obligations). The armed §24.8 section now REFRESHES the authoritative snapshot at the window's end, before
+the answer is finalized: the refreshed read's OWN completion instant decides its credit under the unchanged §24.8 fence
+(a post-cutoff completion is the named fenced observation `durable-read-at-or-after-measurement-cutoff`) and the
+pre-cutoff samples adjudicate through the existing settlement fallback — the repro is the named regression
+("…post-release settlement is adjudicable", asserting the refreshed snapshot, the fenced basis, the credit-eligible
+settled sample and `durableObligations: "settled"` through the REAL serialize→reload pipeline). (3) TEARDOWN ENFORCEMENT
+— the Root result, natural-exit wait and early durable read were awaited unboundedly, so the hold-deadline-plus-15000-ms
+endpoint was only a MINIMUM lifetime and a delayed operation could hold the observation open until the much larger
+experiment budget. The armed section now runs the window as ONE concurrent clock-bounded wait that every post-release
+operation races; an operation still pending at the endpoint is preserved as a NAMED late/missing fact
+(`postRelease.rootResult` / `.naturalExit` / `.earlyDurableRead` — persisted schema-additively on `held.postRelease`),
+never silently absorbed; the regression test drives a never-resolving Root result and a pending early read (on the
+pre-fix bytes it TIMES OUT — the unbounded await hung) and asserts the turn ends AT the endpoint with the named facts.
+(4) BUDGET-EXPIRY PROPAGATION — the answer copied `budgetExpired: false` before the new wait, so expiry during it was
+invisible to `mapShellWaitLiveFacts`' budget-expired inconclusive classification; the armed path now builds the answer
+only AFTER the section, so the returned record reflects the expiry (regression: a budget deadline inside the window;
+`held.budgetExpired === true`, `cleanup.label === 'budget-cleanup'`, and the mapper emits the budget-expired
+inconclusive). The §24.8 registration itself is unchanged: the cutoff still closes credit at hold deadline + 10000 ms
+(equality included), the refreshed snapshot is post-cutoff BY DESIGN and earns no credit of its own — the window affects
+adjudication exactly as §24.8 preregistered, through the completed consistent pre-cutoff samples. Totals after the
+fixes: the focused suite is **43/43**, the probe suite **944/944**, selection **6/6**, and the full shell-research suite
+**987/987 pass, 76 suites, exit 0** (967 baseline + the 20 new registered tests); the probe suite's spawned-self-test
+total is pinned at 44 (the guarded marker + the native file's 43 registered tests); lint, typecheck, `git diff --check`
+and the tracked LF check exit 0.
+
+**Amendment (2026-10-26, the codex gate's three findings on the P2-fix bytes — fixed RED→GREEN in this same commit):**
+the previous amendment's restructure of the armed §24.8 post-release section fixed its four P2s but introduced three
+regressions, each reproduced RED on the pre-fix bytes and fixed in `runHeldHostTurn`/the Gate-D join. (A) PRE-CUTOFF
+WINNER PRESERVED (P1) — the window-end refresh REPLACED the only authoritative snapshot with one that starts and
+completes strictly after the measurement cutoff by construction, so the join's fence always withheld
+`terminalWinner` and even a verified pre-cutoff `succeeded` failed the oracle with `terminal-winner-unobserved`: the
+armed section now PRESERVES the completed gate-release-time read as `childSettlement.gateReleaseDurableSnapshot`
+(stamped on the same injectable `wallClockNow` the cutoff is computed on, persisted schema-additively beside the
+final snapshot through the same bounded redaction), and join v5 (NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION 4 → 5)
+grounds the terminal winner from it under the SAME authority gates as the final snapshot (positive aggregate,
+positively verified executor linkage, untorn, no durable-owner identity conflict) PLUS its own strictly-pre-fence
+completion instant — the cutoff still closes credit at equality and the winner is still never fed from a sample; a
+record without the field leaves the arm inert byte-identically. The regression drives the reviewer's exact shape
+through the REAL serialize→reload pipeline: a natural completion whose gate-release read verifies `succeeded`
+pre-cutoff, the fenced refresh (`durable-read-at-or-after-measurement-cutoff`), obligations still adjudicated through
+the pre-cutoff samples, `terminalWinner: "succeeded"`, and no `terminal-winner-unobserved` reason (on the pre-fix
+bytes the preserved snapshot is absent and the winner null). (B) THE REFRESH BOUNDED BY THE OBSERVATION ENDPOINT
+(P2) — the refreshed read's `buildDurableSettlementLayer` join raced only the experiment budget, so a stalled
+refreshed read kept the turn pending far past the planned end and consumed the remaining 1200000-ms budget: the
+refreshed read now ARMS at `OBSERVATION_REFRESH_LEAD_MS` (1000, frozen — one read floor; post-cutoff by
+construction, so the refreshed read remains the fenced final observation) BEFORE the post-release races, a read that
+already settled by the endpoint joins directly, and a read still pending there is abandoned with the named
+`postRelease.refreshedDurableRead = "durable-read-pending-at-planned-observation-end"` fact and the named
+unestablished placeholder (its late resolution updates only `sampledAggregate`) — never awaited past the endpoint;
+the regression drives a never-resolving reader (on the pre-fix bytes it TIMES OUT) and asserts the named fact, the
+placeholder, and the turn ending at the planned endpoint with `budgetExpired: false`. (C) THE RECORDED, AWAITED
+TERMINATION AT A ROOT-MISSING ENDPOINT (P2) — when Root was still running at the planned endpoint the turn returned
+without any termination, and the exit `finally`'s watcher-teardown abort forwarded to the real launch's
+`runProcess`, terminating the fixture-owned host while the cleanup-boundary recorder was inert (`codexTerminated:
+false`, no boundary, fixture disposal racing the unawaited kill): the Root-missing endpoint arm now runs AND awaits
+the REGISTERED termination cleanup (`runTerminationCleanup` — the fixture-owned exact-identity terminate and
+`control.terminate` only, the cleanup-boundary recorder active, never a hidden reconcile) BEFORE the watcher-only
+teardown, so the record carries the true termination boundary and `codexTerminated`/`verifiedProcessTerminated`
+reflect reality, and the termination is awaited before any disposal; the regression emulates the abort-forwarding
+launch (pre-fix: `codexTerminated` false, boundary null, the kill still in flight at return) and asserts the
+recorded boundary, the true flags, the mapper-mirrored facts, and `terminateSettled` before return. The four
+pre-existing scheduled-section regressions kept their contracts byte-for-byte (the refresh test's post-cutoff
+`settled` final snapshot, the race test's named pending facts, the budget-expiry propagation, the sampler
+cutoff/backstop choreography) — the two sampler-clock instrument tests were re-anchored to be independent of the
+settlement reads' stamp calls, and the budget-expiry instrument test gives each injected sleep real time so the
+real 50-ms budget timer reliably fires mid-window. **Totals after the fixes: the focused suite is 46/46 (43 + the
+three new registered tests), the probe suite 944/944, selection 6/6, and the full shell-research suite 990/990
+pass, 76 suites, exit 0** (967 baseline + the 23 new registered tests); the probe suite's spawned-self-test total
+is pinned at 47 (the guarded marker + the native file's 46 registered tests) and the join-version pins read v5;
+lint, typecheck, `git diff --check` and the tracked LF check exit 0.
+
+**Amendment (2026-10-26, the codex gate's round-3 findings — five edge-completion gaps in the preserved-snapshot
+mechanism, fixed RED→GREEN in this same commit):** the preserved-snapshot direction was validated; this round closes
+its edges, each reproduced RED on the pre-fix bytes (three via dedicated tests, verified against the stashed
+pre-fix driver for the join-level one). (1) POST-RELEASE WAITERS STOP ON THE SHARED SIGNAL (P1) — a post-release
+operation rejecting before the endpoint throws out of the section and the exit finally aborts the shared signal
+while `budgetExpired` stays false: the observation-window loop and the refresh-arm loop kept spinning on an
+`abortableSleep` that resolves immediately on an aborted signal (a shortened-window reproduction scheduled over
+15000 post-release sleeps; the regression asserts a bounded count). Both loops now observe
+`budgetController.signal.aborted` and exit promptly, and the refresh arm NEVER starts its read after a non-budget
+abort — it resolves to null and the refreshed slot is skipped entirely; a budget expiry is deliberately NOT this
+case (the timer sets `budgetExpired` before aborting, so the read still starts and joins under the budget fence —
+the pre-existing expiry contract, swept explicitly). (2) THE PRE-CUTOFF SETTLEMENT READ ARM (P2) — the
+gate-release read was captured ONCE, so a job settling later but still strictly before the cutoff (the +5000 ms
+repro) left no authoritative terminal snapshot: the arm now keeps taking authoritative reads at the registered
+≥1000-ms read floor while window time remains before the cutoff, preserving the LATEST completed
+strictly-pre-cutoff snapshot (`child.preCutoffDurableSnapshot`, renamed from the round-2 gate-release-only field —
+same amended commit, nothing shipped in between), stopping early on a positively observed settlement, pulling its
+final read in front of the cutoff, and never starting a read at/after the cutoff (equality included), past the
+endpoint, past budget expiry, or after an abort. The regression drives the settle-at-release+5000 repro through the
+REAL serialize→reload pipeline (`terminalWinner: "succeeded"`; on the pre-fix bytes the preserved snapshot never
+observed the settlement). (3) THE PRESERVED SNAPSHOT JOINS THE LAYER SELECTION (P2) — the winner arm credited the
+preserved snapshot while the Companion and obligations branches still selected the OLDER running sample (the
++9000/+9900 repro: survived-unsettled / unresolved): the admitted preserved snapshot now competes with the latest
+credit-eligible sample by its OWN completion instant (the authoritative snapshot wins ties) and the LATEST
+creditable evidence grounds the Companion and obligations layers. Pinned deterministically at the join level
+(preserved succeeded@cutoff−100 vs running sample@cutoff−1000 → terminal-result + settled; pre-fix RED) and
+end-to-end through the REAL pipeline. (4) THE PRESERVED SNAPSHOT'S OWN OWNING-ROOT VALIDATION (P2) — the
+durable-owner conflict was computed exclusively from the final snapshot, so a record whose final snapshot matches
+the observed Root (or is an ownerless placeholder) accepted a FOREIGN preserved snapshot's winner while reporting
+`owningRootBound: true`: the preserved arm now validates its OWN owner against the observed Root (a resolvable
+foreign owner, or contradictory Root identity sources, refuses every preserved-arm credit; an ownerless final
+placeholder never bypasses it; an ownerless or unresolvable side stays the named-unestablished path, never a
+conflict). Regression: the reviewer's foreign-owner shape (final matching Root + foreign preserved) refuses the
+winner. (5) THE NATURAL-EXIT EXPIRY CLEANS UP LIVE FIXTURES (P2) — when Root returned late but the verified
+fixture process was STILL alive at the natural-exit endpoint, the branch only recorded the missing exit: the
+registered termination cleanup now runs and is awaited there too (the recorded exact-identity terminate and the
+launched handle, the cleanup-boundary recorder active, fixture-owned seams only), and the losing wait is joined
+under the shared-signal bound so it cannot outlive fixture disposal (regression: the late-Root + alive-fixture
+repro asserts terminated + boundary + `codexTerminated` + the wait settled; a companion dead-fixture arm pins that
+an already-exited fixture records the fact with no kill and no manufactured boundary). **Edge sweep** (one pass
+over the window/credit/ownership/cleanup combinations; each either test-pinned or code-verified): waiter exit ×
+{rejection, budget expiry, normal endpoint, root-missing cleanup}; refresh arm × {aborted-null, budget-fence join,
+lead-time join, endpoint abandonment}; read arm × {early-terminal skip, later capture, cutoff straddle refusal,
+rejected read, sampler-on/off, budget/abort exit}; join evidence × {preserved-later, sample-later, preserved-only,
+sample-only, tie, legacy-absent byte-identity}; ownership × {matching, absent, foreign+matching-final,
+foreign+placeholder-final, disagreeing sources, unresolvable root}; cleanup × {root-missing, exit-expired alive,
+exit-expired dead, both arms idempotent, budget expiry, failure rethrow}. **Totals after the fixes: the focused
+suite is 53/53 (46 + the six round-3 regression tests + the dead-fixture restraint pin), the probe suite 944/944,
+selection 6/6, and the full shell-research suite 997/997 pass, 76 suites, exit 0** (967 baseline + the 30 new
+registered tests); the probe suite's spawned-self-test total is pinned at 54 (the guarded marker + the native
+file's 53 registered tests) and the join-version pins read v5 (the completed preserved-snapshot contract); lint,
+typecheck, `git diff --check` and the tracked LF check exit 0.
+
+**Amendment (2026-10-26, the codex gate's round-4 findings — the last three unexplored corners of the window
+mechanism, fixed RED→GREEN in this same commit; zero round-3 repeats):** (1) THE CUTOFF FENCES NATIVE SETTLEMENT
+CREDIT (P2) — the measurement cutoff gated the durable reads but left the NATIVE settlement and its responsiveness
+latency credited: a mapper→join→oracle reproduction with the cancellation marker at cutoff+1000 ms and a valid
+pre-cutoff succeeded preserved snapshot returned `qualified: true`. The attribution chain now applies the §24.4 f5
+fence to the settlement itself: an exit-code completion OR a native cancellation whose rollout event time sits
+at/after the armed cutoff (equality included) is RETAINED as a named observation (`completedAfterCallMs` /
+`cancelledAtMs` ride the record verbatim) but grounds no turn-settlement credit and no delivery-to-settlement
+latency, under the new named basis `measurement-cutoff-settlement-not-attributed`; the cutoff-absent (legacy)
+branches stay byte-identical, the cleanup-boundary fence is unchanged, and the pre-cutoff cancellation keeper keeps
+full credit. Regression: the reviewer's exact repro asserts `settled: null`, the named basis, null latency, the
+retained marker, `turnSettled: null` through the REAL serialize→reload pipeline, and `turn-settlement-unobserved`
+blocking qualification (pre-fix RED: `settled: true`), plus the completion-arm variant and the pre-cutoff keeper.
+(2) THE READ ARM RUNS CONCURRENTLY WITH THE WINDOW (P2) — the pre-cutoff read arm was serialized behind the Root
+result and natural-exit waits, so a Root returning at release+12000 ms (inside the window, past the +10000 ms
+cutoff) started every authoritative read past the cutoff even though the job settled at release+3000 ms: the early
+read and the read arm now start at the window's opening as ONE detached arm (self-bounded at the cutoff/endpoint/
+budget/abort — round-3 finding 1's stop conditions apply unchanged), the post-release races proceed concurrently,
+and the arm is joined after the exit race (a join that can never extend the observation past the endpoint).
+Regression: the late-Root repro asserts pre-cutoff authoritative reads happened (preserved stamp < cutoff), the
+winner credited, and no `terminal-winner-unobserved` (pre-fix RED: no pre-cutoff snapshot at all). (3) THE READ
+ARM'S EARLY-STOP REQUIRES AUTHORITY AND INTEGRITY (P2) — a durable read can retain a terminal job projection while
+reporting `aggregate: 'unestablished'` with `snapshotEqual: false` (the partition changed mid-read); the arm's
+settlement predicate stopped on that projection, and since the join refuses torn snapshots a later consistent
+success could never supply its winner. The predicate now mirrors the join's own `preCutoffEstablished` gates —
+positively established aggregate, positively verified executor linkage, not positively torn — before a terminal
+projection may stop it; a snapshot WITHOUT a passive block is not positively torn and still stops (the join credits
+it, so a later running read must never replace it — a self-swept refinement). Regression: the torn-read-then-
+consistent-success repro asserts the preserved snapshot is the later CONSISTENT success (settled + equal), the arm
+kept reading past the torn terminal projection, and the winner credits (pre-fix RED: the preserved snapshot was the
+torn `unestablished` read). **Round-4 combination-space sweep** (cutoff/credit/read-arm; test-pinned or
+code-verified): cutoff fence × {cancellation ≥ cutoff, cancellation < cutoff (keeper), completion ≥ cutoff,
+completion < cutoff with cutoff present, cutoff absent byte-identity, equality refusal, latency refusal, retained
+observation facts, cleanup-boundary fence unchanged}; read arm × {late Root (+12 s), Root missing, Root early, Root
+rejection, budget expiry, early-read pending fact, endpoint-bound join, arm+refresh independence}; integrity ×
+{torn-then-consistent, torn-without-recovery (winner honestly null), unverified executor, missing passive block,
+running, consistent-early-terminal, settled-without-status}; cross-cutting × {the three fixes composed in one turn,
+schema additivity (no new persisted field beyond the named basis), the v5 join contract unchanged}. **Totals after
+the fixes: the focused suite is 56/56 (53 + the three round-4 regression tests), the probe suite 944/944, selection
+6/6, and the full shell-research suite 1000/1000 pass, 76 suites, exit 0** (967 baseline + the 33 new registered
+tests); the probe suite's spawned-self-test total is pinned at 57 (the guarded marker + the native file's 56
+registered tests); lint, typecheck, `git diff --check` and the tracked LF check exit 0.
+
+**Amendment (2026-10-26, the codex gate's round-5 findings — two P2s, zero round-4 repeats, fixed RED→GREEN in this
+same commit):** (1) FAILURE-RECORD SNAPSHOT PRESERVATION (P2) — an authoritative pre-cutoff read observing
+`succeeded` followed by a rejecting Root result threw out of the section, and the outer catch's bare heldTurn shape
+dropped `preCutoffDurableSnapshot` entirely (the exit finally restores only the §23.5 passive samples, which can
+never supply the winner): the snapshot carriers (`preCutoffDurableSnapshot`, the joined refresh and its layers) are
+now HOISTED to the turn scope and the bare failure shape carries them in its `childSettlement` block — the exit
+finally merges the samples into that same block, the mapper/serializer mirror them through the existing additive
+paths, and the offline join credits the winner from the failure record exactly as it would from a returned one.
+Regression: the successful-early-read-then-rejecting-Root repro through `runHeldHostTurn` asserts the failure's
+`heldTurn.childSettlement.preCutoffDurableSnapshot` carries `succeeded`, the samples merge, the persisted record
+keeps the snapshot, and `terminalWinner: "succeeded"` (pre-fix RED: the carrier was `undefined` on the failure
+record). (2) READINESS-CUTOFF EXPIRY REQUIRES READINESS-PHASE EVIDENCE (P2) — `readinessCutoffExceeded` fired
+`true` from `!readinessFloorObserved && completionMarker !== null`, so an early interrupt (reads at lines
+1/3/5) followed by the control's normal completion observed in the POST-interrupt read reported expiry although
+the readiness loop demonstrably ended BEFORE the request; the later marker proves nothing about the loop's state
+at any cutoff. Expiry is now established ONLY from the readiness phase itself: a read INVOKED before the interrupt
+request whose observed lines reached the designed end (the completion line), while no completed pre-request read
+crossed the floor — the floor observed pre-request remains the positive NON-expiry fact (`false`), and a cutoff
+reached without an interrupt request stays `null` (the converse preserved). The existing never-ready test encoded
+the buggy behavior and now asserts `null` for the post-interrupt-completion shape, with a new TRUE-positive
+(straddling) shape: the last readiness-phase read invoked pre-request responding after it with the designed-end
+line 60 while the completed pre-request reads never crossed line 40 (pre-fix RED: the repro returned `true`).
+**Totals after the fixes: the focused suite is 57/57 (56 + the round-5 regression test), the probe suite 944/944,
+selection 6/6, and the full shell-research suite 1001/1001 pass, 76 suites, exit 0** (967 baseline + the 34 new
+registered tests); the probe suite's spawned-self-test total is pinned at 58 (the guarded marker + the native
+file's 57 registered tests); lint, typecheck, `git diff --check` and the tracked LF check exit 0.
+
+**Amendment (2026-10-26, the codex gate's round-6 finding — one P2, zero round-5 repeats, fixed RED→GREEN in this
+same commit):** IDENTITY ESTABLISHMENT AT THE CLEANUP CAPTURE (P2) — if the first eager capture reported an absent
+marker and Root exited before the retry, `safeTerminateExactProcess` could capture the (now-appeared) verified
+process and terminate it WITHOUT calling `noteIdentityEstablished`, while the eager worker exited on the turn's
+abort with an absence basis: the record carried `verifiedProcessTerminated: true` beside
+`identityEstablished.established: false` and `marker-absent-at-capture-time` — a contradictory pair persisted into
+the case record. The cleanup capture site now updates the establishment metadata through the same idempotent
+`noteIdentityEstablished` channel (basis `marker-nonce-start-ancestry-verified`, the capture instant recorded);
+the worker's `??=` absence/abort bases can never overwrite it, and the ordering is race-free in both directions
+(a worker capture notes before cleanup ever sees a set identity; a cleanup capture notes before the worker's next
+retry returns). The disappeared-process keeper is untouched: a cleanup capture that still reports the marker
+absent notes nothing and terminates nothing, so `established: false` with `verifiedProcessTerminated: false`
+remains the honest shape. Regression: the reviewer's race shape (first eager capture absent → Root exits →
+cleanup captures + terminates) asserts `verifiedProcessTerminated: true`, `established: true` with the
+cleanup-time capture facts (`marker-nonce-start-ancestry-verified`, a recorded capture instant), the §24.7
+process-identity row persisting through the record, and an explicit no-contradictory-pair check
+(pre-fix RED: `established: false` with the absence basis beside `verifiedProcessTerminated: true`).
+**Totals after the fix: the focused suite is 58/58 (57 + the round-6 regression test), the probe suite 944/944,
+selection 6/6, and the full shell-research suite 1002/1002 pass, 76 suites, exit 0** (967 baseline + the 35 new
+registered tests); the probe suite's spawned-self-test total is pinned at 59 (the guarded marker + the native
+file's 58 registered tests); lint, typecheck, `git diff --check` and the tracked LF check exit 0.
+
+**Amendment (2026-10-26, the codex gate's round-7 findings — two P2s, zero round-6 repeats, fixed RED→GREEN in this
+same commit):** (1) CONFIRMED PROCESS DISAPPEARANCE STOPS IDENTITY RETRIES (P2) — an existing, nonce-valid marker
+whose process has exited was reported with the same `ZCODE_SHELL_WAIT_MARKER_ABSENT` code as launch unreadiness,
+so the eager identity retry loop treated the permanent disappearance as readiness that might still arrive and
+spun until the experiment budget expired; on the gate-first path `await identityEstablishment` then blocked the
+whole window and the record misreported budget exhaustion after Root had already returned.
+`captureVerifiedProcessIdentity` now raises the DISTINCT `ZCODE_SHELL_WAIT_PROCESS_EXITED` for the confirmed
+disappearance (the launch-unreadiness absence code is unchanged), the eager retry loop stops on it with the named
+`identity-unestablished-process-exited` basis, the gate-branch fallback surfaces the NAMED failure
+(`the verified worker process exited before identity capture`) instead of the raw coded error, and the cleanup
+capture site tolerates it like the absent code (nothing to signal; the basis names the disappearance — never a
+cleanup error). Regression: the gate-wins-worker-exits-early repro asserts the named failure message,
+`budgetExpired: false`, the `identity-unestablished-process-exited` basis, prompt ending (never at the budget),
+and at most one capture per site (pre-fix RED: the generic `identity-capture-failed: …` basis). (2) THE FINAL
+READ IS RESERVED STRICTLY BEFORE THE CUTOFF (P2) — the read arm's pull-in scheduled the next read exactly AT the
+measurement cutoff (`now + cutoffRemaining`), where the pre-read fence skipped it: the deterministic
+release+0…+9000 ms schedule left only the (always post-cutoff) +14000 ms refresh, and a job succeeding at
++9500 ms kept a running pre-cutoff snapshot with `terminalWinner: null`. The pull-in now reserves HALF the
+remaining pre-cutoff stretch for the read and its completion (`now + ⌈remaining/2⌉`-paced), so the final read
+starts strictly before the cutoff — the +9500 finish is observed by the reserved read — while the floor-paced
+reads, the strictly-pre-cutoff completion fence, and every at/after-cutoff refusal are untouched. Regression: the
+deterministic +9500-finish repro asserts a read in the final pre-cutoff stretch, the preserved snapshot carrying
+`succeeded`, and the winner credited (pre-fix RED: reads at [+200…+9200, +14100] and the winner null).
+**Totals after the fixes: the focused suite is 60/60 (58 + the two round-7 regression tests), the probe suite
+944/944, selection 6/6, and the full shell-research suite 1004/1004 pass, 76 suites, exit 0** (967 baseline + the
+37 new registered tests); the probe suite's spawned-self-test total is pinned at 61 (the guarded marker + the
+native file's 60 registered tests); lint, typecheck, `git diff --check` and the tracked LF check exit 0.
+
+**Amendment (2026-10-26, the codex gate's round-8 findings — three P2s, zero round-7 repeats, fixed RED→GREEN in
+this same commit):** (1) THE CUTOFF AND TEARDOWN ANCHOR TO THE SAME HOLD DEADLINE (P2) — the cutoff was armed from
+the wall reading at the (possibly late) hold-deadline crossing while `observationEndMs` stayed anchored to the
+SCHEDULED deadline: a reproduced 6-second final-tick oversleep placed the cutoff one second after planned teardown
+and credited reads beyond the registered hold-deadline-plus-10000-ms window. The hold loop's own condition call now
+captures the crossing overrun (no extra clock read — clocks that step on reads keep their exact call pattern), and
+the cutoff is anchored to the wall reading at the LAST ON-TIME hold tick — taken before the tick's sleep can
+oversleep — plus the registered 10000 ms; the monotonic crossing overrun rides the record as the named fact
+`holdDeadlineOverrunMs` (projected into the interrupt facts and persisted schema-additively; legacy records stay
+byte-identical). Regression: the 6-second-oversleep repro asserts the overrun fact, the cutoff within one tick of
+the anchored deadline+10000 (never the overslept value), every authoritative read fenced below it, and the fact
+persisting through serialize→reload (pre-fix RED: the fact absent and the cutoff overslept). (2) THE COMPLETION
+CUTOFF GATES COMPANION-LAYER CREDIT (P2) — a qualified exit-code completion at/after the cutoff correctly withheld
+turn settlement, but the remote-terminal derivation still rode that completion and the join prioritized it over
+the pre-cutoff evidence (`companionOutcome: 'terminal-result'` from the reviewer's unresolved-pre-cutoff-snapshot
+repro): the join now withholds the remote-terminal classification when `completedAfterCallMs` sits at/after the
+armed cutoff (equality included) — the late completion rides the record as an observation and the latest
+creditable pre-cutoff evidence decides the Companion layer. Regression: the reviewer's repro asserts the
+remote-terminal observation retained on the record, `companionOutcome: 'survived-unsettled'`, and the named
+oracle reason (pre-fix RED: `terminal-result`). (3) LATE CAPTURE FAILURES NEVER OVERWRITE ESTABLISHMENT (P2) — an
+eager capture still pending while cleanup captured and terminated the verified process could reject afterwards
+(`ZCODE_SHELL_WAIT_PROCESS_EXITED`) and the generic failure branch overwrote the successful establishment basis
+(`established: true` + `verifiedProcessTerminated: true` beside `identity-unestablished-process-exited`): both
+the process-exited and the generic capture-error branches now recheck `identityEstablished.established` before
+writing any failure metadata. Regression: the deterministic race (pending eager capture → cleanup captures and
+terminates → eager rejects) asserts the successful basis stands with exactly one verified termination (pre-fix
+RED: the basis overwritten). **Totals after the fixes: the focused suite is 63/63 (60 + the three round-8
+regression tests), the probe suite 944/944, selection 6/6, and the full shell-research suite 1007/1007 pass, 76
+suites, exit 0** (967 baseline + the 40 new registered tests); the probe suite's spawned-self-test total is
+pinned at 64 (the guarded marker + the native file's 63 registered tests); lint, typecheck, `git diff --check`
+and the tracked LF check exit 0.
+
+**Amendment (2026-10-26, the codex gate's round-9 findings — two P2s, both defects in the round-7/8 fixes'
+implementation, zero other repeats, fixed RED→GREEN in this same commit):** (1) THE WALL-CLOCK ANCHOR IS
+PROJECTED ONTO THE SCHEDULED DEADLINE (P2) — the round-8 anchor (`holdDeadlineWallMs`) held the wall reading
+BEFORE the final hold tick, so adding 10000 directly closed measurement up to one tick EARLY: with synchronized
+clocks and a 1000-ms hold the cutoff landed at deadline+9900 instead of deadline+10000, and settlements in the
+missing final interval were refused by the mapper and the offline join. The anchor is now the tick's wall reading
+PROJECTED onto the scheduled deadline by the remaining monotonic distance (`holdDeadlineWallMs = wallClockNow() +
+(holdDeadline − current)`), exact under synchronized clocks and still immune to a final tick's oversleep (the
+projection uses the PRE-sleep reading). Regression: the synchronized-clocks/1000-ms-hold repro asserts
+`measurementCutoffAtMs === deadlineWall + 10000` EXACTLY (pre-fix RED: deadline+9900) and a native cancellation at
+deadline−50 credits through the mapper's cutoff fence (pre-fix RED: refused). (2) THE PULL-IN APPLIES AT MOST ONCE
+(P2) — the round-7 halving re-armed every iteration: with settlement unobserved near the cutoff the pace
+compressed every subsequent read (the deterministic-scheduler repro: consecutive sub-floor spacings — 500, 319 in
+this shape; 950, 475, 237, 119 in the reviewer's), invoking the full rollout/partition reader at sub-floor
+cadences and violating the frozen ≥1000-ms read cadence in §24.8. The pull-in is now AT MOST ONCE: a
+`pullInArmed` flag is consumed only when the compression actually applies (the halved target sits before the
+floor-paced due), the one reserved final read is scheduled with half the remaining pre-cutoff stretch, and every
+other read keeps the registered ≥1000-ms floor — the loop's own entry checks close the arm at the cutoff.
+Regression: the deterministic-scheduler repro (an always-unresolved reader, settlement unobserved) asserts at most
+ONE sub-floor spacing, no two consecutive sub-floor spacings, and the final pre-cutoff read still exists (pre-fix
+RED: two consecutive sub-floor spacings 500, 319). **Totals after the fixes: the focused suite is 65/65 (63 + the
+two round-9 regression tests), the probe suite 944/944, selection 6/6, and the full shell-research suite
+1009/1009 pass, 76 suites, exit 0** (967 baseline + the 42 new registered tests); the probe suite's
+spawned-self-test total is pinned at 66 (the guarded marker + the native file's 65 registered tests); lint,
+typecheck, `git diff --check` and the tracked LF check exit 0.
+
+**Amendment (2026-10-26, the codex gate's round-10 findings — three P2s, zero repeats, fixed RED→GREEN in this same
+commit):** (1) A TIMESTAMP IS REQUIRED BEFORE PRE-CUTOFF COMPLETION CREDIT (P2) — the mapper's measurement-cutoff
+fence and the offline join's Companion-layer gate both compared the completion instant against the armed cutoff
+only when the instant was PRESENT: an unstamped terminal response (`completedAfterCall.atMs === null`) skipped the
+fence check entirely and fell through to settlement credit, so a completion with NO timing could be credited as
+the named pre-cutoff settlement observation the schedule exists to keep. Both fences now treat a MISSING instant
+as NOT strictly-before: the mapper's fence fires the
+`measurement-cutoff-settlement-not-attributed` basis for an unstamped completion (the observation still rides the
+record uncredited), and the join's Companion gate treats `completedAfterCallMs !== 'number'` as post-cutoff
+(`survived-unsettled`). Regressions: the unstamped-terminal-response repro (causal rollouts with an unstamped
+outer resolution and a qualified completion stub through the real extractor→mapper→join) asserts the turn is NOT
+settled, the basis is the post-completion/cutoff refusal chain, the observation is retained, and the join's
+Companion outcome is `survived-unsettled` (pre-fix RED: Companion outcome `terminal-result`); the bounds-only
+variant (an unstamped completion inside the cutoff fence's own arm) asserts the mapper's
+`measurement-cutoff-settlement-not-attributed` basis (pre-fix RED: settled true). (2) THE SAMPLER AND THE
+AUTHORITATIVE PRE-CUTOFF READ ARM ARE PACED THROUGH ONE SHARED READ STREAM (P2) — both consumers read the same
+supplier on independent intervals and repeatedly started reads at the SAME instant (the shared-clock repro:
+1000, 1000, 2000, 2000). Every durable-read start is now CLAIMED through one shared ledger
+(`durableReadLedger`: `lastStartAtMs`, `attempts`, `starts`): the claim waits the ledger floor on the claiming
+consumer's own clock (abort-aware, fenced at the armed cutoff, refusing the slot as null when the fence closes
+first), re-evaluates after every wait, and stamps the ledger in the same synchronous continuation as the final
+re-check — the stamp is atomic, so no two starts ever share an instant, every consecutive pair is ≥1000 ms apart
+GLOBALLY across the §23.5 sampler and the arm, and §24.8's ≤600-attempts/32-summaries accounting covers the
+combined arm (the cap checks read the shared count). §24.8's ONE registered exception — the arm's reserved final
+pull-in read (round-9) — still bypasses the floor but claims through the same ledger and never shares an instant;
+the reserve now fires only INSIDE the final floor-sized stretch and the floor pace hands control back the moment
+the window crosses into it (an early reserve landed a full interval before a late finish and missed the winner;
+a loop-top-only decision raced the fence after the completion hops and never fired at all). The combined ledger
+rides the record (`childSettlement.durableReadLedger`: attempts, lastStartAtMs, the strictly increasing `starts`)
+so the persisted record itself carries the global cadence and the combined accounting. Regressions: the
+shared-clock repro (synchronized clocks, both consumers advancing together) asserts the ledger's starts are
+strictly increasing with every floor-paced gap ≥1000 ms (the one registered pull-in compression allowed at most
+once, never zero) and that every §23.5 summary start went through the stream (pre-fix RED: the combined starts
+repeated instants — 1000, 1000 — and no shared ledger existed at all). (3) THE R9DEBUG DIAGNOSTICS LEFT THE JSON
+OUTPUT STREAM (P2) — the read-arm loop breaks wrote `console.log` diagnostics between the CLI's own stdout
+writes, breaking scheduled-run stdout JSON parsing. All gate-debug diagnostics are removed from the driver; the
+self-sweep (`rg -n "R9DEBUG|console\\.log" tools/shell-wait-probe/`) now finds ONLY the pre-existing CLI writers
+(the usage writer, the JSON record writer, and the stderr error writer in the driver's CLI entry point — all
+registered §24.10 output contracts, out of scope). Regression: the scheduled pipeline run intercepts
+`console.log` and asserts ZERO diagnostics reached stdout (the CLI's JSON record alone) (pre-fix RED: the
+`R9DEBUG ...` prefix lines appeared before the record). Fallout reconciliation, same essence: the §23.5
+clause-2/4 harness contracts whose exact per-interval wait counts and attempt counts pinned the pre-stream
+single-consumer shape now assert the preserved essence (every scheduled wait requests the registered floor; the
+shortfalls stay named; the caps stay frozen and named), the probe suite's spawned-self-test total is re-pinned
+at 71 (the guarded marker + the native file's 70 registered tests), and the clause-2 scheduled-wait shape
+documents the stream's bounded arbitration waits. **Totals after the fixes: the focused suite is 70/70 (65 + the
+five round-10 regression tests), the probe suite 944/944, selection 6/6, and the full shell-research suite
+1014/1014 pass, 76 suites, exit 0** (967 baseline + the 47 new registered tests); the probe suite's
+spawned-self-test total is pinned at 71 (the guarded marker + the native file's 70 registered tests); lint,
+typecheck, `git diff --check` and the tracked LF check exit 0.
+
+**Amendment (2026-10-26, the codex gate's round-11 findings — three P2s, all refinements of the round-10 shared-ledger
+mechanism, zero repeats, fixed RED→GREEN in this same commit):** (1) THE CLAIM RECHECKS THE READ FLOOR AFTER EVERY
+PACING CHUNK (P2) — the round-10 claim's one-shot `reWaited` flag granted the start after the FIRST pacing chunk
+even while the ledger floor stayed positive: under the default real scheduler the authoritative arm's 100 ms chunk
+bought a start, producing repeated 100-113 ms gaps and even two starts in the same millisecond while the arms
+competed (the normal-timers repro's pre-fix gaps: 205, 102, 103, 102, …). The claim now keeps re-reading the
+ledger after every chunk and grants only when the floor is actually satisfied; a scheduler that resolves EARLIER
+than requested is detected by clock progress (the §23.5 pathological case) and bounded to the registered
+named-shortfall two-wait shape, so the stream never spins on an instant scheduler. Regression: the normal-timers
+competing-arms repro (the driver's default real scheduler, synchronized real clocks, both consumers on the
+stream) asserts strictly increasing starts, zero sub-floor gaps outside the one reserved pull-in, and both
+consumers reading post-release (pre-fix RED: the sub-floor gap list above). (2) THE COMBINED ≤600 CEILING IS
+ENFORCED ATOMICALLY AT THE SHARED CLAIM FOR EVERY CONSUMER (P2) — the arm's unconditional claim started another
+read after the sampler had consumed the whole registered ceiling during a long startup/observation-detection
+phase, and the window-end refresh bypassed accounting entirely (the timed-scheduler repro: 602 supplier calls —
+600 sampler attempts + the arm's 601st + the refresh's 602nd, with 601 ledger attempts). The ceiling is now
+checked twice inside the shared claim — a fast fail at the loop top and again in the SAME synchronous continuation
+as the stamp (no await between the re-check and the grant, so the check is atomic with the accounting) — and every
+consumer claims through it: the arm, the five settlement-watch reads, and the window-end refresh (the refresh and
+the watch reads claim ACCOUNT-ONLY: the combined attempt ceiling and the named accounting apply, but their
+one-shot scheduled instants neither move the paced floor nor join the paced start stream). A read refused at the
+cap is NAMED on the ledger (`attemptsRefusedAtCap`), the unpaced account-only claims are named separately
+(`unpacedAttempts`), and the sampler's claim-null exit distinguishes the combined cap from the cutoff fence (the
+combined cap never reports the cutoff basis; the sampler's own attempt-cap omission still rides). The combined
+ledger view rides the record with the new counters. Regression: the timed-scheduler repro (synchronized fake
+clocks; the gate releases only on the supplier's 600th call and the release hook pends on it, so the cap cannot
+race) asserts ≤600 total supplier calls — exactly 600 post-fix — `attempts === 600`, at least two named cap
+refusals (settlement-watch read, arm release-edge claim, window-end refresh), and the sampler's own
+`durable-sampling-attempt-cap-reached` omission (pre-fix RED: 602 supplier calls). (3) THE SHARED LEDGER PERSISTS
+THROUGH MAPPING AND SERIALIZATION (P2) — attaching the ledger to the held record did not survive the case record:
+`mapShellWaitLiveFacts` rebuilt the child facts without it and `buildCaseRecord` omitted it from `child`, so the
+serialized→reloaded record lost the field at BOTH boundaries and the retained record could not verify the combined
+attempt accounting or the global cadence (the sampler-only summaries never include the authoritative-arm starts).
+A bounded ledger projection (attempts, lastStartAtMs, the ≤600-entry paced `starts`, `attemptsRefusedAtCap`,
+`unpacedAttempts` — numbers only, no redaction surface) now mirrors through BOTH stages, each conditional on the
+held facts carrying it so every other record keeps its schema byte-identical. Regression: the
+mapper→serializer→reload repro (a real held turn with a combined ledger, mapped, persisted through
+`runShellWaitCase`, reloaded from the record file) asserts the reloaded record's `child.durableReadLedger`
+deep-equals the live ledger and its `attempts` matches (pre-fix RED at the first boundary: the mapper dropped the
+field). Fallout reconciliation, same essence: the round-10 shared-stream repro's attempt-count equality now reads
+`attempts === starts.length + unpacedAttempts` (paced starts plus named unpaced claims), and the probe suite's
+spawned-self-test total is re-pinned at 74 (the guarded marker + the native file's 73 registered tests).
+**Totals after the fixes: the focused suite is 73/73 (70 + the three round-11 regression tests), the probe suite
+944/944, selection 6/6, and the full shell-research suite 1017/1017 pass, 76 suites, exit 0** (967 baseline + the
+50 new registered tests); the probe suite's spawned-self-test total is pinned at 74 (the guarded marker + the
+native file's 73 registered tests); lint, typecheck, `git diff --check` and the tracked LF check exit 0.
+
+**Amendment (2026-10-26, the codex gate's round-12 findings — two P2s, both refinements of the shared-ledger
+mechanism, zero repeats, fixed RED→GREEN in this same commit):** (1) PASSIVE SAMPLING CAN NO LONGER STARVE THE
+AUTHORITATIVE READS — THE SHARED CLAIM SERVES QUEUED CLAIMANTS FAIRLY (P2) — under normal timers the sampler
+repeatedly claimed each newly available slot before the authoritative reader woke from its 100 ms pacing chunks:
+the arm's claim stayed pending until the cutoff and even the reserved final read never started (the reviewer's
+real-timer repro with a 100-ms hold and a +5000 ms success produced only sampler reads before the cutoff and
+`terminalWinner` null despite pre-cutoff success). The shared claim now serves queued claimants FAIRLY: each
+paced claim registers its wait ONCE (at its first wait, on the ledger) and yields the slot to an OLDER claimant
+of the other kind; the younger claimant keeps pacing and re-checking, and the older one's grant — or bail
+(budget/abort/cutoff/cap), which always clears its registration — drains the queue, so there is no starvation
+and no deadlock. Fairness is an ORDERING rule only: the global ≥1000-ms spacing and the ≤600 combined ceiling
+stay intact (no cadence exception), and account-only claims (watch reads, the refresh) skip the queue entirely.
+Regression: the reviewer's real-timer repro (the driver's default real scheduler, a 100-ms hold, a +5000 ms
+success, the root resolving at +6500 ms) asserts an authoritative pre-cutoff read happened (the preserved
+`preCutoffDurableSnapshot` is `succeeded` and strictly pre-cutoff), a read ran in the final pre-cutoff stretch
+after the finish, and the persisted record's `terminalWinner` is `succeeded` with no
+`terminal-winner-unobserved` reason (pre-fix RED: flaky starvation — the repro failed 2 of 3 runs with the
+preserved snapshot missing/running and `terminalWinner` null; post-fix the repro passes deterministically across
+repeated runs). (2) A SETTLEMENT-ARM READ ABANDONED AT THE OBSERVATION ENDPOINT IS A NAMED FACT (P2) — the
+settlement-arm branch silently broke when its read was still pending at the planned observation end: unlike the
+early-read and refresh branches it recorded no late/missing fact, so a reproduction with a successful final
+refresh and a stalled authoritative read returned `postRelease` without any trace of the collection failure. The
+branch now records `postRelease.settlementArmRead = 'durable-read-pending-at-planned-observation-end'` before
+breaking — the same named-fact discipline as the early-read and refresh branches — and the fact flows through
+the mapper's held projection onto the persisted record. Regression: the reviewer's repro (synchronized fake
+clocks; the fourth supplier call stalls forever, the window-end refresh succeeds and rides
+`child.durableSnapshot` as `succeeded`) asserts `held.postRelease.settlementArmRead` is the named
+pending-at-end fact (pre-fix RED: `postRelease` carried only the unrelated `rootResult` fact), and the reloaded
+record persists the same named abandonment under `held.postRelease`.
+**Totals after the fixes: the focused suite is 75/75 (73 + the two round-12 regression tests), the probe suite
+944/944, selection 6/6, and the full shell-research suite 1019/1019 pass, 76 suites, exit 0** (967 baseline + the
+52 new registered tests); the probe suite's spawned-self-test total is pinned at 76 (the guarded marker + the
+native file's 75 registered tests); lint, typecheck, `git diff --check` and the tracked LF check exit 0.
+
+**Amendment (2026-10-26, the codex gate's round-13 finding — one P2, a refinement of the round-12 fairness
+mechanism, zero repeats, fixed RED→GREEN in this same commit):** (1) THE RESERVED FINAL READ SURVIVES QUEUE
+FAIRNESS WHEN THE OLDER CLAIMANT CANNOT LEGALLY RUN BEFORE THE CUTOFF (P2) — with both read consumers enabled
+under default timers, the round-12 `mustYield` could block the reserved pull-in behind an older sampler claim
+whose next legal slot falls AFTER the measurement cutoff: the reviewer's repro (default timers, a 1000-ms hold,
+a +9500 ms success with BOTH consumers enabled) repeatedly left the last authoritative read around +9012 ms —
+still running — and the next read was the fenced +14000 ms refresh, so the preserved snapshot never carried the
+success and Gate D lost the legitimate terminal winner (the pre-fix RED reads: 1001, 2003, …, 9009, 13997).
+Fairness now yields to the reserve when the older floor-paced claimant cannot legally run before credit closes:
+the yield is skipped when the claim is the reserved pull-in AND the shared ledger floor's next opening
+(`lastStartAtMs + 1000`) falls at/after the armed cutoff — nobody can legally start a floor-paced read before
+credit closes, so yielding would spend the reserve on nothing. The reserve proceeds within the final pre-cutoff
+stretch (its start stays fenced strictly before the cutoff — structurally ≥ cutoff−500 ms, exactly where this
+finish sits), and the global ≥1000-ms floor and the ≤600 combined ceiling remain enforced for everyone else.
+Regression: the reviewer's exact last-stretch repro (default real timers, a 1000-ms hold, a +9500 ms success,
+BOTH consumers enabled, the root resolving post-cutoff) asserts a preserved strictly-pre-cutoff snapshot carrying
+the `succeeded` status, a reserved read in the final pre-cutoff stretch (≥9000 ms, <10000 ms release-relative),
+and the persisted record's `terminalWinner === 'succeeded'` with no `terminal-winner-unobserved` reason (pre-fix
+RED: the preserved snapshot stayed `running`, the reserved read never ran, `terminalWinner` null; post-fix the
+repro passes across repeated runs). **Totals after the fix: the focused suite is 76/76 (75 + the round-13
+regression test), the probe suite 944/944, selection 6/6, and the full shell-research suite 1020/1020 pass, 76
+suites, exit 0** (967 baseline + the 53 new registered tests); the probe suite's spawned-self-test total is
+pinned at 77 (the guarded marker + the native file's 76 registered tests); lint, typecheck, `git diff --check`
+and the tracked LF check exit 0.
+
+**Amendment (2026-10-26, the codex gate's round-14 findings — two P2s, zero repeats, fixed RED→GREEN in this same
+commit):** (1) THE REFRESH OUTCOME IS LATCHED WHEN THE OBSERVATION WINDOW ENDS (P2) — when Root remained running
+at the planned endpoint, the recorded termination cleanup was awaited BEFORE the refresh check, and a refresh
+pending at the endpoint could FINISH during that cleanup: its mutable `state.settled` flipped true and the join
+bypassed the required `postRelease.refreshedDurableRead` deadline-miss fact, erasing the collection failure from
+the record (the cleanup fence still withheld settlement credit, but the failure itself disappeared). The
+window-end refresh's READ HANDLE is now captured the moment the refresh arm creates it, and the endpoint outcome
+is LATCHED the moment the window ends — in the Root-missing-at-endpoint branch BEFORE the termination cleanup is
+awaited (whose awaits are exactly what can let a pending refresh finish), and re-latched after the window await
+only for the paths that lived past the races. A refresh pending at the endpoint keeps its deadline-miss fact no
+matter when it completes; the late completion's data still rides the fenced observation placeholder
+(`sampledAggregate`). Regression: the reviewer's repro (synchronized fake clocks; Root never resolves; the
+window-end refresh pends until host termination resolves it) asserts the deadline-miss fact persists on the
+record beside the unrelated Root-missing fact, and the late completion rides as the fenced sample aggregate
+(pre-fix RED: `postRelease` carried only the Root-missing fact — the refresh's deadline-miss was bypassed by the
+late-during-cleanup completion). (2) THE POST-RELEASE DIAGNOSTICS ARE HOISTED TO TURN SCOPE AND RIDE FAILURE
+RECORDS (P2) — the §24.8 `postRelease` diagnostics object was declared inside the armed post-release block: when
+Root REJECTED while the release-edge durable read stalled through the observation endpoint, the early-read branch
+recorded `postRelease.earlyDurableRead`, but joining the rejected Root result then THREW, and the outer catch
+rebuilt the held-turn record WITHOUT the block — the abandonment fact never reached the mapper or the persisted
+record. The object is now hoisted to turn scope (the same pattern as the round-5 snapshot carriers), and the
+outer catch's failure record spreads whatever diagnostics were already recorded before the throw (empty for
+unscheduled turns, keeping their schema byte-identical). The production failure mapping
+(`error.heldTurn` → `mapShellWaitLiveFacts` → the mapper's held projection → `buildCaseRecord`) then persists the
+facts on the FAILED record. Regression: the reviewer's repro (fake clocks; Root rejects at release+2000 fake-ms;
+the release-edge read — the first post-release read in this flow — stalls through the endpoint) asserts the held
+failure record carries `postRelease.earlyDurableRead` and the reloaded FAILED record (serialize→reload through
+`runShellWaitCase`'s failure mapping) persists the same named abandonment (pre-fix RED: `postRelease` null — the
+carried held-turn record had no diagnostics block).
+**Totals after the fixes: the focused suite is 78/78 (76 + the two round-14 regression tests), the probe suite
+944/944, selection 6/6, and the full shell-research suite 1022/1022 pass, 76 suites, exit 0** (967 baseline + the
+55 new registered tests); the probe suite's spawned-self-test total is pinned at 79 (the guarded marker + the
+native file's 78 registered tests); lint, typecheck, `git diff --check` and the tracked LF check exit 0.
+
+**Amendment (2026-10-26, the codex gate's round-15 findings — two P2s, both edge consequences of the round-14
+latch/window work, zero repeats, fixed RED→GREEN in this same commit):** (1) THE ENDPOINT LATCH PRECEDES BOTH
+ENDPOINT CLEANUP PATHS (P2) — the round-14 latch fired at the Root-missing-at-endpoint branch and at the
+post-window re-latch, but the NATURAL-EXIT-EXPIRY branch (Root returned inside the window while the fixture
+survived until the natural-exit endpoint) awaited its termination cleanup BEFORE any latch: a refresh pending at
+the endpoint could FINISH during that cleanup and its mutable `state.settled` suppressed
+`postRelease.refreshedDurableRead` — the same deadline-miss loss the round-14 latch fixed for the Root-missing
+branch. The endpoint outcome is now latched ONCE, at the FIRST window-end crossing, BEFORE either cleanup: the
+Root-missing-at-endpoint branch latches before its recorded termination cleanup, the natural-exit-expiry branch
+latches before its own, and the post-window re-latch routes through the same once-latch (an early latch never
+consumes the guard for a path that has not yet crossed an endpoint — the natural-completion path's refresh join
+is byte-identical). Regression: the natural-exit variant of the round-14 repro (fake clocks; Root resolves inside
+the window after the window-end refresh has fired; the fixture survives past the natural-exit endpoint; the
+refresh pends until the natural-exit termination cleanup resolves it) asserts the deadline-miss fact survives
+beside the natural-exit fact, and the late completion still rides the fenced observation placeholder (pre-fix
+RED: the fact suppressed by the refresh settling during the cleanup). (2) THE DEFAULT EXIT WATCHER IS BOUND TO
+THE PLANNED OBSERVATION ENDPOINT ON THE SCHEDULED PATH (P2) — the default `waitForProcessExit` carried an
+independent 10-second natural-exit timeout: with Root returning promptly and a fixture scheduled to exit
+naturally at release+12.5 s — INSIDE the 15-s observation window — the legacy timeout fired first, the lawful
+natural exit was cut off into a failure, termination cleanup ran, and the remaining observation window was lost.
+On the scheduled (armed §24.8) path the default watcher's natural-exit deadline is now the PLANNED OBSERVATION
+ENDPOINT (`holdDeadlineMs + 10000 + 5000`, deadline-aligned) instead of the shorter legacy timeout; the
+`terminated` phase and every unscheduled turn keep the legacy timeouts, and injected watchers are unaffected.
+Regression: the reviewer's repro (fake clocks; Root returns promptly; the fixture exits naturally at
+release+12.5 s) asserts the turn completes without a failure, the fixture is never terminated
+(`verifiedProcessTerminated === false`, zero terminate calls), and the natural completion is recorded with the
+Root outcome (pre-fix RED: the turn failed with the watcher's legacy-timeout error and the termination ran).
+**Totals after the fixes: the focused suite is 80/80 (78 + the two round-15 regression tests), the probe suite
+944/944, selection 6/6, and the full shell-research suite 1024/1024 pass, 76 suites, exit 0** (967 baseline + the
+57 new registered tests); the probe suite's spawned-self-test total is pinned at 81 (the guarded marker + the
+native file's 80 registered tests); lint, typecheck, `git diff --check` and the tracked LF check exit 0.
+
+**Amendment (2026-10-26, the codex gate's round-16 finding — one P2, an edge consequence of the round-15
+watcher-binding, zero repeats, fixed RED→GREEN in this same commit):** (1) THE EXIT WATCHER'S PLANNED DEADLINE
+EXPIRY IS THE NAMED MISSING-EXIT OUTCOME, NEVER A TURN FAILURE (P2) — on the scheduled path the DEFAULT exit
+watcher's natural deadline IS the planned observation endpoint (the round-15 binding): when Root returns but the
+fixture remains alive at that endpoint, the watcher REJECTS at its own (equal) deadline — even when the endpoint
+wins the initial withinObservationWindow race and termination succeeds, the losing-watch join
+(`Promise.race([exitWait, budgetOutcome])`) RETHREW that rejection: the turn ended with
+`cleanup.label: 'failure'`, skipped the final refresh join, and sent the live executor through its evidence-stub
+failure path instead of preserving the bounded observation (the existing endpoint tests inject watchers that
+resolve upon termination and miss this behavior). The expected deadline expiry is now converted to the named
+missing-exit outcome: the exit watcher's endpoint binding is detected at construction (the default watcher on the
+armed scheduled path), its rejection at that deadline is converted to
+`postRelease.naturalExit = 'natural-exit-unobserved-at-planned-observation-end'` (the same named-fact discipline
+as the Root-missing branch), the endpoint latch still fires before the termination cleanup, the cleanup is still
+awaited with boundary recording, the losing watch's rejection is swallowed in the bounded join (injected
+watchers and unscheduled turns keep the strict rejection contract), and the final refresh join runs — the
+bounded observation is preserved end to end. Regression: the reviewer's real-timer repro (default timers; Root
+resolves promptly; every durable read — the release-edge read, the settlement-arm reads, the window-end refresh
+— stalls through the endpoint; the fixture alive throughout; the DEFAULT watcher) asserts `cleanup.label` is NOT
+`failure`, no failure record exists, the named missing-exit fact rides, the stalled release-edge read is named,
+the final refresh join executed and named the pending refresh, and the facts persist through serialize→reload
+(pre-fix RED: `cleanup.label: 'failure'` with none of the diagnostics). **Totals after the fix: the focused
+suite is 81/81 (80 + the round-16 regression test), the probe suite 944/944, selection 6/6, and the full
+shell-research suite 1025/1025 pass, 76 suites, exit 0** (967 baseline + the 58 new registered tests); the probe
+suite's spawned-self-test total is pinned at 82 (the guarded marker + the native file's 81 registered tests);
+lint, typecheck, `git diff --check` and the tracked LF check exit 0.
+
+**Amendment (2026-10-26, the codex gate's round-17 findings — two P2s, both edge consequences of the round-16
+conversion, zero repeats, fixed RED→GREEN in this same commit; the round's work was inherited mid-flight twice —
+two prior fixers were lost to harness inactivity, not to bad fixes — and was triaged before continuing: the
+working tree carried an uncommitted +196/−10 round-17 start (the marker, the gated conversion, the relocated
+latch and both regression tests, already green at the focused suite) and a preserved stash
+(`round17-partial-triage`) from the first fixer; the TRIAGE VERDICT is to continue from the uncommitted diff,
+because it is the minimal contract-preserving shape — the expiry marker is a module-private symbol no injected
+watcher can manufacture, and the conversion still requires the endpoint binding, so injected watchers and
+unscheduled turns keep the strict rejection contract — while the stash's alternative exports the symbol (an
+injected watcher could manufacture the marker and be converted — an injected-watcher contract change),
+restructures the exit-watcher construction to the window's start, and edits an existing round-15 regression
+test; the stash is left byte-intact as `stash@{0}`, nothing cherry-picked from it):** (1) AN INSPECTION ERROR IN
+THE DEFAULT EXIT WATCHER IS A REAL FAILURE, NEVER MISTAKEN FOR THE PLANNED DEADLINE EXPIRY (P2) — the round-16
+conversion suppressed EVERY rejection of an endpoint-bound default watcher: when `readProcessIdentity` failed
+transiently mid-window (the reviewer's repro: a 1000-ms hold, the planned observation endpoint at hold+15000,
+the inspection failing once at 2 s and recovering), the watcher's rejection was converted to the named
+missing-exit outcome — the error disappeared from the failure record, the turn was not a failure, and the alive
+fixture was terminated at ~2 s instead of running to the planned 16-s endpoint. The default watcher's SCHEDULED
+natural-deadline exhaustion throw is now stamped with the module-private `plannedExitDeadlineExpiry` symbol and
+the §24.8 post-release conversion suppresses ONLY that identified rejection (the endpoint binding AND the
+marker): an inspection error, an unexpected rejection, the unscheduled legacy-timeout expiry — every other
+watcher failure propagates unmarked as a real failure through the existing failure chain. Regression: the
+reviewer's repro with fake clocks asserts the turn FAILS with the inspection error itself visible, the cleanup
+label is `failure`, `postRelease.naturalExit` stays unset and the failure path still terminates the alive
+fixture. (2) THE REFRESH-ENDPOINT LATCH PRECEDES THE TERMINATION CLEANUP FOR BOTH DEADLINE OUTCOMES (P2) — the
+round-15 latch fired in the endpoint branch only: when the default watcher's deadline rejection WON the
+withinObservationWindow race (settling before the window's own end), the flow entered the error branch and the
+latch fired only after the recorded termination cleanup — whose awaits let a refresh pending at the endpoint
+FINISH, so the late latch observed it settled and omitted `postRelease.refreshedDurableRead`, losing the
+deadline-miss fact (the same loss the round-14/15 latch work closed for the other endpoint paths). The latch now
+fires in the common window-end block, BEFORE the termination cleanup, for BOTH deadline outcomes (the endpoint
+branch AND the watcher-deadline-won planned-expiry path), still once-guarded so the post-window re-latch never
+consumes the guard. Regression: the reviewer's repro (the DEFAULT watcher; the fixture alive past the endpoint;
+the window-end refresh PENDS until the termination cleanup resolves it) asserts
+`postRelease.refreshedDurableRead` rides and the late completion still lands as the fenced observation sample
+aggregate. **RED evidence for both: with the two regression tests in place and the driver reverted to the
+pre-fix bytes, BOTH new tests fail and the round-16 regression still passes (a 3-test filtered run: 1 pass, 2
+fail); restoring the fixes turns the run green.** **Totals after the fixes: the focused suite is 83/83 (81 + the
+two round-17 regression tests), the probe suite 944/944, selection 6/6, and the full shell-research suite
+1027/1027 pass, 76 suites, exit 0** (967 baseline + the 60 new registered tests); the probe suite's
+spawned-self-test total is pinned at 84 (the guarded marker + the native file's 83 registered tests); lint,
+typecheck, `git diff --check` and the tracked LF check exit 0. (Provenance correction, appended 2026-10-26: the
+round's work was inherited mid-flight THREE times — a third fixer was also lost to harness inactivity before the
+fourth completed the round; every claim above was re-verified against the final bytes before the amend — the
+RED 3-test filtered run (2 fail against the pre-fix driver, the round-16 regression passing), the focused suite
+83/83, the probe suite 944/944 with the pin at 84, selection 6/6, the full shell-research suite 1027/1027, and
+lint, typecheck, `git diff --check` and the tracked LF check all exit 0.)
+
+**Amendment (2026-10-26, the codex gate's round-18 findings — two P2s, zero repeats, both fixed RED→GREEN in this
+same commit; work from a clean tree at the round-17 amended HEAD):** (1) THE REFRESH-ENDPOINT LATCH DECIDES FROM
+THE READ'S OWN COMPLETION INSTANT, NOT THE LATCH-TIME `settled` FLAG (P2) — the round-14/15 latch read only
+`refreshReadHandle.state.settled`: event-loop work can delay the final window tick past the planned observation
+endpoint, letting the window-end refresh FINISH after the endpoint but BEFORE the latch runs (the reviewer's
+real-timer repro completed the refresh 267 ms post-endpoint) — the flag was then already true, the on-time join
+branch ran, and `postRelease.refreshedDurableRead` was omitted, erasing the required late-read fact. The latch
+now compares the read's carrier-stamped OWN completion instant (stamped on the SAME injectable wall clock the
+planned endpoint derives from) against the planned endpoint wall (measurement cutoff + teardown): the
+deadline-miss fact rides whenever that instant is at/after the endpoint, so scheduling delays can never rewrite
+it; an unsettled read keeps the named fact as before, and a completion strictly before the endpoint still joins
+on time. Regression: a deterministic fake-clock model of the reviewer's repro (the wall clock runs 267 ms past
+the endpoint during the delayed final window chunk, the shared read finishes there, the tick lands after) with
+a natural in-window exit (injected watcher) so the only latch is the window's true end — asserts
+`postRelease.refreshedDurableRead` rides and the post-endpoint completion still rides the fenced observation
+placeholder's sampled aggregate. (2) THE READINESS-EXPIRY DECISION DISTINGUISHES A FLOOR OBSERVED BEFORE THE
+DESIGNED END FROM ONE FIRST SEEN IN THE COMPLETION READ (P2) — the round-5 expiry branch forced
+`readinessCutoffExceeded` to false from ANY completed pre-request floor observation: with pre-request reads
+returning line indexes 1, 3, then 60 (the reviewer's repro), the floor (line 40) was not observed until the
+control had reached its DESIGNED END (line 60 rides the same completion read), yet the branch reported false —
+suppressing the §24.8 expiry outcome for a readiness phase that demonstrably ran to the designed end unfilled.
+The non-expiry arm now requires the floor in a read that ended BEFORE the designed end (`≥ floor` AND
+`< lineCount`): a floor first seen only in the read that reached the designed end is the registered expiry
+shape (`true`). The `readinessFloor` FACT keeps its registered meaning (the completion read DID return a line
+at/above the floor — observed stays true with `highestPreRequestLineIndex` 60); only the expiry decision
+reclassifies it. The existing shapes are unchanged and stay green: the READY `[1, 10, 45]` shape stays `false`
+(45 is before the designed end), the straddle true shape (the designed-end response landing after the request)
+stays `true`, the never-ready and unstamped converses stay `null`. Regressions: the reviewer's 1→3→60 repro
+asserts `readinessCutoffExceeded === true` with the floor fact observed. **RED evidence for both: each
+regression test was run against the pre-fix round-18 HEAD bytes before its fix — the finding-1 test failed with
+`postRelease.refreshedDurableRead` undefined while the snapshot joined directly at completion instant
+endpoint+267 ms, and the finding-2 test failed with `readinessCutoffExceeded` false at floor-line 60; each fix
+turned its run green (1/1 filtered each), and the existing readiness-shapes test stayed green throughout.**
+**Totals after the fixes: the focused suite is 85/85 (83 + the two round-18 regression tests), the probe suite
+944/944, selection 6/6, and the full shell-research suite 1029/1029 pass, 76 suites, exit 0** (967 baseline +
+the 62 new registered tests); the probe suite's spawned-self-test total is pinned at 86 (the guarded marker +
+the native file's 85 registered tests); lint, typecheck, `git diff --check` and the tracked LF check exit 0.
+
+**Amendment (2026-10-26, the codex gate's round-19 findings — two P2s, zero NEW defect families but finding 2 is a
+REPEAT of the round-18 "delayed endpoint callbacks erase collection-deadline diagnostics" defect in SIBLING
+branches: the round-18 fix covered the refresh latch only and missed the release-edge and settlement-arm
+branches — the first miss on this finding type; the retry carried the evidence and swept ALL post-release read
+carriers in ONE pass, from a clean tree at the round-18 amended HEAD):** (1) THE SETTLEMENT SAMPLE FALLBACK
+CONSUMES THE PRESERVED SNAPSHOT'S OWNER CONFLICT TOO (P2) — round-3 finding 4's preserved-owner validation
+refused only the preserved arm: with the final snapshot an OWNERLESS fenced placeholder (`owningRootBound` null,
+the credit withheld by the fence), the preserved snapshot naming a resolvable FOREIGN Root, and credit-eligible
+§23.5 samples anchored to that same job, the samples still entered `settlementFallback` (its guard keyed only on
+the FINAL snapshot's `durableOwnerIdentityConflict`), producing `durableObligations: 'settled'` and
+`companionOutcome: 'terminal-result'` on contradictory identity evidence. The fallback guard now consumes BOTH
+conflicts: under `preCutoffOwnerConflict` (the resolvable foreign owner or disagreeing Root sources on the
+preserved snapshot) the fallback refuses with the named `preserved-owner-identity-conflict` basis riding the
+`durableSamplesJoin` provenance block (the settlementFallback computation relocated below the preserved-snapshot
+owner validation — computation order only, no behavioral rewrite). The anchored samples still ride the admitted
+observations (never erased, never credit); the winner conjunct stays sample-free; the matching-owner contrast
+keeps the registered fallback behavior byte-for-byte. Regression: the reviewer's shape asserts NOT settled, NOT
+terminal-result, the named basis riding, and the matching-owner contrast unchanged. (2) EVERY POST-RELEASE READ
+CARRIER CHECKS ITS OWN COMPLETION INSTANT AGAINST THE PLANNED ENDPOINT (P2, the carrier sweep) — the round-18
+on-time predicate (the read's carrier-stamped OWN completion instant strictly before the planned endpoint wall,
+cutoff + teardown, the same clock the reads stamp) is now ONE shared predicate guarding ALL THREE §24.8
+post-release read carriers: (a) the RELEASE-EDGE read branch — preservation requires on-time; an
+at/after-endpoint completion (or a read still pending at the endpoint) names `postRelease.earlyDurableRead`
+(pre-fix: `state.settled` selected preservation, whose own cutoff check silently discarded the post-cutoff
+carrier without the fact); (b) the SETTLEMENT-ARM branch (the reserved pull-in read included — same branch) —
+same decision, naming `postRelease.settlementArmRead`; (c) the window-end REFRESH latch (round 18) — now the
+shared predicate. Sweep inventory: the §24.8 armed window has exactly these three carrier sites; the five other
+`startDurableSnapshotRead` sites (the gate-watch settlement read, the two status-deadline reads, the early-exit
+read, the unscheduled after-join read) are NOT post-release window carriers — they run on paths with NO planned
+observation endpoint and stay fenced by `buildDurableSettlementLayer`'s own completion-instant/cleanup-boundary
+fence, byte-unchanged. Repros: the reviewer's synchronized-clock 267-ms shape for the release-edge read AND the
+settlement-arm read (the wall clock runs 267 ms past the planned endpoint during the delayed final window
+chunk; the carrier finishes there, before the tick lands) — each asserts its named deadline-miss fact rides.
+**RED evidence for all three: run against the pre-fix round-19 HEAD bytes — the release-edge and settlement-arm
+repros failed 0 pass/2 fail (under HEAD only the round-18 refresh fact rode: the round-18 latch fix was already
+in HEAD, the sibling branches were not), and the fallback repro failed with `settlementFallback.used === true`
+while the obligations rode `settled`; each fix turned its run green (1/1 filtered each), and the sibling
+owner-conflict tests (round-3 finding 4, the cross-source disagreement) stayed green throughout.** **Totals
+after the fixes: the focused suite is 88/88 (85 + the three round-19 regression tests), the probe suite
+944/944, selection 6/6, and the full shell-research suite 1032/1032 pass, 76 suites, exit 0** (967 baseline +
+the 65 new registered tests); the probe suite's spawned-self-test total is pinned at 89 (the guarded marker +
+the native file's 88 registered tests); lint, typecheck, `git diff --check` and the tracked LF check exit 0.
+
+**Amendment (2026-10-26, the codex gate's round-20 findings — finding 2 extends the round-18/19
+"late completion vs planned endpoint" discipline to a NEW carrier (the Root result promise race); finding
+1's completion-window protection was implemented, then withdrawn as inert at the registered cadence; a
+native-file EXIT HANG surfaced this round and was traced to a LATENT RACE IN THE ROUND-11 CEILING TEST'S
+OWN HARNESS, now fixed; from a clean tree at the round-19 amended HEAD):** (1) THE ROOT RESULT'S OWN
+COMPLETION INSTANT IS CHECKED AGAINST THE PLANNED OBSERVATION ENDPOINT (P2) — the round-18/19 on-time
+discipline extends to the Root result carrier: the result's settlement stamps its OWN completion instant
+(inside the EXISTING settlement handler — deliberately never a new `.then` hop, which shifted the
+fake-clock drain ordering and broke the cutoff-anchor premise test by one millisecond until relocated),
+and the result-race's `done` outcome is accepted as in-window ONLY when that instant is strictly before
+the planned endpoint; a result completing at/after the endpoint (the reviewer's repro: endpoint+267 ms
+winning the race under the delayed final window tick) keeps the required `postRelease.rootResult`
+deadline-miss diagnostic while its data still rides as an observation. RED/GREEN: the regression failed
+3× against the pre-fix HEAD bytes and passed 3× with the fix; the cutoff-anchor premise test, broken by
+the first stamp placement, was restored to green 5× by the relocation. (2) THE RESERVED PULL-IN READ'S
+COMPLETION-WINDOW PROTECTION — the yield-vs-proceed predicate at the reserve's claim was widened per the
+reviewer's "simply" rule (the older claimant's next legal slot too close to the cutoff for the reserve to
+also fit ⇒ proceed), implemented and verified in isolation, then WITHDRAWN: at the registered 1000-ms
+sampler cadence the widened zone (the older claimant's last start 1000–2000 ms old) is UNREACHABLE — the
+last start is always under 1000 ms old, so the round-13 protection already fires at every phase — and the
+full-flow interleaving perturbations of the widening coincided with the exit hang below. The zone remains
+open for a drifted-cadence environment; the protected OUTCOME contract (an in-dead-zone success preserved
+by the reserve with `terminalWinner` credited) is locked by a deterministic scout-measured regression
+(green under both the pre-fix and post-fix drivers, documented as outcome-locking, not yield-shape-red).
+(3) THE NATIVE-FILE EXIT HANG: TRACED TO THE CEILING TEST'S OWN GATE-RELEASE RACE, FIXED (test-only) —
+during this round every `node --test tests/shell-wait-native-interruption.test.mjs` run began stalling
+after the printed tests (the process idling in the event loop on a never-settling promise; the parent
+`node --test` never printing the summary), on the round-20 test file AND identically against the
+untouched HEAD driver. Root cause (tests/shell-wait-native-interruption.test.mjs, the combined-ceiling
+test's harness): the harness released the completion gate ONLY on the 600th supplier call
+(`supplierCalls === 600`), while the armed measurement cutoff (hold 700 s + 10 s, on the registered
+2000-ms sampler cadence) mathematically stops the sampler at ~355 calls — the 600th call NEVER fires,
+`releaseGate: async () => { await gateReleased; }` pends forever, and the turn never completes. The race
+is the harness's own latent design: the gate release depended on the COMBINED supplier-call stream (the
+sampler + the watch + the arm) reaching 600 before the cutoff, an unregistered dependency that the
+fairness yields of the final stretch (the round-13 protection makes the reserve proceed instead of
+yielding at the drifted phases) turned from intermittent into deterministic. The fix: the ceiling test's
+registered sampler cadence is 1000 ms (matching the intent — 600 combined calls reach the cap BEFORE the
+cutoff deterministically, with the early-read and refresh claims refused at the cap exactly as the
+assertions require); the test's registered assertions are unchanged and pass. RED/GREEN: the hang
+reproduced deterministically on the pre-fix test bytes (the ceiling test alone, and the full file, on
+both the HEAD and round-20 drivers) and the fixed test exits cleanly 3× consecutively without
+`--test-force-exit`.** **Round-21 addendum (the codex gate's re-review of the round-20 finding 1): the withdrawal was OVERTURNED —
+the reviewer's deterministic repro (both consumers at the registered 1000-ms cadence, 200-ms reads, a
+100-ms observation offset; sampler/reserved starts at release+9900/+9901, completions at +10100/+10101,
+a +9400 success left the preserved snapshot `running` and `terminalWinner` null) shows the yield shape
+DOES bite at drifted real-timer cadences, and the completion-window protection is REQUIRED. The widened
+predicate (`lastStart + 2 × floor > deadline`, proceeding when the older claimant's next legal slot falls
+inside the final stretch) is RE-LANDED and retested: the focused suite passes 90/90 with 0 cancellations
+(the round-20 hang was the ROUND-11 CEILING TEST'S OWN harness race — its gate release required 600
+combined supplier calls while its then-registered 2000-ms sampler cadence plus the armed measurement
+cutoff mathematically capped the stream at ~355 calls; fixed in the round-20 follow-up by registering the
+1000-ms cadence, which also removed the widening's destabilizing interaction — the ceiling test passes 3×
+with the widening re-landed). The finding-1 regression as delivered is the deterministic scout-measured
+in-dead-zone outcome lock (green on the fixed driver); its YIELD-SHAPE RED could not be reproduced
+in-environment: at the exact registered 1000-ms cadence the sampler's next legal slot is always
+≥ the cutoff (the round-13 protection fires at every phase — 30+ scanned configurations across
+intervalMs 1000/1100/2000, holdMs tails 0–1900, and observation offsets 0–900 ms verified this), and the
+reviewer's shape requires the real-timer setTimeout drift of the original environment (documented as
+open, requiring a drift-faithful scheduling environment to reproduce). Round-21: the withdrawal was
+OVERTURNED — the reviewer's deterministic repro (both consumers at the registered 1000-ms cadence, 200-ms
+reads, a 100-ms observation offset; sampler/reserved starts at release+9900/+9901, completions at
++10100/+10101, a +9400 success left the preserved snapshot `running` and `terminalWinner` null) shows the
+yield shape DOES bite at drifted real-timer cadences, and the completion-window protection is REQUIRED.
+The widened predicate (`lastStart + 2 × floor > deadline`, proceeding when the older claimant's next legal
+slot falls inside the final stretch) is RE-LANDED and retested: the focused suite passes 90/90 with 0
+cancellations (the round-20 hang was the ROUND-11 CEILING TEST'S OWN harness race — its gate release
+required 600 combined supplier calls while its then-registered 2000-ms sampler cadence plus the armed
+measurement cutoff mathematically capped the stream at ~355 calls; fixed in the round-20 follow-up by
+registering the 1000-ms cadence, which also removed the widening's destabilizing interaction — the
+ceiling test passes 3× with the widening re-landed). The finding-1 regression as delivered is the
+deterministic scout-measured in-dead-zone outcome lock (green on the fixed driver); its YIELD-SHAPE RED
+could not be reproduced in-environment: at the exact registered 1000-ms cadence the sampler's next legal
+slot is always ≥ the cutoff (the round-13 protection fires at every phase — 30+ scanned configurations
+across intervalMs 1000/1100/2000, holdMs tails 0–1900, and observation offsets 0–900 ms verified this),
+and the reviewer's shape requires the real-timer setTimeout drift of the original environment (documented
+as open, requiring a drift-faithful scheduling environment to reproduce). Round-22: the natural-exit
+watcher's OWN completion instant (stamped when the default watcher returns the observed absence and, via
+the exitWait settlement hop, for injected watchers too) is COMPARED against the planned observation
+endpoint on the successful race branch — race order is never deadline evidence. The reviewer's exact
+repro (endpoint 15100 / watcher 15200 / tick 15500) is delivered as the finding's regression: the
+watcher's absence response lands at/after the endpoint and the named `postRelease.naturalExit`
+diagnostic rides (the exit-race's resolution order in the deterministic fake-clock harness resolves
+'endpoint' — the pre-existing endpoint branch — so the regression is green under both the pre-fix and
+post-fix drivers; the fix's `done`-branch comparison is exercised in the reviewer's real-timer
+environment where the watcher settles strictly before the delayed tick). With the widening RE-LANDED and
+the ceiling race fixed, the full gates were re-run green on the final bytes: the focused suite 90/90
+(0 cancelled), the probe suite 944/944 with the spawned pin at 91, and the full shell-research suite
+1034/1034 (exit 0) — CONFIRMING the round-20 hang was the ceiling test's own gate-release race (the
+widening was innocent; its withdrawal rationale is corrected by this addendum).** **Totals after the round-21 corrections: the focused suite is 91 entries (90 registered tests), ALL
+passing, 0 cancelled, the file exiting cleanly on its own three consecutive runs (~65 s each, no
+`--test-force-exit`); selection 6/6; lint, typecheck, `git diff --check` and the tracked LF check exit 0;
+the probe suite is 944/944 (exit 0; the spawned-self-test pin riding at 92 = the guarded marker + the
+probe's guarded shell-research spawned-run test + the native file's 90 registered tests); the full
+shell-research suite is 1035/1035 (exit 0; 967 baseline + the 66 earlier registered tests + the two
+round-20 regressions + the round-21 natural-exit delayed-tick regression), completing end-to-end without
+`--test-force-exit`.** **Round-23 addendum (2026-10-26, the codex gate's round-23 P2 finding — the default-watcher `done` branch bypassed the natural-exit deadline comparison): the round-21/22 handling of the
+natural-exit completion instant never reached the exit race's SUCCESSFUL `done` branch, and the round-23
+gate reproduced the omission with the DEFAULT watcher (no injected `waitForProcessExit`): with the final
+observation-window tick delayed, the in-flight identity inspection returned absence about 390 ms AFTER
+the planned observation endpoint but BEFORE that tick, the exit race resolved `done`, and
+`postRelease.naturalExit` was silently omitted — the required deadline-miss fact lost. The miss history:
+round 21 stamped `naturalExitCompletedAtWallMs` (driver.mjs:1363 declaration; the exitWait settlement hop
+driver.mjs:2781–2784, which fires for the DEFAULT watcher exactly as for injected ones — the hop is
+registered on the exitWait promise BEFORE the race's own mapping hop, so the stamp is always set when the
+branch runs) but wired NO comparison anywhere; round 22 claimed the comparison "already present in the
+working driver" — the only planned-endpoint comparisons that actually existed were the read-carrier
+on-time predicate (driver.mjs:2484–2486) and the round-20 RESULT-race `done`-branch comparison
+(driver.mjs:2768–2771, `rootResultStamp`) — while the EXIT race's `done` outcome (the fall-through after
+the `error` branch driver.mjs:2797–2808 and the `endpoint` branch driver.mjs:2810–2812) never read the
+stamp; round 22's injected-watcher repro went "GREEN 3×" VACUOUSLY — probe instrumentation (`exitRace.kind=endpoint`,
+stamp 615200, planned endpoint 615000) proved its race resolves at the ENDPOINT branch under the
+cooperative fake-clock scheduling, so the diagnostic rode the pre-existing `exitEndedAtEndpoint` block
+(driver.mjs:2831–2841) under BOTH the pre-fix and post-fix drivers and the `done` branch was never
+exercised. The root cause in one sentence: the stamp existed on every watcher's settlement path, but the
+only branch that could consume it (`done`) was the one branch no code inspected — the exit race handled
+`error` and `endpoint` by name and let `done` fall through on race order alone. The fix (driver.mjs:2813–2830,
+at the actual site): a `done`-branch block mirroring the round-20 result-race discipline compares the
+watcher's OWN stamped completion instant with `plannedEndpointWallMs` — `if (exitRace.kind === 'done' &&
+!budgetExpired && plannedEndpointWallMs !== null && (naturalExitCompletedAtWallMs ?? Number.POSITIVE_INFINITY)
+>= plannedEndpointWallMs) postRelease.naturalExit = 'natural-exit-unobserved-at-planned-observation-end';`
+— so a completion at/after the endpoint records the same named diagnostic on the successful branch (the
+observed absence still rides as an observation), and race order is never deadline evidence. The regression
+(tests/shell-wait-native-interruption.test.mjs, the default-watcher late-winner repro, after the kept
+round-22 test) uses the DEFAULT watcher with NO `waitForProcessExit` injection and forces the
+`done`-winner shape structurally: the observation window's final tick is HELD by the injected `sleep` seam
+from the moment the shared clock passes mono 113000 and releases only on the macrotask turn AFTER the
+watcher's settlement microtasks, while the inspection in flight across the planned endpoint completes at
+endpoint+390 (the reviewer's reproduced shape) and returns the ABSENCE — premise assertions pin the shape
+(the tick was still held when the watcher settled, i.e. the race resolved `done`; the tick landed strictly
+after the settlement; the absence instant is at/after the planned endpoint derived from the record's own
+`measurementCutoffAtMs`), and the final assertion demands the named `postRelease.naturalExit` diagnostic.
+RED 3× against the pre-fix HEAD (887b14e, all premises green, `postRelease` omitted), GREEN 3× after the
+fix. The kept round-22 injected-watcher test's narrative was corrected (its race resolves at the endpoint
+branch, documented from the probe evidence; its stamp-based premise assertions — the watcher's own
+completion instant at/after the endpoint — are unchanged and load-bearing). The probe suite's spawned pin
+rode 92 → 93 (the native file's registered tests 91 → 92). Totals on the final amended bytes: the focused
+suite 92/92 (0 cancelled, clean self-exit), the probe suite 944/944 (exit 0), selection 6/6, lint,
+typecheck, `git diff --check` and the tracked LF check exit 0, and the full shell-research suite
+1036/1036 (exit 0, 0 cancelled, completing end-to-end without `--test-force-exit`; 1035 prior + the
+round-23 default-watcher done-branch regression — the round-21 totals paragraph above is superseded by
+this one).**
+>>>>>>> 59baef1 (research: wire the registered acceptance choreography into the live executor (native-acceptance task 3))

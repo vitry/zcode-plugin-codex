@@ -3283,6 +3283,18 @@ export function survivalControlShellCommand(scriptPath) {
 const SURVIVAL_CONTROL_LINE_PATTERN = /^zcode-survival-control (\d+) (\d+)$/gm;
 
 /**
+ * The §24.5/§24.8 registered readiness floor (native-acceptance Task 1 freeze;
+ * wired by Task 3): the Root's readiness coordination observes a control line
+ * whose index is AT LEAST this value (~80 s after control start at the
+ * declared 2000-ms cadence) before delivering. The floor is an
+ * observer-coordination approximation of the Child's poll-start window —
+ * NEVER readiness proof either way (report §24.5) — and the
+ * `readiness-cutoff-exceeded` outcome is the named live model-obedience fact
+ * when the control reached its designed end with the loop unfilled.
+ */
+export const SURVIVAL_CONTROL_READINESS_FLOOR_LINE_INDEX = 40;
+
+/**
  * @param {unknown[]} rollouts
  * @param {string} controlPath
  * @param {{ lineCount: number, interruptInteraction: ReturnType<typeof extractInterruptInteraction>, exactTargetMatch?: boolean | null, settledDeliveryCleanupGenerated?: boolean | null, childThreadId?: string | null, scanCompletenessUnestablished?: boolean | null }} options
@@ -3313,6 +3325,8 @@ const SURVIVAL_CONTROL_LINE_PATTERN = /^zcode-survival-control (\d+) (\d+)$/gm;
  *   settledDeliveryAtMs: number | null,
  *   completionBeforeDeliveryObserved: boolean,
  *   beforeDeliveryRead: { observed: boolean, lastLineIndex: number | null, orderedBeforeInterrupt: boolean | null },
+ *   readinessFloor: { observed: boolean, highestPreRequestLineIndex: number | null },
+ *   readinessCutoffExceeded: boolean | null,
  * }}
  */
 export function extractSurvivalControlFacts(rollouts, controlPath, options = /** @type {{ lineCount: number, interruptInteraction: ReturnType<typeof extractInterruptInteraction>, exactTargetMatch?: boolean | null, settledDeliveryCleanupGenerated?: boolean | null, childThreadId?: string | null, scanCompletenessUnestablished?: boolean | null }} */ ({})) {
@@ -3372,7 +3386,7 @@ export function extractSurvivalControlFacts(rollouts, controlPath, options = /**
   if (!Array.isArray(rollouts) || !rollouts.every(isEventArray)) {
     throw invalidEvidenceInput('rollouts must be an array of parsed rollout event arrays.');
   }
-  /** @type {{ launched: boolean, launchCount: number, handleGrounded: boolean, ownership: 'root' | 'child' | 'unidentifiable', deliveryBoundTag: number | null, emittedLines: { index: number, tag: number }[] | null, completionMarker: { index: number, tag: number } | null, postDeliveryRead: { occurred: boolean, readable: boolean, returnedLines: boolean }, controlExitObserved: boolean, controlExitPremature: boolean, controlExitCode: number | null, owningRootSessionId: string | null, launchAtMs: number | null, settledDeliveryAtMs: number | null, completionBeforeDeliveryObserved: boolean, beforeDeliveryRead: { observed: boolean, lastLineIndex: number | null, orderedBeforeInterrupt: boolean | null } }} */
+  /** @type {{ launched: boolean, launchCount: number, handleGrounded: boolean, ownership: 'root' | 'child' | 'unidentifiable', deliveryBoundTag: number | null, emittedLines: { index: number, tag: number }[] | null, completionMarker: { index: number, tag: number } | null, postDeliveryRead: { occurred: boolean, readable: boolean, returnedLines: boolean }, controlExitObserved: boolean, controlExitPremature: boolean, controlExitCode: number | null, owningRootSessionId: string | null, launchAtMs: number | null, settledDeliveryAtMs: number | null, completionBeforeDeliveryObserved: boolean, beforeDeliveryRead: { observed: boolean, lastLineIndex: number | null, orderedBeforeInterrupt: boolean | null }, readinessFloor: { observed: boolean, highestPreRequestLineIndex: number | null }, readinessCutoffExceeded: boolean | null }} */
   const facts = {
     launched: false,
     launchCount: 0,
@@ -3390,6 +3404,10 @@ export function extractSurvivalControlFacts(rollouts, controlPath, options = /**
     launchAtMs: null,
     settledDeliveryAtMs: null,
     beforeDeliveryRead: { observed: false, lastLineIndex: null, orderedBeforeInterrupt: null },
+    // §24.8 readiness arm (native-acceptance Task 3): the preregistered
+    // readiness facts, computed from the SAME parsed read events below.
+    readinessFloor: { observed: false, highestPreRequestLineIndex: null },
+    readinessCutoffExceeded: null,
   };
   // PASS 1 — the ONE control launch and its grounded handle (the settled
   // observation machinery's own grounding discipline: the launch's OWN
@@ -3672,6 +3690,66 @@ export function extractSurvivalControlFacts(rollouts, controlPath, options = /**
   if (facts.beforeDeliveryRead.observed !== true) {
     facts.beforeDeliveryRead = { observed: false, lastLineIndex: null, orderedBeforeInterrupt: unorderedReadObserved ? false : null };
   }
+  // §24.8 readiness arm (native-acceptance Task 3): the registered readiness
+  // coordination is OBSERVED when some pre-request control read — invoked AND
+  // responded strictly before the interrupt request, the same ordering the
+  // qualifying pre-delivery read requires — returned a line at/above the
+  // readiness floor. The named `readiness-cutoff-exceeded` outcome fires when
+  // the control reached its DESIGNED END (the completion marker line) with
+  // the readiness loop unfilled — a live model-obedience fact, recorded as
+  // such, never readiness proof either way (report §24.5/§24.8). Without a
+  // request stamp to order the reads against, the outcome stays null —
+  // unestablishable, never guessed.
+  /** @type {{ callId: string, invokedAtMs: number | null, respondedAtMs: number | null, lastLineIndex: number | null, advancing: boolean, readable: boolean, exitObserved: boolean, exitCode: number | null }[]} */
+  const preRequestReadEvents = requestAtMs !== null
+    ? readEvents.filter((readEvent) => readEvent.invokedAtMs !== null && readEvent.invokedAtMs < requestAtMs
+      && readEvent.respondedAtMs !== null && readEvent.respondedAtMs < requestAtMs)
+    : [];
+  const preRequestLineIndexes = preRequestReadEvents
+    .map((readEvent) => readEvent.lastLineIndex)
+    .filter((lastLineIndex) => typeof lastLineIndex === 'number');
+  const readinessFloorObserved = requestAtMs !== null
+    && preRequestReadEvents.some((readEvent) => readEvent.lastLineIndex !== null
+      && readEvent.lastLineIndex >= SURVIVAL_CONTROL_READINESS_FLOOR_LINE_INDEX);
+  facts.readinessFloor = {
+    observed: readinessFloorObserved,
+    highestPreRequestLineIndex: preRequestLineIndexes.length > 0 ? Math.max(...preRequestLineIndexes) : null,
+  };
+  // Codex gate round-5 finding 2: expiry is determined from evidence of the
+  // READINESS PHASE ITSELF reaching the designed-end cutoff — a read INVOKED
+  // before the interrupt request (a readiness-phase read, whatever became of
+  // its response) whose observed lines reached the designed end (the
+  // completion line) — while the floor was never observed in a completed
+  // pre-request read. A completion marker observed in a POST-interrupt read
+  // never establishes expiry: the readiness loop may have ended (the control
+  // completed) long before the request, and a marker read after the request
+  // proves nothing about the loop's state at any cutoff. Codex gate round-18
+  // finding 2: the NON-expiry arm is a floor observed in a read that ended
+  // BEFORE the designed end — the floor line can ride the SAME completion
+  // read that reaches the designed end (a reproduced 1→3→60 sequential run:
+  // indexes 1, 3, then 60), and a floor first seen only there is NOT a
+  // mid-phase observation: the phase demonstrably ran to the designed end
+  // without the floor, which is the registered expiry shape. The
+  // `readinessFloor` FACT above keeps its registered meaning (a read DID
+  // return a line at/above the floor); only the expiry decision
+  // distinguishes. Without a request stamp — or without either positive arm
+  // — the outcome stays null (unestablishable, never guessed).
+  const readinessPhaseReadEvents = requestAtMs !== null
+    ? readEvents.filter((readEvent) => readEvent.invokedAtMs !== null && readEvent.invokedAtMs < requestAtMs)
+    : [];
+  const readinessPhaseReachedDesignedEnd = readinessPhaseReadEvents.some((readEvent) => readEvent.lastLineIndex !== null
+    && readEvent.lastLineIndex >= lineCount);
+  const readinessFloorObservedBeforeDesignedEnd = requestAtMs !== null
+    && preRequestReadEvents.some((readEvent) => readEvent.lastLineIndex !== null
+      && readEvent.lastLineIndex >= SURVIVAL_CONTROL_READINESS_FLOOR_LINE_INDEX
+      && readEvent.lastLineIndex < lineCount);
+  facts.readinessCutoffExceeded = requestAtMs !== null
+    ? (readinessFloorObservedBeforeDesignedEnd
+      ? false
+      : readinessPhaseReachedDesignedEnd
+        ? true
+        : null)
+    : null;
   // Codex review round 14: INDEPENDENT pre-delivery completion evidence —
   // the read that returned the completion marker (the declared final line)
   // must itself have COMPLETED before the interrupt request. The delivery
