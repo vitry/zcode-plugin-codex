@@ -810,12 +810,16 @@ export const RESPONSIVENESS_BOUND_MS = 60_000;
  * Task 3): v1 was the §16.5/§16.6 freeze (executed under the shared
  * RELEASE_QUALIFICATION_VERSION 1 stamp); v2 adds the §19.4-registered
  * host-activity admission conjunct (report §19.4, registered BEFORE any live
- * trial) to the delivery layer. The shared RELEASE_QUALIFICATION_VERSION
- * stamp is NOT bumped: the exact-terminal and settlement-layer family
- * oracles are byte-unchanged, and v1 verdicts stand as recorded (report
- * §19.2 re-adjudication continuity).
+ * trial) to the delivery layer. v3 (2026-10-23 post-review fix, PR #72
+ * review findings 1-2) is the join INPUT-CONTRACT growth: the offline Gate-D
+ * join (NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION 2) can consume the recovered
+ * spawn-acknowledgement identity and pre-boundary per-sample durable facts
+ * when the final snapshot is fenced out — the oracle's own logic is
+ * byte-unchanged, and the bump marks every v3 adjudication so it can never
+ * be mistaken for a recorded v1/v2 verdict (old verdicts stand as history;
+ * report §19.2/§19.9 re-adjudication continuity).
  */
-export const NATIVE_INTERRUPTION_ORACLE_VERSION = 2;
+export const NATIVE_INTERRUPTION_ORACLE_VERSION = 3;
 
 /**
  * The §16.3/§16.6 Gate-D native-delivery/settlement aggregation over
@@ -825,7 +829,9 @@ export const NATIVE_INTERRUPTION_ORACLE_VERSION = 2;
  * unconfirmed pending window, unobserved turn settlement, a still-live
  * unsettled Companion, unresolved/unobserved durable obligations, cleanup
  * kills (never native settlement), an unadjudicated or lost collateral
- * control — and the production terminal winner/error semantics pass through
+ * control, an owning-Root identity conflict (the durable-side chain is never
+ * provably the interrupted child's job under it) — and the production
+ * terminal winner/error semantics pass through
  * untouched: a natural completion racing cancellation is never rewritten to
  * `cancelled`, and a status observation-only timeout never counts as
  * stopping the unrelated control.
@@ -850,6 +856,7 @@ export const NATIVE_INTERRUPTION_ORACLE_VERSION = 2;
  *   terminalWinner: 'succeeded' | 'failed' | 'cancelled' | null,
  *   naturalCompletionObserved: boolean,
  *   statusObservationTimeoutOnly: boolean,
+ *   spawnIdentityJoin?: { exact: boolean, owningRootBound: boolean | null, executorVerified: boolean | null } | null,
  * }} input
  * @returns {{
  *   qualified: boolean,
@@ -916,6 +923,18 @@ export function evaluateNativeInterruptionSettlement(input) {
   const durableSettled = input.durableObligations === 'settled';
   if (input.durableObligations === 'unresolved') reasons.push('durable-obligations-unresolved');
   else if (!durableSettled) reasons.push('durable-obligations-unobserved');
+  // POST-REVIEW FIX 2 (2026-10-25, the user-review round-2 finding): the
+  // join's owning-Root CONFLICT — the spawn acknowledgement's Root and the
+  // durable job's owner BOTH resolvable and DISAGREEING
+  // (`spawnIdentityJoin.owningRootBound === false`) — is contradictory
+  // identity evidence, and qualification is refused by name: the
+  // durable-side chain (obligations, Companion outcome, terminal winner and
+  // any pre-boundary sample fallback) is never provably THE interrupted
+  // child's job under it. One side unresolvable (null) stays the existing
+  // named-unestablished path — never conflated with the conflict — and the
+  // non-conflict keepers (exact match → bound) are unchanged. Legacy oracle
+  // inputs without the additive join block never carry the reason.
+  if (input.spawnIdentityJoin?.owningRootBound === false) reasons.push('owning-root-identity-conflict');
   if (input.cleanupKill === true) reasons.push('cleanup-termination-is-not-native-settlement');
   // The §16.4 survival layer. A status observation-only timeout NEVER stops
   // an unrelated job: a control whose only loss evidence is such a timeout
