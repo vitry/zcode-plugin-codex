@@ -16683,3 +16683,435 @@ re-run.
 > manifests under `/tmp`); the verification copy is deleted after the run; the three untracked
 > scratch files were untouched; no private rollout, preparation, auth, job body, credential or
 > user-configuration data entered the repository at any point in this round.
+
+## 24. 2026-10-26 native-acceptance Task 1: causal-contract preregistration, pins, duty table and budget freeze (offline; zero model turns, zero live launches)
+
+Task 1 of [the native-acceptance plan](../superpowers/plans/2026-10-26-rescue-shell-wait-native-acceptance.md), executed
+2026-10-26 in worktree `.worktrees/rescue-shell-wait-native-acceptance` (branch
+`docs/rescue-shell-wait-native-acceptance`). Read-only and offline throughout: zero model turns, zero
+`ZCODE_SHELL_WAIT_E2E=1` runs, zero host launches, no production/source/config edit; the Codex source checkout was read
+through `git show <pin>:<path>` only. This section is ADDITIVE — every prior section stands byte-unchanged. It
+PREREGISTERS the acceptance contract Tasks 2–4 implement and execute; it is not an acceptance result and it changes no
+past verdict: the I/F verdicts stand as history, and nothing below retroactively marks F passed (the plan's exit rule —
+a new timing interpretation is registered prospectively, never applied backward).
+
+### 24.1 Pins (checkbox 1; all commands executed 2026-10-26 inside the worktree; nothing trusted forward)
+
+- Plugin worktree: branch `docs/rescue-shell-wait-native-acceptance`; `git rev-parse HEAD` =
+  `ad474077b665b2150f46dd570748d9a71cd107a5` (the plan §1 fresh base, the PR #72 merge); `git status --short` = ONLY the
+  untracked plan file — the tracked tree is clean, zero modified tracked files, scratch preserved untouched.
+- **Selected trial binary — the retained measured 0.163.0 executable, STILL AVAILABLE, re-verified today:**
+  `/Users/zhangzikai/.codex/packages/standalone/releases/0.163.0-aarch64-apple-darwin/bin/codex` (absolute realpath — it
+  resolves to itself), `--version` = `codex-cli 0.163.0`, SHA-256 =
+  `8813367285524ac798dd96d1b071aea30d58708c7226fd236cd275cf1cfdee31` — byte-identical to the §1 preference, §16.1, §19.1,
+  §21.1, §23.1, §23.10.1/§23.10.2, §23.11.1 and §23.12.1/§23.12.3 pins. Every existing long-wait/cadence/stdout/identity
+  conclusion composes with a trial on this binary WITHOUT any cross-version claim; no substitute executable is launched.
+- Ambient CLI, recorded SEPARATELY at its own realpath (never blended, never launched by this design):
+  `/Users/zhangzikai/.codex/packages/standalone/releases/0.164.0-aarch64-apple-darwin/bin/codex`, `--version` =
+  `codex-cli 0.164.0`, SHA-256 = `d8990e3ee7acfbc26f91265b12a1a83f0fee40d0e0f8f1f40a37d4ec21f499cf`. Host drift is NOT an
+  experiment-budget reset (plan checkbox 1): if the 0.163.0 path ever becomes unsupported, a Gate-D result on another
+  version stays on that version, the reusable conclusions are exactly those whose pins match that version, and every
+  cross-version applicability remains UNESTABLISHED (the §23.12.1 applicability-boundary rule, unchanged).
+- REQUESTED model: `gpt-6.1-sol` — carried from the §16.1/§20.2/§20.3 registration, resolved through the EXECUTED
+  read-only `codex debug models` re-pins at the I/F launches (raw catalog SHA-256 `52f8de84…`, 10 entries, `gpt-6.1-sol`
+  list-visible at priority 0). NOT re-run here (authenticated network discovery outside this analysis-only task — the
+  §23.1 precedent); the §20.7 pre-launch duty executes it again immediately before N. OBSERVED EFFECTIVE model metadata:
+  the `model: null` contract (driver.mjs:84, inside the `EXECUTING_OBSERVER_PROVENANCE` object that starts at
+  driver.mjs:69; never inferred). Requested and
+  effective stay separate facts, never blended.
+- Configuration layers, REQUESTED (fixture candidate) versus OBSERVED (the F record's in-record facts; no new measured
+  value exists in this section): fixture cap `background_terminal_max_timeout = 3600000` — in-record `capVerified: true`
+  (§23.12.3); `--exec-default-ms 3600000`; `--poll-ms 3600000`; `--cap-ms 3600000`; wait-policy `config-default`
+  (the fixture's `configDefaultWaitingParagraph` @3600000 with the same-cell explicit `tools.wait` continuation,
+  `paragraphTreatment: "candidate-paragraph"` — the F record's `waitPolicy` block); normalized instruction hashes
+  `2ea76cf0…` (named-role) / `5800e3ab814f…` (generic @3600000) — byte-identical to the §20.4 clause-4 candidates; the
+  V2 wait feature bounds at the source pin (min 10000 / default 30000 / max 3600000 — `core/src/config/mod.rs:257-259`,
+  over-max rejection and min clamp `core/src/tools/handlers/multi_agents_v2/wait.rs:53-65`); effective Child cap stays
+  the in-record `capVerified` fact plus the §18.4/§19.1 proven basis — no claim here changes or re-measures it.
+- Installed fixture artifacts (retained declarations, read from the F record's provenance; the artifacts themselves live
+  ONLY in disposable fixture `CODEX_HOME`/`ZCODE_DATA_ROOT` homes and the repository carries their digests):
+  survival-control script SHA-256 `c510d81f296881a9e4e3c174429758c3e2f26c08cf7a63b26ac75d2e5ca30172` (879 bytes; 60 lines
+  @2000-ms cadence; designed exit 0; emission-tag clock `control-process-monotonic-elapsed-ms-since-start`);
+  capture preload `closure-stdout-preload.cjs` SHA-256 `cb168b74d5175b9915d12cbc3e37f3655403cfdb4611940b2694f7196020e362`
+  (maxBytes 65536; gate argv exactly `[invoke-prepared, rescue]`); applied instruction artifacts named-role-template
+  (before `4a9bbbcb…` → after `5d2791b6…`) and generic-skill (before `df2de8cc…` → after `0ede2e3e…`); fixture
+  `isolatedSetup`: owningSessionId `44c0db37-0979-43ca-b975-1597e381c6d6`, `setupAttempts: 2`, `roleStatus: "ready"`,
+  `capVerified: true`, `sessionEstablished: true`, `launcherDescriptorPublished: true` (all — the F record).
+- Retained records re-verified byte-identical TODAY (both exist on disk):
+  F record `/tmp/shell-wait-interrupt-closure-f.AD92sT/rescue-interrupt.record.json` = SHA-256
+  `634289fd64a87f73962f59e12216466b86f812dd0e703f4e99c2df21469ed5b7`; I record
+  `/tmp/shell-wait-interrupt-closure-i.kRQKtD/rescue-interrupt.record.json` = SHA-256
+  `13aae0ca41ba9ab25db1aeab33f97494e4563d1f685e6d75291233d064142549`.
+- Probe module digests on THIS worktree's bytes (SHA-256): `evidence.mjs` = `df09f62aaf68d258d5dfc2a35e74dfbec08fe4e3ab5ac616b7941f09d820dee1`,
+  `driver.mjs` = `3a5aefeb8fddcee4221eb41631643e83ce72839f9e72bb4d2bcd4f5c37999320`, `release-qualification.mjs` =
+  `93cf9d62515a9eb73e186dcff7c410e3982421b04c280b720b03226ffe6b9a8d`, `closure-observation.mjs` =
+  `46b7f5e282b811c3bb88518a6f2d36f54da2f586eac74fe40c134978a90f6fa7`, `shape-diagnostic.mjs` = `2f300de25af3c12635d2dec400170a3e50b057dbe33f27a2375a01c0ffb1bb31`,
+  `fixture.mjs` = `1b7b030d95dc0e4fb03d5ccb4596af51cda1441c3aa1c19c8bfad6a496c3e4a3` (byte-identical to the §23.12.1
+  F-launch values — unchanged through close-outs 5/6), `wait-comparison.mjs` =
+  `eba75edbac4d69be42b312b7ff09582314e034d93aaa56cf73ba93024c622146`. `driver.mjs`, `evidence.mjs` and
+  `release-qualification.mjs` DIFFER from their §23.12.1 F-launch values because the close-out 5/6 fix rounds
+  (`77660b8`/`8160183`) changed them; the executing-observer digest for any future N launch is RECOMPUTED at N's own
+  freeze (the §20.7 duty), never copied forward from a superseded value.
+- The N/C ledger (the plan's Task 4) contains ONLY N (1) and C (1 conditional) — NO long-wait/repeat/cadence trial is
+  added to it and no prior O/M/B/calibration allowance is reopened (the §20.4 no-new-campaign rule, carried).
+
+### 24.2 Source pin and the request→target→interruption→emission→response→Child-abort trace (checkbox 2)
+
+- Checkout: `/Users/zhangzikai/Workspace/Codes/github/codex` — `git rev-parse HEAD` =
+  `dffa0deb69268ed4ac31578794c9ea897b336ae3`; `git status --porcelain` = EMPTY (clean; zero entries). Identical to the
+  drafting pin AND the §16.2/§19.4/§23.3 trace pin, so every chain below reproduces the earlier traces byte-identically;
+  all citations are stable via `git show dffa0deb69268ed4ac31578794c9ea897b336ae3:<path>`. NOT an established
+  source/binary mapping (the §13.11/§16.1 boundary, unchanged) — the drafting pin is recorded here as the ACTUAL pin
+  inspected, and it happens to equal the drafting pin.
+- **Step 1 — request submission:** the Root model emits ONE `interrupt_agent { target }` tool call; the owning Root's
+  handler `handle_interrupt_agent` (`core/src/tools/handlers/multi_agents_v2/interrupt_agent.rs:33-77`) parses the
+  arguments and resolves the target FIRST (`resolve_agent_target`, :46 → `agent_control.resolve(..., target)`,
+  `core/src/agent/agent_resolver.rs:9-30`; a resolution failure is a tool ERROR — no dispatch, no emission).
+- **Step 2 — dispatch (awaited):** `agent_control.interrupt(...)` is awaited (:48-57) →
+  `LocalAgentControl::interrupt_spawned_agent` (`core/src/agent/control/interrupt.rs:16-51`): root and self targets
+  rejected; the receiver's status SNAPSHOTTED BEFORE dispatch (`inspect_agent`, :40); only
+  `ThreadNotFound`/`InternalAgentDied` tolerated as already-dead success (:43-48) — →
+  `LocalAgentControl::interrupt_agent` (`core/src/agent/control.rs:330-345`) awaits
+  `send_op(agent_id, Op::Interrupt, None, None)` to the EXACT Child session.
+- **Step 3 — Child-side abort:** `Op::Interrupt` → `core/src/session/handlers.rs:493-495` (`interrupt`) →
+  `Session::interrupt_task` (`core/src/session/mod.rs:5347-5354`) → `abort_all_tasks(TurnAbortReason::Interrupted)` →
+  `handle_task_abort` (`core/src/tasks/mod.rs:944-989`): cancels the task's cancellation token (:959); because the
+  reason is `Interrupted` AND `Feature::CodeModeInterrupt` is Stable/default-TRUE at the pin
+  (`features/src/lib.rs:1196-1203`), it awaits `interrupt_active_cells()` (:967-970), which terminates EACH active
+  code-mode cell via `session.terminate(cell_id)` (`core/src/tools/code_mode/mod.rs:164-179`); then it waits at most
+  `GRACEFULL_INTERRUPTION_TIMEOUT_MS = 100` ms for graceful completion (`tasks/mod.rs:72`, `:977-985`), then
+  `task.handle.abort()` (:985), then records the interrupted-turn history marker (:991+).
+- **Step 4 — activity-item emission, strictly AFTER the dispatch returns:** `emit_sub_agent_activity`
+  (`core/src/tools/handlers/multi_agents_v2.rs:44-52`) emits turn-item STARTED + COMPLETED;
+  `emit_turn_item_completed` stamps `completed_at_ms = now_unix_timestamp_ms()` AT EMISSION
+  (`core/src/session/mod.rs:2731-2771`, stamp at :2746); `ItemStarted` is TRANSIENT — never persisted
+  (`rollout/src/policy.rs:212`) — while `ItemCompleted` persists through `persisted_item_completed_event`
+  (:218-268), and in Paginated mode EVERY item kind is kept (`_ => Cow::Borrowed`, :281) including
+  `SubAgentActivity(kind=interrupted)`; `LocalThreadStore::default_history_mode` returns Paginated
+  (`thread-store/src/local/mod.rs:481-484`) and a spawned V2 Child inherits its PARENT's mode
+  (`core/src/agent/control/spawn.rs:823-827`). Wire shape per §19.4's serde citations (payload-level
+  `completed_at_ms`; `SubAgentActivityItem` fields `protocol/src/items.rs:368-375`; `ItemCompletedEvent`
+  `protocol.rs:2060-2074`).
+- **Step 5 — tool response:** `InterruptAgentResult { previous_status }` (interrupt_agent.rs:76) — the PRE-dispatch
+  snapshot (:61), returned as the tool result; never settlement.
+- **Step 6 — Child abort of the pending poll:** the cancelled poll future releases only its OWN store entry via
+  `release_process_id` (`core/src/unified_exec/process_manager.rs:479-491`); per-process terminate is
+  `terminate_process` (:1870+); the terminate-ALL route `terminate_all_processes` (:1823-1839) is reached ONLY through
+  `close_unified_exec_processes` (`core/src/tasks/mod.rs:926-931`) → `clean_background_terminals`
+  (`session/handlers.rs:64-66`, fired by `Op::CleanBackgroundTerminals`, :502-504) and the session-shutdown route
+  (`handlers.rs:311-314`) — the EXHAUSTIVE caller list at the pin, and the native interrupt chain NEVER calls it.
+  §16.2's frozen boundary reproduces exactly at the re-verified pin: a native Child interruption settles the turn and
+  its active cells, does NOT auto-clear the terminal process store, does NOT kill the worker/Companion process, and
+  does NOT cancel the plugin's durable job.
+- The Child's own rollout records the interruption through the native cancellation framing
+  `Wall time: {secs:.1} seconds\naborted by user` for `exec_command` cells (`core/src/tools/parallel.rs:376-382`) —
+  the marker the extractor treats as a valid poll resolution (the evidence.mjs round-7 note,
+  tools/shell-wait-probe/evidence.mjs:1644-1650) and whose event timestamp is the resolution endpoint
+  (`cancelledAfterCall.atMs`) on a record.
+
+**The consequence, confirmed at the actual pin:** the Interrupted item is emitted strictly AFTER
+`agent_control.interrupt(...)` returns — but that return is a HOST-SIDE SUBMISSION RESULT, never a Child
+acknowledgement: at this pin `send_op` delegates to `SessionIo::submit_with_trace`
+(`core/src/thread_manager.rs:1797-1831`, delegation call :1823), whose `submit_with_id` returns after
+`tx_sub.send(sub).await` (`core/src/session/mod.rs:1091-1100`, send at :1095-1096) — the submission is ENQUEUED on
+the Child session's submission channel, and NOTHING in that path awaits Child receipt or handling; the Step-2
+wrapper additionally tolerates `ThreadNotFound`/`InternalAgentDied` as already-dead success, so even the send's
+success does not prove the runtime was alive-and-processing. The item's `completed_at_ms` is therefore a
+post-dispatch, post-submission instant: it bounds the dispatch FROM ABOVE and is never the request-submission
+instant, and it is NEVER by itself evidence that the Child received or processed the interrupt — any such processing
+claim requires the independent Child resolution evidence of f4 (§24.4). The F record's equality (§24.3) is the shape
+the source predicts when the host emits the submission-result item at the settlement instant; **equality alone is
+neither successful delivery nor proof of failed interruption** (the plan §1 F row, unchanged).
+
+### 24.3 What the retained F transcript proves, independent of the source trace (checkbox 2, second half)
+
+The F record exists byte-identical (§24.1) and carries NO rollout bytes (`evidence.rolloutCount: 2` — two rollouts WERE
+captured — `evidence.childToolCallCount: null`; the one withheld unclassified-cell body rides as digest-only,
+SHA-256 `36c90344004996a5b61cf38a102dba1525324828b13bfe7df91d05e93466e7a0`, `parserStage: "wrapper"`). Its retained facts
+(read from the record directly, 2026-10-26):
+
+- **Call side** (`interrupt` block): `requested: true`, `attempted: true`, `family: "v2"` (DIRECT),
+  `delivered: true`, `rejection: null`, `previousStatus: "running"` (NONTERMINAL — the interrupt landed on a live turn),
+  `callCount: 1`, `orderingBound: true`, `exactTargetMatch: null` (the caller target is the suppressed 23-char alias:
+  `{kind: "unknown", value: null, suppressed: true, chars: 23}`), `settled: null` with `settledBasis:
+  "delivery-target-unmatched-no-settlement-claim"`, `pendingWindowObserved: true`, `pendingIntervalMs: 57445`
+  (`timingBasis: "rollout-event-timestamps"`), `deliveryToSettlementMs: null`, `cancelledAtMs: 1792855936561`,
+  `settlementCleanupGenerated: false`, `unreadableContinuationObserved: false`, and the abort-path
+  `missingPrerequisite` naming the independent-identity basis.
+- **Host item side** (`interrupt.hostDelivery`): `itemPresent: true`, `interruptedItemCount: 1`, `joinedItemCount: 1`,
+  `foreignItemCount: 0`, `idJoin: true` (basis `outer-call-id` — the item's id equals the interrupt call's
+  host-assigned id `call_42b2122794b744cbaa4796ee19481a75`), `agentThreadIdMatch: true` (the item's `agent_thread_id`
+  equals the spawn-acknowledged Child), `rootRolloutOwned: true`, `timed: true`,
+  `completedAtMs: 1792855936561`, `insidePendingWindow: false`, `admitted: false`,
+  `reasons: ["host-activity-after-settlement"]` — the single remaining reason (§23.12.5).
+- **Identity** (`interrupt.partialFacts.spawnIdentity`, version 1, basis `raw-rollout-fixture-proof`): `exact: true`,
+  `childThreadId: "01a16e89-1667-7920-9f9d-9e0bfac06235"`,
+  `parentThreadId: "01a16e88-920e-7463-819a-a20c339281dd"`, `sourceRolloutsSha256: c526862c…`.
+- **Durable side** (`child.durableSamples`, version 1): 460 attempts (≤600), interval 1000 ms with ZERO shortfalls,
+  identity established at attempt 35 (the baseline read, started 1792855840491 / completed …493), 32 retained summaries
+  with 394 rolled off (every roll-off a superseded same-aggregate member), stopped at the SHARED SIGNAL
+  (`durable-sampling-stopped-at-shared-signal`); the transition at attempt 153: aggregate `settled`, job `cancelled`,
+  `stopCause: "session-end"`, stop intent cause `session-end` requestedAt `2026-10-24T15:32:38.087Z`, completed
+  1792855958643; the final sample (attempt 460, started 1792856269878 / completed …901) identical — a TEARDOWN-time
+  observation; the pre-transition reads through attempt 152 completed `2026-10-24T15:32:37.651Z` with the job
+  `running`, aggregate `unresolved`, `executorLinkage: "verified"`, `snapshotEqual: true`.
+- **Held timeline** (the monotonic probe clock): poll start 72670, root acknowledgement 156582, hold deadline 460056,
+  ended 460071 — the SCHEDULED hold-deadline observation end (deadline = observation detection 40056 + 420000);
+  `processTermination` both false (zero kills); `cleanupBoundaryAtMs` ABSENT (no termination-initiation boundary — and
+  none SHOULD be manufactured, the §22-round-3 semantics); `survivalControl` OBSERVED facts `null`; `stdoutCapture`
+  incomplete (`capture-meta-missing` — the interrupted path never delivered a final stdout).
+- **Same-clock numeric comparisons established** (the epoch-ms rollout-event clock): the item's emission stamp EQUALS
+  the cancellation marker stamp (both `1792855936561` — exact, same clock, not a cross-clock projection); the last
+  pre-transition durable read completed 21.090 s AFTER that stamp; the session-end stop intent was requested 21.526 s
+  AFTER it.
+
+**PROVEN by the retained bytes alone** (no source trace needed): (P1) exactly one interrupt-shaped call was attempted
+and the host processed it on the HOST side (`delivered: true` — the host-side submission result of §24.2; never by
+itself Child-receipt or Child-processing proof); (P2) the Child's original-handle observation was in the PENDING state
+before the call and the call was issued 57445 ms after the attributable pending instant on ONE rollout-event clock — a
+partial ordering plus a measured interval; (P3) the host emitted exactly ONE joined interrupted item (call-id join,
+agent-thread join, owning-Root rollout), timed at the cancellation-marker millisecond; (P4) the durable job stayed
+running/unresolved through a read completing 21.090 s after the emission stamp, and the durable winner that DID appear
+rode a REAL session-end stop intent 21.526 s after — the §16.2 convergence OBSERVED on live data; (P5) zero kills, no
+recorded termination boundary, the held turn ended at its scheduled hold deadline with a natural worker exit.
+
+**NOT PROVEN by the retained bytes** (each precisely named): (N1) the request-submission epoch instant itself —
+`callAtMs`/`pendingBeforeCall.atMs` are not persisted (only their 57445-ms distance); (N2) sub-millisecond ordering of
+the emission against the resolution — the same-millisecond equality cannot distinguish the submission-result emission
+before/at/within the resolution instant; (N3) scan completeness — no rollout bytes survive, so whether the ONE unclassified cell hid a
+second interruption or an explicit stop can never be re-established from this record; (N4) settlement attribution and
+latency — the exact-target guard held (`settled: null`); (N5) no-collateral — `survivalControl` observed facts `null`
+(parser uncertainty about WHERE the control's launch/read statements live — the unclassified cell is the only
+collection-level anomaly, §23.12.7); (N6) local process reaping — the registered named-unobservable `null`; (N7) the
+60000-ms comparison — never applied (the admission set was unsatisfied; no latency was ever measured).
+
+The source trace (§24.2) is CONSISTENT with all of it: emission-after-dispatch explains P3's stamp position; the
+durable-job convergence explains P4. **Registered consequence (prospective — Tasks 2–4 only): F stays UNQUALIFIED
+(`qualified: false`, 8 named reasons, §23.12.7) under ANY new interpretation; no new semantics below retroactively
+marks F passed.**
+
+### 24.4 The causal-contract preregistration (checkbox 3; frozen BEFORE any implementation, applies to Tasks 2–4)
+
+**The five fact classes — distinct facts, never folded into each other:**
+
+| Fact | Supported source of truth | Credit role | Forbidden readings |
+| --- | --- | --- | --- |
+| f1 REQUEST SUBMISSION | the interrupt call's attributable position in the OWNING ROOT's rollout — joined to the CHILD rollout's poll/resolution stamps ONLY through the cross-rollout timestamp/bounds comparison (the ordering mechanism below), never through event positions: `callCount === 1`, family v2 DIRECT, `orderingBound: true`, `pendingBeforeCall.observed === true` with finite `atMs`, and the call's attributable bounds (`callAtMs` — the poll-interval field, evidence.mjs:1665; `notBeforeMs`/`notAfterMs` — the attribution machinery inside `extractInterruptInteraction`, declared evidence.mjs:1765/:1783, computed :2209/:2234, projected :2649/:2650 as the exported `callNotBeforeMs`/`callNotAfterMs`; the interval computation precedent driver.mjs:5606-5611) | credit leg (a): the exact joined request demonstrably issued while the original observation was pending | the item emission stamp is NEVER this instant (source-proven post-dispatch); a pending-state observation alone is never a request; the caller-supplied target text is never relabeled authoritative; the Root rollout's call position and the Child rollout's poll/resolution positions are NEVER index-compared (the extractor keeps cross-rollout indices incomparable — cross-rollout ordering runs on timestamps/bounds only) |
+| f2 HOST SUBMISSION RESULT / IDENTITY RESOLUTION | the §19.4 six-conjunct item admission with its window comparison RELOCATED (below): `itemPresent`, `idJoin` (basis `outer-call-id`), `agentThreadIdMatch`, `rootRolloutOwned`, `timed` (finite positive `completedAtMs`), plus `delivered`/`deliverySent` | credit leg (b): a successful exact-target HOST-SIDE SUBMISSION — the tool send returned after the interrupt was ENQUEUED on the Child's submission channel (the §24.2 mechanics), with the exact pending Child's identity joined; an enqueue fact only, never by itself a Child receipt/processing/resolution claim (f4's independent evidence is required for any processing claim) | its `completedAtMs` is never the dispatch instant and never alone a latency endpoint; it is never a Child-receipt or Child-processing proof; its being at/after the resolution is the recorded submission-result-at-resolution SHAPE (the `acknowledgementAtResolution` field keeps its historical name and is read ONLY as this host-side stamp shape) — by itself neither a delivery failure nor request-timing proof |
+| f3 PENDING INTERVAL | [attributable original-handle poll start, first resolution): the child-rollout bound-observation machinery with the closing bounds binding (terminal completion, native cancellation, nonterminal resolution, explicit cell terminate — evidence.mjs:3071-3105); f1's request enters this window ONLY through the cross-rollout timestamp/bounds comparison (the ordering mechanism below) | the window f1's request must sit strictly inside; natural completion excludes delivery | a clock floor, a control read, or the held monotonic clock NEVER establishes it; an unestablishable attributable start stays unestablished (`host-activity-window-unestablished`), never approximated |
+| f4 CHILD RESOLUTION | the interrupted observation's resolution with its own attributable stamp, keeping its own named class: the native-cancellation marker (`aborted by user` framing — parallel.rs:376-382), a nonterminal resolution, an exit-code completion, or an explicit cell terminate | credit leg (c): a corresponding native resolution — attributable to THIS delivery (after the admitted request, exact target, complete scan) | a resolution is never attributed to an unconfirmed target (`delivery-target-unmatched-no-settlement-claim`); a natural winner stays natural; explicit terminate and cleanup are never native settlements |
+| f5 MEASUREMENT/CLEANUP ENDPOINTS | each read/observation's OWN completion instant versus the explicit measurement cutoff (§24.8) and the earliest recorded termination-initiation boundary (§23.5 machinery) | pre-cutoff, pre-boundary completion earns credit; at/after = named observation facts with ZERO settlement credit | absence of a kill is never proof of pre-teardown settlement; a later SessionEnd never backfills missing evidence; teardown never manufactures a boundary |
+
+**Same-clock numeric comparisons SEPARATE from explicit causal ordering.** A numeric comparison (`completedAtMs ==
+cancelledAtMs`, `callAtMs >= pendingBeforeCall.atMs`, `latency ≤ 60000`) is ONLY a same-clock arithmetic fact on its
+named clock (the epoch-ms rollout-event clock or the held-turn monotonic clock — the two are never joined, §19.6's
+three-clock rule). A CAUSAL claim ("the request arrived while the observation was pending", "this resolution is the
+delivery's settlement") additionally requires the ORDERING MECHANISM to be established. For f1 that mechanism is the
+**cross-rollout timestamp/bounds comparison**, preregistered here because the two sides live in DIFFERENT rollouts —
+the interrupt call in the OWNING ROOT's rollout, the original-handle poll and its resolution in the CHILD rollout —
+so event-position ordering inside one rollout can never join them: the extractor keeps cross-rollout indices
+INCOMPARABLE and orders cross-rollout by rollout-event TIMESTAMPS exclusively ("event indices from different arrays
+cannot order anything" — evidence.mjs:2387-2392), and an index witness exists ONLY inside a single rollout
+(evidence.mjs:2280). The registered witness for the managed trial, on the ONE epoch-ms rollout-event clock (the F
+record's own stamp join — the Root-side item stamp vs the Child-side cancellation marker, §24.3 — is this clock's
+established cross-rollout precedent): the call's attributable bounds against the Child-side stamps — bounds-eligible
+pending (`pending.atMs ≤ callNotBeforeMs`, evidence.mjs:2306) with every resolution provably at/after
+`callNotAfterMs` (`resolvedThroughBounds`, evidence.mjs:2316-2317; the identical poll-interval form,
+evidence.mjs:2404/:2414), or the exact-timestamp pair (`pending.atMs ≤ callAtMs`, evidence.mjs:2281) with the
+resolution ordered after it. The witness proves a timestamp-ordering BOUND — the request demonstrably inside
+[poll start, resolution) on that one clock — NEVER a dispatch instant (declaration (i) below, unchanged) and never a
+cross-rollout index claim; incompatible clocks stay non-crediting (the family-(9) rule, unchanged). For f4 the
+mechanism stays the settlement-attribution guard chain (driver.mjs:5474-5530). An equality of stamps proves neither.
+
+**The window-comparison relocation — the prospective Task-1-design registration (the decision §23.12.8 explicitly
+anticipated: "a window-registration change for the item-at-settlement emission semantics").** The registered §19.4
+conjunct 4 compared the ITEM EMISSION stamp to the pending window and required it strictly inside ([poll start,
+resolution), closing comparisons `>=` — evidence.mjs:3079-3105). The F record proved the host emits the
+submission-result item AT the resolution instant (equality to the millisecond), so that comparison fails closed BY
+DESIGN on the physically expected shape. The new contract RELOCATES the comparison: the [poll start, resolution) test
+binds to the REQUEST (f1's call-side attributable position, strictly inside the window); the submission result (f2) is
+admitted through its identity/timing conjuncts, and its emission stamp's relation to the resolution is RECORDED as a
+typed fact (`acknowledgementAtResolution: "at" | "after" | "before" | "unestablishable"`, same clock, sub-ms ambiguity
+stays `unestablishable`) that never fails the admission by itself. **This is NOT the forbidden `>=` → `>` flip:** the
+old comparison is RETIRED, not inverted — the emission stamp no longer carries the window conjunct at all, and the two
+contradiction guards on it STAY: an emission stamp strictly BEFORE its own call's attributable bound is the named
+pre-call contradiction (`host-activity-pre-call-timing`), and an emission stamp BEFORE the attributable poll start is
+`host-activity-outside-pending-window` — never admitted. Implementation (Task 2) must version the changed
+join/oracle pair, replay BOTH retained records offline proving the old verdicts BYTE-IDENTICAL (`qualified: false` on
+both — the falsification duty that makes this registration honest), and add the counterexample matrix.
+
+**The credit rule — all three legs REQUIRED, plus the complete-scan conjunct:** a trial's native-interruption credit
+requires (a) the exact joined request demonstrably issued while the original observation was pending (f1, strictly
+inside the f3 window); (b) a successful exact-target HOST-SIDE SUBMISSION (f2's admitted identity join — an enqueue
+fact that never credits by itself); (c) a corresponding native resolution (f4 attributed to the delivery through the
+settlement guards). The Child-side half of the contract is carried entirely by (c): any claim that the Child received
+or processed the interrupt requires f4's independent resolution evidence, an enqueued-but-unresolved submission never
+credits, and the tolerated already-dead error path (§24.2) is not a resolution and never substitutes for (c). The
+scan-completeness conjunct stays load-bearing on (c): when an unclassified cell coexists with the recognized call, the
+scan cannot prove
+exactly-one delivery or rule out a second interruption/explicit stop inside it, so the RESOLUTION cannot be attributed
+to this delivery (`ambiguous-cell-scan-incomplete-not-attributed`, §23.15) — recognized f1/f2 facts keep riding the
+record as observation facts, never credit.
+
+**Non-crediting families (each fails closed by its named reason):** (1) natural/pre-request completion
+(`post-completion` guard; `completedBeforeCall`; `natural-completion-misclassified-as-cancelled`); (2) ambiguous
+timestamps/order (`ordering-unbound`; `host-activity-window-unestablished`); (3) multiple attempts
+(`multiple-delivery-attempts`; `host-activity-call-count-not-one`; `host-activity-duplicate-item`); (4) unrelated
+resolutions (`delivery-target-unmatched`; `foreign-call-rollout`; `host-activity-foreign-rollout`); (5) incomplete
+scans (`ambiguous-cell-scan-incomplete-not-attributed`; `host-activity-item-bound-exceeded`); (6) stale/foreign/
+cross-Root targets (`host-activity-agent-thread-mismatch`; `owning-root-identity-conflict` — the close-out-6 union
+gate; `sample-identity-unbound`); (7) wrapped/unjoinable call IDs (`host-activity-wrapped-interrupt-unjoinable` — the
+delegate-allocated nested exec id never persists, §19.9 codex round 4); (8) truncated/ambiguous scans (evidence
+truncation; whole-case `inconclusive`); (9) incompatible clocks (`timingBasis: "unavailable"` — the held monotonic
+clock is never joined to epoch stamps); (10) rejected/unsent/unreadable/unresolved submissions (`delivery-rejected`;
+`delivery-unobserved`; `unreadable-continuation`; `submission-enqueued-unresolved` — the f2 send returned but no f4
+resolution ever joined, so the enqueued-but-unresolved submission never credits;
+`already-dead-tolerance-not-a-resolution` — the tolerated `ThreadNotFound`/`InternalAgentDied` path is not a Child
+resolution, §24.2); (11) explicit cell terminate (`host-activity-after-explicit-stop`;
+`explicit-cell-termination-not-attributed`); (12) budget cleanup (`cleanup-termination-is-not-native-settlement`;
+`budget-cleanup-termination-not-attributed`); (13) genuine later SessionEnd (its own stop cause/timestamp, never the
+earlier interrupt's settlement). Items (11)–(13) may retain observations; none supplies native-interrupt credit.
+
+**What the supported evidence proves — the three declarations, never renamed:** (i) a DISPATCH INSTANT is NOT
+established by any emission stamp (source-proven post-dispatch); the closest supported request-position facts are the
+call's attributable bounds. (ii) A REQUEST-TO-RESOLUTION UPPER BOUND is establishable when the call's `notAfterMs` (or
+exact `callAtMs`) and the resolution stamp join on ONE clock: `resolution − notAfter ≤ request-to-resolution ≤
+resolution − notBefore` — recorded as an upper-bound form, never renamed a dispatch instant. (iii) PARTIAL ORDERING
+(pending-state < call < resolution, one clock, with the f3 interval) is the F record's established form. The 60000-ms
+responsiveness comparison is computed ONLY on a causally admitted trial (all legs satisfied on that trial's own
+record); it is never applied to an ordering-only or upper-bound-only record, and an ordering-only record never borrows
+the responsiveness verdict.
+
+### 24.5 The fixture-only readiness choreography (checkbox 4)
+
+- **The starting point (unchanged authority):** the owning Root's ONE direct native tool call — `interrupt_agent` in
+  DIRECT mode carrying the EXACT full agent id copied from the spawn acknowledgement — and the EXACT observed Child. A
+  clock floor alone is not readiness proof (source-frozen: the §16.4/§19.9/§20.5-item-2 registration names the
+  control-clock floor an OBSERVER-COORDINATION APPROXIMATION, never a pending acknowledgment, never a Child-poll
+  observation).
+- **The usable choreography — the byte-unchanged §16.4 five-step registration** (fixture.mjs
+  `survivalControlPromptDirective`, tools/shell-wait-probe/fixture.mjs:126-136): (A) spawn the Rescue child and retain
+  the spawn acknowledgement's EXACT full agent id; (B) immediately after the child launch, launch the bounded control
+  ONCE on its OWN `exec_command` handle; (C) readiness coordination through the control clock — bounded empty-input
+  reads (each `yield_time_ms` 1000), every read requiring a fresh line, until a line whose index is at least 40 (the
+  ~80-second floor); (D) the §16.4 pre-delivery read (one more fresh mid-run line, index still below the line count,
+  ordered before the interrupt); (E) the exactly-one `interrupt_agent` call with the exact full agent id. The F record
+  demonstrates the choreography performed: the child's poll started at held-clock 72670 ms, the readiness floor and
+  pre-delivery read were executed, and the record's `pendingWindowObserved: true` + `pendingIntervalMs: 57445` ESTABLISH
+  the actual pending window on the delivered attempt — the approximation did not block the measurement.
+- **The investigated candidate — a bounded fixture coordination marker.** A producer (the DRIVER, never the model,
+  never the Child) reads the fixture-owned Child rollout mid-run (inside the fixture's disposable `CODEX_HOME`),
+  detects the actual pending original-handle poll event, and writes a dedicated coordination artifact OUTSIDE product
+  storage; the directive's readiness step would read that artifact instead of the control clock. **Assessment: NOT
+  preregistered as an improvement for N; registered as an OPTIONAL Task-2/3 investigation with four binding
+  constraints.** Grounds: (1) it adds a second recognized `exec_command` read family for the Root — a recognition
+  surface Task 2 must freeze and negatively test FIRST (the §23.2 grammar discipline; no grammar growth without its own
+  offline evidence); (2) a driver-side mid-run rollout read is a NEW collection seam — the §23.5 discipline froze
+  rollout observation to the driver's existing collection, and the new seam needs its own registration, provenance and
+  non-interference proof (read-only, never holds a lock, never creates state inside `CODEX_HOME`); (3) model obedience
+  remains the load-bearing dependency either way — the marker removes the approximation, not the obedience risk; (4)
+  the existing choreography already established the actual pending window on F (point 2 above), so the candidate
+  addresses a marginal, not blocking, defect. Whatever is chosen: the producer observes ONLY the already-owned original
+  pending call, writes ONLY the dedicated fixture coordination artifact, and NEVER polls/stops/launches Companion or
+  grants authority; Root never takes over Child handles, never polls a pending inner call twice, never spawns a
+  replacement, never uses a separate app-server as owner (the fail-closed scan unchanged); and the LIVE evidence must
+  still prove the actual pending window through the recorded host timeline — the floor or the artifact is never
+  readiness proof.
+
+### 24.6 Blocker classification (checkbox 5; each classified separately, investigated within this task)
+
+| Blocker | Classification | Basis and required follow-up |
+| --- | --- | --- |
+| Acknowledgement timing | RESOLVED-BY-THIS-REGISTRATION | The mechanism is understood from two independent sources: the source trace (the item is emitted strictly after the awaited dispatch returns, and that return is a submission-channel ENQUEUE — `submit_with_id` returns after `tx_sub.send(sub).await`, never an awaited Child receipt — §24.2) and the F record (the submission-result item's stamp EQUALS the cancellation stamp to the millisecond, §24.3). The prospective relocation (§24.4) registers the corrected semantics — enqueueing (f2) and Child resolution (f4) stay distinct facts, and any processing claim requires f4's independent evidence; Task 2 implements it versioned offline first, with the F/I byte-identical replay as the falsification duty. No live case is spent to learn this. |
+| Incomplete call scan | OPEN — instrument-side, bounded | The unclassified wrapper family (F: 2 lines/228 bytes, `parserStage: "wrapper"`, line-1 prefix class `other`; I: 217 bytes) aborts the whole-case analysis; the withheld bodies are unreconstructable identity anchors (`36c90344…` / `be3b9a1c…`). A bounded lexical binding-and-equal-sink whitelist is the registered investigation candidate (the plan's Task-2 checkbox 3), NOT a promised fix; fail-closed settlement refusal (`ambiguous-cell-scan-incomplete-not-attributed`) stands meanwhile. |
+| Unobserved collateral launch/read | OPEN — same demonstrated cause as the scan blocker | The survival control's OBSERVED facts are `null` on both I and F; the extraction consumes the captured rollouts through the frozen parser, so the control's launch/read statements may live inside the unclassified cell — PARSER UNCERTAINTY, never negative evidence (§23.12.7). Follow-up: only the Task-2 recognition work or a separately registered supported surface; the oracle and the §16.4 emission-tag machinery are never rewritten to make this pass. |
+| Teardown fence | RESOLVED-BY-THIS-REGISTRATION | No termination-initiation boundary exists on I/F (zero kills; the scheduled hold-deadline observation end), and teardown never manufactures one (§22-round-3). The final settlement read completed AT the hold deadline — TEARDOWN-TIME, zero qualification credit. The explicit measurement cutoff (§24.8) is preregistered: it is persisted BEFORE planned observation teardown, independent of any actual termination-initiation boundary, and post-cutoff reads get zero settlement credit by name. |
+| Unobserved local/remote/durable/guard duty | OBSERVABLE (remote/durable/guard) + NAMED-UNOBSERVABLE (local) | Remote/durable/guard are observable through the pre-cutoff passive samples plus the §19.5 predicates — the F run demonstrated 27 admitted identity-bound intact samples entering join v2 (attempts 42, 129–152, 153, 460 — §23.12.6; the 26-sample count is the I record's separate offline re-adjudication total, the §23.12.1 finding-1 annotation's replay of record `13aae0ca…`) with the session-end cause discipline held. Local reaping stays the registered named-unobservable `null` (§19.9 codex round 3): Gate D's companion layer qualifies through the remote outcome alone (the pinned contract). A true missing production stop/reconciliation path would be a potential product defect reported as such — NOT permission to rewrite the oracle; the F record demonstrates NO such missing path (the no-durable-stop-authority behavior IS the §16.2-frozen design). |
+| Actual lifecycle behavior | OBSERVED — the expected shape, not a defect | §16.2's convergence was observed live on F: the interrupt persisted NO durable stop authority; the job stayed running/unresolved 21.090 s past the emission stamp; the REAL session-end stop intent did the durable settlement 21.526 s after; zero kills (§24.3 P4). The remaining lifecycle question for N is the turn/cell/poll's responsiveness to the admitted request (the 60000-ms comparison) — a live fact, not pre-certifiable. |
+
+### 24.7 The duty/evidence table (checkbox 6; frozen from the ACTUAL production predicates, current worktree bytes)
+
+| Duty | Production predicate (exact source, this worktree) | Supported observation | Origin and fence | Precise absent mechanism (when unavailable) |
+| --- | --- | --- | --- | --- |
+| Root/Child/job/owner/executor + runtime generation | `observeSpawnAcknowledgementIdentity` exact spawn join (evidence.mjs:2683-2696); `interruptDurableSnapshotSupplier` owner = observed PARENT + `expectedExecutorAgentId` = observed Child (driver.mjs:2688-2713); binding identity via the exported `rescueBindingAuthorityView` (`childAuthority.childAgentId`, `anchorJobId`/`currentJobId` — rescue-binding.mjs:28-36); generation carried by `rescueExecutionReservation` + `workerLeaseId` on the exact job record (state.mjs:78; recovery.mjs:74; binding-guard stale detection returns `kind: 'stale'` at state.mjs:397-407, with the guard constructing `currentJobId`/`workerLeaseId` at :402-405, and the `RESCUE_BINDING_STALE` error itself defined by `staleRescueBinding()` at state.mjs:2675) | the exact spawn acknowledgement recovered from raw rollouts; the owner-index join resolving EXACTLY ONE validated entry; `executorLinkage: "verified"` (the F record: owner `01a16e88-920e-…` = the spawn parent; job `3b3cbaed536d…bba7683b`) | exact-identity-only; BOTH identities required (either missing ⇒ NO supplier, named); any disagreement ⇒ `owning-root-identity-conflict` hard refuse (close-out 6's union: spawn recovery + supported linkage) | an inexact spawn recovery keeps BOTH ids null with its named reason (`observeSpawnAcknowledgementIdentity`); a missing/ambiguous/unreadable owner index is the named `owner-binding-missing`/`owned-job-ambiguous`/`owner-binding-entry-unreadable` state |
+| Native turn/cell | the §19.4 admission (conjuncts 1/2/3/5 + the §24.4-relocated f1 window) + `interruptDeliveryAttributionGuard` (evidence.mjs:4008-4022) + the settlement basis chain (driver.mjs:5474-5530) | the admitted host item; `delivered`/`deliverySent`; the settlement basis; `cancelledAtMs`; `pendingWindowObserved` | every §19.4/§24.4 counterexample fails closed; latency computed ONLY on the exact-target attributed settlement (driver.mjs:5624-5636) | the specific named conjunct failure (the admission reasons list) — never a guessed positive |
+| Remote result/winner | TERMINAL = {succeeded, failed, cancelled} (recovery.mjs:18); consumed ONLY from a positively observed final durable snapshot (join v2; samples never ground it) | the production-published terminal winner in the exact job record (F: `cancelled` via session-end) | the §19.5 TERMINAL set guards it; `cancelling` is a RETAINED GUARD, never terminal; natural winners stay natural | an unobserved winner ⇒ `terminal-winner-unobserved` (never inferred from terminality alone) |
+| Local Companion/process cleanup | the registered named-unobservable limitation (§19.9 codex round 3); verified process identity machinery (`captureVerifiedProcessIdentity`/`inspectVerifiedProcessIdentity`, driver.mjs:1306-1320) for DECLARED fixture-owned identities | `localProcessReaping: null` on the interrupt path — NEVER inferred | exact verified identity/nonce/start identity/ancestry; never PID reuse or a process-name change as termination proof | the completion-shaped watch is frozen out of the interrupt case, the Child's post-abort rollout carries no Companion exit, and the fixture identity watch tracks the host process — the layer is genuinely unobservable on this path (registered, never fabricated) |
+| Marked runner obligations | `isMarkedRunnerClaim` (recovery.mjs:237-240) + `endedObligationSettled` (recovery.mjs:148-158): terminal + marked claim ⇒ outstanding duty | the F record's genuine shape: `runnerCleanupDuty: {applicable: false, reason: "not-applicable: the record carries no marked runner claim"}` | exported production predicates only; a terminal status alone never proves duties discharged | a marked claim riding a terminal record is the named outstanding duty — never silently discarded |
+| Writable exclusion | a nonterminal writable rescue job holds the workspace writable guard (state.mjs:1539-1543) | `writableGuard: {applicable: false, retained: false, reason: "not-applicable"}` when the production not-retained state is observed; otherwise retained-guard = SAFE unresolved | "guard retained" is never a failure of settlement and never readable as success; the F run observed the job `running` (guard held) through 15:32:37.651Z, then settled by session-end | an unknown guard state stays named-unestablished, never folded into another layer |
+| Binding currency | the rescue-binding partition, `RESCUE_BINDING_VERSION` 3 (rescue-binding.mjs:11-20); `bindingCurrent` conjunct (§19.3(d)) | `bindingCurrency: {state: "current", anchorsJob: 3b3cbaed536d…}` (F final sample) | a positively resolved binding pair matching the observed Child is POSITIVELY current; absent pair/no anchor ⇒ `binding-executor-linkage-unverified`, never settled (§19.9 codex round 2); stale/advanced is unproven, never false-by-guess | unknown stays named |
+| Stop-intent authority | `stopCauseFor` grants stop authority ONLY to explicit stop intent, matching-epoch SessionEnd receipts, or attached-foreground host-coordination loss (rescue-lifecycle.mjs:114-122); NO durable stop intent exists for a foreign-origin interrupt (§16.2) | the F record: the interrupt persisted NO stop intent; the REAL `'session-end'` intent appeared 21.526 s after the emission with its own cause/timestamp | a genuine later SessionEnd keeps its own cause — never the interrupt's settlement; the pinned session-end distinction (§23.9 codex round 2) | a stop intent's presence would be evidence of a REAL stop authority — never assumed |
+| Lifecycle epoch | epoch-scoped obligations (`discoverSessionEndObligations`, recovery.mjs:185-229) | the F record's genuine shape: `lifecycleEpoch: {applicable: false, reason: "not-applicable: no epoch was declared for this observation"}` | applicable only when an epoch is declared for the observation | no epoch declared = the named not-applicable, never a silent pass |
+| Unrelated survival control | the §16.4 emission-tag machinery (the B = D − L sound upper bound, evidence.mjs:3172-3196; pre-delivery mid-run read ordered before the interrupt) | F OBSERVED facts `null` (parser uncertainty — §24.6); the DECLARATION verified (`c510d81f…`, 60 lines @2000 ms) | survival proven ONLY by an emission tag strictly AFTER the delivery bound; buffered-only bytes, completion-before-delivery, and premature/abnormal exit reject; the control is never Status-observed, never sent input, never stopped | unestablishable anchors keep the layer fail-closed (`survival-control-unadjudicated`), never qualified by absence |
+
+**Never-substitute rules (frozen):** a terminal job or a fake ZCode exit NEVER substitutes for all applicable duties;
+natural success stays success (a natural terminal winner is never relabeled); safe unresolved guard retention is
+reported as SAFELY PRESERVED but NOT fully settled. `not-applicable` is claimed ONLY with its demonstrated
+production-path reason on the record (the §23.6 genuine-shapes rule). Aggregates are `settled` ONLY when ALL
+applicable duties are POSITIVELY established; every positive requires positive integrity proof (per-snapshot
+fingerprint equality, exact identity, own completion timestamps).
+
+### 24.8 Budgets and the schedule freeze (checkbox 7; frozen BEFORE any launch; observation bounds only)
+
+| Quantity | Frozen value | Origin |
+| --- | --- | --- |
+| Candidate empty observation (cap) | 3600000 ms | the already-measured fixture policy (§16.1/§20.3; unchanged) |
+| Fixture work (harmless hold) | 420000 ms, hold deadline ANCHORED at the observation-detection instant (F record: 40056 + 420000 = 460056 held-clock) | the §20.2/§23.12.2 registration, carried |
+| Total case budget | ≤ 1200000 ms (never a production timeout; the 100-hour ceiling unchanged) | the §23.5/§20.5-item-5 shared budget |
+| Passive read cadence | ≥ 1000 ms between read starts (scheduler contract + actual-clock re-check, §23.5 dated annotation) | the §23.5 frozen schedule |
+| Passive read attempts / retained summaries | ≤ 600 attempts; ≤ 32 retained summaries (rolling ledger: baseline + transitions pinned; roll-offs named) | the §23.5 frozen schedule + the codex-backfill annotation |
+| Readiness coordination | the control-clock floor ONLY: line index ≥ 40 (≈80 s after control start at the 2000-ms cadence) | the §16.4 revision; the §24.5 candidate stays optional |
+| Readiness cutoff | the control's designed end — line index 60 (≈120 s after control start; ≈161 s elapsed on the F margins); a readiness loop unfilled at that instant is the named `readiness-cutoff-exceeded` outcome (a live model-obedience fact, preregistered) | this section's new freeze; the §16.4 sizing margins (R 57623 / L 68044 / F 72670 held-clock poll starts) |
+| Gate release | AT the hold deadline — the observation-detection instant + 420000 ms: `runHeldHostTurn`'s held phase runs to the deadline and only THEN releases the fixture completion gate (hold loop + release site: tools/shell-wait-probe/driver.mjs:1590-1595 acknowledgement-first, :1765-1850 gate-first), and the fixture worker's `scheduleCompletion` publishes a natural completion ONLY after that gate reads `release` (tests/fixtures/fake-zcode-cli.mjs:258-277, gate poll :273-275) — so every lawful natural finish is strictly POST-release | NEW in this preregistration (the Task-1 review correction): the instrument mechanics that order the schedule below |
+| Worker lifetime | the held turn ends at its scheduled POST-CUTOFF observation end — teardown at hold deadline + 15000 ms (cutoff + 5000 ms; never a manufactured boundary) | the §23.10.6/§23.12.7 records (the recorded cohort's hold-deadline ends), extended by this section's post-cutoff teardown freeze |
+| Control lifetime | 60 lines @2000 ms (designed exit 0; ≈120 s after control start) — sized to be demonstrably active at delivery and observable afterward within the same finite budget (F margins: readiness ≈120 s elapsed, delivery ≈130 s elapsed, control end ≈161 s elapsed) | the §16.4 revision sizing, re-verified against the F record |
+| Measurement cutoff | the observation-detection epoch instant + 420000 + 10000 ms (i.e., hold deadline + 10000 ms — strictly AFTER the gate release); persisted on the record BEFORE planned observation teardown; defined independently of any actual termination-initiation boundary | NEW in this preregistration (the plan's Task-3 cutoff duty), REPOSITIONED by the Task-1 review correction: a cutoff BEFORE the deadline would exclude every lawful natural finish, because the gate releases only AT the deadline and the worker cannot publish completion before that release; the 10000-ms post-release interval exceeds the ≥1000-ms read floor + read duration, so a finish at/after the release still gets a pre-cutoff read |
+| Native responsiveness comparison | the 60000-ms criterion (release-qualification.mjs:806) remains the comparison ONLY on a causally admitted trial (all §24.4 legs satisfied on that trial's record); post-cutoff or admission-failed records never apply it | §16.5/§19.6/§20.5 item 6, unchanged |
+
+**The schedule (the frozen instants, in order; the gate-release mechanics keep THREE settlement-measurement instants
+DISTINCT and ordered — gate release (6), measurement cutoff (8), observation teardown (9)):** (1) child launch (t0);
+(2) the survival control launched ONCE immediately after (STEP 2); (3) the readiness floor (control index ≥ 40, ≈80 s
+after control start); (4) the §16.4 pre-delivery read (fresh line, index < 60, ordered before the interrupt); (5) the
+ONE `interrupt_agent` delivery (STEP 5) — expected inside the control's designed lifetime; (6) the hold deadline /
+COMPLETION-GATE RELEASE at the observation-detection instant + 420000 ms — `runHeldHostTurn` releases the fixture
+completion gate only here (its held loop runs to the deadline and the release follows it, driver.mjs:1590-1595 and
+:1765-1850), and the fixture worker can publish a natural completion ONLY after that release (fake-zcode-cli.mjs
+gate poll :273-275); (7) the worker's possible LEGITIMATE natural finish — strictly AFTER the gate release, at any
+point in the bounded post-release window; reads continue at the ≥1000-ms floor throughout, so a finish in this window
+is sampled before credit closes; (8) the MEASUREMENT CUTOFF at hold deadline + 10000 ms — the bounded
+read/collection interval after an in-budget natural finish and before the cutoff is exactly the gate-release→cutoff
+window (10000 ms, exceeding the ≥1000-ms read floor + read duration); a finish AFTER the cutoff is recorded as the
+named post-cutoff limit (observation facts, zero settlement credit), never manufactured settlement and never a silent
+budget extension; (9) planned observation teardown AFTER the cutoff, at hold deadline + 15000 ms — a fixed bounded
+grace in which the cutoff read persists on the record before teardown; budget expiry 1200000 ms remains the outer
+named bound never reached on the recorded cohort (the scheduled observation end is 420000 + 15000 = 435000 ms after
+detection, far inside the budget; the 1200000-ms budget never expired on I or F).
+
+No value above becomes a new production timeout, detector, or ceiling change: they are OBSERVATION bounds on the
+fixture trial only (the §16.5 composition table stands; production has NO aggregate delivery-to-settlement deadline;
+the 100-hour ceiling is unchanged).
+
+### 24.9 Exit, gates and the handoff to Tasks 2–4
+
+**Exit (plan Task 1):** the acceptance design is now source-backed and falsifiable — the pins (§24.1), the
+mechanism/retention trace at the actual source pin (§24.2), the retained-record provability boundary (§24.3), the
+preregistered causal contract with its relocated window comparison, credit rule and non-crediting families (§24.4),
+the readiness choreography and its candidate (§24.5), the blocker classification (§24.6), the duty/evidence table
+(§24.7) and the budget/schedule freeze (§24.8). Every unavailable mechanism is NAMED (installed event field
+completeness beyond the F record's item-level facts, scan-completeness closure, the collateral read's parser
+uncertainty, local reaping) rather than guessed. Tasks 2–4 implement and execute EXACTLY this registration; Task 2's
+versioned offline replay of the I/F records (byte-identical `qualified: false` on both) is the mandatory
+falsification gate before any live work; the N/C ledger is spent only per the plan's Task 4.
+
+**Hygiene gates (executed 2026-10-26 on the exact docs bytes):** recorded in this section's final commit —
+`node scripts/check-line-endings.mjs` exit 0; `git diff --check` clean; the section's one relative markdown link
+(the plan) resolves — the spec and the previous plan appear as bare §-references, not links; the diff touches ONLY
+this report and the plan file.
+
+**Named investigation tasks handed to Tasks 2–4 (unknowns, never guessed APIs):** (1) the relocated admission's
+versioned implementation with the F/I replay duty (Task 2); (2) the bounded lexical binding-and-equal-sink whitelist
+investigation — freeze accepted grammar and bounds from its own offline evidence before implementing (Task 2); (3) the
+fixture coordination-marker candidate — only if Tasks 2/3 demonstrate its recognition surface and non-interference
+proof (Tasks 2/3); (4) the actual installed event-field completeness and scan completeness on a fresh capture — N's own
+measured outcomes (Task 4); (5) native turn/cell responsiveness under the admitted contract — N's own measured
+outcome, against the unchanged 60000-ms comparison (Task 4).
