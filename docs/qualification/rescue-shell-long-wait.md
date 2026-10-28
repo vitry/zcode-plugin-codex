@@ -19088,3 +19088,357 @@ about later bytes).
 **96/96 pass, 0 failed, 0 cancelled, clean self-exit** (92 + the four grammar-amendment tests); the probe suite,
 shell-research total, selection, lint, typecheck, `git diff --check`, check-line-endings and the EMPTY
 prohibited-path diff re-run on the final rebased bytes — counts recorded in the §24.11 round record below.
+
+## 25. 2026-10-29 local-settlement Task 1: the actual-target map and the local observation-contract preregistration (offline; zero model turns, zero live launches)
+
+Task 1 of [the local-settlement plan](../superpowers/plans/2026-10-28-rescue-shell-wait-local-settlement.md), executed
+2026-10-29 in worktree `.worktrees/rescue-shell-wait-local-settlement` (branch
+`docs/rescue-shell-wait-local-settlement`). Read-only and offline throughout: zero model turns, zero
+`ZCODE_SHELL_WAIT_E2E=1` runs, zero host launches, no production/source/config edit. The only executed code was a set
+of HARMLESS LOCAL Node controls (trivial child processes under the OS temp directory, exercising the fixture-generated
+preload source against a fixture-declared stand-in entry — never the installed launcher, never any companion/provider
+binary), plus `stat`/`shasum`/`ps` reads of locally owned processes and files. This section is ADDITIVE — every prior
+section stands byte-unchanged. It PREREGISTERS the actual-target map and the observation contract Tasks 2–4 implement
+and execute; it is not a live result and it changes no past verdict.
+
+### 25.1 Pins (checkbox 1; all commands executed 2026-10-29 inside the worktree; nothing trusted forward)
+
+- Plugin worktree: branch `docs/rescue-shell-wait-local-settlement`; `git rev-parse HEAD` =
+  `a8f54d06f640777d539e8b6b44bb23dc924bec5f` (the plan §1 fresh base, the PR #73 merge); `git status --short` = ONLY
+  the untracked plan file — the tracked tree is clean, zero modified tracked files.
+- **Selected trial binary — the retained measured 0.163.0 executable, STILL AVAILABLE, re-verified today:**
+  `/Users/zhangzikai/.codex/packages/standalone/releases/0.163.0-aarch64-apple-darwin/bin/codex` (absolute realpath —
+  it resolves to itself), `--version` = `codex-cli 0.163.0`, SHA-256 =
+  `8813367285524ac798dd96d1b071aea30d58708c7226fd236cd275cf1cfdee31` — byte-identical to the §16.1/§19.1/§21.1/§23.1/
+  §23.12.1/§24.1 pins. Every existing long-wait/cadence/stdout/identity conclusion composes with a trial on this
+  binary WITHOUT any cross-version claim; no substitute executable is launched and no applicability statement is owed.
+- Ambient CLI, re-recorded SEPARATELY at its own realpath (never blended, never launched by this design): `command -v
+  codex` now resolves to `/Users/zhangzikai/.codex/packages/standalone/releases/0.165.0-aarch64-apple-darwin/bin/codex`,
+  `--version` = `codex-cli 0.165.0`, SHA-256 =
+  `a45099154d7fb4a5ed8a56f40966a95deb938e508bab23e6985035c709e9a85a` — a FURTHER host drift beyond the §24.1-recorded
+  ambient 0.164.0, whose binary is still present at its recorded path with its recorded digest
+  (`d8990e3ee7acfbc2…` — first 16 hex chars re-verified today). Host drift is NOT an experiment-budget reset: the
+  exact 0.163.0 absolute path is what any future command binds; a launch on any other version stays on that version
+  with cross-version applicability UNESTABLISHED (the §24.1 rule, carried).
+- REQUESTED model: `gpt-6.1-sol` — carried from the §16.1/§20.2/§20.3 registration; its most recent EXECUTED
+  supported-model discovery record is the §24.12 pre-launch re-pin (`codex debug models` on the pinned binary:
+  11 catalog entries, `gpt-6.1-sol` `visibility: "list"` at `priority: 0`). NOT re-run here (authenticated network
+  discovery outside this analysis-only task — the §24.1 precedent); the pre-launch duty re-executes it immediately
+  before any V launch. OBSERVED EFFECTIVE model metadata stays the `model: null` contract (driver.mjs:84, inside the
+  `EXECUTING_OBSERVER_PROVENANCE` object, driver.mjs:69-87); requested and effective stay separate facts, never
+  blended.
+- Configuration layers, REQUESTED (unchanged fixture policy): fixture cap `background_terminal_max_timeout =
+  3600000` (in-fixture `capVerified` re-read at setup); `--exec-default-ms 3600000`; `--poll-ms 3600000`;
+  `--cap-ms 3600000`; wait-policy `config-default` (the fixture's `configDefaultWaitingParagraph` @3600000);
+  worker hold 420000 ms; total case budget ≤ 1200000 ms; the V2 wait feature bounds at the source pin (min 10000 /
+  default 30000 / max 3600000). No new measured value exists in this section.
+- Installed-fixture artifact provenance: the fixture-generated capture preload's digest recomputed on THIS worktree's
+  bytes (the control harness below) = `cb168b74d5175b9915d12cbc3e37f3655403cfdb4611940b2694f7196020e362` —
+  byte-identical to the §24.1 installed F-record artifact digest, so the preload bytes are provenance-continuous
+  across the merged PR #73 bytes. The §20.4 instruction hashes and the §24.1 fixture declarations remain the recorded
+  provenance of THEIR runs; every executing fixture artifact for any future V launch is regenerated and digested at
+  V's own freeze (the §20.7 duty), never copied forward. **Explicit deferral of the plan checkbox-(a) item
+  "Role/instruction provenance": NO Role/instruction hash is recomputed in this section — those hashes are per-run
+  Gate-B preconditions (the §17.3–§17.4/§20.4 practice), and the V pre-launch freeze re-executes the
+  instruction/config/artifact pins as recorded facts of THAT launch; presenting them here as settled would be a
+  partial deviation, so the item is named deferred rather than claimed re-pinned.**
+- Retained records: the N private record STILL EXISTS and re-verified byte-identical TODAY —
+  `/tmp/shell-wait-native-acceptance-n.d14e7297/case-output/rescue-interrupt.record.json` = SHA-256
+  `df45756b787a3d6ac90ed7d69db700e90112267d179fe152f8358f458abdb0d8` (95712 bytes, mode 0600 inside the 0700
+  directory), matching the §24.13 recording. The F/I records at their §24.1 `/tmp/shell-wait-interrupt-closure-*`
+  paths are NO LONGER PRESENT (verified absent 2026-10-29; OS temp cleanup) — their §24.1-recorded digests remain
+  historical identifiers, and §17.12/§23.12/§21.2 remain the records of those runs.
+- Probe module digests on THIS worktree's bytes (SHA-256; all match the §24.14 final-bytes record):
+  `driver.mjs` = `be27d9e489fb3910fc373cfe64a9c5834ba99d18dd7519fa0cc834e01523fc06`, `evidence.mjs` =
+  `2cddad6744d3ef0c7b34e131d4a7cd002ed1f61e68f61b8e832c6109f54a6df1`, `release-qualification.mjs` =
+  `9663d73393097ce1e1345e4772e76e91c6b0b73609c34549a83dda5abb2f8b43`, `closure-observation.mjs` =
+  `46b7f5e282b811c3bb88518a6f2d36f54da2f586eac74fe40c134978a90f6fa7`, `shape-diagnostic.mjs` =
+  `b034c2b80ff9b59f45ce362fbe5ae889e9c34ebe7a1bfb0226d79bb285e6b35c`, `fixture.mjs` =
+  `4730908d388f4ebc8124e6f599c71f5c925607d1bac482382e7aa402bd11b877`, `wait-comparison.mjs` =
+  `eba75edbac4d69be42b312b7ff09582314e034d93aaa56cf73ba93024c622146`. The executing-observer provenance digest
+  recomputed on these bytes = `16b4735e1f4f0a86e20730787b1a69d1bbcb6ac204584fba0a6614db29f5d472` — exactly the
+  §24.14-recorded successor value (`driver.mjs:69-87`; tag `zcode-shell-wait-observer-v5`, `model: null`); N's frozen
+  `5b30f9c4…` stays the historical digest on N's own record. Any observer bytes this campaign adds (Task 2) change
+  this digest, which is RE-FROZEN at V's own pre-launch duty.
+- The local-settlement ledger (plan §4) contains ONLY V (1) and V-fix (1 conditional) — NO long-wait/repeat/cadence
+  trial is added to it and no prior allowance is reopened.
+
+### 25.2 The actual foreground Companion process (checkbox 2; exact mapping, no command-name search, no ambient enumeration)
+
+- **The invocation surface is exact and source-pinned.** The managed Role/skill instructs the Child to run exactly
+  `node "<installed launcher path>"` where the path ends in `/skills/rescue/launcher.mjs`
+  (`renderRescueLauncherCommand`, scripts/lib/rescue-launcher-command.mjs:27-41, command rendered at :38, leaf
+  suffix :7). The launcher's argv whitelist accepts exactly the six fixed command shapes including
+  `['invoke-prepared','rescue']` (skills/rescue/launcher.mjs:11-18).
+- **The Companion IS the launcher OS process — in-process dispatch, no second OS process.** The launcher imports
+  `runCompanionCli` (launcher.mjs:9) and its entry guard dispatches it in-process for the launcher's own invocation
+  (launcher.mjs:30-36, default dispatch parameter launcher.mjs:21-27). `runCompanionCli` runs the direct
+  `invoke-prepared rescue` invocation through `runDirectInvocation` in the SAME process (scripts/zcode-companion.mjs:2740,
+  function at :2722), writes the bounded public success envelope to stdout (`process.stdout.write(formatted.text)`,
+  zcode-companion.mjs:2751; exit code at :2753) or the bounded error envelope (:2761-2768), and its own module-entry
+  guard is the same realpath shape (zcode-companion.mjs:2773, `sameEntryPath` :2775+). A different JavaScript module
+  therefore does NOT imply another OS process: exactly ONE Node process plays the launcher and the Companion.
+- **The transport layer is broker-mediated — the Companion never spawns the ZCode process directly.** The Companion
+  resolves the ZCode CLI through `discoverLaunch` → `discoverZCode({ explicitPath: env.ZCODE_PATH })`
+  (zcode-companion.mjs:2318-2320; candidate order scripts/lib/zcode-discovery.mjs:42-49) and creates its client ONLY
+  through `createManagedZCodeClient` (zcode-companion.mjs:150/:166/:231/:1624/:1819/:1952/:2283; import :21), which
+  calls `ensureZCodeBroker` (scripts/lib/zcode-client.mjs:288-294, call :292). That ensure path launches a SEPARATE
+  DETACHED DAEMON process (`spawnDaemon({ command: process.execPath, args: [<installed zcode-broker.mjs>] },
+  { args: [configPath], cwd: tmpdir(), env: options.env })`, scripts/zcode-broker.mjs:600; `detached: true` + `unref`,
+  scripts/lib/process.mjs:80-88 — on POSIX a NEW PROCESS GROUP, not a double fork, so the daemon's OS parent is the
+  Companion while the Companion lives), and the Companion then CONNECTS to it over IPC (`createZCodeClient` with
+  `brokerEndpoint` → `connectZCodeBroker`, zcode-client.mjs:269-278; zcode-protocol.mjs:502+). The DAEMON owns the
+  protocol spawn: `initializeProtocolGeneration` → `spawnZCodeProtocol(this.options.launch, …)` (zcode-broker.mjs:1011-1012)
+  → `spawnProcess(launch, { args: ['app-server'] })` (scripts/lib/zcode-protocol.mjs:494-497). The fixture pins the
+  launched binary to the fake-ZCode fixture via `ZCODE_PATH` (tools/shell-wait-probe/fixture.mjs:564, constant :56),
+  so the fixture-path chain is EXACTLY Companion → broker daemon → the fake-ZCode app-server process, which writes
+  its own marker `{pid, ppid, nonce?}` at startup (tests/fixtures/fake-zcode-cli.mjs:23-25) — **the marker's `ppid`
+  is the BROKER DAEMON's PID, never the Companion's** (this section's original Task-1 claim recorded the marker's
+  `ppid` as the Companion PID; corrected by the codex review round, 2026-10-29). The daemon also inherits the
+  Companion's environment at its spawn (zcode-broker.mjs:600 passes `env: options.env`), so fixture capture-env
+  values — including the capture nonce — are NOT role-distinguishing between Companion and daemon; the role selector
+  is the entry/argv shape, never the nonce alone. This is the "fake-peer" the §24.7 identity watch tracks: the
+  existing `captureVerifiedProcessIdentity` reads the FAKE-ZCODE marker file (fixture.mjs:1342-1381) and
+  `inspectVerifiedProcessIdentity` re-verifies THE FAKE process (fixture.mjs:1315-1333) — it has never captured the
+  Companion itself, and neither the fake-peer marker nor a verified fake-ZCode PID proves the real Companion's
+  identity.
+- **The selected Child is NOT an OS process.** A managed V2 Child is an in-process agent session of the SAME codex
+  host OS process that owns the Root; its unified-exec process manager spawns the launcher invocation as ONE PTY
+  child of that host process (the §19.3(a) pinned spawn chain: separate stdout/stderr receivers merged before any
+  observation surface, `codex-rs/utils/pty/src/process.rs:320-344`; env inheritance from the default all-inherit
+  shell-environment policy, `config/src/shell_environment_policy.rs:135-136`). Exact Child identity is the host-side
+  thread/agent id namespace (the spawn acknowledgement's `agent_thread_id`), joined through the existing
+  identity/owner machinery — never an OS PID.
+- **The exact mapping, end to end:** selected Child (in-process session, exact agent id from the spawn
+  acknowledgement) → its process manager's ONE `invoke-prepared rescue` PTY cell → the launcher/Companion OS process
+  (Node, argv[1] = the installed launcher realpath, argv[2..] = `invoke-prepared rescue`) → its DETACHED broker-daemon
+  child (the `ensureZCodeBroker` spawn, zcode-broker.mjs:600; daemon `ppid` = the Companion PID at capture time,
+  subject to reparenting after the Companion's exit) → the daemon's ZCode app-server spawn (the fake-ZCode process;
+  marker `ppid` = the broker-daemon PID) → the durable job/executor/generation facts (job id +
+  `rescueExecutionReservation` + `workerLeaseId` + `ownerLifecycleEpoch` on the exact job record, owner-index join;
+  §24.7 row 1). No shell-level intermediate is assumed beyond the pinned PTY spawn; each OS parentage fact is
+  established AT CAPTURE TIME by the Task-2 observer (the §25.4 ancestry rule), never by a process-tree walk.
+
+### 25.3 The fixture-only preload seam: verdict, propagation and process selection (checkbox 3; harmless local controls EXECUTED 2026-10-29)
+
+**The candidate EXISTS and is selected** (plan §2: "If an existing helper suffices, document that decision"):
+`closurePreloadSource`/`writeClosurePreload`/`captureEnvironment` (tools/shell-wait-probe/closure-observation.mjs:117-302,
+:313-331, :346-384) and the fixture's arming block (tools/shell-wait-probe/fixture.mjs:623-657 — preload written into
+the disposable fixture root :626, declared entry = the installed launcher realpath :627, per-scope 64-hex nonce :624,
+capture dir 0700 :628, `NODE_OPTIONS` composed :629-637, bounded declaration recorded :646-656). The gate is the
+frozen §19.3(b) selector: the four fixture-only capture env vars present and well-formed (closure-observation.mjs:81-84,
+:156-159), `realpathSync(argv[1])` equal to the declared launcher realpath (:163-164), argv strictly
+`['invoke-prepared','rescue']` (:160-161) — INERT in every other process. On match it creates the wx 0600 capture
+file AT PRELOAD INSTALL (closure-observation.mjs:182-183 — i.e., BEFORE the launcher's own module body runs),
+intercepts stdout writes (P2), and registers exit bookkeeping at two idempotent points (`exit` re-ordered listener +
+wrapped `process.reallyExit`, :281-299), publishing the closed meta record (:202-231).
+
+**Harmless controls executed (zero host/provider launches; stand-in entry under the OS temp directory; the generated
+preload digest `cb168b74…` = the §24.1 installed artifact digest):**
+
+| Control | Setup | Result |
+| --- | --- | --- |
+| Gated activation + exit meta | exact entry/argv/env through `captureEnvironment` with the `--require` fragment | capture + meta written; `admitStdoutCapture` = `complete` with `exitAttribution: "verified"` against the supplied expected exit; digest re-verification passed |
+| Positive startup capture | poll the nonce-keyed capture path from the parent while the child runs | capture file EXISTS ~22-35 ms after spawn, while the child is alive — created at preload install, before the entry module executes |
+| OS identity + nonce readability of a launcher-like process | `ps -o pid= -o ppid= -o lstart= -p <pid>` and `ps eww -o command= -p <pid>` on the live child | lstart triple parses (the fixture's `readMacProcessStart` shape, fixture.mjs:1255-1262); the nonce env var IS readable via `ps eww` (the fixture's `readProcessEnvironmentMarker` macOS read, fixture.mjs:1302-1304) |
+| Inert elsewhere | foreign `node -e`; wrong argv (`role-status rescue`); capture env absent | all three run normally, ZERO capture files — the entry+argv+env selector rejects every non-declared invocation |
+| Propagation depth | parent node (NODE_OPTIONS set) spawns a nested node grandchild with a sentinel-writing tap | BOTH parent and grandchild load the preload — `NODE_OPTIONS --require` propagates through nested node descendants; PROCESS SELECTION is the gate, not propagation |
+| Selection under propagation | grandchild + C-run descendants under the armed env | capture directory gains exactly the gated invocation's nonce-keyed pair — no foreign nonce keys |
+
+**Propagation through the ACTUAL Child spawn is live-established, not source-presence only:** the §19.3(e) item-1
+blocker is CLOSED by recorded outcomes — §21.1 recorded `NODE_OPTIONS=--require …` verified live on the actual
+spawned host process environment at the I launch, and the I/F/N records' stdout-capture admissions read
+`{status: "incomplete", reason: "capture-meta-missing"}` (§21.2/§23.12.7/§24.13; re-read byte-identical from the
+retained N record today). By the admission's own ordering (`admitStdoutCapture`, closure-observation.mjs:549-559) a
+`capture-meta-missing` verdict requires the capture FILE to exist — and that file is created ONLY by the P1 gate
+matching the exact installed launcher realpath + argv + fixture env. Three independent live runs therefore observed
+the preload loading in the REAL launcher process. **The same records name the seam's residual gap:** the meta
+(exit bookkeeping) was missing on every interrupted run — exit listeners do not survive uncatchable termination, so
+exit/absence evidence can never rest on the meta alone (the §25.4 contract below makes OS-side observation the
+termination authority and the meta mere corroboration).
+
+**Why the other candidate seams are not selected (each with its reason, none required to succeed):** a Companion-side
+exit marker written by the pinned host binary is a production change outside research authority (§24.13 mechanism 2);
+ancestry-scoped `ps` descendant snapshots anchored at the fake-ZCode host break when the host's own disappearance
+re-parents the descendants before the Companion cleanup instant (§24.13 mechanism 4 — the anchor-breaking record);
+command-name search and ambient process enumeration are prohibited by this plan; a second app-server or a replaced
+launcher/renderer is prohibited. No supported seam is blocked: the preload candidate carries identity/exit metadata
+without changing canonical code or the host binary.
+
+### 25.4 The frozen process-evidence contract (checkbox 4; binding for Task 2's implementation and every V adjudication)
+
+1. **Real Companion role and exact invocation binding:** the observed process is the real Companion ONLY with ALL of:
+   the fixture-declared installed launcher realpath equal to `realpath(argv[1])`, argv exactly
+   `['invoke-prepared','rescue']`, and the per-invocation fixture capture env present — the §19.3(b) selector
+   verbatim. A fake-peer identity (the fake-ZCode marker) never attests the Companion; a marker written by one
+   process never attests another merely because they inherited a nonce.
+2. **Per-invocation nonce:** a fresh 64-hex value per fixture invocation scope, generated by the fixture
+   (fixture.mjs:624), carried in the private capture env, NEVER reused across invocations and NEVER persisted in any
+   record (only its digest-bearing meta contract is).
+3. **Positive startup capture:** the nonce-keyed capture pair's creation is the startup existence fact (created at
+   preload install, before the entry body — control-verified above), to be recorded with its first-observation
+   timestamp and, per Task 2's extension, an identity record (pid, OS start identity, first-write instant). A MISSING
+   startup marker is a NAMED observer fact (`capture-file-missing`) — it is NEVER "never launched" and NEVER launch
+   readiness: three live runs show meta-missing with the file present, and a failed/torn capture write can leave no
+   file at all.
+4. **PID plus OS start identity and the justified ancestry links:** identity = PID + OS start identity (`lstart` on
+   darwin / `starttime` on Linux — fixture.mjs:1255-1278) + the environment-nonce verification, captured and
+   re-verified by the race-safe double-read (fixture.mjs:1315-1333) against the capture nonce variable — the existing
+   helper already accepts the variable name parameter (fixture.mjs:1315). The nonce binds an invocation SCOPE, not a
+   role: the broker daemon demonstrably inherits the Companion's environment at its spawn (zcode-broker.mjs:600), so
+   the same nonce can appear in several same-scope processes, and the ROLE selector is the entry/argv shape (the
+   item-1 selector for the Companion; the daemon identified by its own zcode-broker.mjs argv + fixture config path;
+   the transport by its marker). The justified ancestry chain is the TWO-hop join verified at this revision:
+   (a) the transport's marker `ppid` equals the captured BROKER-DAEMON PID (fake-zcode-cli.mjs:24 — the daemon owns
+   the protocol spawn, zcode-broker.mjs:1012), checked in BOTH directions at capture; (b) the broker daemon's own
+   `ppid` equals the captured Companion PID at capture time (the `spawnDaemon` parentage, zcode-broker.mjs:600 +
+   scripts/lib/process.mjs:80-88 — the POSIX detached spawn is a new process group, not a double fork), likewise a
+   CAPTURE-TIME fact only: after the Companion's exit the daemon is reparented, and a changed parent NEVER proves
+   death — for the daemon or any other link; reparenting never destroys an already captured start identity. If a
+   hop's endpoints are not BOTH positively captured, the join across that hop stays NAMED-unestablished — the
+   Companion↔transport attribution never crosses an unestablished hop by inference, and a marker's `ppid` equality
+   with an UNCAPTURED assumed parent is never positive evidence.
+5. **Local observation timestamps/clock:** probe-side instants on the held-turn monotonic elapsed clock
+   (driver.mjs:1413-1414, `held-turn-monotonic-elapsed-ms`) plus wall-clock epoch ms (driver.mjs:1355) for
+   comparability with the §23.5 sampling instants and rollout timestamps; the OS `lstart` string is recorded verbatim
+   as its own fact. A value that cannot be established stays null/unknown, never zero.
+6. **Exit/absence evidence:** termination of the previously established generation = verified presence (double-read)
+   earlier + verified absence of the SAME pid + start identity later, at/after the planned endpoint and before the
+   measurement cutoff for credit. A process is NOT proven gone because its parent changed, its nonce read failed,
+   permission was denied, or a reused PID differs (a different start identity is a DIFFERENT process). The exit META
+   corroborates identity/outcome on a normal exit only — it cannot cover uncatchable termination (the three live
+   `capture-meta-missing` records are the measured demonstration). Observation failure (ps failure, env truncation,
+   torn read, watcher losing the exit race) is NAMED and keeps the layer unestablished.
+7. **Applicability:** per the §25.5 table; unknown is neither not-applicable nor settled; `not-applicable` requires
+   its demonstrated production-path reason on the record (the §23.6 genuine-shapes rule).
+8. **Integrity (per evidence class — never one admission gate for all):** `admitStdoutCapture` is the admission
+   route for the TERMINAL STDOUT layer ONLY — bounded files, 0600 in the nonce-keyed fixture directory,
+   hasher-authoritative digest re-verification before use, closed meta shape and captureError vocabulary
+   (closure-observation.mjs:410-477, :526-665); tampered/foreign/truncated/oversize captures are named failures
+   exposing no bytes. It is NOT the admission route for the process-evidence contract: an invocation killed before
+   its exit bookkeeping necessarily yields `incomplete`/`capture-meta-missing` (the meta lstat and its named verdict,
+   closure-observation.mjs:555-559), so routing process evidence through it would block exactly the interrupted-run
+   case this campaign targets and would contradict item 6. The startup identity record and the OS-side observations
+   (liveness/absence double-reads, the §25.4 item-4 ancestry joins) carry their OWN independent integrity admission —
+   bounded record shapes, source binding (nonce + start identity + argv shape), capture/read timestamps — specified
+   and tested by Task 2. Missing exit metadata NEVER blocks process-evidence admission, and a missing/incomplete
+   stdout capture never erases positively admitted identity or absence facts.
+9. **Causal/measurement/cleanup origin:** every persisted fact names its origin — pre-launch offline control, live
+   observation, or cleanup housekeeping — and respects the §25.7 fences; observer write failure is a named
+   missing-observation fact, never a replaced business result; cleanup-side facts (fixture disposal, termination
+   machinery) keep `nativeInterruptionClaimed: false` and never seed settlement.
+
+**The one-sentence falsifiable observation contract:** IF the selected Child's `invoke-prepared rescue` launcher
+invocation launches under the armed fixture capture environment, THEN within the §25.7 observation window the
+fixture-owned capture directory MUST gain that invocation's nonce-keyed capture file (its meta pair completed only
+at a lawful exit) and Task-2 identity record bound to one (PID, OS start identity, two-hop ancestry join through the
+positively captured broker daemon) whose OS-side double-read later reports verified absence strictly before the
+registered measurement cutoff — and any missing/torn/foreign nonce, failed OS read, missing exit metadata, or
+identity change is a NAMED unestablished/observer fact that never becomes death, never becomes "never launched",
+and never becomes settlement.
+
+### 25.5 The local duty table (checkbox 5; frozen from the actual production predicates, this worktree's bytes)
+
+| Duty | Predicate (exact source) | Observation on the actual path | Status on this path |
+| --- | --- | --- | --- |
+| The invocation process (real Companion) | the §25.4 selector; launcher in-process dispatch (launcher.mjs:9, :21-27, :30-36) | the §25.3 preload seam + OS-side identity verification | APPLICABLE — the campaign's target layer; unobserved stays unestablished, never inferred |
+| The declared transport descendant (fake-ZCode) | the fixture-pinned `ZCODE_PATH` (fixture.mjs:564) + the fake marker (fake-zcode-cli.mjs:23-25); spawned by the BROKER DAEMON (zcode-broker.mjs:1012), never the Companion | the existing verified-identity machinery: capture/inspect/terminate (fixture.mjs:1342-1381, :1315-1333, :1394-1460) | APPLICABLE — already observable; its exit is a fixture-owned fact, never the Companion's |
+| The broker daemon (the declared `ensureZCodeBroker` spawn) | the detached daemon spawn (zcode-broker.mjs:600) with its config under the fixture broker partition; the mediation hop of the §25.2 map | its OWN positive capture (zcode-broker.mjs argv + fixture config path; `ppid` = Companion PID at capture time only) | APPLICABLE as the mediation hop of the ancestry join (§25.4 item 4) — never collapsed into the Companion or the transport; unestablished when not positively captured |
+| Positively identified surviving descendants | only identities positively captured under a declared nonce | per-identity observation, each with its own nonce/start identity | APPLICABLE ONLY as positively identified — no full-machine process-tree requirement; an unknown extra descendant is named unknown, never silently ignored, and the anchor-breaking limit of §24.13 mechanism 4 stands |
+| Marked runner claims | `isMarkedRunnerClaim` = writable rescue + marked runner version + digest `workerLeaseId` + positive `childPid` (recovery.mjs:237-240); terminal + marked claim ⇒ outstanding duty (recovery.mjs:148-158) | the passive durable reader over the exact job record | APPLICABLE when the exact job record carries the claim; a marked claim on a terminal record is the named outstanding duty |
+| Writable exclusion | a nonterminal writable rescue job holds the workspace guard (`WRITABLE_JOB_EXISTS`, state.mjs:1537-1543) | the passive durable reader | SEPARATE duty — retained guard = SAFE unresolved, never a settlement failure, never success |
+| Binding currency | the rescue-binding partition, `RESCUE_BINDING_VERSION` 3 (§19.5 item 6) | the existing binding authority view | SEPARATE duty — carried unchanged from §24.7 |
+| Remote result/winner + durable obligations | `TERMINAL` = {succeeded, failed, cancelled} (recovery.mjs:18); `endedObligationSettled` (recovery.mjs:148-158) | the §19.5 passive snapshot strategy | SEPARATE duties — NEVER substitutes for the local process layers (the §24.13 standing prohibition, carried verbatim) |
+
+Never-substitute rules carried verbatim from §24.7: a terminal job or a fake-ZCode exit never substitutes for the
+local process duties; every positive requires positive integrity proof; `not-applicable` is claimed ONLY with its
+demonstrated production-path reason; unknown stays named.
+
+### 25.6 Native-interrupt and downstream lifecycle authority (checkbox 6; epoch/receipt provenance frozen)
+
+- **Native interrupt authority is unchanged:** ONE `interrupt_agent` call to the exact Child id, admitted through
+  the §19.4 six-conjunct set on the owning Root's rollout, with the request/acknowledgement/resolution separation and
+  the relocated pending-window comparison (§24.4) — the 60000-ms responsiveness comparison applies ONLY on a causally
+  admitted trial (release-qualification.mjs:806 defined; :923-927 applied) and is never a production timeout.
+- **Downstream stop authority is EXACTLY three-legged** (`stopCauseFor`, scripts/lib/rescue-lifecycle.mjs:114-122):
+  an explicit stop intent; a SessionEnd receipt matching the job's owning lifecycle epoch (`:119` — the receipt
+  evidence is computed as `matching` vs `older` from the epoch comparison, recovery.mjs:427, against the
+  `ownerLifecycleEpoch` host-lifecycle field, state.mjs:64); or attached-foreground host-coordination loss
+  (rescue-lifecycle.mjs:120, gate :126-137). A delivered foreign-origin interrupt is none of these: NO durable stop
+  intent may exist from the interrupt itself (the §16.2 frozen boundary, reproduced at §24.2 step 6).
+- **Epoch/receipt provenance for a genuine production SessionEnd:** the real receipt's own cause, timestamp and
+  matching-epoch fact ride the record as the SESSION-END settlement (the F/N measured shape: the genuine
+  `'session-end'` stop intent settled the job 21.526 s / 14.342 s after the interrupt item stamp) — a later SessionEnd
+  is NEVER relabeled as the earlier interrupt, is NEVER inferred from timing alone, and an unrelated/unknown-origin
+  SessionEnd, gate release or harness cleanup cannot backfill native proof.
+- **Natural success and safe unresolved retention are preserved without fabricating cancellation:** a natural
+  terminal winner stays natural (never relabeled; the misclassification guard release-qualification.mjs:970-972); an
+  interrupted Child that leaves a running job safely guarded is reported as the actual unresolved-guard state, never
+  completed by any hidden cancel/reconcile act.
+
+### 25.7 The observation schedule freeze (checkbox 7; frozen BEFORE any implementation; observation bounds only)
+
+The §24.8 schedule is carried VERBATIM as the starting bounds (same executor, same case family), with the
+local-observer duties inserted:
+
+| Quantity | Frozen value | Origin |
+| --- | --- | --- |
+| Candidate empty observation (cap) / poll | 3600000 ms | §16.1/§20.3/§24.8, carried |
+| Worker hold (fixture work) | 420000 ms, anchored at the observation-detection instant | §20.2/§23.12.2/§24.8, carried |
+| Total case budget | ≤ 1200000 ms (never a production timeout; the 100-hour ceiling unchanged) | §23.5/§20.5 item 5, carried |
+| Readiness cutoff | the survival control's designed end (line index 60, ≈120 s after control start; named `readiness-cutoff-exceeded` outcome) | §24.8, carried |
+| Gate release | AT the hold deadline (driver.mjs hold loop + release site per §24.8 row) | §24.8, carried |
+| Measurement cutoff | hold deadline + 10000 ms (`MEASUREMENT_CUTOFF_AFTER_HOLD_MS`, driver.mjs:4760), persisted BEFORE planned teardown | §24.8, carried |
+| Observation teardown | cutoff + 5000 ms (`OBSERVATION_TEARDOWN_AFTER_CUTOFF_MS`, driver.mjs:4769) — never a manufactured boundary | §24.8, carried |
+| Durable passive reads | ≥ 1000-ms cadence, ≤ 600 attempts, ≤ 32 retained summaries (`sampleDurableSnapshots`, driver.mjs:4978-4986) | §23.5/§24.8, carried |
+| Local-process observation reads (NEW) | armed BEFORE the launch (pre-host gate), sampled concurrently with the held turn on the SAME monotonic clock, bounded by the SAME case deadline and the §24.8 instants — additional local reads add NO separate budget and every read completes before the measurement cutoff for credit | this freeze (plan checkbox 7: "explicitly bound additional local reads on the same case deadline") |
+| Pre-cutoff collection window | the gate-release→cutoff window (10000 ms, exceeding the ≥1000-ms read floor + read duration): a lawful in-budget natural finish is collected BEFORE the cutoff, never assuming worker startup equals initial detection | §24.8, carried |
+| Native responsiveness comparison | 60000 ms, ONLY on a causally admitted trial; not a production timeout | §16.5/§24.8, carried |
+
+No value above becomes a new production timeout, detector, or ceiling change. The local-observer arming/persistence
+insertion is the ONLY new schedule element this campaign adds; its runtime enforcement (arming pre-host, persistence
+before disposal, cutoff fences) is Task 3's tested wiring.
+
+### 25.8 Schema/platform, failure labels, applicability decisions and the selected seam (checkbox 8; frozen BEFORE implementation)
+
+- **Platform of record:** darwin/aarch64 (this host), with the Linux reads (`/proc`) carried by the existing helpers
+  (fixture.mjs:1266-1278, :1293-1301); the macOS `ps eww` environment read and `lstart` identity read were both
+  exercised live in the §25.3 controls.
+- **Failure-label vocabulary (closed, reused or newly owned by this campaign's layers):** capture admission statuses
+  `complete | missing | incomplete | truncated | invalid` with the named reasons (`capture-file-missing`,
+  `capture-meta-missing`, `capture-meta-nonce-mismatch`, `entry-realpath-mismatch`, `byte-count-mismatch`,
+  `capture-exit-code-mismatch`, `write-after-finalization`, `capture-truncated`, `capture-digest-mismatch`,
+  `capture-utf8-invalid`, and the closed `capture-*` captureError vocabulary, closure-observation.mjs:393-404, :410-477);
+  identity facts `ZCODE_SHELL_WAIT_MARKER_ABSENT` (confirmed absence, never launch liveness),
+  `ZCODE_SHELL_WAIT_MARKER_INVALID`, `ZCODE_SHELL_WAIT_PROCESS_EXITED` (confirmed permanent disappearance of the
+  DECLARED identity, fixture.mjs:1355-1378); termination outcomes `{attempted, signalled, exited, failure}`
+  (fixture.mjs:1481-1489); the named schedule outcomes (`readiness-cutoff-exceeded`, the post-cutoff limit, the
+  missing-exit outcome, `natural-completion-misclassified-as-cancelled`); the §19.4/§24.4 admission reasons; and the
+  campaign-level dispositions `acceptance-proven | observer-blocked | production-defect-observed` (plan Task 5).
+  Unknown cells of ANY new fact stay named-unknown with their own reason — no new label may silently fold into an
+  existing one, and the existing stdout-capture schema (version 1) is preserved unless a versioned change is
+  registered and compatibility-tested (Task 2's duty).
+- **Applicability decisions (frozen):** the invocation process, the declared broker daemon, and the declared
+  transport descendant are APPLICABLE on every V case; positively identified surviving descendants are APPLICABLE
+  only as captured; marked-runner, writable-guard, binding, remote and durable duties keep their §24.7/§25.5
+  separations; `localProcessReaping` ceases to be the named-unobservable ONLY when the §25.4 contract's facts are
+  actually captured on a trial — until then the layer stays unestablished, and a launch without the capture armed is
+  the §24.13 amendment's registered deviation, not to be repeated (the Task-3 pre-host gate refuses it).
+- **The selected seam:** the fixture-only `NODE_OPTIONS --require` preload (§25.3) — extended by Task 2 with a
+  startup identity record (nonce, entry realpath, argv, first-write instant, PID/start identity when the OS read
+  supplies it) while the stdout-capture contract and its schema stay intact. Feasibility claims above are
+  FIXTURE-TESTED (harmless controls + the recorded live capture-file facts), not a new installed observation; the
+  first armed V case remains the place where the FULL §25.4 contract (identity + exit) is measured live.
+
+### 25.9 Exit, gates and the handoff to Tasks 2–4
+
+**Exit (plan Task 1):** the actual-target map (§25.2), the selected seam with its propagation/selection controls
+(§25.3), the falsifiable observation contract (§25.4), the duty table (§25.5), the lifecycle-authority freeze (§25.6),
+the schedule (§25.7) and the schema/labels/applicability freeze (§25.8) are preregistered; no supported local seam is
+blocked, so this plan is NOT observer-blocked at Task 1. Every feasibility claim is fixture-tested; nothing below
+Task 1 is claimed observed. Tasks 2–4 implement, wire and execute EXACTLY this registration; any deviation is a
+registered amendment, never a silent re-decision.
+
+**Hygiene gates (executed 2026-10-29 on the exact docs bytes):** `node scripts/check-line-endings.mjs` exit 0;
+`git diff --check` clean; `node --test tests/test-selection.test.mjs` 6/6 pass, 0 failed, 0 skipped, exit 0; the
+diff touches ONLY this report and the (previously untracked) plan file.
