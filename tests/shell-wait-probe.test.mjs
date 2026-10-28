@@ -24,8 +24,9 @@ const nativeInterruptionEntry = 'tests/shell-wait-native-interruption.test.mjs';
 // Task 2, report §24.10): this one — which under the guard env contributes
 // EXACTLY the guarded marker — and the native-interruption contract file,
 // whose every top-level test registers. The spawned-suite totals pinned below
-// are that marker (1) plus the native file's registered test count (92 at
-// the codex-gate round-23 fix registration, including the two §24.8
+// are that marker (1) plus the native file's registered test count (96 at
+// the native-acceptance spec-review registration — the §24.10 grammar
+// amendment's four pipeline tests — including the pre-review 92: the two §24.8
 // sampler-fence tests of the self-review P3 fix, the four codex-gate P2
 // regression tests, the three round-2 fix-A/B/C regression tests, the six
 // round-3 regression tests, the three round-4 regression tests, the
@@ -38,7 +39,7 @@ const nativeInterruptionEntry = 'tests/shell-wait-native-interruption.test.mjs';
 // round-23 default-watcher done-branch regression test), so a wrong
 // selection (an extra or missing entry) or a silently
 // skipped contract test still breaks them.
-const shellSuiteSpawnedTestTotal = 93;
+const shellSuiteSpawnedTestTotal = 97;
 /** @param {number} count */
 const suiteCountPattern = (count) => new RegExp(`ℹ tests ${count}\\r?\\n`);
 /** @param {number} count */
