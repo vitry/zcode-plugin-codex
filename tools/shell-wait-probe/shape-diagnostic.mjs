@@ -109,8 +109,19 @@ const ROOT_CONTROL_WRAPPER_PATTERN = /^text\(await tools\.(interrupt_agent|send_
 // The pinned wrapper stage's head prefix (binding and tool family exactly as
 // WRAPPER_PATTERN pins them): a slot starting like this whose failure sits
 // DOWNSTREAM of the wrapper skeleton diagnoses the arguments/output stage
-// instead of the wrapper stage.
-const WRAPPER_HEAD_PREFIX_PATTERN = /^const r = await tools\.(?:exec_command|write_stdin)\(/u;
+// instead of the wrapper stage. Native-acceptance review round: the binding
+// class is the FROZEN BOUNDED-NAME grammar (the anchored non-`r` family's
+// BOUND_RESULT_WRAPPER_PATTERN in evidence.mjs, mirrored verbatim below), so
+// a generalized binding with a failure downstream of the skeleton diagnoses
+// arguments/output exactly like the pinned `r` head does.
+const WRAPPER_HEAD_PREFIX_PATTERN = /^const [A-Za-z_][A-Za-z0-9_]{0,63} = await tools\.(?:exec_command|write_stdin)\(/u;
+// VERBATIM mirror of evidence.mjs's BOUND_RESULT_WRAPPER_PATTERN (the
+// anchored bounded-name wrapper family, report §24.11 amendment): the
+// non-`r` bounded-binding whole-body statement with the §23.2 emission-
+// junction tolerances and the structural equality backreference. It exists
+// ONLY to diagnose which existing stage would respond to the input; the
+// classifier never admits anything.
+const BOUND_RESULT_WRAPPER_PATTERN = /^const (?!(?:r) = await )([A-Za-z_][A-Za-z0-9_]{0,63}) = await tools\.(exec_command|write_stdin)\((\{[^\n]{1,4096}?\})\);[ \t]*text[ \t]{0,8}\([ \t]{0,8}\1[ \t]{0,8}\);?[ \t]*\r?\n?$/u;
 
 // The public tool allowlist at v1: any other established name (including its
 // spelling) is the fixed `other` class.
@@ -962,6 +973,11 @@ function existingLineParses(line) {
   }
   const rootControl = ROOT_CONTROL_WRAPPER_PATTERN.exec(line);
   if (rootControl !== null) return decodeBoundedLiteralObject(rootControl[2]) !== null;
+  // The anchored bounded-name family (the real whole-body branch's response
+  // for these single-line bodies; the §23.2 emission-junction divergence for
+  // the pinned `r` spelling is unchanged below).
+  const boundResult = BOUND_RESULT_WRAPPER_PATTERN.exec(line);
+  if (boundResult !== null) return decodeBoundedLiteralObject(boundResult[3]) !== null;
   let source = line;
   const directiveMatch = DIRECTIVE_PATTERN.exec(source);
   if (directiveMatch !== null) {
@@ -1019,6 +1035,8 @@ function slotMatchesPinnedSkeleton(rawLine) {
   }
   const rootControl = ROOT_CONTROL_WRAPPER_PATTERN.exec(rawLine);
   if (rootControl !== null) return decodeBoundedLiteralObject(rootControl[2]) !== null;
+  const boundResult = BOUND_RESULT_WRAPPER_PATTERN.exec(rawLine);
+  if (boundResult !== null) return decodeBoundedLiteralObject(boundResult[3]) !== null;
   const wrapper = WRAPPER_PATTERN.exec(rawLine) ?? INLINE_WRAPPER_PATTERN.exec(rawLine);
   return wrapper !== null;
 }
@@ -1038,6 +1056,8 @@ function slotArgumentRejected(rawLine) {
   }
   const rootControl = ROOT_CONTROL_WRAPPER_PATTERN.exec(rawLine);
   if (rootControl !== null) return decodeBoundedLiteralObject(rootControl[2]) === null;
+  const boundResult = BOUND_RESULT_WRAPPER_PATTERN.exec(rawLine);
+  if (boundResult !== null) return decodeBoundedLiteralObject(boundResult[3]) === null;
   const wrapper = WRAPPER_PATTERN.exec(rawLine) ?? INLINE_WRAPPER_PATTERN.exec(rawLine);
   if (wrapper === null) return false;
   return wrapper[2].length > MAX_SHAPE_ARGUMENT_CHARS || decodeBoundedLiteralObject(wrapper[2]) === null;

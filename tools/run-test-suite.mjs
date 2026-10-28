@@ -12,7 +12,10 @@ const researchEntries = Object.freeze([
   'tests/wait-route-probe.test.mjs',
 ]);
 const researchSet = new Set(researchEntries);
-const shellResearchEntries = Object.freeze(['tests/shell-wait-probe.test.mjs']);
+const shellResearchEntries = Object.freeze([
+  'tests/shell-wait-probe.test.mjs',
+  'tests/shell-wait-native-interruption.test.mjs',
+]);
 const shellResearchSet = new Set(shellResearchEntries);
 const testExtension = /\.(?:cjs|mjs|js)$/;
 const testFileName = /(?:\.test|[-_]test)\.(?:cjs|mjs|js)$|^test(?:-.*)?\.(?:cjs|mjs|js)$/;
