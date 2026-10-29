@@ -11,11 +11,12 @@ const researchEntries = [
   'tests/wait-route-probe.test.mjs',
 ];
 const shellResearchEntries = [
+  'tests/shell-wait-local-process.test.mjs',
   'tests/shell-wait-native-interruption.test.mjs',
   'tests/shell-wait-probe.test.mjs',
 ];
 
-test('routine selection excludes only the five MCP research tests and the two shell research tests', async () => {
+test('routine selection excludes only the five MCP research tests and the three shell research tests', async () => {
   const discovered = await discoverTestEntries();
   const routine = selectTestEntries(discovered, 'routine');
   const research = selectTestEntries(discovered, 'mcp-research');
@@ -24,6 +25,10 @@ test('routine selection excludes only the five MCP research tests and the two sh
   assert.deepEqual(research, researchEntries);
   assert.deepEqual(shell, shellResearchEntries);
   assert.deepEqual(routine, discovered.filter((entry) => !researchEntries.includes(entry) && !shellResearchEntries.includes(entry)));
+  // The complement of routine is EXACTLY the registered research entries:
+  // an unregistered new test entry may never silently land in the routine
+  // suite (shell-research registration is explicit).
+  assert.deepEqual(discovered.filter((entry) => !routine.includes(entry)).sort(), [...researchEntries, ...shellResearchEntries].sort());
   for (const entry of ['tests/mcp-result.test.mjs', 'tests/mcp-lifecycle-controller.test.mjs', 'tests/plugin-contracts.test.mjs']) {
     assert.ok(routine.includes(entry), `${entry} must remain in routine tests`);
   }
@@ -35,7 +40,8 @@ test('test selection fails closed for missing or duplicate research entries', ()
   const ordinary = 'tests/mcp-result.test.mjs';
   const shellEntry = 'tests/shell-wait-probe.test.mjs';
   const nativeEntry = 'tests/shell-wait-native-interruption.test.mjs';
-  const complete = [...researchEntries, shellEntry, nativeEntry, ordinary];
+  const localEntry = 'tests/shell-wait-local-process.test.mjs';
+  const complete = [...researchEntries, shellEntry, nativeEntry, localEntry, ordinary];
   assert.throws(() => selectTestEntries(complete.slice(1), 'routine'), /missing MCP research test/i);
   assert.throws(() => selectTestEntries([...complete, researchEntries[0]], 'routine'), /duplicate test entry/i);
   assert.throws(() => selectTestEntries(complete, 'unknown'), /unknown test suite/i);
@@ -43,6 +49,8 @@ test('test selection fails closed for missing or duplicate research entries', ()
   assert.throws(() => selectTestEntries(complete.filter((entry) => entry !== shellEntry), 'routine'), /missing shell research test/i);
   assert.throws(() => selectTestEntries(complete.filter((entry) => entry !== nativeEntry), 'shell-research'), /missing shell research test/i);
   assert.throws(() => selectTestEntries(complete.filter((entry) => entry !== nativeEntry), 'routine'), /missing shell research test/i);
+  assert.throws(() => selectTestEntries(complete.filter((entry) => entry !== localEntry), 'shell-research'), /missing shell research test/i);
+  assert.throws(() => selectTestEntries(complete.filter((entry) => entry !== localEntry), 'routine'), /missing shell research test/i);
 });
 
 test('the wait-route probe research test stays out of routine selection', async () => {

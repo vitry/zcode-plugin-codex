@@ -13,8 +13,9 @@ const researchEntries = Object.freeze([
 ]);
 const researchSet = new Set(researchEntries);
 const shellResearchEntries = Object.freeze([
-  'tests/shell-wait-probe.test.mjs',
+  'tests/shell-wait-local-process.test.mjs',
   'tests/shell-wait-native-interruption.test.mjs',
+  'tests/shell-wait-probe.test.mjs',
 ]);
 const shellResearchSet = new Set(shellResearchEntries);
 const testExtension = /\.(?:cjs|mjs|js)$/;

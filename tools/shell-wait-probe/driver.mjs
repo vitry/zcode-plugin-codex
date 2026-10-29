@@ -30,6 +30,7 @@ import { codexLaunch } from '../../scripts/lib/tool-launch.mjs';
 import { parseCodexRolloutJsonl } from '../../tests/helpers/codex-rescue-qualification.mjs';
 import { EXECUTING_EVIDENCE_SOURCE, interruptDeliveryAttributionGuard, admitInterruptHostDelivery, extractInterruptInteraction, INTERRUPT_TARGET_HEX_SHAPE, extractSurvivalControlFacts, inspectShellWaitEvidence, observeSpawnAcknowledgementIdentity, parseCallStatements, parseToolOutput, precedingStatementsCompleted, statementOutputAt, TERMINAL_INTERRUPT_PREVIOUS_STATUSES } from './evidence.mjs';
 import { EXECUTING_CLOSURE_OBSERVATION_SOURCE, admitStdoutCapture, readDurableObligationSnapshot } from './closure-observation.mjs';
+import { EXECUTING_CLOSURE_PRELOAD_SOURCE } from './closure-preload.mjs';
 import { EXECUTING_RELEASE_QUALIFICATION_SOURCE, evaluateSurvivalControl, exactRescueForegroundRenderedExpectation } from './release-qualification.mjs';
 import { EXECUTING_SHAPE_DIAGNOSTIC_SOURCE } from './shape-diagnostic.mjs';
 
@@ -55,7 +56,19 @@ const MAX_CASE_EXCERPTS = 64;
 // settlement reader (the closure-observation owner-index resolution mode)
 // and the live-launch preflight now EXECUTE during observation too — copying
 // the v4 digest onto these bytes would misattribute the new observers.
-const OBSERVER_DIGEST_TAG = 'zcode-shell-wait-observer-v5';
+// v6 (review round 9): the round-8 extraction moved the generated preload
+// source and its shared constants into closure-preload.mjs — changes
+// confined to that module (including constants the stdout admission reads)
+// change observation behavior, so its module-init bytes join this
+// construction and the record-time reread. The local-process observer's OWN
+// provenance (zcode-shell-wait-local-observer-v4,
+// local-process-observation.mjs + closure-preload.mjs + the materialized
+// executing helper copies) intentionally stays a SEPARATE construction: it
+// is the local-process campaign's evidence-closure digest consumed by the
+// local-settlement records, while THIS digest attributes the driver's
+// live-case pipeline; both now bind closure-preload.mjs, so a preload edit
+// flips BOTH (no silent divergence).
+const OBSERVER_DIGEST_TAG = 'zcode-shell-wait-observer-v6';
 
 // P2 round-29: module-INIT snapshot of the EXECUTING observer source — the
 // driver module body runs only after evidence.mjs has fully loaded, so this
@@ -78,9 +91,11 @@ const EXECUTING_OBSERVER_PROVENANCE = Object.freeze({
     .update('\0')
     .update(EXECUTING_CLOSURE_OBSERVATION_SOURCE)
     .update('\0')
+    .update(EXECUTING_CLOSURE_PRELOAD_SOURCE)
+    .update('\0')
     .update(EXECUTING_DRIVER_SOURCE)
     .digest('hex'),
-  digestInput: `${OBSERVER_DIGEST_TAG} || evidence.mjs || shape-diagnostic.mjs || release-qualification.mjs || closure-observation.mjs || driver.mjs (executing module-init snapshot, NUL-separated)`,
+  digestInput: `${OBSERVER_DIGEST_TAG} || evidence.mjs || shape-diagnostic.mjs || release-qualification.mjs || closure-observation.mjs || closure-preload.mjs (the extracted generated-preload seam) || driver.mjs (executing module-init snapshot, NUL-separated)`,
   model: null,
   reachableToolFamily: null,
 });
@@ -102,11 +117,12 @@ export { EXECUTING_OBSERVER_PROVENANCE };
  * @returns {Promise<ShellWaitObserverProvenance>}
  */
 export async function observerProvenance() {
-  const [evidenceSource, shapeSource, releaseQualificationSource, closureObservationSource, driverSource] = await Promise.all([
+  const [evidenceSource, shapeSource, releaseQualificationSource, closureObservationSource, closurePreloadSource, driverSource] = await Promise.all([
     readFile(fileURLToPath(new URL('./evidence.mjs', import.meta.url))),
     readFile(fileURLToPath(new URL('./shape-diagnostic.mjs', import.meta.url))),
     readFile(fileURLToPath(new URL('./release-qualification.mjs', import.meta.url))),
     readFile(fileURLToPath(new URL('./closure-observation.mjs', import.meta.url))),
+    readFile(fileURLToPath(new URL('./closure-preload.mjs', import.meta.url))),
     readFile(fileURLToPath(new URL('./driver.mjs', import.meta.url))),
   ]);
   const digest = createHash('sha256')
@@ -119,12 +135,14 @@ export async function observerProvenance() {
     .update('\0')
     .update(closureObservationSource)
     .update('\0')
+    .update(closurePreloadSource)
+    .update('\0')
     .update(driverSource)
     .digest('hex');
   return {
     revision: 'working-tree-uncommitted',
     digest,
-    digestInput: `${OBSERVER_DIGEST_TAG} || evidence.mjs || shape-diagnostic.mjs || release-qualification.mjs || closure-observation.mjs || driver.mjs (working-tree bytes, NUL-separated)`,
+    digestInput: `${OBSERVER_DIGEST_TAG} || evidence.mjs || shape-diagnostic.mjs || release-qualification.mjs || closure-observation.mjs || closure-preload.mjs (the extracted generated-preload seam) || driver.mjs (working-tree bytes, NUL-separated)`,
     model: null,
     reachableToolFamily: null,
   };
@@ -1365,7 +1383,15 @@ export async function runHeldHostTurn(input) {
     return captureVerifiedProcessIdentity(/** @type {string} */ (input.processPath), /** @type {string} */ (input.processNonce));
   });
   const readProcessIdentity = input.readProcessIdentity ?? (async (expected) => {
-    const observed = await inspectVerifiedProcessIdentity(/** @type {any} */ (expected).pid, /** @type {any} */ (expected).nonce);
+    let observed;
+    try {
+      observed = await inspectVerifiedProcessIdentity(/** @type {any} */ (expected).pid, /** @type {any} */ (expected).nonce);
+    } catch (error) {
+      // Round-28: a mid-read disappearance during driver identity reads is
+      // the exited shape (the pid is gone; this gate only binds signalling).
+      if (/** @type {any} */ (error)?.observedThenGone === true) return undefined;
+      throw error;
+    }
     if (!observed) return undefined;
     if (observed.ppid !== /** @type {any} */ (expected).ppid || observed.startIdentity !== /** @type {any} */ (expected).startIdentity) {
       throw new Error('the exact fake-ZCode process identity changed');

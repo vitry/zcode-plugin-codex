@@ -19442,3 +19442,798 @@ registered amendment, never a silent re-decision.
 **Hygiene gates (executed 2026-10-29 on the exact docs bytes):** `node scripts/check-line-endings.mjs` exit 0;
 `git diff --check` clean; `node --test tests/test-selection.test.mjs` 6/6 pass, 0 failed, 0 skipped, exit 0; the
 diff touches ONLY this report and the (previously untracked) plan file.
+
+### 25.10 2026-10-29 local-settlement Task 2: the exact local-process observer implemented offline with the non-interference proof (zero model turns, zero live launches)
+
+Task 2 of [the local-settlement plan](../superpowers/plans/2026-10-28-rescue-shell-wait-local-settlement.md), executed
+2026-10-29 in the same worktree on the Task-1 bytes (`57015b116898c1c7c3bc40e03403f01de4c763ea`). Offline throughout:
+zero model turns, zero host/companion/provider launches. The only real processes are HARMLESS LOCAL Node children under
+the OS temp directory (stand-in probe entries written by the test file, plus the production launcher fast-fail control),
+every synthetic process identity goes through an INJECTED fake inspection seam, and no synthetic PID is ever signalled
+into the real OS. This section is ADDITIVE; §25.1–§25.9 stand byte-unchanged.
+
+**Files (the Task-2 delta only):** NEW `tools/shell-wait-probe/local-process-observation.mjs` (the focused read-side
+observer: startup-identity admission, OS live observation, exit/absence adjudication, two-hop ancestry join, bounded
+local-duty verdict, provenance/drift — NO stop authority anywhere); `tools/shell-wait-probe/closure-observation.mjs`
+extended (the generated preload additionally writes a startup identity record at install, plus an OPTIONAL
+broker-daemon identity-record gate on a declared broker entry; the stdout-capture contract and its meta schema stay
+version 1 BYTE-INTACT); `tools/shell-wait-probe/fixture.mjs` arming now also DECLARES the installed
+`zcode-broker.mjs` realpath (arming fails loudly when the installed broker file is missing — never a silently
+undeclared hop) and records the bounded `brokerGate`/`identityRecord` declaration; NEW
+`tests/shell-wait-local-process.test.mjs`; registration in `tools/run-test-suite.mjs` +
+`tests/test-selection.test.mjs` + the probe suite's nested self-test total.
+
+**The §25.4 contract, implemented and fixture-tested:** item 3 — the nonce-keyed startup identity record
+(`<nonce>.identity.json`, wx 0600, closed per-role bounded JSON: version/role/nonce/entryRealpath/invocation-argv or
+broker-config-digest/pid/ppid/firstWriteEpochMs) is created at PRELOAD INSTALL, before the entry body (real-child
+ordering proof: the record's first-write instant precedes the entry body's own timestamp); a missing record is the
+named `identity-record-missing` fact, never "never launched", never launch readiness. Item 4 — identity = record
+admission + the OS race-safe double read (`inspectVerifiedProcessIdentity` reused under the CAPTURE nonce variable,
+live-established on a real gated child); the two-hop ancestry join is adjudicated ONLY from positively captured
+endpoints with the ppid equalities checked at capture time (`daemon-ppid-mismatch-at-capture` carries
+`detail: capture-time-only` — reparenting is named, never death); a marker never attests another process merely
+because they inherited the nonce (`scope-nonce-mismatch` / `marker-ppid-mismatch-at-capture`); the
+Companion↔transport attribution never crosses an unestablished hop. Item 5 — every verdict carries a caller-clock
+`readEpochMs` (fake clocks accepted; the OS `lstart` string rides verbatim). Item 6 — disappearance = verified
+presence of the established generation EARLIER + verified absence of the SAME pid and start identity LATER; a reused
+start identity is named `pid-start-identity-reused`/`start-identity-generation-changed` and never death; later
+same-generation evidence wins as `live`; only-failed reads stay `absence-unestablished`; the delayed-capture shape
+(record present, no OS presence ever established) stays `presence-unestablished`. Item 8 — per-evidence-class
+integrity: the identity record carries its OWN closed admission vocabulary (`identity-record-missing`,
+`-not-regular`, `-oversize`, `-unreadable`, `-torn`, `-shape-invalid`, `-nonce-mismatch`, `-role-mismatch`,
+`entry-realpath-mismatch`); `admitStdoutCapture` is untouched; a missing exit meta never blocks process-evidence
+admission (the SIGKILL control), and a complete meta never proves death without an established disappearance. §25.5 —
+the bounded local-duty verdict covers the invocation process, the broker daemon (its own role-selected
+`<nonce>.identity-broker.json`, raw config path never persisted — digest only), the transport descendant
+(marker-captured OS observation alone), and ONLY positively identified descendants; a positively identified
+SURVIVING descendant is an outstanding duty (the verdict stays unsettled without its positive disappearance); the
+verdict never claims `not-applicable` and never signals.
+
+**Test matrix registered (91 named tests, `tests/shell-wait-local-process.test.mjs`):** install-time startup record;
+stdout schema-v1 compatibility on a real gated run (exact closed v1 meta field set asserted); inertness on wrong
+argv/wrong entry/absent env; admission battery (established, missing, torn, shape-invalid, foreign nonce, oversize,
+symlink, permission failure, entry mismatch, read-only fingerprint); live OS observation + post-exit absence on a
+real child; failed/mid-read-change seams; reused generation seam; natural exit (disappearance corroborated by the
+meta); abrupt SIGKILL of the TEST-OWNED child (`capture-meta-missing` named, record stands, disappearance without
+meta); meta-alone-never-death; reused-PID-never-death; raced-exit later-evidence-wins; unestablished-only evidence;
+delayed capture; broker gate real stand-in child (record only, no stdout interception, no undeclared-broker
+inertness); two-hop join battery; duty-verdict battery; non-interference (the REAL launcher fast-fail envelope
+byte-exact 207 with `exitAttribution: verified`, business error exit 3 + exact stderr, export-surface freeze with NO
+terminate/kill/signal authority and no child_process/timers/handlers in the observer bytes, observer write failure =
+named missing fact with the business stdout/exit byte-exact, 0600/0700 privacy modes, concurrent invocation
+nonce-scoping with no cross-attestation); provenance and drift battery; plus the fail-closed arming control (a fixture whose installed root LACKS `scripts/zcode-broker.mjs` rejects with the named arming error — never a silently undeclared hop) and the captured-ppid control (a reparented live process stays `established` with `ppidChangedFromCapture: true` — reparenting recorded, never death).
+
+**Codex review round (five P2 behavioral fixes, each RED-proven on the pre-fix bytes then fixed):** (1) every
+observation verdict now carries its QUERIED identity (`queried: {pid, nonce}`), and `adjudicateLocalExit` validates
+each read's queried identity against the bound presence before admitting absence, reuse or failure — a foreign
+absence read for another PID never establishes this generation's disappearance (malformed reads without a queried
+identity throw); (2) a descendant's credited exit must be the descendant's OWN: `adjudicateLocalDuties` requires the
+exit's `boundIdentity` (pid, start identity, nonce) to equal the descendant's OS observation before `settled` —
+another process's disappearance never completes a live descendant's duty; (3) observation timestamps are honest:
+`readEpochMs` is sampled only AFTER the whole asynchronous inspection (the completion instant, next to the new
+`readStartedEpochMs` interval start), so a disappearance timestamp can never predate the read that produced it —
+the Task-3 fences consume the completion side — the SAME honesty rule now covers the startup-record admission (whose verdict carries `readStartedEpochMs` with `readEpochMs` sampled after the admission's reads — third review round: the completion is resampled per path AFTER the bounded record read and its integrity checks, via an injected read seam on every read path) AND the absence-confirmation await (the absence verdict's completion covers the whole OS confirmation, not just the inspection); (4) `joinAncestryHops` treats valid negative verdicts (`absent`,
+`unestablished`) as unavailable endpoints — each hop is independently adjudicated (the daemon→transport hop stays
+established with an unestablished companion endpoint) and only malformed inputs throw; (5) the provenance
+construction is bumped to **v2** (`zcode-shell-wait-local-observer-v2`) and now binds the fixture helper's
+module-init bytes (fixture.mjs implements the actual OS inspection; new `EXECUTING_FIXTURE_SOURCE` self-snapshot)
+and the identity-record integrity helper's bytes (scripts/lib/fs.mjs, snapshotted at observer init without modifying
+the production module, with the record-time working-tree re-read covering it).
+
+**Codex review rounds 4-7 (consolidated honest record of the continued fix rounds — each finding RED-proven on the
+pre-fix bytes, minimal fix, class-swept):**
+- **Round 4:** (a) ROLE binding — each startup-backed duty requires its OWN admitted role (`startup-role-mismatch`):
+  the invocation duty joins only an `invocation`-role record, the broker duty only a `broker-daemon` role; one
+  process never attests another duty; (b) SCOPE binding — the duty aggregate takes the EXPECTED invocation nonce and
+  binds every duty identity and every credited descendant exit to it (`scope-nonce-mismatch`): facts from concurrent
+  fixture invocations are a named refusal, never settled; (c) exit-meta corroboration strictness groundwork: macOS
+  absence confirmation requires an ERROR-FREE OS no-match (on this host measured as `ps` exit 1 with empty stdout
+  AND empty stderr — any stderr diagnostic stays `absence-unconfirmed`), with injectable platform/filesystem seams
+  (the Linux branch is exercised through injected seams on any host); (d) the startup admission's completion is
+  resampled per path AFTER the bounded record read and its integrity checks (injected `readRecordFile` seam); (e)
+  absence at-or-before the presence baseline is never credited; (f) the entry lint error (unused `transportFact`)
+  was fixed by using it in its intended all-in-scope control.
+- **Round 5:** (a) GENERATION GRANULARITY — darwin `lstart` is whole-second, so a record written inside the parsed
+  start second could not exclude a same-nonce same-second successor; superseded by the round-7 precise rule below;
+  (b) the confirmation's platform and filesystem seams made injectable (CI hazard closed: no absence test reads the
+  host OS for a synthetic PID).
+- **Round 6:** (a) the daemon→transport hop verifies the marker against the transport's OWN DECLARED nonce
+  (`expectedTransportNonce` — the driver's `FAKE_ZCODE_PROCESS_NONCE`, generated independently of the capture scope;
+  `transport-nonce-mismatch`); the capture-scope rule stays for the startup-backed duties; (b) the exit-meta
+  corroboration is bound to the admitted INVOCATION identity (pid + start identity + nonce): the invocation and
+  broker processes deliberately share the capture nonce, so scope alone never credits a broker/transport exit;
+  (c) the capture-environment composition explicitly removes an INHERITED broker variable when no broker entry is
+  supplied (the broker gate is disabled by default — a stale declaration can never write an undeclared broker
+  identity record under the fresh nonce).
+- **Round 7:** (a) PRECISE GENERATION IDENTITY — the identity record (schema VERSION 2) embeds the process's OWN
+  sub-millisecond start instant (`performance.timeOrigin`) and its precise write instant, and the binding requires
+  the OS lstart second to CONTAIN the record's precise start with the precise write postdating it
+  (`generation-start-second-mismatch` / `generation-start-after-record` / `generation-binding-unavailable` are the
+  named failure branches). This resolves the whole-second ambiguity that would have left fast same-second startups
+  unestablished indefinitely, verified by a REAL-CHILD end-to-end test (admission → OS observation → duty join on a
+  genuine fast gated child, then exit and disappearance). The documented residual bound: a successor starting inside
+  the writer's own start second AFTER the write is excluded only down to the OS second — recorded, never guessed;
+  (b) HELPER-CACHE HONESTY — `verifyLocalObserverHelperCacheConsistency` compares every cached helper namespace
+  binding against a fresh evaluation, and the record-time provenance goes NAMED-UNAVAILABLE
+  (`helper-cache-inconsistent`, null digest) instead of attributing evidence to code that never ran; (c) the LINT
+  RECONCILIATION: the round-6 gate invocation piped `npm run lint` through `tail` inside an `&&` chain, masking the
+  failing exit status — the round-6 bytes DID ship with an unused-variable lint error (tests:1487), now fixed by
+  using the binding in its intended all-in-scope assertion, and the gate invocations no longer pipe the lint exit
+  status.
+
+**Codex review rounds 8 (three P2 fixes, each RED-proven on the pre-fix bytes then fixed, class-swept):**
+- (a) FORK-BEFORE-BOUNDARY + REAL LINUX BINDING: the darwin containment accepts the OS creation second OR the
+  immediately preceding second of the record's precise start (a fork just before a boundary whose Node initializes
+  just after is ordinary startup, not PID reuse — the ~2-second accepted span is the DOCUMENTED residual window);
+  Linux is REALLY bound: the observation resolves `/proc/<pid>/stat` starttime ticks against `/proc/stat` btime and
+  `getconf CLK_TCK` (~10ms creation precision), and the Linux binding requires the record's precise timeOrigin to lie
+  within a DOCUMENTED 1000-ms window of that creation instant (`generation-start-window-exceeded` otherwise) — Linux
+  is no longer permanently `generation-binding-unavailable`.
+- (b) EXECUTING-COPY MATERIALIZATION: the exported-string helper-cache comparison could NOT see private-code edits
+  (demonstrated: a POST_EXIT_DRAIN_MS-only edit kept the old verifier `consistent: true`). The three production
+  helpers the evidence path executes (scripts/lib/fs.mjs, process.mjs, errors.mjs) are now copied BYTE-IDENTICAL at
+  observer init into a private cache layout inside the repo's node_modules scope (preserving their relative imports
+  and createRequire resolution), the observer loads THE COPIES (readBoundedJsonFile, runProcess — the identity
+  machinery moved INTO the observer's own bytes; fixture.mjs no longer executes in the evidence path and its public
+  identity surface is re-exported unchanged), the copied bytes are the hashed provenance inputs (executing == hashed
+  by construction), and the record-time provenance drift-checks the copies against current disk bytes
+  (`verifyLocalObserverHelperMaterialization`; drift or unavailable materialization → NAMED-UNAVAILABLE provenance,
+  null digest).
+- (c) the LINT RECONCILIATION (see the round-7 entry above).
+- Round-8 gating incident recorded honestly: an intermediate working-tree state had duplicated materialization
+  scaffolding that broke module loading; it was repaired and the FULL battery re-run on the final bytes — every
+  gate and suite count below is from the final bytes only.
+
+**Codex review round 9 (one P1 + three P2, each RED-proven on the pre-fix bytes then fixed, class-swept):**
+- (P1) MATERIALIZATION ROOT: the cache root resolved `../../..` from tools/shell-wait-probe/ — the repository's
+  PARENT — so in a standalone checkout the copies fell outside dependency-resolution scope and the copied fs.mjs
+  could not resolve its native dependency while materialization "succeeded" (the fallback never engaged). The root
+  is now the REPOSITORY ROOT (`../..`), and two tests pin the layout inside the repo node_modules scope and the
+  copied fs.mjs/process.mjs actually loading. A worktree-local coincidence (an ancestor providing node_modules) had
+  masked this on the development host — exactly the finding's caveat.
+- (P2a) LINUX RESOLUTION HONESTY: the Linux start-instant resolution (boot-clock read, getconf) is awaited BEFORE
+  the verdict completion sample — the completion covers ALL asynchronous evidence collection, so a verdict
+  completing after a cutoff can never carry a pre-cutoff timestamp (the same honesty class as rounds 3/7, now on
+  the Linux branch).
+- (P2b) BOOT-CLOCK REJECTION: a masked/inaccessible /proc/stat rejects the boot-clock read AFTER a successful
+  inspection; the rejection is now CAUGHT into a named null start instant (the observation never rejects on this
+  path; the duty join names `generation-binding-unavailable`).
+- (P2c) EXECUTING PROVENANCE NAMED-UNAVAILABLE: on a read-only checkout failing cache initialization, the
+  executing provenance previously emitted a non-null digest with literal `undefined` helper-copy interpolation
+  (binding nothing). It now mirrors the record-time reader: revision `helper-materialization-unavailable`, null
+  digest (injected materialization seam).
+
+**Provenance (actual source hashes on the FINAL bytes — after the round-8 executing-copy refactor):** tag
+`zcode-shell-wait-local-observer-v4`, executing observer digest
+`48200aa378151f9c1a84a7824590909dbd08a4a20549759e6af2871039046edf` (v4 construction: tag ‖
+local-process-observation.mjs (the identity machinery lives in THESE bytes) ‖ closure-preload.mjs (the generated
+preload seam, extracted from closure-observation.mjs) ‖ the three MATERIALIZED EXECUTING COPY DIGESTS ‖
+`closurePreloadSource()` bytes, NUL-separated; the record-time working-tree re-read uses the same construction,
+verified AGREEMENT at rest). The copy digests ARE the executing bytes by construction: the copies are loaded as the
+modules, and the record-time provenance drift-checks them against the CURRENT disk bytes
+(`verifyLocalObserverHelperMaterialization` — a private-constant edit that exported-string comparisons cannot see is
+caught, demonstrated by the RED test). Earlier constructions (v1 `c7bfc5e1…` three inputs; v2/v3 with disk-snapshot
+helper inputs, e.g. the v3 intermediate `487693e3…`) described earlier fix-round bytes and are SUPERSEDED — recorded
+so the intermediate identifiers stay interpretable. `generatedPreloadSha256` =
+`49cc2539fbcb23bcfc0003dd8afb8015d4f3976312f67c366de5c0295998ee75` (the round-7 precise-instant preload; the
+pre-round-7 bytes were `d0edebc0…`; the §25.1/§24.1 `cb168b74…` remains the historical F-record identifier, and per
+the §25.1 rule the executing-observer provenance is RE-FROZEN at V's own pre-launch duty). Module digests on the
+final bytes: `local-process-observation.mjs` =
+`fcc7a27973c73ae86fcf44badd6a53f6863b71bdbd068cd11668e845a7bcd947` (`93f22a60…` pre-review; intermediates
+`c69d4703…`, `0d63d733…`, `6c2a68a9…`, `c9bf0960…`, `824eeef8…`, `0aa2cdbd…`, `6fc9aed2…` described the earlier fix
+rounds; `ef77f617…` was the pre-round-10 state, `52768312…` the round-10 state, `f21caff4…` the round-11 state and
+`9d7032b8…` the round-12 state — rounds 10-12's per-round digest updates were NOT landed in this block at the time,
+recorded here from the git history; and the SAME bookkeeping failure recurred for rounds 13-23 — recomputed from
+the amend-boundary git states, `2a94438b…` was the pre-round-14 state (unchanged through the round-13 docs-only
+fix), `f5e26375…` the round-14 state, `48b4e1c5…` the round-19 state, `69604f0c…` the round-20 state,
+`2be77f32…` the pre-round-24 state, `5b8475eb…` the round-24 state, `59f453e9…` the round-25 state and
+`00857819…` the round-25-final state (the task's first amended commit bytes); the round-26 fix round was begun by an
+execution interrupted mid-work — its uncommitted module state hashed `a31eb3fd…` (both fixes in first form, the
+state the resumed round received; NEVER landed as a commit) — and `cc45b78e…`, `834d8455…`, `c817b693…`,
+`83b65a70…`, `8846e82d…`, `64cd4166…`, `56a48e39…`, `39d806e0…`, `a02dd2f3…` and `f0bf8f1c…` were the
+round-26 through round-35 final bytes (the second through eleventh amended commits); `fcc7a279…` is the
+final bytes after the round-36 refinement — the per-round digest updates were not
+landed at the time; this correction records them from the git history), NEW `closure-preload.mjs` =
+`44fdd25d907236666f5ab19fe4eafe49bb93a971ec5f2b4aa820b2fb8df330ba` (extracted generated-preload seam),
+`closure-observation.mjs` =
+`3a45f9db7bef21c60bc0a9f6093433eb9da90843def3019a424165c578c68451` (was `46b7f5e2…` at §25.1 — the admission/
+composition code with the preload seam extracted), `fixture.mjs` =
+`a1284c42f2c1a776e91cacd9ea96524e7594753f3de08499b5be9a54870c8a31` (was `4730908d…` at §25.1 — the identity
+machinery moved out; the public identity surface is re-exported unchanged), and the bound production helpers —
+EXECUTING as materialized copies, on-disk digests recorded: `scripts/lib/fs.mjs` =
+`ea222a08c0eed1051e2143cfafc21c773c49a901637a7dfdc5e8c8c406512792`, `scripts/lib/process.mjs` =
+`e3c95506d58b2d9f196b0f6469ac458206ee97320a6f6fb96bab701b9dc1aacb`, `scripts/lib/errors.mjs` =
+`8fed9126621c61ba5d35091435ac734232116490acc94b68dfc84593c424752b` (never modified). **Schema compatibility:** the
+stdout-capture meta keeps its EXACT closed v1 field set (asserted on a real gated run) and
+`CLOSURE_OBSERVATION_VERSION` stays 1; the identity/broker records are separate nonce-keyed files the stdout
+admission never reads, and their OWN closed schema is VERSION 2 as of the round-7 precise instants
+(`IDENTITY_RECORD_VERSION` 1 → 2, compatibility asserted by the updated closed-shape tests).
+
+**Codex review round 10 (two P2, each RED-proven on the pre-fix bytes then fixed, class-swept):**
+- (a) DAEMON→TRANSPORT SCOPE INDEPENDENCE: the daemon→transport hop now verifies the DAEMON endpoint's own scope
+  independently of hop 1 (`scope-nonce-mismatch`) — a foreign-nonce daemon can never host in-scope transport
+  evidence, whatever the Companion endpoint's state; class sweep: hop 1 already verified BOTH endpoints, the
+  descendant-exit credit already verified scope+identity, so this was the last cross-endpoint credit without an
+  independent scope check; (b) DRIVER DIGEST CLOSURE: the round-8 extraction moved the generated preload source and
+  its shared constants into closure-preload.mjs, but the DRIVER's executing provenance (bumped to
+  `zcode-shell-wait-observer-v6`) still hashed only closure-observation.mjs — both driver constructions (the
+  executing module-init digest and the record-time working-tree reread that drives `sourcesChangedDuringRun`) now
+  bind closure-preload.mjs bytes, so changes confined to the extracted module flip the digest and mid-run edits are
+  detected; the local-process observer's OWN construction
+  (`zcode-shell-wait-local-observer-v4`, deliberately separate) attributes the local-process campaign's evidence
+  closure and also binds closure-preload.mjs — both constructions now cover the extracted module, no silent
+  divergence; the split is documented (driver pipeline attribution vs local-process campaign evidence closure).
+
+**Codex review round 11 (two P2, each RED-proven on the pre-fix bytes then fixed, class-swept):**
+- (a) ASYMMETRIC LINUX GENERATION RULE: the symmetric |creation − timeOrigin| ≤ 1000 tolerance accepted a same-nonce
+  successor CREATED demonstrably after the record write (start T, written T+100, successor created T+500 bound). The
+  rule is now write-anchored and asymmetric: creation later than the write by more than the DOCUMENTED /proc
+  resolution bound (10ms — `LINUX_PROC_RESOLUTION_MS`) is `generation-start-after-write` (demonstrably a successor);
+  creation only resolution-close to the write stays `generation-start-ambiguous`; creation up to the documented
+  fork-to-init window (1000ms) BEFORE the record start binds; creation farther before it is
+  `generation-start-window-exceeded`. Sweep: the early-side, late-side and ambiguity branches are all in the single
+  Linux arm of the duty join — no other site compares creation to record instants.
+- (b) CONFIRMATION-REJECTION HONESTY: a REJECTING `absenceConfirmation` seam produced a rejection of the whole
+  observation; it is now caught into the named `absence-confirmation-failed` verdict with the completed read
+  interval — consistent with the inspection-failure and boot-clock-failure handling. Class sweep: every supplied
+  seam call site catches its own failures (inspect → liveness-read-failed/identity-changed, confirmAbsence →
+  absence-confirmation-failed, boot-clock resolution → caught null, record read → torn/unreadable).
+
+
+**Codex review round 12 (one P2, RED-proven on the pre-fix bytes then fixed, class-swept):** BTIME UNCERTAINTY
+HONESTY — /proc/stat btime is WHOLE-SECONDS, so `btime + starttime ticks / CLK_TCK` does NOT yield ~10ms
+wall-clock precision: the boot's fractional-second offset is lost and the TRUE creation instant of a proc-ticks
+identity lies in [computed, computed + 1000 ms). With an 800 ms fractional boot offset, a same-nonce successor
+created 440 ms AFTER the record write had a computed instant 440 ms BEFORE the write — the round-11 rule bound it
+as the writer. The Linux binding now propagates the uncertainty: reject (`generation-start-after-write`) only when
+the computed LOWER bound is demonstrably after the write (beyond the 10ms tick-resolution bound); name
+`generation-start-ambiguous` whenever the record write falls inside the candidate's uncertainty window (a
+same-nonce successor created in that window cannot be excluded — never established-by-default); bind only when the
+ENTIRE uncertainty window precedes the write (the candidate demonstrably existed at write time and no successor
+can predate the write); the old early-side window constant is subsumed by the uncertainty itself. Consequence
+recorded honestly: Linux same-second record writes stay `generation-start-ambiguous` (genuinely unexcludable under
+whole-second btime) — Linux duties bind only with a ≥1s write gap over the computed creation; darwin binds through
+the round-7/8 precise-instant rule. Sweep: the creation-vs-record comparison lives only in the Linux arm of the
+duty join.
+
+**Codex review round 13 (one P2, test-only — the generation check is NOT weakened):** the round-7 REAL-CHILD
+fast-startup test asserted duty establishment UNCONDITIONALLY, but on Linux an ordinary fast startup legitimately
+yields `generation-start-ambiguous` (the round-12 whole-second btime uncertainty keeps a same-second write
+unexcludable), so the test and the shell-research runs including it would fail on Linux hosts. The assertion is now
+PLATFORM-GATED (the round-5 pattern): DARWIN asserts the exact established outcome with no reservation reasons
+(never weakened); LINUX asserts the exact named conservative label `generation-start-ambiguous`; and the Linux
+branch is additionally asserted DETERMINISTICALLY on every host through injected seams — the synthetic btime/ticks
+are DERIVED FROM THE RECORD'S WRITE INSTANT (computed = round(write − 500)), so the write provably lands inside the
+1000-ms uncertainty window BY CONSTRUCTION on any wall-clock (round-14: a boundary-crossing startup made the old
+floor(origin)-derived control wall-clock dependent; the real Linux leg now derives its expected outcome from the
+child's own MEASURED interval and the darwin leg carries an explicit boundary-safety assertion). Sweep of
+the other real-child assertions (admission established with precise instants, sub-second write, OS-verified live
+observation, pid join, post-exit absence, disappeared adjudication): all platform-independent — the only
+host-dependent assertion was the duty establishment. Test count unchanged (78 named tests; the test was split
+internally, no new test registered).
+
+**Codex review round 15 (two P2, each RED-proven on the pre-fix bytes then fixed, class-swept):**
+- (a) OBSERVATION NONCE BINDING: a supplied inspect seam returning the REQUESTED pid with a DIFFERENT nonce was
+  accepted and its nonce RELABELED to the requested scope — foreign-scope evidence became an established
+  observation passing every downstream scope check. `observeLocalProcess` now compares the returned nonce with the
+  requested one and names the divergence (`observation-nonce-mismatch`, unestablished, no facts exposed). Class
+  sweep: this was the only site consuming a supplied identity object without verifying what came back.
+- (b) COMPLETE GENERATION EVIDENCE FOR EVERY DUTY: transport and identified-descendant duties checked only the
+  scope nonce, so an established-tagged observation carrying {pid, ppid, nonce} WITHOUT an OS start identity
+  established the duty (a bare marker substituting for verified generation evidence, capable of settled:true). The
+  duty join now requires a positive pid AND a nonempty OS start identity before establishing ANY duty
+  (`os-observation-incomplete`); the positive controls were updated to supply complete shapes — never by weakening
+  the validation.
+
+**Codex review round 16 (one P2, RED-proven on the pre-fix bytes then fixed):** the round-15 completeness gate
+covered only the transport/descendant branch — the STARTUP-BACKED branch (invocation/broker) still let an
+established-tagged {pid, ppid, nonce} observation through (pid/nonce checks pass, the missing start identity falls
+through the generation comparison), producing settled:true with identities missing their OS generation. The SAME
+`os-observation-incomplete` gate now applies to startup-backed duties — one completeness gate for every
+duty-establishing branch; the duty fixtures were updated to supply complete shapes, never by weakening the gate.
+Sweep inventory: joinLocalDuty has exactly two establishment branches (startup-backed and observation-only); both
+now require positive pid + nonempty startIdentity + scope nonce; adjudicateLocalDuties establishes only through
+joinLocalDuty.
+
+**Codex review round 17 (one P2, RED-proven on the pre-fix bytes then fixed, class-swept):** GENERATION-COMPATIBLE
+LIFETIMES FOR ANCESTRY HOPS — PPID + nonce equality is not ancestry under PID reuse: a daemon observed at epoch
+1000 with PPID 5100 joined a Companion whose PID was 5100 but whose OS start instant was 2000
+(`companionToTransportAttributed: true` although that Companion did not exist at the daemon's capture time). BOTH
+hops now verify generation-compatible lifetimes before credit: each endpoint's OS start instant must precede the
+other endpoint's capture/read instant (child start ≤ parent's read; parent start ≤ child's read and ≤ child's
+start); missing or out-of-order lifetime evidence keeps the hop NAMED-unestablished
+(`generation-lifetime-unverifiable`) — never bridged, never credited by PPID equality alone. The transport hop
+additionally verifies the marker's OWN time (`markerEpochMs`, the fixture-known marker-write instant): the daemon's
+creation must precede it and it must precede the daemon's capture read; hops without marker time evidence stay
+named-unestablished. Positive controls now supply complete marker-time evidence — never by weakening the rule.
+Sweep inventory: cross-process attributions are the two hops (both now lifetime-gated), the descendant credits
+(already bound to the descendant's own measured identity + scope + strict post-observation absence) and the
+exit-meta corroboration (already bound to the admitted invocation identity + scope) — no unverified cross-process
+credit remains.
+
+**Codex review round 18 (one P2, RED-proven on the pre-fix bytes then fixed):** the round-17 hop lifetime checks
+treated `startInstantEpochMs` as an EXACT creation instant, but on Linux it is a LOWER BOUND with whole-second btime
+uncertainty (true creation in [computed, computed + 1000)) — a daemon whose computed start was T with the transport
+marker written at T+500 established the hop even though the TRUE daemon creation (>= T+800) postdated the marker
+(false `companionToTransportAttributed` under PID reuse). The uncertainty is now propagated into ALL hop lifetime
+orderings, mirroring the duty-join rule structure: a marker ordering that holds merely via the uncertainty window
+is named-unestablished (`generation-lifetime-unverifiable`); only orderings that hold even at the UNCERTAINTY BOUND
+(daemon computed start + 1000 ≤ marker time; Linux companion start + 1000 ≤ daemon read/creation) are
+demonstrable and credit; orderings demonstrably violated at the computed values are refused. Darwin lstart
+instants are not lower bounds in this sense (their second-containment is the duty join's rule). Sweep: the two
+hops were the only sites ordering cross-process creation instants against read/marker times.
+
+**Codex review round 19 (one P2, RED-proven on the pre-fix bytes then fixed):** the round-18 propagation covered
+only Linux proc-ticks instants — `startBoundMs` gave darwin `ps lstart` ZERO uncertainty although lstart is
+whole-second too: a daemon actually created at T+800ms reported start T and could join a transport marker written
+at T+500ms under broker PID reuse. The rounding uncertainty is now UNIFORM — every OS start instant carries the
+1000-ms lower-bound uncertainty in the hop lifetime checks (the marker-inside-start-second control names
+`generation-lifetime-unverifiable`; the marker at/after the +1000ms bound is demonstrable and credits). The duty
+join's darwin second-CONTAINMENT rule is UNCHANGED (this round only stops the ancestry hop checks from treating a
+rounded start as an exact instant); the join-scenario synthetic facts were moved to ≥1s generation gaps so the
+positive controls demonstrate bound-safe credit.
+
+**Codex review round 20 (one P2, RED-proven on the pre-fix bytes then fixed):** the exit adjudication's ordered walk
+OVERWROTE a detected generation change when a later read reported absence — presence A (1000), replacement B
+established (2000), absent (3000) returned `disappeared` bound to A with the successor's absence instant, losing
+the named reuse refusal and letting the successor's disappearance complete A's duties. A reuse detection is now a
+TERMINAL LATCH: once the read sequence contains an established read with a different start identity (or a named
+`start-identity-generation-changed` read), the verdict stays `pid-start-identity-reused` (the evidence epoch
+recorded); later reads of the replacement generation never convert it into A's disappearance. A DIRECT absence of
+the original generation (same start identity as A, no intervening reuse) still adjudicates normally.
+
+**Codex review round 21 (two P2, each RED-proven on the pre-fix bytes then fixed, class-swept):**
+- (a) TIE-ORDERED GENERATION-CHANGE EVIDENCE: a replacement established at the SAME millisecond as a same-
+  generation presence read was skipped by the recency filter (read epoch <= lastPresenceEpochMs) before the reuse
+  detection, so evidence ORDER decided between the named reuse refusal and A's disappearance (live-then-replacement
+  at one instant -> disappeared for A; replacement-then-live -> refused). A generation-change read is now latched
+  BEFORE the recency filtering whenever its epoch is >= the last verified presence — rearranging the same evidence
+  yields the same verdict, and the later absence of the replacement never becomes A's disappearance.
+- (b) BASELINE VALIDATION: the established-tagged presence baseline was accepted WITHOUT validating its timestamp
+  or generation — a missing readEpochMs made the recency comparison run against undefined (an absence never
+  rejected -> `disappeared` without a verified presence instant) and a pid+nonce baseline without a startIdentity
+  bound `disappeared` without a bound generation. The baseline is now validated BEFORE boundIdentity is
+  constructed: missing instant -> `presence-instant-unverified`; missing start identity or nonce ->
+  `presence-generation-unverified`; both named-unestablished. Class sweep: adjudicateLocalExit is the only
+  consumer of the presence baseline (the duty join validates its own observations since round 16).
+
+**Codex review round 22 (two P2, each RED-proven on the pre-fix bytes then fixed):** two refinements of the reuse
+latch: (a) TIED NAMED GENERATION CHANGES — with `expectedStartIdentity` supplied, a replacement produces an
+UNESTABLISHED verdict (`start-identity-generation-changed`) rather than an established one; a named verdict TIED
+with a same-generation live read sorted after it and was discarded by the recency filter, so a later absence
+returned `disappeared` despite positively detected PID reuse. The tie latch now covers BOTH replacement shapes
+(established-with-different-identity AND named `start-identity-generation-changed`) at epoch >= the last verified
+presence; (b) OLD EVIDENCE NEVER LATCHES — a replacement observation stamped BEFORE the presence baseline predates
+the current occupant and is irrelevant; the latch now requires replacement evidence at or after the last verified
+presence (the conservative equal-timestamp behavior from round 21 preserved), so omitting an old-generation
+observation and including it yield the same normal disappearance.
+
+**Codex review round 23 (two P2, each RED-proven on the pre-fix bytes then fixed, class-swept):**
+- (a) INSPECTOR-DETECTED PID REUSE IS ITS OWN CLASS: a PID reused BETWEEN the inspector's double-read start-identity
+  reads throws the generic identity-changed error, which folded into `identity-changed-during-read` — a class the
+  reuse latch does NOT consume, so presence A -> detected change -> absence of successor B returned `disappeared`
+  for A (crediting B's disappearance to A). The inspector-detected change now keeps its OWN class
+  `start-identity-generation-changed` (consumed by the round-20/22 latch); reparenting alone (ppid-only divergence)
+  stays in the generic torn class — the round-1 rule is unchanged. The round-1 test expectation was updated to the
+  new class name (same injected seam, same named-unestablished status).
+- (b) ANCESTRY ENDPOINT COMPLETENESS: `joinEndpointFacts` passed an established-tagged endpoint missing its OS
+  start identity unchanged — compatible pid/ppid/nonce/instants made BOTH hops established with NEITHER endpoint
+  generation-verified (also bypassing joinLocalDuty's round-15/16 completeness checks). The endpoint helper now
+  requires a positive pid AND a nonempty start identity; incomplete endpoints are named-unavailable (the hops name
+  `hop-endpoint-unestablished`), never joined. Class sweep: the duty join was gated in rounds 15/16, the exit
+  baseline in round 21, and the ancestry endpoints here — every established-tagged consumer now applies the same
+  completeness bar.
+
+**Codex review round 24 (one P2, RED-proven on the pre-fix bytes then fixed):** the round-23 regex
+misclassifies a PPID-ONLY mid-read change as the reuse class — the real inspector threw ONE generic 'identity
+changed' message for BOTH a changed start identity and a reparenting, so a reparented process (the daemon whose
+Companion dies) followed by a confirmed absence latched `pid-start-identity-reused` and permanently blocked the
+disappearance adjudication; the round-23 test missed it by injecting a fabricated message string the real
+inspector never emits. The inspector (in the observer's own bytes since round 8) now throws SELF-DESCRIBING
+errors: a changed START IDENTITY between the double reads keeps the `identity changed` message (the reuse latch
+consumes it), while a PPID-ONLY change throws `ppid changed between reads` (the generic torn class — the round-1
+reparenting rule restored). `observeLocalProcess`/`inspectVerifiedProcessIdentity` gained injectable OS SEAMS
+(platform/ps/environ) with the ps seam applying the SAME startIdentity derivation as the real darwin reader
+(startIdentity = the lstart text), so tests drive the REAL inspector's actual error paths on every host. The
+round-23 test was rewritten honestly: the reparenting case drives the real double-read through the injected seams
+(torn class, absence adjudicates normally) and the start-identity case keeps its named class and still latches —
+no over-correction. The round-23 reparenting control's fabricated message was removed.
+
+**Codex review round 25 (one P2, RED-proven on the pre-fix bytes then fixed):** the environment-NONCE verification
+failure ALSO carried an `identity changed` message WITHOUT completing the second start-identity read — the regex
+labeled a nonce-verification failure as PROVEN PID reuse and adjudicateLocalExit permanently latched it (presence
+A -> nonce mismatch -> verified same-generation presence -> confirmed absence stayed
+`pid-start-identity-reused`). A nonce mismatch now has its OWN error message ('the exact fake-ZCode process nonce
+identity verification failed' — carrying 'identity' for the inherited message contract but NOT the 'identity
+changed' phrase the latch consumes) mapping to the named non-reuse torn class — only an OBSERVED OS start-identity change
+between the double reads is generation-change evidence. Throw-site inventory (each maps to exactly one
+classification; the latch consumes ONLY the observed start-identity change): start-identity change ->
+`start-identity-generation-changed` (reuse latch); nonce mismatch -> `liveness-read-failed` (non-reuse torn);
+ppid-only change -> `liveness-read-failed` (round-24 reparenting rule); unparseable/failed ps read ->
+`liveness-read-failed`; marker gone / absent process -> the positive `absent` fact, not a failure.
+
+**Codex review round 26 (two P2, each RED-proven on the pre-fix bytes then fixed, class-swept; the fixes were
+begun by an execution interrupted mid-work and completed by a resumed one — see the interruption note below):**
+- (a) A NONCE-MISMATCH FAILURE DISCARDED THE OBSERVED START IDENTITY OF A NONCE-LESS REPLACEMENT: when a
+  captured PID is reused by a process WITHOUT the capture nonce, the inspector's first OS read observes the
+  replacement's start identity, but the round-25 mismatch throw carried nothing — `observeLocalProcess` folded
+  it into `liveness-read-failed` without checking `expectedStartIdentity`, and a subsequent absence adjudicated
+  the ORIGINAL generation as `disappeared` (the demonstrable reuse never latched). The mismatch error now rides
+  its observed start identity, and `observeLocalProcess` compares it with the expected generation:
+  demonstrably different -> `start-identity-generation-changed` (the round-20/22 latch consumes it — terminal
+  `pid-start-identity-reused`, the later absence never converts it); same-generation or unverifiable (no
+  expected start identity supplied) stays the named round-25 nonce-failure fact (`liveness-read-failed`,
+  never latched, the absence still adjudicates normally). RED: reverting both hunks fails the regression with
+  actual `liveness-read-failed` / `disappeared` against expected `start-identity-generation-changed` /
+  `pid-start-identity-reused`. Class sweep of every mismatch-throw consumer: `observeLocalProcess` (the only
+  adjudication-producing consumer — fixed); `terminateVerifiedProcess` (a throw fails termination loudly —
+  fail-closed, never an exit verdict); `captureVerifiedProcessIdentity` (capture time: no expected generation
+  exists yet — a named capture failure); the driver's `readProcessIdentity` signal gate (a throw blocks
+  signalling — fail-closed); the fixture re-export (no consumption).
+- (b) A CACHED OS OBSERVATION OF AN EARLIER GENERATION COULD ESTABLISH A LATER STARTUP RECORD: the duty join
+  accepted any creation sufficiently earlier than the record write WITHOUT checking whether the OS observation
+  predates the record writer's startup — an observation completed five seconds before generation B's
+  `startOriginMs` still established B's invocation duty carrying A's start identity (B reused A's pid AND
+  capture nonce, so pid+nonce joins could not exclude it). A final GENERATION-CONTINUITY gate now requires the
+  OS observation's completion instant to POSTDATE the record writer's own precise start (`startOriginMs`;
+  observer-sampled wall clock on both sides — no OS-resolution uncertainty enters this comparison, while the
+  creation-instant rules above it keep their documented `LINUX_BTIME_UNCERTAINTY_MS` / darwin
+  second-containment bounds); an observation completed BEFORE the writer's start is a cached observation of an
+  earlier generation and is named `os-observation-stale`, never bridged. The gate is FINAL (fires only when
+  the more specific creation-instant labels did not — it can never mask them) and applies only to
+  startup-backed duties (the transport/identified-descendant duties join no record writer). FAIL-CLOSED on the
+  completion instant itself: an established-tagged observation with NO verifiable `readEpochMs` cannot
+  demonstrate freshness and is named the same way — the interrupted partial form guarded the gate with
+  `Number.isSafeInteger(...)` AND, which silently SKIPPED it for an unstamped observation (established-by-default);
+  the resumed round inverted that to fail-closed and regression-tested the unstamped arm (RED: the
+  generation-consistent unstamped observation established under the partial form). RED for the main arm:
+  reverting the gate fails the regression with actual `established` against expected `unestablished` /
+  `['os-observation-stale']`. Class sweep of every startup-record <-> OS-observation join: `joinLocalDuty` is
+  the ONLY one (`startOriginMs` has no other adjudication consumer); `joinAncestryHops`/`joinEndpointFacts`
+  adjudicate capture-time ppid equalities and OS-fact lifetime orderings with no record writer involved;
+  `adjudicateLocalExit` orders presence/absence without records.
+- INTERRUPTION NOTE (honesty): the round-26 fixes were begun by an agent run killed by a usage quota mid-work;
+  its uncommitted partial state (module `a31eb3fd…`, both fixes in first form, the two regression tests, the
+  duty-join fixture epochs moved past their record starts, and a partial digest re-land) was recovered and
+  verified by the resumed round, which then (1) re-proved both findings RED by hunk-level reversion, (2) added
+  the fail-closed unstamped arm above, (3) updated the probe file's spawned-suite self-test total 188 -> 190 —
+  the partial round had left the probe file's eight spawned-suite CLI tests failing on the stale total — and
+  (4) re-landed the provenance block below on the FINAL bytes.
+
+**Codex review round 27 (two P2, each RED-proven on the round-26 bytes then fixed, class-swept):**
+- (a) THE ROUND-26 STALENESS GATE ANCHORED ON THE WRONG INSTANT: on Linux the identity double-read finishes
+  BEFORE the asynchronous boot-clock resolution, so a pid+nonce reuser starting DURING that await makes the
+  whole-observation completion POSTDATE the reuser's startup while every identity read observed the EARLIER
+  generation — the gate then accepted the earlier generation's start identity for the reuser's record (an
+  injected delayed-clock reproduction established the incorrect join). Chosen rule (of the three offered):
+  PRESERVE THE IDENTITY-READ TIMESTAMP — an established verdict now carries `identityReadEpochMs`, sampled as
+  soon as the inspection (the double-read and its nonce verification) resolves and BEFORE the awaited
+  start-instant resolution, and the continuity gate anchors on it (falling back to the whole-observation
+  completion for facts without the field — every pre-round-27 hand-assembled fixture is unchanged).
+  JUSTIFICATION: the identity evidence's validity horizon is exactly the instant its reads completed — everything
+  the observation awaits afterwards (boot-clock reads) contributes NO identity evidence, so a writer starting
+  inside that await can never be vouched for by the completion timestamp; the interval-overlap form adds no
+  power once the read instant is carried (the read START is an earlier, weaker bound and the writer's start
+  uncertainty is already governed by the creation-instant rules above the gate), and post-resolution
+  reverification would double the real OS reads only to move the same boundary. With the anchor, every reuser
+  start instant is decided: before/during the double-read -> the observed start-identity change class; after
+  the identity reads -> the record's startOrigin postdates `identityReadEpochMs` -> `os-observation-stale`;
+  before the first read -> the reads observed the reuser itself and join on its own identity. The reproduction
+  drives a REAL delayed clock (an injected boot-clock promise taking real wall time between the identity reads
+  and the completion) — RED: the mid-window record joined `established` pre-fix; GREEN: `unestablished` /
+  `['os-observation-stale']` with the identity-read anchor. Class sweep: `joinLocalDuty` is the only
+  record-join (unchanged); `adjudicateLocalExit` orders reads of the BOUND generation (no record writer);
+  `joinAncestryHops` orders lifetimes BETWEEN two OS endpoints under the round-18/19 uncertainty disciplines
+  (no record writer to bridge — the corrupting shape has no analogue); the descendant-settled check orders an
+  exit against the descendant's own observation (no record join).
+- (b) THE ROUND-26 CARRIED IDENTITY WAS STILL DISCARDED WHEN THE OPTIONAL `expectedStartIdentity` WAS OMITTED:
+  a nonce-less replacement's observed start identity folded back into a plain `liveness-read-failed` (nothing
+  to compare against at the observation layer), so presence S1 -> nonce-mismatched S2 -> absence returned
+  `disappeared` for S1 (reproduced through the REAL inspector with injected OS seams). The observed start
+  identity now RIDES the nonce-failure verdict (`observedStartIdentity`), and `adjudicateLocalExit` — which
+  knows the BOUND generation — classifies a demonstrably different carried identity as positive replacement
+  evidence and latches (`pid-start-identity-reused`, terminal) at BOTH latch sites (the round-22 tie-inclusive
+  check and the strictly-after main-loop handler — evidence ordering can never bypass it); a carried identity
+  EQUAL to the bound generation stays the same-generation nonce failure and never latches (the round-25 rule,
+  now with the comparison the observation layer could not make). RED: the replacement verdict carried nothing
+  and the exit returned `disappeared`; GREEN: `pid-start-identity-reused` with `firstVerifiedAbsenceEpochMs`
+  null. The round-25 fixture honestly updated: its mismatch read had observed a DIFFERENT start identity
+  ('Thu Jan 1…' vs the bound 'S1' — unobserved pre-round-27 because nothing compared it) and is now
+  same-generation ('S1'), preserving that test's actual intent; the different-carried-identity latch is the
+  round-27 test's own assertion. Class sweep: the nonce-mismatch error is the only carrier and
+  `observeLocalProcess` its only verdict producer; `adjudicateLocalExit` is the only adjudicator of
+  unestablished reads (both latch sites covered); the duty join treats unestablished reads as
+  non-establishing regardless of carried fields; the ancestry join consumes established endpoints only.
+
+**Codex review round 28 (three P2, ONE class — the round-27 identity-read/whole-observation-completion
+distinction applied consistently; each RED-proven on the round-27 bytes then fixed, class-swept):**
+- (a) THE INSPECTOR'S EARLY RETURNS DISCARDED A VERIFIED OCCUPANT: if a pid-reusing successor exits between the
+  FIRST start-identity read and the marker/second read, the marker-gone and absent-second-read paths returned a
+  bare `undefined` — discarding the identity the first read positively observed — so the successor's absence
+  read as the BOUND generation's lawful disappearance instead of the reuse latch (reproduced through the REAL
+  inspector with injected OS seams, `expectedStartIdentity` supplied). The first read's generation evidence now
+  RIDES these early returns exactly like the nonce-mismatch failure: a self-describing `observedThenGone`
+  error carries `observedStartIdentity` (its message carries neither the 'identity changed' reuse phrase nor
+  the 'ppid changed' reparenting phrase). `observeLocalProcess` classifies: demonstrably different occupant ->
+  `start-identity-generation-changed` (the reuse latch consumes it — the successor's mid-read absence is never
+  the bound generation's disappearance); the verified generation's OWN mid-read disappearance (or an
+  uncomparable occupant) keeps the LAWFUL absence flow — now extracted into one shared `absenceOutcome` used
+  by the no-process and observed-then-gone paths — with the observed identity attached to the absent verdict
+  for the adjudicator. Consumer conversions preserve each consumer's exact pre-round-28 semantics:
+  `captureVerifiedProcessIdentity` maps the class to its `ZCODE_SHELL_WAIT_PROCESS_EXITED` named failure
+  (capture time: no bound generation exists yet), and the termination verifier's default reader and the
+  driver's `readProcessIdentity` gate treat it as `undefined` (the pid is gone; both only gate signalling —
+  no adjudication to latch for). RED: the marker-gone/absent-second-read verdicts were `absent` and the exit
+  returned `disappeared`; GREEN: both named `start-identity-generation-changed`, exit
+  `pid-start-identity-reused` with `firstVerifiedAbsenceEpochMs` null, and the own-generation control stays
+  the positive absence fact adjudicating `disappeared`.
+- (b) EXIT EVIDENCE ORDERED PRESENCE/REUSE BY THE WHOLE-OBSERVATION COMPLETION: the baseline's completion can
+  be pushed later than its identity reads by asynchronous work that contributes no identity evidence (the
+  delayed Linux boot-clock resolution) — identity reads establish A at t=100, a replacement observed at t=102
+  sorted BEFORE the baseline's completion at t=105 and was discarded by the recency filter, so an absence at
+  t=106 returned `disappeared` for A. `adjudicateLocalExit` now orders IDENTITY evidence (the baseline's
+  last-verified-presence initialization, the round-22 tie-inclusive replacement check, and established
+  same-generation presence updates) by each read's `identityReadEpochMs` (falling back to the completion for
+  pre-round-28 facts), while ABSENCE evidence keeps the whole-observation completion — an absence is proven at
+  its confirmation, the collection-cutoff instant. RED: the replacement was discarded and the exit returned
+  `disappeared` with `lastVerifiedPresenceEpochMs` 105; GREEN: `pid-start-identity-reused`, horizon 100, list
+  order never decides, and a same-generation live read moves the horizon to its own identity instant (104).
+- (c) ANCESTRY LIFETIMES USED THE WHOLE-OBSERVATION COMPLETION AS THE ENDPOINT HORIZON: the Companion's
+  completion can land long after its identity reads, so a pid-reusing replacement creating the "daemon" inside
+  that window passed the lifetime checks against the ORIGINAL Companion. Both endpoint read instants in
+  `joinAncestryHops` now anchor on `identityReadEpochMs` (same fallback): the captured generation's verified
+  lifetime ends where its identity evidence ends, and unrelated asynchronous work can never extend it. RED:
+  the companion-to-daemon hop established against the original Companion; GREEN:
+  `generation-lifetime-unverifiable` (with the fallback semantics asserted unchanged for facts without the
+  carried instant).
+- Class sweep of the identity-read/whole-observation distinction: every consumer of a read instant now uses
+  the identity horizon for identity evidence and the completion for collection-cutoff evidence —
+  `observeLocalProcess` samples the horizon (round 27); `joinLocalDuty` anchors the continuity gate on it
+  (round 27); `adjudicateLocalExit` orders identity evidence by it and absences by the completion (this
+  round); `joinAncestryHops` anchors endpoint lifetimes on it (this round). The inspector's early-return ride
+  completes the throw-site inventory: start-identity change -> `start-identity-generation-changed`; nonce
+  mismatch -> carried identity, non-reuse unless demonstrably different; observed-then-gone -> carried
+  identity, replacement class or lawful absence; ppid-only change / unparseable ps -> `liveness-read-failed`;
+  no process before any read -> the confirmed-absence flow.
+
+**Codex review round 29 (two P2 — edge cases of the round-28 fixes; each RED-proven on the round-28 bytes then
+fixed, class-swept):**
+- (a) THE ABSENCE-ADMISSION BRANCH IGNORED THE ROUND-28 CARRIED IDENTITY: with the OPTIONAL
+  `expectedStartIdentity` omitted, the observed-then-gone ride returns an ABSENT verdict carrying the
+  replacement's observed identity — and `adjudicateLocalExit` admitted the absence without checking it,
+  reporting `disappeared` for the baseline instead of the reuse latch (the round-28 fix covered the
+  unestablished-classified replacement paths; the absent verdict path was missed). The absence branch now
+  checks the carried identity against the BOUND generation BEFORE admitting absence: a demonstrably different
+  carried identity latches (`pid-start-identity-reused`, terminal — the successor's mid-read absence is never
+  the baseline's death); carried-equal or absent-without-carried-identity adjudicates normally. RED: the
+  omitted-expectation arm returned `disappeared`; GREEN: `pid-start-identity-reused` with
+  `firstVerifiedAbsenceEpochMs` null and the carried-equal arm still adjudicating `disappeared`. Tied/old
+  carried-different absent reads stay un-latched by the round-21/22 ordering rules (a tie resolves
+  conservatively to live; old evidence never latches) — only strictly-later evidence admits or latches.
+- (b) READS SORTED BY THE WHOLE-OBSERVATION COMPLETION PLACED STALE PRESENCE AFTER NEWER ABSENCE: a live read
+  whose identity evidence closed at t=2000 but whose Linux clock resolution finished at t=4000 sorted AFTER a
+  confirmed absence at t=3000 and flipped the verdict to `live`. Reads now order by their DECISION instant —
+  identity-bearing reads by `identityReadEpochMs`, absences by their confirmation completion — the same
+  instants the round-28 recency checks consume, so the sort and the recency filter can never disagree.
+  Reproduced through the REAL observation API with an injected delayed clock (identity reads complete
+  immediately, completion ~120ms later, the absence hand-stamped in between). RED: verdict `live`; GREEN:
+  `disappeared` with `lastVerifiedPresenceEpochMs` at the identity-READ instant and the absence instant
+  preserved. Class sweep: the sort was the only remaining completion-ordered site in the exit adjudication;
+  `adjudicateLocalDuties`' descendant-settled check still anchors the descendant's presence on its completion
+  — a REFUSAL direction (it can refuse a lawful composition, never credit a wrong one), left as the
+  conservative residual it is.
+
+**Codex review round 30 (two P2 — edge cases of the round-28/29 fixes; each RED-proven on the round-29 bytes
+then fixed, class-swept):**
+- (a) THE CARRIED-IDENTITY LATCH WAS STILL REASON-KEYED: the round-28 observed-then-gone ride can produce
+  `absence-unconfirmed` / `absence-confirmation-failed` verdicts STILL carrying the replacement's observed
+  identity (the OS confirmation refused or failed), and the latch condition keyed on `liveness-read-failed`
+  alone ignored that evidence — presence A -> unconfirmed read carrying generation B -> later absence
+  incorrectly yielded `disappeared` for A. Both latch sites (the round-22 tie-inclusive check and the
+  strictly-after main-loop handler) now classify ANY read carrying an observed start identity demonstrably
+  different from the BOUND generation, INDEPENDENTLY of its named failure class; carried-equal reads stay
+  non-deciding same-generation failures. RED: the unconfirmed arm returned `disappeared`; GREEN:
+  `pid-start-identity-reused` for both the unconfirmed and the confirmation-failed classes, with the
+  carried-equal controls still adjudicating `disappeared`. The carried-identity inventory is closed: the
+  field is produced only by the nonce-mismatch ride and the observed-then-gone ride; the named
+  generation-changed class latches by class, `absent` verdicts by the round-29 branch, and every other
+  unestablished class by this round's reason-independent rule.
+- (b) THE DESCENDANT-SETTLED COMPARISON STILL ANCHORED ON THE WHOLE-OBSERVATION COMPLETION: delayed Linux
+  boot-clock resolution can finish an observation long after its identity reads; a concurrent absence
+  confirmed AFTER the identity reads but BEFORE the completion is a lawful `disappeared` in
+  `adjudicateLocalExit` (the round-28 ordering), yet the descendant-settled check rejected it against the
+  completion, leaving the aggregate unsettled. The descendant's presence horizon anchors on its
+  `identityReadEpochMs` (legacy fallback to the completion kept) — consistently with the exit adjudicator.
+  RED: `settled` false for the lawful sequence; GREEN: `settled` true, with the ordering refusal unchanged
+  (an absence at or before the identity-READ instant never completes) and the fallback semantics asserted
+  unchanged. Class sweep: this was the last completion-anchored presence comparison on the duty path; the
+  refusal-direction residual noted in round 29 is now closed — the horizon and the exit adjudicator use the
+  same instants everywhere.
+
+**Codex review round 31 (one P2 + one P3 — edge cases of the round-28/29 carried-identity and the darwin
+lstart handling; each RED-proven on the round-30 bytes then fixed, class-swept):**
+- (a) [P2] THE CARRIED IDENTITY INHERITED THE CONFIRMATION'S COMPLETION INSTANT: with the expectation omitted
+  and the absence confirmation DELAYED, old generation B read at t=1000, generation A positively observed at
+  t=2000 and the confirmation finishing at t=3000 made the carried identity look like a replacement observed
+  AFTER A — the round-29 absent-branch latch fired and A's lawful disappearance was permanently refused. The
+  INSPECTION instant (when the identity evidence was actually read, sampled before the confirmation await)
+  now rides the carried identity (`observedIdentityReadEpochMs` on every observed-then-gone verdict), and all
+  three latch sites (the round-29 absent branch and the round-30 tie-inclusive/strictly-after conditions)
+  evaluate the carried identity at THAT instant: B predates A's presence and never latches it — the
+  (later-confirmed) absence admits as A's lawful disappearance; a replacement genuinely read after A's
+  presence still latches (the round-29/30 regressions cover that side). RED: the delayed-confirmation
+  sequence latched `pid-start-identity-reused` (and the inspection instant was not carried at all); GREEN:
+  `disappeared` with the absence instant preserved and the carried instant asserted to precede the
+  confirmation await. The nonce-mismatch rides keep their semantics through the fallback (their verdict
+  completion IS their inspection instant — no confirmation await on that path).
+- (b) [P3] DARWIN LSTART WAS RENDERED AND PARSED IN LOCAL TIME: `ps` renders lstart in LOCAL time without an
+  offset, and during a DST fall-back hour that rendering is ambiguous — host-local `Date.parse` picks the
+  earlier occurrence of the repeated hour (America/New_York: a process started at 06:30Z renders
+  'Sun Nov  2 01:30:00' and parses as 06:30Z-EST against the 01:30Z the fields read), so a genuine process
+  failed the startup-generation join with `generation-start-second-mismatch`, one hour off. The real darwin
+  reader now requests `TZ=UTC ps` and the parse is FIELD-EXPLICIT UTC (`parseLstartAsUtc`: the lstart shape
+  'Www Mmm dd hh:mm:ss yyyy' parsed into `Date.UTC`, any other shape a named-null start instant — never a
+  guessed value; the whitespace collapse is GLOBAL, single-digit days render with a double space). Tested
+  deterministically through the injected ps seam (the rendered fall-back-hour text is fixed; no real DST is
+  awaited): pre-fix the resolved instant was the host-local interpretation (8h off on this host; the exact
+  fall-back skew under New_York) and the duty join refused; post-fix the resolved instant is exactly the UTC
+  interpretation of the rendered fields and the same-second startup record binds. The real darwin reader is
+  re-verified on this host by the real-child end-to-end tests (real `TZ=UTC ps` against a real record). Class
+  sweep: `resolveObservationStartInstantMs` was the only lstart parse site (the linux branch resolves
+  proc-ticks against the boot clock — absolute and offset-free); no other consumer parses the rendered text.
+
+**Codex review round 32 (three P2 — consequences of the round-31 changes; each RED-proven on the round-31
+bytes then fixed, class-swept):**
+- (a) TZ=UTC DOES NOT PIN ps's DATE FORMATTING: under a non-C locale (LC_ALL=fr_FR.UTF-8) lstart renders
+  localized month/day names and ordering, which the strict UTC field parse rejects (null start instant) —
+  invocation/broker duties could never establish on that host. EVERY `ps` identity query in the module now
+  spawns with a PINNED env (`psIdentitySpawnEnv()`: `{ ...process.env, TZ: 'UTC', LC_ALL: 'C' }`) — the
+  darwin lstart read, the darwin `ps eww` marker scan, and the absence-confirmation ps (audited: the linux
+  paths read /proc — no locale surface; the marker scan is byte-token content, pinned anyway so no identity
+  query is left to the ambient locale). Audited through a NEW injected seam (`osSeams.runProcess`, threaded
+  to both darwin ps readers): the test captures the REAL reader's spawn and asserts `TZ=UTC` + `LC_ALL=C` on
+  every query, with the C-locale-shaped stdout parsed through the real reader into a UTC start instant. RED:
+  the seam was ignored (the real ps ran on a synthetic pid -> absent) and no env was pinned; GREEN: every
+  captured spawn carries the pinned env and the observation establishes.
+- (b) THE ROUND-31 DARWIN-UTC REGRESSION BROKE ON LINUX: `resolveObservationStartInstantMs` checked the REAL
+  `process.platform` while the regression injects a darwin ps seam — on a Linux runner the darwin-shaped
+  identity resolved to a null start instant and the registered shell-research suite failed. The resolution
+  now honors the INJECTED seam platform (`deps.osSeams?.platform ?? process.platform`) — consistent with the
+  inspector's seam discipline (the observation's platform identity is the seam's), and the regression's
+  seams ride the INPUT `osSeams` so they reach the resolution path. Verified BOTH directions on this host:
+  with the host forced to the pre-fix linux path (`if (true) return null`) the regression REDs (null start
+  instant — exactly what a Linux runner saw); with the FIXED line and the host pinned to linux, the darwin
+  seam overrides and the regression GREENs.
+- (c) THE NATURAL-EXIT TEST COMPARED THE ADJUDICATION AGAINST `live.readEpochMs`: the round-28 adjudication
+  reports the IDENTITY-READ instant, and on Linux a cold boot-clock cache makes the completion later — the
+  equality could flake on ms-boundary crossings. Verified by simulating the Linux skew (a delayed start-
+  instant resolution on the real-child read: completion 60ms after the identity-read instant) — the old
+  assertion REDs (`lastVerifiedPresenceEpochMs` actual = the identity instant, expected = the later
+  completion); the assertion now compares `live.identityReadEpochMs` (the honest identity-evidence instant)
+  and GREENs. Class sweep: the other natural-exit assertions already compare ordering (`>=`), never
+  completion equality.
+
+**Codex review round 33 (three P2 — consequences of the round-29/31/32 changes; each RED-proven on the
+round-32 bytes then fixed, class-swept):**
+- (a) COMPLETION-ORDER PROCESSING ERASED AN EARLIER-READ CARRIED REPLACEMENT: with a delayed absence
+  confirmation, replacement B carried its identity-read instant 2000 but COMPLETED at 4000; with another A
+  observation at 3000, the completion-ordered decision sequence advanced the presence horizon to 3000 BEFORE
+  B was evaluated at its carried instant — B was discarded as old evidence and the later same-generation
+  read washed out the reuse latch (`disappeared`), whereas without the extra live observation B correctly
+  latched. Evidence ORDER must not decide: the decision sequence now orders every read by its DECISION
+  instant — a read CARRYING an observed identity orders at `observedIdentityReadEpochMs` (it is identity-
+  bearing), plain absences at their confirmation completion, other identity-bearing reads at their
+  identity-read instant — the same instants the round-29/31 evaluations consume. B is classified against the
+  horizon as of ITS read instant and the terminal latch holds. RED: the sandwiched sequence returned
+  `disappeared`; GREEN: `pid-start-identity-reused`, list order never decides.
+- (b) THE ROUND-32 LOCALE REGRESSION BROKE ON LINUX: the test injected the darwin platform only into the
+  inspector closure while the OUTER observation resolved the returned lstart against the REAL host platform —
+  a null start instant on a Linux runner and the registered suite failed. The regression's seams now ride the
+  INPUT `osSeams` (the module-level seam discipline), so the injected platform reaches the start-instant
+  resolution too. Verified BOTH directions on this host: with the resolution forced to the pre-fix linux
+  path the regression REDs (null start instant — exactly what a Linux runner saw); with the FIXED resolution
+  and the host pinned to linux the injected platform overrides and the regression GREENs.
+- (c) LATE-REGISTERED EXIT LISTENER RACE: the REAL-CHILD fast-startup test registered its child's exit
+  listener only AFTER several awaited legs (record wait, admission, live observation, duty join) — on a slow
+  runner the 1200-ms child can emit exit while those legs await and the late listener misses the event
+  permanently (the promise never resolves; the registered test hangs). The exit promise is now created
+  IMMEDIATELY after spawn, before any awaited leg (the `scopeWithLiveChild` pattern). Verified by simulating
+  the slow runner (an artificial wait longer than the child's hold before the late registration): the test
+  hung and was cancelled at the runner timeout (RED); with the hoisted promise it resolves from the buffered
+  exit event (GREEN). SWEEP: the file's only other late-registered close/stdout listener (the read-only
+  capture-directory test) was hoisted the same way — its spawn's install wait and chmod could outrun the
+  child identically; no other real-child spawn registers listeners late.
+
+**Codex review round 34 (one P2 — a consequence of the round-33 identity-time ordering; RED-proven on the
+round-33 bytes then fixed, class-swept):**
+- OVERLAPPING SAME-GENERATION DISAPPEARANCES REPORTED THE FIRST-PROCESSED COMPLETION: two overlapping
+  same-generation observed-then-gone reads — carried identity instants 200/300, absence confirmations
+  completing 500/400 — sort by the carried instants (round 33), so the read whose confirmation completed at
+  500 was ADMITTED first and `finalAbsenceRunStart` stayed 500: a pre-cutoff verified absence (400) was
+  reported post-cutoff. Identity-time ordering is kept for replacement detection (round 33), but the
+  reported first verified absence instant of a run is now the EARLIEST confirmed completion among the run's
+  admitted absences (min-tracked on continuation) — decision order never inflates the absence instant. RED:
+  `firstVerifiedAbsenceEpochMs` 500; GREEN: 400, list order never decides. Class sweep: `finalAbsenceRunStart`
+  is the only reported-absence-instant site (the verdict consumes it; the descendant-settled check consumes
+  composed exit verdicts); the recency filter still refuses any absence at or before the horizon — the min
+  only corrects the REPORTED instant among already-admitted run members.
+
+**Codex review round 35 (one P2 — the inverse interleaving of the round-34 fix; RED-proven on the round-34
+bytes then fixed, class-swept):**
+- IDENTITY-TIME ORDERING LET A LATER-READ PRESENCE OVERWRITE A LATER-CONFIRMED ABSENCE: an observed-then-gone
+  read carries identity instant ~t0+2 but confirms absence at ~t0+80, while ANOTHER read verifies the same
+  generation alive at ~t0+30 (e.g. after a transient ps failure) — sorting the absent verdict at its carried
+  instant admitted the absence first and the later live evidence overwrote it: the verdict was `live` despite
+  the later confirmed absence. The two orderings are now SEPARATE: identity-time ordering governs REPLACEMENT
+  DETECTION (the latch — rounds 29-33 unchanged, including the round-33 shape where a replacement erased by a
+  later-read same-generation presence stays latched), while the FINAL live/absent decision is CONFIRMATION-
+  time: a post-pass re-derives the decision from the admitted evidence — if any same-scope absence confirmation
+  completes after the last same-generation presence evidence (its identity-read instant), the verdict is
+  `disappeared` with the EARLIEST such completion reported (the round-34 rule, re-derived over all admitted
+  absences); a presence whose identity read postdates every confirmed absence leaves the block untouched and
+  adjudicates `live`. Reproduced through the real inspector with a real delayed confirmation and an injected
+  overlapping live read. RED: `live`; GREEN: `disappeared` at the confirmed completion with the presence
+  horizon at the overlapping read, and the inverse arm (`live` for a postdating presence) asserted. Class
+  sweep: the post-pass is the only final-decision site; the latch sites and the recency filter are untouched,
+  and every prior interleaving shape (rounds 29-34) is pinned by its own regression.
+
+**Codex review round 36 (one P2 — completion comparisons alone still allowed a pre-presence snapshot to
+credit a disappearance; RED-proven on the round-35 bytes then fixed, class-swept):**
+- AN ABSENCE WHOSE COLLECTION OVERLAPS THE PRESENCE EVIDENCE WAS STILL CREDITED: completion timestamps bound
+  collection latency, not snapshot ordering — an absence query can capture its OS no-match BEFORE the presence
+  observation and DELIVER the result after it (reproduced by starting the absence read first, holding its
+  confirmation, observing presence, then releasing), and the round-35 confirmation-time post-pass credited it
+  (`disappeared`) for a process that was verifiably alive. Absence crediting now requires a DEMONSTRABLY
+  post-presence COLLECTION in BOTH absence-admission passes: the absence read's START instant
+  (`readStartedEpochMs`, sampled per read since round 3) must be at or after the presence evidence's
+  identity-read instant (non-overlapping read intervals) — gated in the in-loop absent-branch admission AND
+  in the round-35 post-pass; an overlapping collection interval is named-unconfirmed for the decision (it
+  proves nothing about the state after the presence), never credited as disappearance; reads without a
+  sampled start (pre-round-3 hand-built facts) keep the legacy completion-only semantics. The round-35
+  regression was restructured honestly to the refined semantics: the credited shape is the NON-overlapping
+  one (the absence read starts demonstrably after the overlapping live evidence and confirms later), and the
+  OVERLAPPING shape now adjudicates named-unestablished (`absence-unestablished`); the round-31
+  old-generation regression likewise — its overlapping absence proves nothing about the state after A's
+  verification, and the ROUND-31 CORE (B never latches A's disappearance as reuse) is asserted unchanged
+  (the reason is never `pid-start-identity-reused`). RED: the held-confirmation repro returned
+  `disappeared` for the verifiably alive process (stable across three runs); GREEN: named-unestablished,
+  with a demonstrably post-presence absence still crediting the lawful disappearance.
+
+**Registration:** `tools/run-test-suite.mjs` shell-research now selects THREE entries
+(`tests/shell-wait-local-process.test.mjs`, `tests/shell-wait-native-interruption.test.mjs`,
+`tests/shell-wait-probe.test.mjs`); `tests/test-selection.test.mjs` updated and STRENGTHENED (the routine
+complement must equal EXACTLY the eight registered research entries, so an unregistered new entry can never silently
+land in the routine suite; per-entry fail-closed checks); the probe suite's nested spawned-suite self-test total is
+97 → **206** (1 guarded marker + 96 native-interruption + 109 local-process; 188 at the round-25 state, 190 at
+round 26, 192 at round 27, 195 at round 28, 197 at round 29, 199 at round 30, 201 at round 31, 202 at round
+32, 203 at round 33, 204 at round 34 and 205 at round 35 — each round's local-process regressions raise it,
+and the probe file's `shellSuiteSpawnedTestTotal` constant was re-pinned in step 188 → 190 → 192 → 195 →
+197 → 199 → 201 → 202 → 203 → 204 → 205 → 206), and the probe
+file's guarded marker and
+selection tests now name the THREE-entry registration — no research entry is silently skipped.
+
+**Gates (round-25 record: executed 2026-10-29 on the round-25-final bytes at 91 local-process / 188 nested /
+949 full probe, plus the closure/fixture seam section 56/56 by name pattern; round-26 re-execution on its
+bytes at 93 local-process / 190 nested / 950 full probe; round-27 re-execution on its bytes at 95
+local-process / 192 nested / 950 full probe; round-28 re-execution on its bytes at 98 local-process / 195
+nested / 950 full probe; round-29 re-execution on its bytes at 100 local-process / 197 nested / 950 full
+probe; round-30 re-execution on its bytes at 102 local-process / 199 nested / 950 full probe; round-31
+re-execution on its bytes at 104 local-process / 201 nested / 950 full probe; round-32 re-execution on its
+bytes at 105 local-process / 202 nested / 950 full probe; round-33 re-execution on its bytes at 106
+local-process / 203 nested / 950 full probe; round-34 re-execution on its bytes at 107 local-process / 204
+nested / 950 full probe; round-35 re-execution on its bytes at 108 local-process / 205 nested / 950 full
+probe; RE-EXECUTED 2026-10-30 on the round-36 FINAL bytes —
+actuals, the full probe file supersets the seam section):** `node --test
+tests/shell-wait-local-process.test.mjs` = 109/109 pass, 0 failed, 0 skipped, exit 0; `node --test
+tests/test-selection.test.mjs` = 6/6 pass, exit 0; `npm run lint` clean (exit 0); `npm run typecheck` clean
+(exit 0); `git diff --check` clean (exit 0); the nested guarded shell-research run
+(`ZCODE_SHELL_WAIT_PROBE_SELF_TEST=1 node tools/run-test-suite.mjs shell-research`) re-executed on THESE final
+bytes: 206/206 pass, 0 failed, 0 skipped, exit 0 (the guarded three-file selection 1+96+109, including the
+three-entry guarded marker), and the FULL probe file `node --test tests/shell-wait-probe.test.mjs` =
+950/950 pass, 0 failed, 0 skipped, exit 0 (its eight spawned-suite CLI tests each re-run the guarded
+three-file shell-research selection — 206 tests — inside themselves; the round-25 record's 949/949 does not
+match the amended commit's own probe-file registration as measured on these bytes (950): the count was not
+re-measured at the amend boundary — the same bookkeeping-lag class this block documents above — and the
+re-pinned `shellSuiteSpawnedTestTotal` (now 206) is what makes the eight spawned assertions pass). No live
+launch, no native qualification claimed: arming, runtime wiring,
+pre-host/runtime gates and acceptance composition remain Task 3.

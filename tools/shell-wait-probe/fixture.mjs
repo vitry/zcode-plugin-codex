@@ -32,6 +32,7 @@
  * a fixture control — never persisted production-trust qualification.
  */
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { homedir, tmpdir } from 'node:os';
@@ -40,11 +41,15 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { SURVIVAL_CONTROL_READINESS_FLOOR_LINE_INDEX, survivalControlShellCommand } from './evidence.mjs';
 import {
+  BROKER_IDENTITY_SUFFIX,
+  CAPTURE_BROKER_ENTRY_VARIABLE,
   CAPTURE_DIRECTORY_VARIABLE,
   CAPTURE_ENTRY_VARIABLE,
   CAPTURE_MAX_BYTES_VARIABLE,
   CAPTURE_NONCE_VARIABLE,
   CLOSURE_PRELOAD_FILE_NAME,
+  IDENTITY_RECORD_VERSION,
+  INVOCATION_IDENTITY_SUFFIX,
   STDOUT_CAPTURE_MAX_BYTES,
   writeClosurePreload,
 } from './closure-observation.mjs';
@@ -52,6 +57,13 @@ import { buildMarketplaceSnapshot } from '../../scripts/build-marketplace-snapsh
 import { renderManagedRescueRole } from '../../scripts/lib/managed-agent-role.mjs';
 import { runProcess } from '../../scripts/lib/process.mjs';
 import { codexLaunch, npmLaunch } from '../../scripts/lib/tool-launch.mjs';
+
+// Module-INIT snapshot of THIS module's executing source (the same
+// provenance discipline as evidence.mjs/local-process-observation.mjs): the
+// local-process observer binds these bytes because this module implements
+// the actual OS inspection (the race-safe double read and environment-nonce
+// verification) its verdicts trust.
+export const EXECUTING_FIXTURE_SOURCE = readFileSync(fileURLToPath(import.meta.url));
 
 const FAKE_ZCODE_PATH = fileURLToPath(new URL('../../tests/fixtures/fake-zcode-cli.mjs', import.meta.url));
 /** The fixed harmless public sentinel the fake ZCode returns as its terminal result. */
@@ -618,13 +630,25 @@ export async function createShellWaitFixture(input, dependencies = {}) {
     // with the composed environment by reference). The record carries only
     // the bounded provenance (digests and closed configuration, never
     // private paths); the handle exposes the private paths for the driver.
-    /** @type {{ preloadPath: string, preloadSha256: string, captureDirectory: string, nonce: string, maxBytes: number, entryRealpath: string } | null} */
+    /** @type {{ preloadPath: string, preloadSha256: string, captureDirectory: string, nonce: string, maxBytes: number, entryRealpath: string, brokerEntryRealpath: string } | null} */
     let stdoutCaptureHandle = null;
     if (prepared.stdoutCapture === true) {
       const nonce = randomBytes(32).toString('hex');
       const captureDirectory = join(temporary, 'stdout-capture');
       const capturePreload = await writeClosurePreload(temporary);
       const entryRealpath = await realpath(join(installedRoot, 'skills', 'rescue', 'launcher.mjs'));
+      // Local-settlement Task 2 (report §25.4 item 4): the broker daemon is
+      // the mediation hop of the ancestry join, so arming the seam also
+      // DECLARES the installed broker entry — the preload records the
+      // daemon's own startup identity when the exact broker argv runs under
+      // this scope's nonce. A missing installed broker file fails the arming
+      // loudly (fail closed), never a silently undeclared hop.
+      const brokerEntryPath = join(installedRoot, 'scripts', 'zcode-broker.mjs');
+      const brokerStats = await lstat(brokerEntryPath).catch(() => null);
+      if (brokerStats === null || !brokerStats.isFile()) {
+        throw new Error('the armed observation seam requires the installed zcode-broker.mjs (the declared broker-daemon entry)');
+      }
+      const brokerEntryRealpath = await realpath(brokerEntryPath);
       await mkdir(captureDirectory, { recursive: true, mode: 0o700 });
       const existingOptions = /** @type {Record<string, unknown>} */ (env).NODE_OPTIONS;
       const existingNodeOptions = typeof existingOptions === 'string' && existingOptions.length > 0 ? `${existingOptions} ` : '';
@@ -633,6 +657,7 @@ export async function createShellWaitFixture(input, dependencies = {}) {
         [CAPTURE_NONCE_VARIABLE]: nonce,
         [CAPTURE_ENTRY_VARIABLE]: entryRealpath,
         [CAPTURE_MAX_BYTES_VARIABLE]: String(STDOUT_CAPTURE_MAX_BYTES),
+        [CAPTURE_BROKER_ENTRY_VARIABLE]: brokerEntryRealpath,
         NODE_OPTIONS: `${existingNodeOptions}${capturePreload.nodeOptionsFragment}`,
       });
       stdoutCaptureHandle = Object.freeze({
@@ -642,6 +667,7 @@ export async function createShellWaitFixture(input, dependencies = {}) {
         nonce,
         maxBytes: STDOUT_CAPTURE_MAX_BYTES,
         entryRealpath,
+        brokerEntryRealpath,
       });
       /** @type {Record<string, unknown>} */ (record).closureStdoutCapture = {
         preload: CLOSURE_PRELOAD_FILE_NAME,
@@ -652,7 +678,16 @@ export async function createShellWaitFixture(input, dependencies = {}) {
           declaredEntryRealpathSha256: sha256(entryRealpath),
           selector: 'fixture-only capture environment present AND realpath(argv[1]) equal to the declared installed launcher realpath AND argv exactly [invoke-prepared, rescue]',
         },
-        environmentVariables: [CAPTURE_DIRECTORY_VARIABLE, CAPTURE_NONCE_VARIABLE, CAPTURE_ENTRY_VARIABLE, CAPTURE_MAX_BYTES_VARIABLE],
+        brokerGate: {
+          declaredBrokerEntryRealpathSha256: sha256(brokerEntryRealpath),
+          selector: 'the same fixture-only capture environment present AND the declared installed zcode-broker.mjs realpath equal to realpath(argv[1]) AND argv exactly [broker-entry, config] (three segments) — identity RECORD only, never stdout interception',
+        },
+        identityRecord: {
+          version: IDENTITY_RECORD_VERSION,
+          roles: { invocation: INVOCATION_IDENTITY_SUFFIX, brokerDaemon: BROKER_IDENTITY_SUFFIX },
+          fields: 'closed per-role bounded JSON: version, role, scope nonce, entry realpath, invocation argv (terminal selector) or broker config digest, pid, ppid, first-write instant',
+        },
+        environmentVariables: [CAPTURE_DIRECTORY_VARIABLE, CAPTURE_NONCE_VARIABLE, CAPTURE_ENTRY_VARIABLE, CAPTURE_MAX_BYTES_VARIABLE, CAPTURE_BROKER_ENTRY_VARIABLE],
       };
     }
 
@@ -1217,276 +1252,19 @@ async function applyVariantArtifacts({ installedRoot, codexHome, prepared, insta
   };
 }
 
-/**
- * Exact process-identity discipline reused by the driver's bounded host
- * lifecycle: a process is signalled only after its PID, parent PID, start
- * identity, and fake-ZCode nonce environment marker were all re-verified. A
- * stale, reparented, restarted, or nonce-mismatched PID is never signalled.
- */
-const FAKE_ZCODE_NONCE_VARIABLE = 'FAKE_ZCODE_PROCESS_NONCE';
-
-/** @param {string} nonce */
-export function validateProcessNonce(nonce) {
-  if (typeof nonce !== 'string' || !/^[a-f0-9]{64}$/u.test(nonce)) throw new Error('the exact fake-ZCode process nonce mismatch');
-}
 
 /**
- * Validate one fake-ZCode process marker file record.
- * @param {unknown} marker @param {string} expectedNonce
- * @returns {{ pid: number, ppid: number, nonce: string }}
+ * The exact process-identity discipline MOVED (review round 8) into
+ * local-process-observation.mjs — the observer's executing bytes bind it —
+ * and re-exported here so the driver surface stays unchanged.
  */
-export function validateProcessMarker(marker, expectedNonce) {
-  validateProcessNonce(expectedNonce);
-  if (!marker || typeof marker !== 'object'
-    || !Number.isSafeInteger(/** @type {any} */ (marker).pid) || /** @type {any} */ (marker).pid <= 0
-    || !Number.isSafeInteger(/** @type {any} */ (marker).ppid) || /** @type {any} */ (marker).ppid <= 0
-    || /** @type {any} */ (marker).nonce !== expectedNonce) {
-    // Marker CORRUPTION (malformed PID or mismatched nonce) is distinct from a
-    // confirmed absence: corruption is recorded as incomplete cleanup and the
-    // unverified PID is never signalled.
-    /** @type {any} */ const corruption = new Error('the exact fake-ZCode process marker identity is invalid');
-    corruption.code = 'ZCODE_SHELL_WAIT_MARKER_INVALID';
-    throw corruption;
-  }
-  return { pid: /** @type {any} */ (marker).pid, ppid: /** @type {any} */ (marker).ppid, nonce: expectedNonce };
-}
-
-/** @param {number} pid */
-async function readMacProcessStart(pid) {
-  const result = await runProcess({ command: 'ps', args: ['-o', 'pid=', '-o', 'ppid=', '-o', 'lstart=', '-p', String(pid)] }, { timeoutMs: 2_000, maxOutputBytes: 4 * 1024 });
-  if (result.code !== 0 || !result.stdout.trim()) return undefined;
-  const match = /^\s*(\d+)\s+(\d+)\s+(.+?)\s*$/u.exec(result.stdout);
-  if (!match || Number(match[1]) !== pid || !Number.isSafeInteger(Number(match[2])) || Number(match[2]) <= 0) {
-    throw new Error('the exact fake-ZCode process identity could not be parsed');
-  }
-  return { pid, ppid: Number(match[2]), startIdentity: match[3] };
-}
-
-/** @param {number} pid */
-async function readLinuxProcessStart(pid) {
-  const { readFile: read } = await import('node:fs/promises');
-  let statText;
-  try { statText = await read(`/proc/${pid}/stat`, 'utf8'); } catch (error) {
-    if (/** @type {NodeJS.ErrnoException} */ (error).code === 'ENOENT') return undefined;
-    throw error;
-  }
-  const close = statText.lastIndexOf(')');
-  const fields = close < 0 ? [] : statText.slice(close + 2).trim().split(/\s+/u);
-  const observedPid = Number(statText.slice(0, statText.indexOf(' ')));
-  const ppid = Number(fields[1]);
-  const startTicks = fields[19];
-  if (observedPid !== pid || !Number.isSafeInteger(ppid) || ppid <= 0 || !/^\d+$/u.test(startTicks ?? '')) {
-    throw new Error('the exact fake-ZCode process identity could not be parsed');
-  }
-  return { pid: observedPid, ppid, startIdentity: `proc:${startTicks}` };
-}
-
-/**
- * Read one process environment marker. Returns 'gone' when the process no
- * longer exists, 'mismatch' when a live process does not carry the expected
- * nonce (an identity change, never silently accepted), and 'present' on an
- * exact nonce match.
- * @param {number} pid @param {string} expectedNonce @param {string} nonceVariable
- * @returns {Promise<'present' | 'mismatch' | 'gone'>}
- */
-async function readProcessEnvironmentMarker(pid, expectedNonce, nonceVariable) {
-  if (process.platform === 'linux') {
-    const { readFile: read } = await import('node:fs/promises');
-    let environ;
-    try { environ = await read(`/proc/${pid}/environ`, 'utf8'); } catch (error) {
-      if (/** @type {NodeJS.ErrnoException} */ (error).code === 'ENOENT') return 'gone';
-      throw error;
-    }
-    return environ.split('\0').includes(`${nonceVariable}=${expectedNonce}`) ? 'present' : 'mismatch';
-  }
-  const command = await runProcess({ command: 'ps', args: ['eww', '-o', 'command=', '-p', String(pid)] }, { timeoutMs: 2_000, maxOutputBytes: 64 * 1024 });
-  if (command.code !== 0 || !command.stdout.trim()) return 'gone';
-  return command.stdout.split(/\s+/u).includes(`${nonceVariable}=${expectedNonce}`) ? 'present' : 'mismatch';
-}
-
-/**
- * Inspect one exact process identity (double-read so a racing exit or restart
- * is detected, never silently accepted). The returned shape carries the nonce
- * under the single canonical `nonce` field shared by capture, re-verification,
- * and termination.
- * @param {number} pid @param {string} expectedNonce @param {string} [nonceVariable]
- * @returns {Promise<{ pid: number, ppid: number, startIdentity: string, nonce: string } | undefined>}
- */
-export async function inspectVerifiedProcessIdentity(pid, expectedNonce, nonceVariable = FAKE_ZCODE_NONCE_VARIABLE) {
-  if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error('the exact fake-ZCode PID is invalid');
-  validateProcessNonce(expectedNonce);
-  if (typeof nonceVariable !== 'string' || !/^[A-Z][A-Z0-9_]{0,63}$/u.test(nonceVariable)) {
-    throw new Error('the exact fake-ZCode process nonce marker is invalid');
-  }
-  const readStart = process.platform === 'linux' ? readLinuxProcessStart : readMacProcessStart;
-  const before = await readStart(pid);
-  if (!before) return undefined;
-  const markerState = await readProcessEnvironmentMarker(pid, expectedNonce, nonceVariable);
-  if (markerState === 'mismatch') throw new Error('the exact fake-ZCode process identity changed');
-  if (markerState === 'gone') return undefined;
-  const after = await readStart(pid);
-  if (!after) return undefined;
-  if (before.ppid !== after.ppid || before.startIdentity !== after.startIdentity) {
-    throw new Error('the exact fake-ZCode process identity changed');
-  }
-  return { ...after, nonce: expectedNonce };
-}
-
-/**
- * Capture one exact process identity from a fake-ZCode process marker file:
- * the single shared entry point for the held-run lifecycle so capture,
- * re-verification, and termination all speak the same nonce-bearing shape.
- * @param {string} processPath @param {string} processNonce
- * @returns {Promise<{ pid: number, ppid: number, startIdentity: string, nonce: string }>}
- */
-export async function captureVerifiedProcessIdentity(processPath, processNonce) {
-  const { readFile: read } = await import('node:fs/promises');
-  /** @param {string} code @param {string} message @returns {Error} */
-  const coded = (code, message) => /** @type {any} */ (Object.assign(new Error(message), { code }));
-  let markerBytes;
-  try {
-    markerBytes = await read(processPath, 'utf8');
-  } catch (error) {
-    if (/** @type {NodeJS.ErrnoException} */ (error).code === 'ENOENT') {
-      throw coded('ZCODE_SHELL_WAIT_MARKER_ABSENT', 'the exact fake-ZCode process marker never appeared (confirmed absence; nothing to signal)');
-    }
-    throw coded('ZCODE_SHELL_WAIT_MARKER_INVALID', `the exact fake-ZCode process marker could not be read: ${/** @type {Error} */ (error).message}`);
-  }
-  // The marker invariant: the file exists WITH its JSON payload only after fake
-  // ZCode actually launched. A zero-byte marker (e.g. pre-created empty by the
-  // harness before the host launched, then the host exited early) is a
-  // CONFIRMED ABSENCE — no fake process ever wrote its identity — never
-  // marker corruption.
-  if (markerBytes.trim() === '') {
-    throw coded('ZCODE_SHELL_WAIT_MARKER_ABSENT', 'the exact fake-ZCode process marker is empty: no fake process ever launched (confirmed absence; nothing to signal)');
-  }
-  let marker;
-  try {
-    marker = validateProcessMarker(JSON.parse(markerBytes), processNonce);
-  } catch (error) {
-    throw /** @type {any} */ (error)?.code === 'ZCODE_SHELL_WAIT_MARKER_INVALID'
-      ? error
-      : coded('ZCODE_SHELL_WAIT_MARKER_INVALID', `the exact fake-ZCode process marker is corrupt: ${error instanceof Error ? error.message : String(error)}`);
-  }
-  const observed = await inspectVerifiedProcessIdentity(marker.pid, processNonce);
-  // Codex gate round-7 finding 1: an EXISTING, nonce-valid marker whose
-  // process has exited is a CONFIRMED PERMANENT DISAPPEARANCE — never launch
-  // readiness that might still arrive. It carries its own code so the
-  // driver's identity retry loop can stop retrying (and name the failure)
-  // instead of treating the disappearance as an absent marker and burning
-  // the experiment budget on a process that can never be captured.
-  if (!observed) throw coded('ZCODE_SHELL_WAIT_PROCESS_EXITED', 'the exact fake-ZCode process exited before identity capture');
-  if (observed.ppid !== marker.ppid) throw coded('ZCODE_SHELL_WAIT_MARKER_INVALID', 'the exact fake-ZCode parent identity mismatch');
-  return observed;
-}
-
-/**
- * Terminate one exact process after re-verifying its identity; escalate to
- * SIGKILL only while the identity still matches, verify exit after every
- * signal within a bounded deadline, and return an explicit outcome: a thrown
- * signal is never a success while the process is still live, and a process
- * that survives SIGKILL verification is reported as a failure for the caller
- * to record.
- * @param {{ pid: number, ppid: number, nonce: string, startIdentity: string }} identity
- * @param {{ readIdentity?: (expected: unknown) => Promise<unknown>, kill?: (pid: number, signal: NodeJS.Signals) => boolean, waitForExit?: (identity: unknown, phase: 'terminate' | 'kill') => Promise<void> }} [dependencies]
- * @returns {Promise<TerminationOutcome>}
- */
-export async function terminateVerifiedProcess(identity, dependencies = {}) {
-  const readIdentity = dependencies.readIdentity ?? (async (expected) => inspectVerifiedProcessIdentity(/** @type {any} */ (expected).pid, /** @type {any} */ (expected).nonce));
-  const kill = dependencies.kill ?? ((pid, signal) => process.kill(pid, signal));
-  const waitForExit = dependencies.waitForExit ?? (async (expected, phase) => {
-    const deadline = Date.now() + (phase === 'kill' ? 5_000 : 2_000);
-    while (Date.now() < deadline) {
-      if (await readIdentity(expected) === undefined) return;
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    throw new Error(`the exact verified process remained alive during ${phase}`);
-  });
-  /** @type {TerminationOutcome} */
-  const outcome = { attempted: false, signalled: null, exited: false, failure: null };
-  // A disappeared target needs no signal and counts as exited; a live target
-  // whose identity changed is never signalled and is reported as a failure.
-  if (await readIdentity(identity) === undefined) {
-    outcome.exited = true;
-    return outcome;
-  }
-  if (!await verifyUnchanged(identity, readIdentity)) {
-    outcome.failure = 'the exact fake-ZCode process identity changed before signalling';
-    return outcome;
-  }
-  outcome.attempted = true;
-  try {
-    kill(identity.pid, 'SIGTERM');
-    outcome.signalled = 'SIGTERM';
-  } catch (error) {
-    // A thrown signal is not a success while the process is still live.
-    if (await readIdentity(identity) === undefined) {
-      outcome.exited = true;
-      return outcome;
-    }
-    outcome.failure = `SIGTERM could not be signalled (${error instanceof Error ? error.message : String(error)}) and the exact fake-ZCode process remains live`;
-    return outcome;
-  }
-  try {
-    await waitForExit(identity, 'terminate');
-    outcome.exited = true;
-    return outcome;
-  } catch { /* escalate only the still-matching PID */ }
-  if (!await verifyUnchanged(identity, readIdentity)) {
-    const gone = await readIdentity(identity) === undefined;
-    outcome.exited = gone;
-    if (!gone) outcome.failure = 'the exact fake-ZCode process identity changed during termination';
-    return outcome;
-  }
-  try {
-    kill(identity.pid, 'SIGKILL');
-    outcome.signalled = 'SIGKILL';
-  } catch (error) {
-    if (await readIdentity(identity) === undefined) {
-      outcome.exited = true;
-      return outcome;
-    }
-    outcome.failure = `SIGKILL could not be signalled (${error instanceof Error ? error.message : String(error)}) and the exact fake-ZCode process remains live`;
-    return outcome;
-  }
-  try {
-    await waitForExit(identity, 'kill');
-    outcome.exited = true;
-    return outcome;
-  } catch {
-    outcome.failure = 'the exact fake-ZCode process remained alive after SIGKILL exit verification';
-    return outcome;
-  }
-}
-
-/**
- * Re-verify one captured identity before any signal. Even when the injected
- * reader does not throw, a returned observation that differs in any field
- * (reparented, restarted, nonce changed) blocks the signal.
- * @param {{ pid: number, ppid: number, nonce: string, startIdentity: string }} identity
- * @param {(expected: unknown) => Promise<unknown>} readIdentity
- * @returns {Promise<boolean>} true only when the exact identity is still live
- */
-async function verifyUnchanged(identity, readIdentity) {
-  const observed = await readIdentity(identity);
-  if (observed === undefined || observed === null) return false;
-  const record = /** @type {any} */ (observed);
-  if (record.pid !== identity.pid || record.ppid !== identity.ppid) return false;
-  if (record.startIdentity !== identity.startIdentity) return false;
-  if (record.nonce !== identity.nonce) return false;
-  return true;
-}
-
-/**
- * Explicit termination outcome returned by terminateVerifiedProcess so the
- * caller can record exactly which cleanup obligation failed.
- * @typedef {{
- *   attempted: boolean,
- *   signalled: 'SIGTERM' | 'SIGKILL' | null,
- *   exited: boolean,
- *   failure: string | null,
- * }} TerminationOutcome
- */
+export {
+  validateProcessNonce,
+  validateProcessMarker,
+  inspectVerifiedProcessIdentity,
+  captureVerifiedProcessIdentity,
+  terminateVerifiedProcess,
+} from './local-process-observation.mjs';
 
 /** Release one fake-ZCode completion gate. @param {string} gatePath */
 export async function releaseCompletionGate(gatePath) {

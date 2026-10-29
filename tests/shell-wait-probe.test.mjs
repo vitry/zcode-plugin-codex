@@ -20,26 +20,38 @@ import { discoverTestEntries, selectTestEntries } from '../tools/run-test-suite.
 const suiteCliPath = fileURLToPath(new URL('../tools/run-test-suite.mjs', import.meta.url));
 const shellEntry = 'tests/shell-wait-probe.test.mjs';
 const nativeInterruptionEntry = 'tests/shell-wait-native-interruption.test.mjs';
-// The registered shell-research selection is TWO files (native-acceptance
-// Task 2, report §24.10): this one — which under the guard env contributes
-// EXACTLY the guarded marker — and the native-interruption contract file,
-// whose every top-level test registers. The spawned-suite totals pinned below
-// are that marker (1) plus the native file's registered test count (96 at
-// the native-acceptance spec-review registration — the §24.10 grammar
-// amendment's four pipeline tests — including the pre-review 92: the two §24.8
-// sampler-fence tests of the self-review P3 fix, the four codex-gate P2
-// regression tests, the three round-2 fix-A/B/C regression tests, the six
-// round-3 regression tests, the three round-4 regression tests, the
-// round-5 through round-15 regression tests, the round-16
+const localProcessEntry = 'tests/shell-wait-local-process.test.mjs';
+// The registered shell-research selection is THREE files (local-settlement
+// Task 2, report §25): this one — which under the guard env contributes
+// EXACTLY the guarded marker — the native-interruption contract file,
+// whose every top-level test registers, and the local-process observation
+// file, whose every top-level test registers. The spawned-suite totals
+// pinned below are that marker (1) plus the native file's registered test
+// count (96 at the native-acceptance spec-review registration — the §24.10
+// grammar amendment's four pipeline tests — including the pre-review 92: the
+// two §24.8 sampler-fence tests of the self-review P3 fix, the four
+// codex-gate P2 regression tests, the three round-2 fix-A/B/C regression
+// tests, the six round-3 regression tests, the three round-4 regression
+// tests, the round-5 through round-15 regression tests, the round-16
 // regression test, the two round-17
 // regression tests, the two round-18
 // regression tests, the three round-19
 // regression tests, the two round-20
 // regression tests, the round-22 delayed-tick regression test and the
-// round-23 default-watcher done-branch regression test), so a wrong
+// round-23 default-watcher done-branch regression test) plus the
+// local-process file's registered test count (89 at the local-settlement
+// Task 2 registration — the §25.4 startup-record, admission, live/exit,
+// broker-hop/duty, non-interference, provenance and fail-closed arming
+// tests, plus the class-exhaustive review-round regression tests and the
+// round-4/5/6/7 scope, strictness, granularity, platform, transport-nonce
+// and precise-generation regressions; 91 after the codex review rounds
+// through 25, 93 after round 26, 95 after round 27, 98 after round 28, 100
+// after round 29, 102 after round 30, 104 after round 31, 105 after round
+// 32, 106 after round 33, 107 after round 34, 108 after round 35 and 109
+// after round 36), so a wrong
 // selection (an extra or missing entry) or a silently
 // skipped contract test still breaks them.
-const shellSuiteSpawnedTestTotal = 97;
+const shellSuiteSpawnedTestTotal = 206;
 /** @param {number} count */
 const suiteCountPattern = (count) => new RegExp(`ℹ tests ${count}\\r?\\n`);
 /** @param {number} count */
@@ -256,12 +268,12 @@ function spawnSuiteWithPresetNodeOptions(presetNodeOptions) {
 }
 
 if (process.env[selfTestGuard] === '1') {
-  test('guarded re-entry: the suite selected exactly the two registered shell research entries', async () => {
+  test('guarded re-entry: the suite selected exactly the three registered shell research entries', async () => {
     assert.equal(process.env[selfTestGuard], '1');
-    assert.deepEqual(selectTestEntries(await discoverTestEntries(), 'shell-research'), [nativeInterruptionEntry, shellEntry]);
+    assert.deepEqual(selectTestEntries(await discoverTestEntries(), 'shell-research'), [localProcessEntry, nativeInterruptionEntry, shellEntry]);
   });
 } else {
-  test('the shell-research suite selects exactly the two registered shell research entries and exits zero', () => {
+  test('the shell-research suite selects exactly the three registered shell research entries and exits zero', () => {
     const result = spawnSync(process.execPath, [suiteCliPath, 'shell-research'], {
       encoding: 'utf8',
       env: suiteChildEnv(),
@@ -270,7 +282,7 @@ if (process.env[selfTestGuard] === '1') {
     assert.equal(result.status, 0, result.stderr);
     // The guarded marker ran beside the native-contract file's tests and all
     // passed: a wrong selection (extra entries or none) breaks these counts.
-    assert.match(result.stdout, /guarded re-entry: the suite selected exactly the two registered shell research entries/);
+    assert.match(result.stdout, /guarded re-entry: the suite selected exactly the three registered shell research entries/);
     assert.match(result.stdout, suiteCountPattern(shellSuiteSpawnedTestTotal));
     assert.match(result.stdout, suitePassPattern(shellSuiteSpawnedTestTotal));
     assert.match(result.stdout, suiteFailZeroPattern);
@@ -788,8 +800,9 @@ if (process.env[selfTestGuard] === '1') {
       const oracleSource = await readFile(fileURLToPath(new URL('../tools/shell-wait-probe/release-qualification.mjs', import.meta.url)));
       const closureSource = await readFile(fileURLToPath(new URL('../tools/shell-wait-probe/closure-observation.mjs', import.meta.url)));
       const driverSource = await readFile(fileURLToPath(new URL('../tools/shell-wait-probe/driver.mjs', import.meta.url)));
+      const preloadSource = await readFile(fileURLToPath(new URL('../tools/shell-wait-probe/closure-preload.mjs', import.meta.url)));
       const expectedDigest = createHash('sha256')
-        .update('zcode-shell-wait-observer-v5\0')
+        .update('zcode-shell-wait-observer-v6\0')
         .update(evidenceSource)
         .update('\0')
         .update(shapeSource)
@@ -798,9 +811,11 @@ if (process.env[selfTestGuard] === '1') {
         .update('\0')
         .update(closureSource)
         .update('\0')
+        .update(preloadSource)
+        .update('\0')
         .update(driverSource)
         .digest('hex');
-      assert.equal(observer.digest, expectedDigest, 'the digest must hash the actual evidence.mjs + shape-diagnostic.mjs + release-qualification.mjs + closure-observation.mjs + driver.mjs working-tree contents');
+      assert.equal(observer.digest, expectedDigest, 'the digest must hash the actual evidence.mjs + shape-diagnostic.mjs + release-qualification.mjs + closure-observation.mjs + closure-preload.mjs + driver.mjs working-tree contents');
       // Stability: two records built from the same tree carry the same digest.
       const second = await runShellWaitCase(caseInput({ output: secondOutput }), {
         createFixture: async () => fakeFixture,
@@ -5941,8 +5956,12 @@ if (process.env[selfTestGuard] === '1') {
     const driverPath = fileURLToPath(new URL('../tools/shell-wait-probe/driver.mjs', import.meta.url));
     const oraclePath = fileURLToPath(new URL('../tools/shell-wait-probe/release-qualification.mjs', import.meta.url));
 
-    const digestV5 = (evidenceBytes, shapeBytes, oracleBytes, closureBytes, driverBytes) => createHash('sha256')
-      .update('zcode-shell-wait-observer-v5\0')
+    // The v6 construction adds the EXTRACTED closure-preload module bytes
+    // (the generated preload seam and its shared constants) after the
+    // closure-observation bytes.
+    const { EXECUTING_CLOSURE_PRELOAD_SOURCE: EXECUTING_CLOSURE_PRELOAD_SOURCE_SNAPSHOT } = await import('../tools/shell-wait-probe/closure-preload.mjs');
+    const digestV6 = (evidenceBytes, shapeBytes, oracleBytes, closureBytes, preloadBytes, driverBytes) => createHash('sha256')
+      .update('zcode-shell-wait-observer-v6\0')
       .update(evidenceBytes)
       .update('\0')
       .update(shapeBytes)
@@ -5951,28 +5970,32 @@ if (process.env[selfTestGuard] === '1') {
       .update('\0')
       .update(closureBytes)
       .update('\0')
+      .update(preloadBytes)
+      .update('\0')
       .update(driverBytes)
       .digest('hex');
 
-    test('the executing digest binds the shape-diagnostic, release-qualification AND closure-observation helper bytes under the versioned v5 construction', () => {
+    test('the executing digest binds the shape-diagnostic, release-qualification, closure-observation AND extracted closure-preload helper bytes under the versioned v6 construction', () => {
       const driverBytes = readFileSync(driverPath);
-      const expected = digestV5(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, EXECUTING_RELEASE_QUALIFICATION_SOURCE, EXECUTING_CLOSURE_OBSERVATION_SOURCE, driverBytes);
+      const expected = digestV6(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, EXECUTING_RELEASE_QUALIFICATION_SOURCE, EXECUTING_CLOSURE_OBSERVATION_SOURCE, EXECUTING_CLOSURE_PRELOAD_SOURCE_SNAPSHOT, driverBytes);
       assert.equal(EXECUTING_OBSERVER_PROVENANCE.digest, expected,
-        'the digest must hash the executing evidence + shape-diagnostic + release-qualification + closure-observation + driver module-init bytes');
+        'the digest must hash the executing evidence + shape-diagnostic + release-qualification + closure-observation + closure-preload + driver module-init bytes');
       assert.match(String(EXECUTING_OBSERVER_PROVENANCE.digestInput), /shape-diagnostic\.mjs/u,
         'the digest input description must name the shape helper');
       assert.match(String(EXECUTING_OBSERVER_PROVENANCE.digestInput), /release-qualification\.mjs/u,
         'the digest input description must name the release-qualification verdict helper');
       assert.match(String(EXECUTING_OBSERVER_PROVENANCE.digestInput), /closure-observation\.mjs/u,
         'the digest input description must name the closure-observation capture helper');
-      assert.match(String(EXECUTING_OBSERVER_PROVENANCE.digestInput), /v5|version/u,
+      assert.match(String(EXECUTING_OBSERVER_PROVENANCE.digestInput), /closure-preload\.mjs/u,
+        'the digest input description must name the extracted preload module');
+      assert.match(String(EXECUTING_OBSERVER_PROVENANCE.digestInput), /v6|version/u,
         'the construction version must be recorded explicitly');
     });
 
     test('the helper binding is load-bearing: omitting or changing any helper\'s bytes changes the digest', () => {
       const driverBytes = readFileSync(driverPath);
       const shapeOnlyConstruction = createHash('sha256')
-        .update('zcode-shell-wait-observer-v5\0')
+        .update('zcode-shell-wait-observer-v6\0')
         .update(EXECUTING_EVIDENCE_SOURCE)
         .update('\0')
         .update(EXECUTING_SHAPE_DIAGNOSTIC_SOURCE)
@@ -5983,20 +6006,62 @@ if (process.env[selfTestGuard] === '1') {
         'a construction without the release-qualification and closure bytes must not reproduce the executing digest');
       const mutatedOracle = Buffer.concat([EXECUTING_RELEASE_QUALIFICATION_SOURCE, Buffer.from('\n')]);
       assert.notEqual(
-        digestV5(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, mutatedOracle, EXECUTING_CLOSURE_OBSERVATION_SOURCE, driverBytes),
+        digestV6(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, mutatedOracle, EXECUTING_CLOSURE_OBSERVATION_SOURCE, EXECUTING_CLOSURE_PRELOAD_SOURCE_SNAPSHOT, driverBytes),
         EXECUTING_OBSERVER_PROVENANCE.digest,
         'a release-qualification-only byte change must change the digest',
       );
       const mutatedClosure = Buffer.concat([EXECUTING_CLOSURE_OBSERVATION_SOURCE, Buffer.from('\n')]);
       assert.notEqual(
-        digestV5(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, EXECUTING_RELEASE_QUALIFICATION_SOURCE, mutatedClosure, driverBytes),
+        digestV6(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, EXECUTING_RELEASE_QUALIFICATION_SOURCE, mutatedClosure, EXECUTING_CLOSURE_PRELOAD_SOURCE_SNAPSHOT, driverBytes),
         EXECUTING_OBSERVER_PROVENANCE.digest,
         'a closure-observation-only byte change must change the digest',
       );
       assert.notEqual(
-        digestV5(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, readFileSync(oraclePath), EXECUTING_CLOSURE_OBSERVATION_SOURCE, driverBytes),
-        digestV5(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, mutatedOracle, EXECUTING_CLOSURE_OBSERVATION_SOURCE, driverBytes),
+        digestV6(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, readFileSync(oraclePath), EXECUTING_CLOSURE_OBSERVATION_SOURCE, EXECUTING_CLOSURE_PRELOAD_SOURCE_SNAPSHOT, driverBytes),
+        digestV6(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, mutatedOracle, EXECUTING_CLOSURE_OBSERVATION_SOURCE, EXECUTING_CLOSURE_PRELOAD_SOURCE_SNAPSHOT, driverBytes),
       );
+    });
+
+    test('the executing digest binds the EXTRACTED closure-preload module bytes (round-9 sweep: the round-8 split moved the preload generator and shared constants into closure-preload.mjs)', async () => {
+      // Changes confined to closure-preload.mjs (the generated preload source,
+      // its frozen constants used by the stdout admission) change observation
+      // behavior, so its module-init bytes must be bound — a construction
+      // without them must not reproduce the executing digest.
+      const { EXECUTING_CLOSURE_PRELOAD_SOURCE } = await import('../tools/shell-wait-probe/closure-preload.mjs');
+      const driverBytes = readFileSync(driverPath);
+      const withPreload = createHash('sha256')
+        .update('zcode-shell-wait-observer-v6\0')
+        .update(EXECUTING_EVIDENCE_SOURCE)
+        .update('\0')
+        .update(EXECUTING_SHAPE_DIAGNOSTIC_SOURCE)
+        .update('\0')
+        .update(EXECUTING_RELEASE_QUALIFICATION_SOURCE)
+        .update('\0')
+        .update(EXECUTING_CLOSURE_OBSERVATION_SOURCE)
+        .update('\0')
+        .update(EXECUTING_CLOSURE_PRELOAD_SOURCE)
+        .update('\0')
+        .update(driverBytes)
+        .digest('hex');
+      assert.equal(EXECUTING_OBSERVER_PROVENANCE.digest, withPreload,
+        'the digest must bind the extracted closure-preload module bytes');
+      assert.notEqual(
+        createHash('sha256')
+          .update('zcode-shell-wait-observer-v6\0')
+          .update(EXECUTING_EVIDENCE_SOURCE)
+          .update('\0')
+          .update(EXECUTING_SHAPE_DIAGNOSTIC_SOURCE)
+          .update('\0')
+          .update(EXECUTING_RELEASE_QUALIFICATION_SOURCE)
+          .update('\0')
+          .update(EXECUTING_CLOSURE_OBSERVATION_SOURCE)
+          .update('\0')
+          .update(driverBytes)
+          .digest('hex'),
+        EXECUTING_OBSERVER_PROVENANCE.digest,
+        'a construction without the closure-preload bytes must not reproduce the digest (the round-8 extraction gap)');
+      assert.match(String(EXECUTING_OBSERVER_PROVENANCE.digestInput), /closure-preload\.mjs/u,
+        'the digest input description must name the extracted preload module');
     });
 
     test('the record-time working-tree reader uses the same construction, so mid-run helper edits are detected without relabelling loaded code', async () => {
@@ -11695,6 +11760,11 @@ process.exit(result.status ?? 1);
           }
           await cp(join(cleanSource, 'agents', 'zcode-rescue.toml.template'), join(installed, 'agents', 'zcode-rescue.toml.template'));
           await writeFile(join(installed, 'skills', 'rescue', 'launcher.mjs'), 'process.exit(0);\n', 'utf8');
+          // Local-settlement Task 2: arming the seam now also DECLARES the
+          // installed broker entry, so the fast installer materializes it too
+          // (a missing installed zcode-broker.mjs fails the arming loudly).
+          await mkdir(join(installed, 'scripts'), { recursive: true });
+          await writeFile(join(installed, 'scripts', 'zcode-broker.mjs'), 'process.exit(0);\n', 'utf8');
           await writeFile(join(codexHome, 'config.toml'), '[plugins."zcode@vitry"]\nenabled = true\n', 'utf8');
           materializedInstalledRoot = installed;
           return { pluginVersion: '0.1.0' };
@@ -22649,6 +22719,7 @@ describe('cleanup-boundary attribution for exit-code settlements (round-9 review
     const {
       CLOSURE_OBSERVATION_VERSION, STDOUT_CAPTURE_MAX_BYTES,
       CAPTURE_DIRECTORY_VARIABLE, CAPTURE_NONCE_VARIABLE, CAPTURE_ENTRY_VARIABLE, CAPTURE_MAX_BYTES_VARIABLE,
+      CAPTURE_BROKER_ENTRY_VARIABLE,
       closurePreloadSource, writeClosurePreload, captureEnvironment, admitStdoutCapture, closureExactLinkage,
     } = await import('../tools/shell-wait-probe/closure-observation.mjs');
     const { PUBLIC_RESULT_SENTINEL } = await import('../tools/shell-wait-probe/fixture.mjs');
@@ -22725,7 +22796,9 @@ describe('cleanup-boundary attribution for exit-code settlements (round-9 review
       return probePath;
     }
 
-    const captureNames = (nonce) => [`${nonce}.stdout`, `${nonce}.meta.json`];
+    // Local-settlement Task 2: the gated run's fixture-owned triple is the
+    // stdout capture pair PLUS the nonce-keyed startup identity record.
+    const captureNames = (nonce) => [`${nonce}.stdout`, `${nonce}.meta.json`, `${nonce}.identity.json`];
 
     async function captureFileBytes(captureDirectory, nonce) {
       return readFile(join(captureDirectory, `${nonce}.stdout`));
@@ -23653,7 +23726,7 @@ describe('cleanup-boundary attribution for exit-code settlements (round-9 review
       const secondAdmission = await admitStdoutCapture({ captureDirectory: second.captureDirectory, nonce: second.nonce });
       assert.equal(firstAdmission.status, 'complete');
       assert.equal(secondAdmission.status, 'complete');
-      assert.deepEqual(await readdir(first.captureDirectory).then((entries) => entries.sort()), captureNames(first.nonce).sort(), 'each nonce owns exactly its own capture pair');
+      assert.deepEqual(await readdir(first.captureDirectory).then((entries) => entries.sort()), captureNames(first.nonce).sort(), 'each nonce owns exactly its own capture triple (pair + startup identity record)');
       // A second invocation in the SAME scope (same nonce) must not disturb
       // the first capture (wx creation fails closed) and must still deliver
       // its own business output with its own exit code.
@@ -23821,6 +23894,10 @@ describe('cleanup-boundary attribution for exit-code settlements (round-9 review
           await cp(join(cleanSource, 'skills', skill, 'SKILL.md'), join(installedRoot, 'skills', skill, 'SKILL.md'));
         }
         await cp(join(cleanSource, 'skills', 'rescue', 'launcher.mjs'), join(installedRoot, 'skills', 'rescue', 'launcher.mjs'));
+        // Local-settlement Task 2: the seam now declares the installed broker
+        // entry too, so the fast installer materializes it.
+        await mkdir(join(installedRoot, 'scripts'), { recursive: true });
+        await writeFile(join(installedRoot, 'scripts', 'zcode-broker.mjs'), 'process.exit(0);\n', 'utf8');
         await writeFile(join(codexHome, 'config.toml'), '[marketplaces.vitry]\nsource_type = "local"\n\n[plugins."zcode@vitry"]\nenabled = true\n', { encoding: 'utf8' });
         return { pluginVersion: '0.1.0' };
       }
@@ -23865,7 +23942,16 @@ describe('cleanup-boundary attribution for exit-code settlements (round-9 review
       assert.equal(recordBlock.gate.declaredEntryRealpathSha256, createHash('sha256').update(handle.entryRealpath, 'utf8').digest('hex'));
       const serializedRecord = JSON.stringify(recordBlock);
       assert.ok(!serializedRecord.includes(temporary), 'the fixture record must never carry the private fixture root');
-      assert.deepEqual(recordBlock.environmentVariables, [CAPTURE_DIRECTORY_VARIABLE, CAPTURE_NONCE_VARIABLE, CAPTURE_ENTRY_VARIABLE, CAPTURE_MAX_BYTES_VARIABLE]);
+      assert.deepEqual(recordBlock.environmentVariables, [CAPTURE_DIRECTORY_VARIABLE, CAPTURE_NONCE_VARIABLE, CAPTURE_ENTRY_VARIABLE, CAPTURE_MAX_BYTES_VARIABLE, CAPTURE_BROKER_ENTRY_VARIABLE]);
+      // Local-settlement Task 2: the arming also DECLARES the broker-daemon
+      // entry (the ancestry join's mediation hop) and records the bounded
+      // identity-record declaration.
+      assert.equal(fixture.env[CAPTURE_BROKER_ENTRY_VARIABLE], handle.brokerEntryRealpath, 'the composed environment declares the broker entry');
+      assert.equal(handle.brokerEntryRealpath, await realpath(join(fixture.installedRoot, 'scripts', 'zcode-broker.mjs')), 'the declared broker entry is the exact installed broker realpath');
+      assert.equal(recordBlock.brokerGate.declaredBrokerEntryRealpathSha256, createHash('sha256').update(handle.brokerEntryRealpath, 'utf8').digest('hex'));
+      assert.match(recordBlock.brokerGate.selector, /identity RECORD only/u, 'the broker gate records identity, never stdout interception');
+      assert.deepEqual(recordBlock.identityRecord.roles, { invocation: '.identity.json', brokerDaemon: '.identity-broker.json' });
+      assert.equal(recordBlock.identityRecord.version, 2);
 
       // The default (opt-out) fixture composes no capture environment and
       // records no capture provenance.
@@ -23878,7 +23964,7 @@ describe('cleanup-boundary attribution for exit-code settlements (round-9 review
       t.after(() => plain.dispose());
       assert.equal(plain.stdoutCapture, undefined);
       assert.equal(plain.record.closureStdoutCapture, undefined);
-      for (const variable of [CAPTURE_DIRECTORY_VARIABLE, CAPTURE_NONCE_VARIABLE, CAPTURE_ENTRY_VARIABLE, CAPTURE_MAX_BYTES_VARIABLE]) {
+      for (const variable of [CAPTURE_DIRECTORY_VARIABLE, CAPTURE_NONCE_VARIABLE, CAPTURE_ENTRY_VARIABLE, CAPTURE_MAX_BYTES_VARIABLE, CAPTURE_BROKER_ENTRY_VARIABLE]) {
         assert.equal(plain.env[variable], undefined, `${variable} must be absent without the opt-in flag`);
       }
     });
