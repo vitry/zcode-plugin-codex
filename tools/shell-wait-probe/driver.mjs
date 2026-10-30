@@ -30,9 +30,10 @@ import { codexLaunch } from '../../scripts/lib/tool-launch.mjs';
 import { parseCodexRolloutJsonl } from '../../tests/helpers/codex-rescue-qualification.mjs';
 import { EXECUTING_EVIDENCE_SOURCE, interruptDeliveryAttributionGuard, admitInterruptHostDelivery, extractInterruptInteraction, INTERRUPT_TARGET_HEX_SHAPE, extractSurvivalControlFacts, inspectShellWaitEvidence, observeSpawnAcknowledgementIdentity, parseCallStatements, parseToolOutput, precedingStatementsCompleted, statementOutputAt, TERMINAL_INTERRUPT_PREVIOUS_STATUSES } from './evidence.mjs';
 import { EXECUTING_CLOSURE_OBSERVATION_SOURCE, admitStdoutCapture, readDurableObligationSnapshot } from './closure-observation.mjs';
-import { EXECUTING_CLOSURE_PRELOAD_SOURCE } from './closure-preload.mjs';
+import { CAPTURE_BROKER_ENTRY_VARIABLE, CAPTURE_DIRECTORY_VARIABLE, CAPTURE_ENTRY_VARIABLE, CAPTURE_MAX_BYTES_VARIABLE, CAPTURE_NONCE_VARIABLE, EXECUTING_CLOSURE_PRELOAD_SOURCE, STDOUT_CAPTURE_MAX_BYTES, TERMINAL_ARGV_SELECTOR } from './closure-preload.mjs';
 import { EXECUTING_RELEASE_QUALIFICATION_SOURCE, evaluateSurvivalControl, exactRescueForegroundRenderedExpectation } from './release-qualification.mjs';
 import { EXECUTING_SHAPE_DIAGNOSTIC_SOURCE } from './shape-diagnostic.mjs';
+import { EXECUTING_HELPER_MATERIALIZATION, EXECUTING_LOCAL_PROCESS_OBSERVATION_SOURCE, FAKE_ZCODE_NONCE_VARIABLE, LINUX_BTIME_UNCERTAINTY_MS, LINUX_PROC_RESOLUTION_MS, adjudicateLocalDuties, adjudicateLocalExit, admitStartupIdentityRecord, composeAncestryJoinForRuntime, observeLocalProcess } from './local-process-observation.mjs';
 
 
 const repositoryRoot = fileURLToPath(new URL('../..', import.meta.url));
@@ -68,7 +69,16 @@ const MAX_CASE_EXCERPTS = 64;
 // local-settlement records, while THIS digest attributes the driver's
 // live-case pipeline; both now bind closure-preload.mjs, so a preload edit
 // flips BOTH (no silent divergence).
-const OBSERVER_DIGEST_TAG = 'zcode-shell-wait-observer-v6';
+// v7 (2026-10-30 local-settlement Task 3): the held turn's concurrent
+// local-observation runtime now EXECUTES local-process-observation.mjs
+// during live observation (the startup-record admission, the OS live
+// observation, the exit adjudication and the bounded duty verdict), so its
+// module-init bytes join this construction and the record-time reread —
+// copying the v6 digest onto these bytes would misattribute the new
+// observer. The local-process campaign's own construction
+// (zcode-shell-wait-local-observer-v4) stays the separate evidence-closure
+// digest as registered.
+const OBSERVER_DIGEST_TAG = 'zcode-shell-wait-observer-v8';
 
 // P2 round-29: module-INIT snapshot of the EXECUTING observer source — the
 // driver module body runs only after evidence.mjs has fully loaded, so this
@@ -79,6 +89,17 @@ const OBSERVER_DIGEST_TAG = 'zcode-shell-wait-observer-v6';
 // that actually adjudicates, and the record-time re-read detects any later
 // edit (sourcesChangedDuringRun).
 const EXECUTING_DRIVER_SOURCE = readFileSync(fileURLToPath(import.meta.url));
+const EXECUTING_LOCAL_PROCESS_RUNTIME_SOURCE = EXECUTING_LOCAL_PROCESS_OBSERVATION_SOURCE;
+// (Review round 12, Finding 2) the executing helper bytes: the MATERIALIZED
+// copy digests when the materialization succeeded, else the PRODUCTION
+// files' digest strings — the observer's own fallback loads the production
+// modules in that state, so this binds the bytes that actually execute in
+// EITHER state. Empty-string placeholders could never agree with the
+// record-time reader and would fabricate sourcesChangedDuringRun for
+// unchanged sources.
+const executingHelperDigest = (/** @type {string} */ relative) => (EXECUTING_HELPER_MATERIALIZATION.dir !== null && EXECUTING_HELPER_MATERIALIZATION.bytes[relative] !== undefined
+  ? EXECUTING_HELPER_MATERIALIZATION.bytes[relative]
+  : createHash('sha256').update(readFileSync(fileURLToPath(new URL(`../../${relative}`, import.meta.url)))).digest('hex'));
 const EXECUTING_OBSERVER_PROVENANCE = Object.freeze({
   revision: 'working-tree-uncommitted',
   digest: createHash('sha256')
@@ -93,9 +114,22 @@ const EXECUTING_OBSERVER_PROVENANCE = Object.freeze({
     .update('\0')
     .update(EXECUTING_CLOSURE_PRELOAD_SOURCE)
     .update('\0')
+    .update(EXECUTING_LOCAL_PROCESS_RUNTIME_SOURCE)
+    .update('\0')
     .update(EXECUTING_DRIVER_SOURCE)
+    .update('\0')
+    // (Review round 6, Finding 4) the MATERIALIZED executing helper copies
+    // (scripts/lib/{fs,process,errors}.mjs — the bytes the local-observation
+    // runtime actually loads) join the construction: a helper change can
+    // never alter admission/OS-observation behavior without changing this
+    // digest.
+    .update(executingHelperDigest('scripts/lib/fs.mjs'))
+    .update('\0')
+    .update(executingHelperDigest('scripts/lib/process.mjs'))
+    .update('\0')
+    .update(executingHelperDigest('scripts/lib/errors.mjs'))
     .digest('hex'),
-  digestInput: `${OBSERVER_DIGEST_TAG} || evidence.mjs || shape-diagnostic.mjs || release-qualification.mjs || closure-observation.mjs || closure-preload.mjs (the extracted generated-preload seam) || driver.mjs (executing module-init snapshot, NUL-separated)`,
+  digestInput: `${OBSERVER_DIGEST_TAG} || evidence.mjs || shape-diagnostic.mjs || release-qualification.mjs || closure-observation.mjs || closure-preload.mjs (the extracted generated-preload seam) || local-process-observation.mjs (the concurrent local-observation runtime the held turn executes) || driver.mjs (executing module-init snapshot, NUL-separated) || scripts/lib/fs.mjs + scripts/lib/process.mjs + scripts/lib/errors.mjs (the executing helper bytes: the MATERIALIZED copies when materialization succeeded, else the production files the observer's fallback loads, NUL-separated)`,
   model: null,
   reachableToolFamily: null,
 });
@@ -117,13 +151,26 @@ export { EXECUTING_OBSERVER_PROVENANCE };
  * @returns {Promise<ShellWaitObserverProvenance>}
  */
 export async function observerProvenance() {
-  const [evidenceSource, shapeSource, releaseQualificationSource, closureObservationSource, closurePreloadSource, driverSource] = await Promise.all([
+  // v8 (2026-10-30 local-settlement Task 3 review round 6, report §25.10):
+  // the record-time reader binds the SAME construction as the module-init
+  // snapshot — the held turn's concurrent local-observation runtime bytes
+  // AND the three production helper files (scripts/lib/{fs,process,errors}.mjs —
+  // whose MATERIALIZED copies the runtime actually loads; the init snapshot
+  // bound the copies, the record time binds the production bytes, so a
+  // mid-run helper edit is detected as sourcesChangedDuringRun and a
+  // pre-run helper change changes the whole digest) — never silently
+  // attributed.
+  const [evidenceSource, shapeSource, releaseQualificationSource, closureObservationSource, closurePreloadSource, localProcessSource, driverSource, helperFsSource, helperProcessSource, helperErrorsSource] = await Promise.all([
     readFile(fileURLToPath(new URL('./evidence.mjs', import.meta.url))),
     readFile(fileURLToPath(new URL('./shape-diagnostic.mjs', import.meta.url))),
     readFile(fileURLToPath(new URL('./release-qualification.mjs', import.meta.url))),
     readFile(fileURLToPath(new URL('./closure-observation.mjs', import.meta.url))),
     readFile(fileURLToPath(new URL('./closure-preload.mjs', import.meta.url))),
+    readFile(fileURLToPath(new URL('./local-process-observation.mjs', import.meta.url))),
     readFile(fileURLToPath(new URL('./driver.mjs', import.meta.url))),
+    readFile(fileURLToPath(new URL('../../scripts/lib/fs.mjs', import.meta.url))),
+    readFile(fileURLToPath(new URL('../../scripts/lib/process.mjs', import.meta.url))),
+    readFile(fileURLToPath(new URL('../../scripts/lib/errors.mjs', import.meta.url))),
   ]);
   const digest = createHash('sha256')
     .update(`${OBSERVER_DIGEST_TAG}\0`)
@@ -137,12 +184,24 @@ export async function observerProvenance() {
     .update('\0')
     .update(closurePreloadSource)
     .update('\0')
+    .update(localProcessSource)
+    .update('\0')
     .update(driverSource)
+    .update('\0')
+    // The SAME input shape as the module-init snapshot: the helper inputs
+    // are the 64-char digest strings (the init binds the MATERIALIZED
+    // copies' digests; the record time binds the production files' CURRENT
+    // digests — equal at rest, divergent on any mid-run helper edit).
+    .update(createHash('sha256').update(helperFsSource).digest('hex'))
+    .update('\0')
+    .update(createHash('sha256').update(helperProcessSource).digest('hex'))
+    .update('\0')
+    .update(createHash('sha256').update(helperErrorsSource).digest('hex'))
     .digest('hex');
   return {
     revision: 'working-tree-uncommitted',
     digest,
-    digestInput: `${OBSERVER_DIGEST_TAG} || evidence.mjs || shape-diagnostic.mjs || release-qualification.mjs || closure-observation.mjs || closure-preload.mjs (the extracted generated-preload seam) || driver.mjs (working-tree bytes, NUL-separated)`,
+    digestInput: `${OBSERVER_DIGEST_TAG} || evidence.mjs || shape-diagnostic.mjs || release-qualification.mjs || closure-observation.mjs || closure-preload.mjs (the extracted generated-preload seam) || local-process-observation.mjs (the concurrent local-observation runtime the held turn executes) || driver.mjs (working-tree bytes, NUL-separated) || scripts/lib/fs.mjs + scripts/lib/process.mjs + scripts/lib/errors.mjs (the production helper bytes behind the MATERIALIZED copies the local-observation runtime loads, NUL-separated)`,
     model: null,
     reachableToolFamily: null,
   };
@@ -628,6 +687,22 @@ export async function runShellWaitCase(input, dependencies = {}) {
     if (caseInput.survivalControlSelector !== null
       && typeof /** @type {any} */ (fixture)?.survivalControlPath !== 'string') {
       throw invalidCaseInput('a declared survival-control run requires the fixture handle to expose a bounded survivalControlPath before launch.');
+    }
+    // Local-settlement Task 3 (the plan's pre-host capability gate): the
+    // observer source/artifact/selection/declaration and its offline record
+    // binding must be present for every applicable mandatory layer BEFORE
+    // the live executor can ever invoke the host/provider. The
+    // pipeline-level enforcement applies to the LIVE RUN only — the default
+    // executor is the ONLY site that launches a host/provider; an INJECTED
+    // executor executing its own offline choreography declares its own
+    // gate ordering (§24.11's instrument pattern). The refusal names the
+    // missing mechanism; the runtime evidence gates (identity, pending
+    // state, model obedience, captured exit) stay exactly what the launched
+    // trial must establish and are never guessed here.
+    if (LOCAL_OBSERVATION_REQUIRED_CASES.has(caseInput.case)
+      && executeLiveCase === undefined
+      && localObservationDeclarationFor(fixture, caseInput.case) === null) {
+      throw invalidCaseInput('the local Companion observation seam is not armed (the local-settlement applies-mandatory observer is known absent for this registered case) — the launch is refused before any host/provider invocation.');
     }
   } catch (refusal) {
     try {
@@ -1220,6 +1295,13 @@ function buildCaseRecord(caseInput, fixture, liveFacts, /** @type {'executed' | 
     ...(caseInput.waitPolicy !== null && /** @type {any} */ (liveFacts).waitPolicyObservation
       ? { waitPolicyObservation: /** @type {any} */ (liveFacts).waitPolicyObservation }
       : {}),
+    // Local-settlement Task 3 (§25.10): the digest-only local-observation
+    // block persists on the record ONLY when the live facts carried it —
+    // records from runs without the armed runtime keep the persisted schema
+    // byte-identical.
+    ...(/** @type {any} */ (liveFacts).localProcess !== undefined
+      ? { localProcess: /** @type {any} */ (liveFacts).localProcess }
+      : {}),
     cleanup: {
       label: liveFacts.held?.cleanupLabel ?? null,
       nativeInterruptionClaimed: false,
@@ -1379,8 +1461,23 @@ export async function runHeldHostTurn(input) {
   // post-release section — race order is never deadline evidence.
   /** @type {number | null} */
   let naturalExitCompletedAtWallMs = null;
+  // Review round 2: the composed default capture carries the MARKER's OWN
+  // write instant (the fixture-owned marker file's mtime, rounded to the
+  // nearest ms — inside the 1000-ms generation uncertainty bound) so the
+  // runtime's ancestry hop can verify generation-compatible lifetimes.
+  // Injected captures carry their own markerEpochMs when the instrument's
+  // synthetic clocks can express one.
   const captureProcessIdentity = input.captureProcessIdentity ?? (async () => {
-    return captureVerifiedProcessIdentity(/** @type {string} */ (input.processPath), /** @type {string} */ (input.processNonce));
+    const captured = await captureVerifiedProcessIdentity(/** @type {string} */ (input.processPath), /** @type {string} */ (input.processNonce));
+    if (typeof input.processPath === 'string' && input.processPath.length > 0) {
+      try {
+        const markerStats = await lstat(/** @type {string} */ (input.processPath));
+        if (markerStats !== null && Number.isFinite(markerStats.mtimeMs)) {
+          return { ...captured, markerEpochMs: Math.round(markerStats.mtimeMs) };
+        }
+      } catch { /* the marker vanished between the capture and the read — the ancestry hop stays honest */ }
+    }
+    return captured;
   });
   const readProcessIdentity = input.readProcessIdentity ?? (async (expected) => {
     let observed;
@@ -1535,7 +1632,12 @@ export async function runHeldHostTurn(input) {
   const postRelease = {};
   const recordTerminationInitiation = () => {
     if (budgetAbortIsTeardown) return;
-    const initiatedAtMs = Date.now();
+    // Local-settlement Task 3: the boundary reads the turn's WALL-CLOCK seam
+    // (Date.now() by default — never the injectable MONOTONIC `now()`), the
+    // same clock the §24.8 measurement cutoff and the local-observation
+    // fence comparisons read, so instrument tests can drive both fences on
+    // one deterministic clock. Production behavior is byte-identical.
+    const initiatedAtMs = wallClockNow();
     if (cleanup.cleanupBoundaryAtMs === null || initiatedAtMs < cleanup.cleanupBoundaryAtMs) {
       cleanup.cleanupBoundaryAtMs = initiatedAtMs;
     }
@@ -1650,6 +1752,739 @@ export async function runHeldHostTurn(input) {
       }
     }
   })().catch(() => { /* the detached establishment never fails the held turn */ });
+  // ---------------------------------------------------------------------------
+  // Local-settlement Task 3 (the §25.7 local reads row; plan Task 3): the
+  // CONCURRENT EXACT LOCAL OBSERVATION of the real Companion, armed from the
+  // fixture's capture declaration (§25.3 selected seam). The runtime runs
+  // DETACHED alongside the held phase — it never polls the Child's handle
+  // (the driver's own eager transport identity above stays the ONLY
+  // capture), never signals anything, and persists its facts on the held
+  // record's cleanup block BEFORE disposal. The observation window and its
+  // fences are the §25.7 freeze: reads sample concurrently with the held
+  // turn, every read completes strictly before the measurement cutoff and
+  // any earlier termination-initiation boundary for credit, and the fence
+  // instant itself is never manufactured (normal observation teardown is
+  // not a boundary). Without the declaration the runtime is INERT and the
+  // block key does not exist (schema stability).
+  // ---------------------------------------------------------------------------
+  const localObservationDeclaration = input.localObservation ?? null;
+  /** The persisted block. Bounded closed facts and DIGESTS only: the raw
+   * capture nonce and every private path never ride it (§25.4 item 2). */
+  const localObservationBlock = localObservationDeclaration === null ? null : {
+    version: 1,
+    armed: true,
+    clock: 'wall-epoch-ms',
+    nonceSha256: createHash('sha256').update(localObservationDeclaration.nonce).digest('hex'),
+    admission: null,
+    presence: null,
+    reads: /** @type {unknown[]} */ ([]),
+    exit: null,
+    duties: null,
+    stoppedAt: null,
+    fenceAtMs: null,
+    cutoffAtMs: null,
+    cleanupBoundaryAtMs: null,
+    composedAtMs: null,
+  };
+  // The block rides the cleanup object — the ONE record component referenced
+  // by EVERY answer shape (early exit, completion, budget, failure) — so the
+  // collected facts persist before disposal on every exit path, exactly like
+  // the §24.7 identity-establishment facts beside it.
+  if (localObservationBlock !== null) (/** @type {any} */ (cleanup)).localObservation = localObservationBlock;
+  /** SHA-256 hex digest of a bounded string (nonce/realpath) — the ONLY form
+   * in which scope/entry bindings ride the persisted block. */
+  /** @param {unknown} value */
+  const localBindingDigest = (value) => (typeof value === 'string' && value.length > 0
+    ? createHash('sha256').update(value).digest('hex')
+    : null);
+  /** The startup-record admission projection: raw nonce/realpath replaced by
+   * their digests; the bounded public facts (role, argv selector, pids,
+   * instants) ride verbatim. @param {any} verdict */
+  const localProjectAdmission = (verdict) => {
+    if (verdict === null || verdict === undefined) return null;
+    const identity = verdict.identity ?? null;
+    return {
+      ...verdict,
+      identity: identity === null ? null : {
+        role: identity.role,
+        argv: identity.argv,
+        configRealpathSha256: identity.configRealpathSha256,
+        pid: identity.pid,
+        ppid: identity.ppid,
+        firstWriteEpochMs: identity.firstWriteEpochMs,
+        startOriginMs: identity.startOriginMs,
+        firstWritePreciseMs: identity.firstWritePreciseMs,
+        nonceSha256: localBindingDigest(identity.nonce),
+        entryRealpathSha256: localBindingDigest(identity.entryRealpath),
+      },
+    };
+  };
+  /** The OS-observation projection: raw scope nonces replaced by digests. @param {any} verdict */
+  const localProjectObservation = (verdict) => {
+    if (verdict === null || verdict === undefined) return null;
+    return {
+      ...verdict,
+      observation: verdict.observation
+        ? { ...verdict.observation, nonce: undefined, nonceSha256: localBindingDigest(verdict.observation.nonce) }
+        : null,
+      queried: { pid: verdict.queried?.pid, nonceSha256: localBindingDigest(verdict.queried?.nonce) },
+    };
+  };
+  /** The duty-verdict projection: per-duty identities carry digests. @param {any} verdict */
+  const localProjectDuties = (verdict) => {
+    if (verdict === null || verdict === undefined) return null;
+    return {
+      ...verdict,
+      duties: verdict.duties.map((/** @type {any} */ duty) => ({
+        ...duty,
+        ...(duty.identity !== null && duty.identity !== undefined
+          ? { identity: { ...duty.identity, nonce: undefined, nonceSha256: localBindingDigest(duty.identity.nonce) } }
+          : {}),
+      })),
+    };
+  };
+  /** The ancestry verdict projection: the raw scope nonce carries its
+   * DIGEST only; the per-hop statuses/reasons ride verbatim. */
+  const localProjectAncestry = (/** @type {any} */ verdict) => {
+    if (verdict === null || verdict === undefined) return null;
+    return {
+      ...verdict,
+      nonce: undefined,
+      nonceSha256: localBindingDigest(verdict.nonce),
+    };
+  };
+  /** The exit verdict projection: the bound generation's raw scope nonce
+   * carries its DIGEST only (§25.4 item 2 — the raw nonce never persists). */
+  const localProjectExit = (/** @type {any} */ verdict) => {
+    if (verdict === null || verdict === undefined) return null;
+    return {
+      ...verdict,
+      boundIdentity: verdict.boundIdentity === null || verdict.boundIdentity === undefined
+        ? null
+        : { ...verdict.boundIdentity, nonce: undefined, nonceSha256: localBindingDigest(verdict.boundIdentity.nonce) },
+    };
+  };
+  /** The operative credit fence: the EARLIEST recorded closing instant (the
+   * §24.8 measurement cutoff and any termination-initiation boundary). */
+  const localOperativeFenceMs = () => {
+    if (localObservationBlock === null) return null;
+    const candidates = [cleanup.measurementCutoffAtMs, cleanup.cleanupBoundaryAtMs]
+      .filter((/** @type {any} */ value) => typeof value === 'number' && Number.isFinite(value));
+    return candidates.length > 0 ? Math.min(.../** @type {number[]} */ (candidates)) : null;
+  };
+  const localFenceKind = (/** @type {number} */ fence) => (cleanup.cleanupBoundaryAtMs !== null && fence === cleanup.cleanupBoundaryAtMs
+    ? 'termination-boundary'
+    : 'measurement-cutoff');
+  // The seams: the defaults compose the REAL observer calls (task 2 exports)
+  // stamped on the wall clock; the injected fakes receive the exact composed
+  // inputs, so a test can prove the RUNTIME declaration/nonce/identity
+  // reached the observation — never a fake-peer identity, never a stale
+  // cached result. Synthetic identities never reach the real OS: an armed
+  // instrument test injects all the seams it exercises.
+  const localAdmit = localObservationDeclaration === null ? null
+    : (input.captureLocalObservationIdentity ?? ((admissionInput) => admitStartupIdentityRecord(admissionInput)));
+  // The DEFAULT observation composition threads the caller's OS-seam
+  // options (platform/ps/environ/absenceConfirmation/inspect — the
+  // observer module's own instrument-seam surface) into the REAL
+  // observeLocalProcess, so instrument tests can drive the EXECUTED
+  // observation path offline (a synthetic pid never reaches the real OS)
+  // while the runtime dispatches through its own composition. Undefined →
+  // the real OS reads, byte-identical behavior.
+  const observerSeamOptions = localObservationDeclaration === null ? {}
+    : ({ ...(input.localObservationObserverOptions ?? {}) });
+  const localObserve = localObservationDeclaration === null ? null
+    : (input.observeLocalObservationIdentity ?? ((observationInput) => observeLocalProcess({ ...observationInput, ...observerSeamOptions })));
+  const localBrokerAdmit = localObservationDeclaration === null ? null
+    : (input.captureLocalBrokerObservationIdentity ?? ((admissionInput) => admitStartupIdentityRecord(admissionInput)));
+  const localBrokerObserve = localObservationDeclaration === null ? null
+    : (input.observeLocalBrokerObservationIdentity ?? ((observationInput) => observeLocalProcess({ ...observationInput, ...observerSeamOptions })));
+  // Review round 3 (Finding 1): the transport's marker machinery verifies
+  // its OWN declared nonce variable (FAKE_ZCODE_PROCESS_NONCE — the
+  // transport's independently generated nonce); the inherited capture
+  // variable in its environment is a DIFFERENT value and can never attest
+  // the transport (§25.2's broker-mediated chain).
+  const localTransportObserve = localObservationDeclaration === null ? null
+    : (input.observeLocalTransportObservationIdentity ?? ((observationInput) => observeLocalProcess({ ...observationInput, nonceVariable: FAKE_ZCODE_NONCE_VARIABLE, ...observerSeamOptions })));
+  /**
+   * One admission call against the composed runtime declaration. A throwing
+   * seam becomes the NAMED operation-failed fact — the runtime never
+   * rejects, and no error text (which may embed a private path) enters the
+   * block.
+   * @param {(input: any) => Promise<any>} seam
+   * @param {{ role: 'invocation' | 'broker-daemon' }} shape
+   */
+  /**
+   * Review round 4 (Finding 3): every outstanding local operation is
+   * bounded by the SHARED abort — a budget expiry or the turn's own teardown
+   * abort settles any in-flight admission/observation immediately with the
+   * NAMED unfinished-observation fact instead of letting the awaited
+   * operation extend the turn beyond the shared deadline. A COMPLETED
+   * operation keeps its own completion instant (the §25.7 measurement
+   * semantics are untouched): only the WAIT is bounded, never the stamps.
+   * @param {Promise<any>} operation
+   */
+  const localBoundedOperation = (operation) => {
+    // (Review round 9, Finding 4) the abort listener is RELEASED as soon as
+    // the operation settles — a completed operation must not retain its
+    // listener until turn teardown (thousands of completed operations would
+    // accumulate thousands of retained listeners).
+    /** @type {(() => void) | null} */
+    let onAbort = null;
+    const windowClosed = new Promise((resolve) => {
+      if (budgetController.signal.aborted) { resolve(undefined); return; }
+      onAbort = () => resolve(undefined);
+      budgetController.signal.addEventListener('abort', onAbort, { once: true });
+    });
+    const releaseListener = () => {
+      if (onAbort !== null) budgetController.signal.removeEventListener('abort', onAbort);
+      onAbort = null;
+    };
+    operation.then(releaseListener, releaseListener);
+    return Promise.race([operation, windowClosed]);
+  };
+  const localAdmitOnce = async (/** @type {any} */ seam, /** @type {any} */ shape) => {
+    const declaration = /** @type {any} */ (localObservationDeclaration);
+    try {
+      const verdict = await localBoundedOperation(seam({
+        captureDirectory: declaration.captureDirectory,
+        nonce: declaration.nonce,
+        role: shape.role,
+        ...(shape.role === 'invocation' && typeof declaration.entryRealpath === 'string'
+          ? { expectedEntryRealpath: declaration.entryRealpath }
+          : {}),
+        ...(shape.role === 'broker-daemon' && typeof declaration.brokerEntryRealpath === 'string'
+          ? { expectedEntryRealpath: declaration.brokerEntryRealpath }
+          : {}),
+        // The Completion-clock THUNK (the P2 review fix): each per-path
+        // sample inside the observer calls wallClockNow() AT ITS SAMPLE
+        // INSTANT, so a verdict's completion reflects its actual collection
+        // completion — the §25.7 fence comparisons (start < completion) and
+        // the completion-side exclusion stay honest on the EXECUTED path
+        // (a dispatch-instant stamp can never prove a straddle). The number
+        // form stays accepted for instruments that pin a fixed stamp.
+        nowEpochMs: () => wallClockNow(),
+      }));
+      // The observation window CLOSED over the in-flight admission (the
+      // shared abort): the named unfinished-observation fact — never a wait.
+      if (verdict === undefined && budgetController.signal.aborted) {
+        (/** @type {any} */ (localObservationBlock)).stoppedAt ??= 'unfinished-observation';
+        return { class: 'startup-identity', status: 'unestablished', reason: 'observation-window-closed', identity: null, readStartedEpochMs: wallClockNow(), readEpochMs: wallClockNow() };
+      }
+      return verdict;
+    } catch {
+      return { class: 'startup-identity', status: 'unestablished', reason: 'admission-operation-failed', identity: null };
+    }
+  };
+  /** One OS observation call; a throwing seam is the named read failure fact.
+   * @param {any} seam @param {any} observationInput */
+  const localObserveOnce = async (seam, observationInput) => {
+    try {
+      // (Review round 6, Finding 3) the observer honors the SHARED abort
+      // between its reads: the signal rides the observation input so no
+      // observation read starts after the window closed (the bounded race
+      // above still bounds the WAIT; this bounds the WORK).
+      const verdict = await localBoundedOperation(seam({ ...observationInput, nowEpochMs: () => wallClockNow(), abortSignal: budgetController.signal }));
+      // The observation window CLOSED over the in-flight read (the shared
+      // abort): the named unfinished-observation fact — never a wait.
+      if (verdict === undefined && budgetController.signal.aborted) {
+        (/** @type {any} */ (localObservationBlock)).stoppedAt ??= 'unfinished-observation';
+        return {
+          class: 'os-live-observation', status: 'unestablished', reason: 'observation-window-closed',
+          observation: null, queried: { pid: observationInput.pid, nonce: observationInput.nonce },
+          readStartedEpochMs: wallClockNow(), readEpochMs: wallClockNow(), absenceConfirmed: null,
+        };
+      }
+      return verdict;
+    } catch {
+      return {
+        class: 'os-live-observation', status: 'unestablished', reason: 'liveness-read-failed',
+        observation: null, queried: { pid: observationInput.pid, nonce: observationInput.nonce },
+        readStartedEpochMs: wallClockNow(), readEpochMs: wallClockNow(), absenceConfirmed: null,
+      };
+    }
+  };
+  /** Settles when the observation loops may proceed (gate release or turn end). */
+  const localReleasedOrEnded = () => cleanup.releasedGate === true || budgetController.signal.aborted;
+  /**
+   * One paced runtime wait. Beyond the abort-aware sleep, EVERY wait yields
+   * the macrotask queue once: an instrument test's no-op injected `sleep`
+   * must never turn the runtime's wait loops into a microtask hot spin that
+   * starves the very turn (its settling launch result, its timers) the
+   * runtime observes. Production `sleep` is a real setTimeout and is
+   * unaffected.
+   * @param {number} ms
+   */
+  const localPace = async (ms) => {
+    await abortableSleep(ms);
+    await new Promise((resolve) => setImmediate(resolve));
+  };
+  /** The detached runtime; awaited in the exit `finally` so the block is
+   * final on EVERY exit path before the record leaves the turn. */
+  const localRuntimeTask = localObservationBlock === null ? null : (async () => {
+    // The armed-run witness (the task only exists when the block does).
+    const block = /** @type {any} */ (localObservationBlock);
+    const declared = /** @type {any} */ (localObservationDeclaration);
+    // Task-scope raw facts (the finalize below composes from the RAW
+    // verdicts; the block only ever receives their projected forms).
+    /** @type {any} */ let admission = null;
+    /** @type {any} */ let presence = null;
+    /** @type {any} */ let brokerAdmission = null;
+    // Task-scope (NOT try-scope — the finalize below runs in the after block
+    // and composes from these): the phase-3 establishment facts.
+    let brokerObservation = null;
+    let transportObservation = null;
+    // Review round 3 (Finding 2): the REFRESHED ancestry endpoint
+    // observations (the downstream-startup coverage) — task-scoped so the
+    // finalize composes the hops from them.
+    let ancestryCompanion = null;
+    let ancestryDaemon = null;
+    /** (Review round 7, Finding 2) whether the selected daemon endpoint is a
+     * SAME-generation refresh read under a CHANGED parent (reparenting) — the
+     * finalize's composition then carries the CAPTURE-TIME parent link as
+     * hop 1's ppid fact. */
+    let selectedDaemonParentNeedsRecord = false;
+    const absenceReads = /** @type {any[]} */ ([]);
+    try {
+      // Phase 1 — ARM (concurrent with the launch; the admission may retry a
+      // MISSING record: the marker may legitimately not exist yet — a missing
+      // record is NEVER launch readiness, and any other non-established
+      // verdict stops with its named fact).
+      for (;;) {
+        if (budgetController.signal.aborted) { block.stoppedAt ??= 'turn-ended'; return; }
+        admission = await localAdmitOnce(localAdmit, { role: 'invocation' });
+        if (admission?.status === 'established') break;
+        if (admission?.status !== 'missing') { block.admission = localProjectAdmission(admission); block.stoppedAt ??= 'turn-ended'; return; }
+        block.admission = localProjectAdmission(admission);
+        await localPace(25);
+      }
+      block.admission = localProjectAdmission(admission);
+      // Phase 2 — PRESENCE: the real Companion is observed ALIVE
+      // concurrently with the held phase — strictly before any interruption.
+      presence = await localObserveOnce(localObserve, {
+        pid: admission.identity.pid,
+        nonce: declared.nonce,
+      });
+      block.presence = localProjectObservation(presence);
+      // Phase 3 — WAIT for the release boundary (the interruption moment or
+      // turn end), completing the REMAINING establishment facts while the
+      // observation window is still open: the declared broker-daemon record
+      // (the daemon spawns moments after the Companion; a missing record is
+      // retried, never launch readiness — observed alive the moment its
+      // record admits, still pre-release) and the DECLARED transport
+      // descendant (the driver's OWN eagerly established transport identity,
+      // observed under its OWN declared nonce the moment that identity
+      // exists). Both duties need PRE-CUTOFF establishment facts — a
+      // finalize-time observation would be post-fence by construction and
+      // could never carry credit (§25.7).
+      while (!localReleasedOrEnded()) {
+        if ((brokerAdmission === null || brokerAdmission.status !== 'established') && brokerObservation === null) {
+          brokerAdmission = await localAdmitOnce(localBrokerAdmit, { role: 'broker-daemon' });
+          if (brokerAdmission.status !== 'missing') block.brokerAdmission = localProjectAdmission(brokerAdmission);
+          if (brokerAdmission.status === 'established') {
+            brokerObservation = await localObserveOnce(localBrokerObserve, {
+              pid: brokerAdmission.identity.pid,
+              nonce: declared.nonce,
+            });
+            block.brokerObservation = localProjectObservation(brokerObservation);
+          }
+        }
+        if (transportObservation === null && identity !== undefined && typeof input.processNonce === 'string') {
+          transportObservation = await localObserveOnce(localTransportObserve, {
+            pid: /** @type {any} */ (identity).pid,
+            nonce: input.processNonce,
+            ...(typeof /** @type {any} */ (identity).startIdentity === 'string' ? { expectedStartIdentity: /** @type {any} */ (identity).startIdentity } : {}),
+          });
+          block.transportObservation = localProjectObservation(transportObservation);
+        }
+        if (brokerObservation !== null && transportObservation !== null) break;
+        await localPace(25);
+      }
+      if (brokerAdmission !== null) block.brokerAdmission = localProjectAdmission(brokerAdmission);
+      if (budgetController.signal.aborted && cleanup.releasedGate !== true) {
+        block.stoppedAt ??= 'turn-ended';
+      }
+      // Review round 3 (Finding 2): the ancestry's lifetime windows need
+      // endpoint observations that COVER the downstream creation — the
+      // broker may spawn seconds after the initial Companion observation and
+      // the transport marker may postdate the first broker read. Both
+      // endpoints are REFRESHED here (after the phase-3 downstream
+      // establishments, still pre-release/pre-fence) with fresh reads of the
+      // SAME generations; a NEGATIVE refresh keeps the endpoint's own
+      // earlier positive baseline (the latest positive generation evidence).
+      // The early presence baseline stays the record's pre-launch witness;
+      // the refreshed endpoints persist with the block for the offline
+      // replay.
+      if (presence?.status === 'established' && brokerObservation?.status === 'established') {
+        const refreshedCompanion = await localObserveOnce(localObserve, {
+          pid: presence.observation.pid,
+          nonce: declared.nonce,
+          ...(typeof presence.observation.startIdentity === 'string' ? { expectedStartIdentity: presence.observation.startIdentity } : {}),
+        });
+        const refreshedDaemon = await localObserveOnce(localBrokerObserve, {
+          pid: brokerObservation.observation.pid,
+          nonce: declared.nonce,
+          ...(typeof brokerObservation.observation.startIdentity === 'string' ? { expectedStartIdentity: brokerObservation.observation.startIdentity } : {}),
+        });
+        // Review round 4 (Finding 4): the runtime PERSISTS THE SELECTED
+        // endpoints — exactly the observations the finalize's ancestry
+        // composition consumes (a NEGATIVE refresh falls back to the
+        // endpoint's own earlier positive baseline HERE, so the runtime
+        // verdict and the offline replay always see identical evidence).
+        // The failed refreshes ride SEPARATELY as the named facts (the
+        // schema-additive `ancestryEndpointRefreshes` field) — never silently
+        // dropped, never mistaken for the selected endpoints.
+        const selectedCompanion = refreshedCompanion?.status === 'established' ? refreshedCompanion : presence;
+        // (Review round 7, Finding 1) a generation-changing Companion refresh
+        // read participates in the EXIT ADJUDICATION exactly like any other
+        // same-scope read carrying a generation change (the frozen latch
+        // rules): a PID reuse discovered during the refresh latches the
+        // reuse, so the REPLACEMENT's subsequent confirmed absence can never
+        // validate the original generation's disappearance.
+        const boundStartIdentity = presence?.status === 'established' && typeof presence.observation?.startIdentity === 'string'
+          ? presence.observation.startIdentity : null;
+        const refreshCarriesGenerationChange = refreshedCompanion !== null && refreshedCompanion !== undefined && typeof refreshedCompanion === 'object'
+          && boundStartIdentity !== null && (
+            (refreshedCompanion.status === 'established' && typeof refreshedCompanion.observation?.startIdentity === 'string'
+              && refreshedCompanion.observation.startIdentity !== boundStartIdentity)
+            || (refreshedCompanion.status === 'unestablished' && refreshedCompanion.reason === 'start-identity-generation-changed')
+            || (typeof refreshedCompanion.observedStartIdentity === 'string' && refreshedCompanion.observedStartIdentity !== boundStartIdentity));
+        if (refreshCarriesGenerationChange) absenceReads.push(refreshedCompanion);
+        // (Review round 5, Finding 5; round 7, Finding 2) the Task-2
+        // reparenting rule, as the TWO-FACT rule: a CHANGED parent never
+        // invalidates the observation. The REFRESHED (reparented) daemon
+        // endpoint is selected for the LIFETIME coverage (its later read
+        // bounds the transport marker window) while the CAPTURE-TIME parent
+        // link (the earlier observation's ppid) is carried SEPARATELY into
+        // the ancestry composition — and both facts persist with the block
+        // (the endpoint here, the parent link in the broker observation and
+        // the composition's capture-parent fact), so the offline join
+        // applies the same two-fact rule.
+        const selectedDaemon = refreshedDaemon?.status === 'established' ? refreshedDaemon : brokerObservation;
+        // The record-based parent link is accepted ONLY for the documented
+        // reparenting shape (the OS-observed parent is init, ppid 1 — the
+        // Companion exited; the detached daemon persists): a FOREIGN non-init
+        // OS parent CONTRADICTS the record (a torn or foreign pairing) and
+        // stays refused, never guessed away.
+        selectedDaemonParentNeedsRecord = selectedDaemon !== null && typeof selectedDaemon === 'object'
+          && selectedDaemon.status === 'established'
+          && Number.isSafeInteger(selectedDaemon.observation?.ppid)
+          && presence?.status === 'established'
+          && selectedDaemon.observation.ppid !== presence.observation.pid
+          && selectedDaemon.observation.ppid === 1
+          && brokerAdmission?.status === 'established'
+          && Number.isSafeInteger(brokerAdmission.identity?.ppid);
+        ancestryCompanion = selectedCompanion;
+        ancestryDaemon = selectedDaemon;
+        // (Review round 16, Finding 1) the SELECTED same-generation companion
+        // refresh joins the exit adjudication's read sequence: it walks the
+        // running presence horizon (the offline horizon walk consumes the
+        // refreshed endpoint the same way) and a subsequent absence TIED
+        // with the refreshed presence never establishes the disappearance —
+        // the runtime keeps sampling for a strictly-later absence.
+        if (selectedCompanion?.status === 'established'
+          && typeof selectedCompanion.observation?.startIdentity === 'string'
+          && selectedCompanion.observation.startIdentity === presence?.observation?.startIdentity) {
+          absenceReads.push(selectedCompanion);
+        }
+        if (refreshedCompanion?.status !== 'established' || refreshedDaemon?.status !== 'established') {
+          block.ancestryEndpointRefreshes = {
+            companion: refreshedCompanion?.status === 'established' ? null : localProjectObservation(refreshedCompanion),
+            daemon: refreshedDaemon?.status === 'established' ? null : localProjectObservation(refreshedDaemon),
+          };
+        }
+        // The transport marker is the driver's OWN eagerly captured identity
+        // (the capture-time pid/ppid/nonce and the marker's OWN write
+        // instant); the nonce rides digest-only.
+        const markerForEndpoints = identity !== undefined && identity !== null && typeof identity === 'object'
+          && Number.isSafeInteger(/** @type {any} */ (identity).pid) && /** @type {any} */ (identity).pid > 0
+          && Number.isSafeInteger(/** @type {any} */ (identity).ppid) && /** @type {any} */ (identity).ppid > 0
+          && typeof /** @type {any} */ (identity).nonce === 'string'
+          ? {
+            pid: /** @type {any} */ (identity).pid,
+            ppid: /** @type {any} */ (identity).ppid,
+            // Review round 24 (Finding 2): the CAPTURED start identity rides
+            // the marker (schema-additive) so the replay binds the transport
+            // observation to the captured GENERATION, not merely to the
+            // pid+nonce digest — a successor generation under the same
+            // pid+nonce cannot settle the original transport's duty.
+            ...(typeof /** @type {any} */ (identity).startIdentity === 'string' && /** @type {any} */ (identity).startIdentity.length > 0
+              ? { startIdentity: /** @type {any} */ (identity).startIdentity }
+              : {}),
+            nonceSha256: localBindingDigest(/** @type {any} */ (identity).nonce),
+            // Review round 4 (Finding 2): the marker's OWN write instant is
+            // REQUIRED evidence for the offline daemon→transport hop
+            // lifetime — persisted with the block (schema-additive).
+            ...(Number.isSafeInteger(/** @type {any} */ (identity).markerEpochMs) ? { markerEpochMs: /** @type {any} */ (identity).markerEpochMs } : {}),
+          }
+          : null;
+        block.ancestryEndpoints = {
+          companion: localProjectObservation(selectedCompanion),
+          daemon: localProjectObservation(selectedDaemon),
+          transportMarker: markerForEndpoints,
+        };
+      }
+      // Phase 4 — ABSENCE reads (post-release, bounded by the operative
+      // fence): the pre-read fence never starts a read at/after the earliest
+      // closing instant (equality included); a read that COMPLETED at/after
+      // the fence it started before rides as the named post-fence
+      // observation, is excluded from every adjudication, and stops the loop.
+      let presenceStartIdentity;
+      if (presence?.status === 'established' && typeof presence.observation?.startIdentity === 'string') {
+        presenceStartIdentity = presence.observation.startIdentity;
+      }
+      for (;;) {
+      if (budgetController.signal.aborted) { block.stoppedAt ??= 'turn-ended'; break; }
+        const fenceAtStart = localOperativeFenceMs();
+        if (fenceAtStart !== null && wallClockNow() >= fenceAtStart) {
+          block.fenceAtMs = fenceAtStart;
+          block.stoppedAt ??= localFenceKind(fenceAtStart);
+          break;
+        }
+        const read = await localObserveOnce(localObserve, {
+          pid: /** @type {any} */ (admission.identity).pid,
+          nonce: declared.nonce,
+          ...(presenceStartIdentity !== undefined ? { expectedStartIdentity: presenceStartIdentity } : {}),
+        });
+        // Local-settlement Task 3 (the §25.7 COMPLETION-side fence, slice F):
+        // a read whose collection interval STRADDLES the fence — it started
+        // before the fence existed (or before the operative fence moved
+        // EARLIER mid-read, e.g. a termination-initiation boundary stamped
+        // while the read awaited) — is re-verified against the fence AS KNOWN
+        // AT ITS COMPLETION before it can enter the adjudication: a
+        // completion at/after the operative fence rides the NAMED post-fence
+        // observation, credits nothing, and stops the loop (equational
+        // fencing; the fence is never manufactured from a completion).
+        const fenceCandidatesAtCompletion = [fenceAtStart, localOperativeFenceMs()]
+          .filter((/** @type {any} */ value) => typeof value === 'number' && Number.isFinite(value));
+        const fenceAtCompletion = fenceCandidatesAtCompletion.length > 0 ? Math.min(.../** @type {number[]} */ (fenceCandidatesAtCompletion)) : null;
+        if (fenceAtCompletion !== null && typeof read?.readEpochMs === 'number' && read.readEpochMs >= fenceAtCompletion) {
+          block.reads.push({ ...localProjectObservation(read), postFence: true });
+          block.fenceAtMs = fenceAtCompletion;
+          block.stoppedAt ??= localFenceKind(fenceAtCompletion);
+          break;
+        }
+        absenceReads.push(read);
+        block.reads.push(localProjectObservation(read));
+        // (Review round 14, Finding 1; round 15, Finding 3) a CONFIRMED
+        // absence whose completion TIES with (or precedes) the LATEST
+        // same-generation verified presence instant never establishes
+        // disappearance (the frozen conservative tie rule) — it must not end
+        // collection either: keep sampling while the window is open so a
+        // LATER strictly-later absence is collectable within the fence. The
+        // latest instant walks the presence AND every same-generation
+        // established read collected so far (refreshes and subsequent live
+        // reads alike — the same discipline as the offline horizon walk).
+        let latestSameGenerationPresenceMs = presence?.identityReadEpochMs;
+        for (const earlier of absenceReads) {
+          if (earlier?.status !== 'established') continue;
+          const evidence = Number.isSafeInteger(earlier?.identityReadEpochMs) ? earlier.identityReadEpochMs : earlier?.readEpochMs;
+          if (Number.isSafeInteger(evidence) && (latestSameGenerationPresenceMs === null || evidence > latestSameGenerationPresenceMs)) {
+            latestSameGenerationPresenceMs = evidence;
+          }
+        }
+        const absenceStrictlyAfterPresence = !(presence && Number.isSafeInteger(latestSameGenerationPresenceMs) && Number.isSafeInteger(read?.readEpochMs))
+          || (Number.isSafeInteger(read?.readEpochMs) && read.readEpochMs > latestSameGenerationPresenceMs);
+        if (read?.status === 'absent' && read.absenceConfirmed === true && absenceStrictlyAfterPresence) break;
+        await localPace(50);
+      }
+      // (Review round 8, Finding 1) the transport's OWN generation-bound exit
+      // evidence: the applicable transport descendant must be positively
+      // adjudicated GONE before the fence can credit local settlement — one
+      // generation-bound read (the transport pid under its OWN declared
+      // nonce, the expected start identity bound) after the invocation exit
+      // loop, with the SAME §25.7 fence discipline (a read started or
+      // completed at/after the operative fence rides the NAMED post-fence
+      // fact and credits nothing). The verdict — absent, still-live, torn,
+      // or window-closed — persists with the block; the offline join gates
+      // the transport's credit on it.
+      const transportIdentity = /** @type {any} */ (identity);
+      if (identity !== undefined && identity !== null && typeof identity === 'object'
+        && Number.isSafeInteger(transportIdentity.pid) && typeof input.processNonce === 'string'
+        && localTransportObserve !== null) {
+        // (Review round 9, Finding 2) the transport exit RETRIES until a
+        // confirmed absence, cancellation, or the operative fence — a
+        // still-live first read is not final: the transport may lawfully
+        // exit later inside the collection window, and every retry is a
+        // fresh §25.7-fenced read (the pre-read fence never starts one
+        // at/after the operative fence; a read whose completion straddles it
+        // rides the NAMED post-fence fact and stops the retries).
+        const TRANSPORT_EXIT_MAX_RETRIES = 10;
+        let transportExitRetries = 0;
+        // (Review round 19, Finding 1) the LIVE same-generation reads the
+        // retries collect are presence evidence: they persist as the
+        // additive `transportPresenceReads` sequence (never overwritten by
+        // the next read) so the offline replay sees the FULL verified
+        // presence sequence, and the strictly-later tie rule compares
+        // against the LATEST verified presence — the same live-wins
+        // discipline as the invocation phase-4 loop.
+        const transportPresenceReads = /** @type {any[]} */ ([]);
+        block.transportPresenceReads = transportPresenceReads;
+        for (;;) {
+          if (budgetController.signal.aborted) { block.stoppedAt ??= 'unfinished-observation'; break; }
+          const fenceAtTransportExitStart = localOperativeFenceMs();
+          if (fenceAtTransportExitStart !== null && wallClockNow() >= fenceAtTransportExitStart) {
+            block.fenceAtMs ??= fenceAtTransportExitStart;
+            block.stoppedAt ??= localFenceKind(fenceAtTransportExitStart);
+            break;
+          }
+          const transportExitRead = await localObserveOnce(localTransportObserve, {
+            pid: transportIdentity.pid,
+            nonce: input.processNonce,
+            ...(typeof transportIdentity.startIdentity === 'string' ? { expectedStartIdentity: transportIdentity.startIdentity } : {}),
+          });
+          const fenceCandidatesTransportExit = [fenceAtTransportExitStart, localOperativeFenceMs()]
+            .filter((/** @type {any} */ value) => typeof value === 'number' && Number.isFinite(value));
+          const fenceAtTransportExitCompletion = fenceCandidatesTransportExit.length > 0 ? Math.min(.../** @type {number[]} */ (fenceCandidatesTransportExit)) : null;
+          const transportExitPostFence = fenceAtTransportExitCompletion !== null
+            && typeof transportExitRead?.readEpochMs === 'number' && transportExitRead.readEpochMs >= fenceAtTransportExitCompletion;
+          // (Review round 10, Finding 1) the generation-change latch is
+          // TERMINAL — exactly as adjudicateLocalExit latches a reuse: once a
+          // retry observes a generation change (the named verdict, an
+          // established different-start read, or a carried foreign identity),
+          // the latch fires, the generation-changing read persists as the
+          // transport's exit fact, and the retries STOP — a subsequent
+          // absence of the REPLACEMENT never converts the latched reuse into
+          // the original transport's confirmed exit.
+          const transportGenerationChanged = transportExitRead !== null && typeof transportExitRead === 'object' && (
+            (transportExitRead.status === 'unestablished' && transportExitRead.reason === 'start-identity-generation-changed')
+            || (transportExitRead.status === 'established' && typeof transportExitRead.observation?.startIdentity === 'string'
+              && typeof transportIdentity.startIdentity === 'string'
+              && transportExitRead.observation.startIdentity !== transportIdentity.startIdentity)
+            || (typeof transportExitRead.observedStartIdentity === 'string'
+              && typeof transportIdentity.startIdentity === 'string'
+              && transportExitRead.observedStartIdentity !== transportIdentity.startIdentity));
+          if (transportGenerationChanged) {
+            block.transportExitGenerationLatched = true;
+            block.transportExit = { ...localProjectObservation(transportExitRead) };
+            break;
+          }
+          block.transportExit = {
+            ...localProjectObservation(transportExitRead),
+            ...(transportExitPostFence ? { postFence: true } : {}),
+          };
+          // (Review round 18, Finding 3) a confirmed transport absence whose
+          // completion TIES with (or precedes) the transport's verified
+          // presence instant never establishes the transport's death (the
+          // frozen conservative tie rule) — it must not end the retries
+          // either: keep sampling while the window is open so a LATER
+          // strictly-later absence is collectable.
+          if (transportExitRead?.status === 'established') {
+            transportPresenceReads.push({ ...localProjectObservation(transportExitRead) });
+          }
+          const transportPresenceInstants = [
+            transportObservation?.identityReadEpochMs ?? transportObservation?.readEpochMs,
+            ...transportPresenceReads.map((/** @type {any} */ read) => read.identityReadEpochMs ?? read.readEpochMs),
+          ].filter((/** @type {any} */ value) => Number.isSafeInteger(value));
+          const transportPresenceInstant = transportPresenceInstants.length > 0 ? Math.max(.../** @type {number[]} */ (transportPresenceInstants)) : null;
+          const transportAbsenceStrictlyLater = !(transportPresenceInstant !== null && Number.isSafeInteger(transportExitRead?.readEpochMs))
+            || (Number.isSafeInteger(transportExitRead?.readEpochMs) && transportExitRead.readEpochMs > transportPresenceInstant);
+          if (transportExitRead?.status === 'absent' && transportExitRead.absenceConfirmed === true && transportAbsenceStrictlyLater) break;
+          if (transportExitRead?.status === 'absent' && transportExitRead.absenceConfirmed === true) {
+            // The tied absence is retained but the loop keeps sampling.
+            await localPace(50);
+            continue;
+          }
+          if (transportExitPostFence) break;
+          // The bounded retry count: a transport that never exits inside the
+          // bound leaves the LAST live read persisted (the join refuses the
+          // transport's credit — honest, the documented residual bound).
+          transportExitRetries += 1;
+          if (transportExitRetries >= TRANSPORT_EXIT_MAX_RETRIES) break;
+          await localPace(50);
+        }
+      }
+    } catch {
+      // The detached runtime never fails the held turn: an unexpected
+      // condition is the named incomplete-observation fact.
+      block.stoppedAt ??= 'turn-ended';
+    } finally {
+      // Finalize — compose the independent duty facts from the collected
+      // evidence (pure offline adjudication of THIS run's verdicts; the
+      // transport duty joins the driver's OWN established transport identity
+      // under its OWN declared nonce — one process never attests another
+      // duty's role, and the declared-transport scope is the transport's
+      // own). The fence echoes ride the block so the offline join can
+      // re-verify every credit fence after disposal.
+      try {
+        block.cutoffAtMs = typeof cleanup.measurementCutoffAtMs === 'number' ? cleanup.measurementCutoffAtMs : null;
+        block.cleanupBoundaryAtMs = typeof cleanup.cleanupBoundaryAtMs === 'number' ? cleanup.cleanupBoundaryAtMs : null;
+        if (block.presence !== null && block.presence !== undefined) {
+          block.exit = localProjectExit(adjudicateLocalExit({
+            presence,
+            absenceReads: /** @type {any} */ (absenceReads),
+          }));
+        }
+        /** @type {any} */
+        let finalizeBrokerObservation = brokerObservation;
+        if (finalizeBrokerObservation === null && brokerAdmission?.status === 'established' && localBrokerObserve !== null) {
+          // Fallback (release raced the broker admission): the observation is
+          // a best-effort finalize read — post-fence by construction on a
+          // scheduled run, so the offline fence refuses its credit and the
+          // duty stays honestly unestablished.
+          finalizeBrokerObservation = await localObserveOnce(localBrokerObserve, {
+            pid: brokerAdmission.identity.pid,
+            nonce: declared.nonce,
+          });
+          block.brokerObservation = localProjectObservation(finalizeBrokerObservation);
+        }
+        /** @type {any} */
+        let finalizeTransportObservation = transportObservation;
+        if (finalizeTransportObservation === null && identity !== undefined && localTransportObserve !== null && typeof input.processNonce === 'string') {
+          finalizeTransportObservation = await localObserveOnce(localTransportObserve, {
+            pid: /** @type {any} */ (identity).pid,
+            nonce: input.processNonce,
+            ...(typeof /** @type {any} */ (identity).startIdentity === 'string' ? { expectedStartIdentity: /** @type {any} */ (identity).startIdentity } : {}),
+          });
+          block.transportObservation = localProjectObservation(finalizeTransportObservation);
+        }
+        // Review round 2 (the ancestry join in the runtime path): the
+        // Companion→broker→transport parentage is adjudicated from the SAME
+        // captured facts and persisted with the block — a failed or
+        // unestablished hop is a NAMED refusal and the local layer may never
+        // settle on it (the offline join re-verifies the SAME verdict).
+        const transportMarker = identity !== undefined && identity !== null && typeof identity === 'object'
+          && Number.isSafeInteger(/** @type {any} */ (identity).pid) && /** @type {any} */ (identity).pid > 0
+          && Number.isSafeInteger(/** @type {any} */ (identity).ppid) && /** @type {any} */ (identity).ppid > 0
+          && typeof /** @type {any} */ (identity).nonce === 'string'
+          ? { pid: /** @type {any} */ (identity).pid, ppid: /** @type {any} */ (identity).ppid, nonce: /** @type {any} */ (identity).nonce }
+          : null;
+        const ancestryVerdict = composeAncestryJoinForRuntime({
+          nonce: declared.nonce,
+          companionObservation: ancestryCompanion ?? presence ?? null,
+          daemonObservation: ancestryDaemon ?? brokerObservation ?? null,
+          transportMarker,
+          // (Review round 7, Finding 2) the two-fact rule: when the selected
+          // daemon endpoint is the reparented refresh, hop 1's ppid chain is
+          // verified against the CAPTURE-TIME parent link (the earlier
+          // observation's ppid = the Companion's pid), never the refresh's
+          // changed parent.
+          ...(selectedDaemonParentNeedsRecord === true && Number.isSafeInteger(brokerAdmission?.identity?.ppid)
+            ? { daemonCaptureParentPid: /** @type {any} */ (brokerAdmission).identity.ppid }
+            : {}),
+          ...(typeof input.processNonce === 'string' ? { expectedTransportNonce: input.processNonce } : {}),
+          ...(Number.isSafeInteger(/** @type {any} */ (identity)?.markerEpochMs) ? { markerEpochMs: /** @type {any} */ (identity).markerEpochMs } : {}),
+        });
+        block.ancestry = localProjectAncestry(ancestryVerdict);
+        block.duties = localProjectDuties(adjudicateLocalDuties({
+          nonce: declared.nonce,
+          invocation: admission?.status === 'established' && presence?.status === 'established'
+            ? { startupRecord: admission, osObservation: presence }
+            : null,
+          broker: brokerAdmission?.status === 'established' && finalizeBrokerObservation?.status === 'established'
+            ? { startupRecord: brokerAdmission, osObservation: finalizeBrokerObservation }
+            : null,
+          transport: finalizeTransportObservation !== null ? { startupRecord: null, osObservation: finalizeTransportObservation } : null,
+          identifiedDescendants: [],
+          ancestryEstablished: ancestryVerdict?.companionToTransportAttributed === true,
+          ...(typeof input.processNonce === 'string' ? { expectedTransportNonce: input.processNonce } : {}),
+        }));
+        block.composedAtMs = wallClockNow();
+      } catch {
+        block.duties ??= null;
+      }
+    }
+  })();
+  const localRuntimeSettled = localRuntimeTask === null ? null : localRuntimeTask;
   // Hoisted so the exit `finally` can attach the §23.5 sampling block to the
   // answer's childSettlement on EVERY exit path (the finally runs after the
   // abort that stops the sampler).
@@ -2362,7 +3197,13 @@ export async function runHeldHostTurn(input) {
         // overrun, the corrected cutoff is the persisted fence (reads past it
         // are fenced exactly as the registration requires), and the overrun
         // itself rides the record as a named fact.
-        cleanup.measurementCutoffAtMs = Math.max(1, (holdDeadlineWallMs ?? wallClockNow()) + MEASUREMENT_CUTOFF_AFTER_HOLD_MS);
+        // (Review round 13, Finding 1) the fence producer FLOORS the
+        // arithmetic to whole wall milliseconds: the fractional monotonic
+        // difference would otherwise persist a fractional cutoff that the
+        // replay's integer fence checks refuse (local-fence-unestablished on
+        // every scheduled run). Flooring only ever closes the fence earlier
+        // (< 1 ms), which is conservative-strict for credit.
+        cleanup.measurementCutoffAtMs = Math.max(1, Math.floor((holdDeadlineWallMs ?? wallClockNow()) + MEASUREMENT_CUTOFF_AFTER_HOLD_MS));
         if (holdDeadlineOverrunMs > 0) cleanup.holdDeadlineOverrunMs = holdDeadlineOverrunMs;
       }
       const processAliveWhileHeld = await readProcessIdentity(identity) !== undefined;
@@ -3153,6 +3994,24 @@ export async function runHeldHostTurn(input) {
     budgetAbortIsTeardown = true;
     budgetController.abort();
     clearInterval(budgetTimer);
+    // Local-settlement Task 3: the local-observation runtime settles BEFORE
+    // the record leaves the turn, so its block is final on EVERY exit path
+    // (the abort above stopped its loops; the finalize below composes the
+    // duty facts from what was collected). The task never rejects.
+    if (localRuntimeSettled !== null) {
+      try { await localRuntimeSettled; } catch { /* unreachable — the task is failure-proof */ }
+      // Review-fix refresh: the runtime's finalize captured the fence echoes
+      // WHEN IT STOPPED — for a runtime that completed during the held phase
+      // the §24.8 cutoff/cleanup stamps may not exist yet. The record is
+      // final before it leaves the turn, so the echoes are refreshed HERE
+      // (after the scheduled section stamped them, after the task settled):
+      // the block's echoed fence facts always agree with the turn's own
+      // final stamps, never a stale null.
+      if (localObservationBlock !== null) {
+        (/** @type {any} */ (localObservationBlock)).cutoffAtMs = typeof cleanup.measurementCutoffAtMs === 'number' ? cleanup.measurementCutoffAtMs : (/** @type {any} */ (localObservationBlock)).cutoffAtMs;
+        (/** @type {any} */ (localObservationBlock)).cleanupBoundaryAtMs = typeof cleanup.cleanupBoundaryAtMs === 'number' ? cleanup.cleanupBoundaryAtMs : (/** @type {any} */ (localObservationBlock)).cleanupBoundaryAtMs;
+      }
+    }
     // 2026-10-23 interrupt-closure Task 3 (report §23.5): the abort above
     // stopped the sampler (the shared-signal stop — a teardown-only abort
     // names the signal, never a termination boundary); the FINAL sampling
@@ -4042,7 +4901,1182 @@ export const INTERRUPT_PARTIAL_FACTS_VERSION = 1;
  * over one — old verdicts are preserved verbatim, and a record without
  * samples reproduces its recorded v1 verdict fields exactly.
  */
-export const NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION = 5;
+// v6 (2026-10-30 local-settlement Task 3, report §25.10): the local-duty
+// input contract — the persisted digest-only local-observation block maps
+// into `localProcessDuties` with the §25.7 offline credit fences re-verified
+// from the record's own fence stamps. A record without the block (every
+// legacy record, every unarmed case) maps NULL — never a pass under this
+// contract (the frozen oracle refuses it by name).
+export const NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION = 37;
+
+// ---------------------------------------------------------------------------
+// Local-settlement Task 3 (report §25.10): the OFFLINE composition of the
+// persisted local-observation block into the frozen native-interruption
+// oracle's input — the all-duty join with the §25.7 credit fences re-verified
+// against the RECORD'S OWN fence stamps. Pure: the runtime's own facts are
+// consumed only after this re-verification; nothing is invented, and every
+// refusal is named.
+// ---------------------------------------------------------------------------
+
+/** The closed local-duty oracle-input contract version (the §25.10 schema;
+ * bumped with the contract's own semantics change — old adjudications stand
+ * as history through the join/oracle versions). */
+export const LOCAL_PROCESS_DUTY_CONTRACT_VERSION = 1;
+
+/**
+ * Compose the local-duty join input from the record's persisted
+ * `localProcess` block. Credit requires, per §25.4/§25.7:
+ *   - the block carried a wall-epoch clock (the same epoch-ms family every
+ *     fence stamp is recorded in);
+ *   - an OPERATIVE fence is known from the record's own stamps (the
+ *     measurement cutoff and/or an earlier termination-initiation boundary;
+ *     the EARLIEST closes credit);
+ *   - every credit-bearing fact proves a completion instant STRICTLY before
+ *     the fence (equality refused; missing instants refused);
+ *   - the block's own echoed fence stamps AGREE with the record's (a torn/
+ *     foreign origin gets no credit);
+ *   - every applicable local duty the block COMPOSED is positively
+ *     established; and
+ *   - the invocation exit is positively adjudicated `disappeared` with its
+ *     first verified absence strictly before the fence (the §25.4 item-6
+ *     local-cleanup fact: the applicable cleanup unknown or the process
+ *     still live NEVER settles).
+ * @param {any} block the record's `localProcess` block
+ * @param {{ measurementCutoffAtMs?: unknown, cleanupBoundaryAtMs?: unknown }} interrupt the record's interrupt fence facts
+ * @param {any} captureDeclaration the record's persisted capture declaration (the §25.3 arming: the gate's argv selector + entry digests the admissions must bind)
+ * @returns {{ contractVersion: number, settled: boolean, duties: unknown[], exit: unknown, fence: { operativeAtMs: number, kind: 'measurement-cutoff' | 'termination-boundary' }, refusals: string[] }}
+ */
+function joinRecordLocalProcessDuties(block, interrupt, captureDeclaration) {
+  /** @type {string[]} */
+  const refusals = [];
+  const cutoff = typeof interrupt?.measurementCutoffAtMs === 'number' && Number.isFinite(interrupt.measurementCutoffAtMs)
+    ? interrupt.measurementCutoffAtMs : null;
+  const boundary = typeof interrupt?.cleanupBoundaryAtMs === 'number' && Number.isFinite(interrupt.cleanupBoundaryAtMs)
+    ? interrupt.cleanupBoundaryAtMs : null;
+  const fenceCandidates = [cutoff, boundary].filter((value) => value !== null);
+  const operativeFenceMs = fenceCandidates.length > 0 ? Math.min(...fenceCandidates) : null;
+  const fenceKind = boundary !== null && boundary === operativeFenceMs ? 'termination-boundary' : 'measurement-cutoff';
+  // Clock compatibility: the block must sit on the SAME epoch-ms family the
+  // fence stamps ride; the monotonic held-turn clock is a different domain
+  // and a block stamped there can never be compared to the fence.
+  if (block?.clock !== 'wall-epoch-ms') refusals.push('local-observation-clock-incompatible');
+  // Echo consistency: the record's own stamps are authoritative; the block's
+  // echoes must agree when present (a torn/foreign origin proves nothing).
+  if (block === null || typeof block !== 'object') {
+    refusals.push('local-observation-unpersisted');
+  } else {
+    // (Review round 13, Finding 4) the persisted block VERSION gate: the
+    // replay interprets the block as the current schema ONLY when the
+    // producer stamped that schema version — a missing or unsupported
+    // version refuses by name and the join never substitutes its own known
+    // version for an unsupported source (the oracle's unknown-contract
+    // guard stays reachable).
+    if (block.version !== 1) {
+      refusals.push('local-process-block-version-unsupported');
+    }
+    // (Review round 28, Finding 1) the echoes compare SYMMETRICALLY: a
+    // missing-versus-present mismatch is the same torn/foreign-origin
+    // contradiction as an unequal pair — cleanup-time evidence stamped on
+    // the block (an EARLIER boundary) must never credit while the record's
+    // echo is absent, and a record echo without the block's stamp is the
+    // same tear in the other direction.
+    const blockCutoffEcho = typeof block.cutoffAtMs === 'number' && Number.isFinite(block.cutoffAtMs) ? block.cutoffAtMs : null;
+    if (blockCutoffEcho !== cutoff) refusals.push('cutoff-echo-mismatch');
+    const blockBoundaryEcho = typeof block.cleanupBoundaryAtMs === 'number' && Number.isFinite(block.cleanupBoundaryAtMs) ? block.cleanupBoundaryAtMs : null;
+    if (blockBoundaryEcho !== boundary) refusals.push('cleanup-boundary-echo-mismatch');
+    // (Review round 5, Finding 1) the block's DECLARED scope digest is the
+    // one-scope binding every startup-backed fact must carry (§25.4 item 2):
+    // a block without it binds nothing (fail-closed, named).
+    if (typeof block.nonceSha256 !== 'string' || block.nonceSha256.length === 0) refusals.push('local-scope-unpersisted');
+  }
+  if (!Number.isSafeInteger(operativeFenceMs)) refusals.push('local-fence-unestablished');
+  /** The block's DECLARED scope digest (every startup-backed duty and
+   * ancestry endpoint must carry it — review round 5, Finding 1). */
+  const declaredScope = typeof block?.nonceSha256 === 'string' && block.nonceSha256.length > 0 ? block.nonceSha256 : null;
+  /** (Review round 12, Finding 1) the collection-interval sanity check: a
+   * read whose BOTH instants exist must carry a VALID interval (the read
+   * started at or before it completed) — an inverted interval is torn
+   * evidence and refuses by name, never credited. A MISSING instant is not
+   * an inversion (the unprovable-instant refusals own that shape). */
+  const collectionIntervalValid = (/** @type {any} */ verdict) => (verdict === null || typeof verdict !== 'object'
+    || !Number.isSafeInteger(verdict.readStartedEpochMs) || !Number.isSafeInteger(verdict.readEpochMs)
+    || verdict.readStartedEpochMs <= verdict.readEpochMs);
+  /** Credit predicate: one verdict proves its collection interval COMPLETE
+   * (a present, safe-integer start AND completion, the start not after the
+   * completion — review round 14, Finding 3: incomplete intervals are never
+   * accepted) and its completion strictly before the operative fence
+   * (equality refused; an unprovable instant refused). */
+  const provesPreFenceCompletion = (/** @type {any} */ verdict) => {
+    if (verdict === null || typeof verdict !== 'object') return false;
+    const fenceAt = Number.isSafeInteger(operativeFenceMs) ? operativeFenceMs : null;
+    if (fenceAt === null) return false;
+    const startedAtMs = typeof verdict.readStartedEpochMs === 'number' && Number.isSafeInteger(verdict.readStartedEpochMs)
+      ? verdict.readStartedEpochMs : null;
+    const completedAtMs = typeof verdict.readEpochMs === 'number' && Number.isSafeInteger(verdict.readEpochMs)
+      ? verdict.readEpochMs : null;
+    if (startedAtMs === null || completedAtMs === null) return false;
+    return startedAtMs <= completedAtMs && completedAtMs < fenceAt;
+  };
+  const dutiesVerdict = block?.duties ?? null;
+  /** The persisted per-duty truth, re-verified from the block's OWN echoed
+   * pieces (review round 2, Finding 2): the serialized aggregate is NEVER a
+   * credit stamp. Identity binding is DIGEST-wise — the persisted block
+   * carries nondigests only (the privacy contract), so the re-verification
+   * binds each duty to its OWN echoed observation by digest equality of
+   * what the two persisted shapes both carry. */
+  const inlineDutyReverification = (/** @type {any} */ block, /** @type {string[]} */ refusals) => {
+    const listed = Array.isArray(dutiesVerdict?.duties) ? dutiesVerdict.duties : [];
+    const slotByDuty = /** @type {Record<string, any>} */ ({
+      'invocation-process': block?.presence ?? null,
+      'broker-daemon': block?.brokerObservation ?? null,
+      'transport-descendant': block?.transportObservation ?? null,
+    });
+    // (a) the closed §25.5 applicable trio must ALL be listed established —
+    // a missing slot or an entry the aggregate claims settled on that the
+    // entry itself contradicts (explicit-unestablished, malformed) is a
+    // named refusal, never silently accepted or skipped.
+    for (const slot of ['invocation-process', 'broker-daemon', 'transport-descendant']) {
+      const duty = listed.find((/** @type {any} */ entry) => entry?.duty === slot) ?? null;
+      if (duty === null) refusals.push(`inline-duty-${slot}-unpersisted`);
+      else if (duty?.status !== 'established' || !Array.isArray(duty?.reasons) || duty?.identity === null || duty?.identity === undefined
+        || typeof duty?.identity !== 'object' || !Number.isSafeInteger(duty?.identity?.pid) || /** @type {any} */ (duty).identity.pid <= 0
+        || typeof /** @type {any} */ (duty).identity?.startIdentity !== 'string' || /** @type {any} */ (duty).identity?.startIdentity.length === 0
+        || typeof /** @type {any} */ (duty).identity?.nonceSha256 !== 'string' || /** @type {any} */ (duty).identity?.nonceSha256.length === 0) {
+        refusals.push('inline-duty-aggregate-inconsistent');
+      }
+    }
+    // (Review round 6, Finding 2) EVERY listed duty must be a member of the
+    // closed applicable trio — the driver's own composition lists no other
+    // slots (identified descendants compose empty in this contract), so an
+    // aggregate claiming settlement while ALSO listing an identified-
+    // descendant (or any foreign slot) — e.g. one whose exit is still live —
+    // is torn or foreign: named, never silently skipped.
+    for (const entry of listed) {
+      if (entry?.duty !== 'invocation-process' && entry?.duty !== 'broker-daemon' && entry?.duty !== 'transport-descendant') {
+        refusals.push('inline-duty-unsupported-slot');
+      }
+    }
+    // (Review round 11, Finding 3) EXACTLY ONE entry per applicable slot: a
+    // valid trio FOLLOWED by a contradictory duplicate (e.g. an
+    // unestablished invocation entry beside the established one) is a torn
+    // aggregate — `find` validates only the first entry, so duplicates are
+    // named, never silently skipped.
+    for (const slot of ['invocation-process', 'broker-daemon', 'transport-descendant']) {
+      if (listed.filter((/** @type {any} */ entry) => entry?.duty === slot).length > 1) {
+        refusals.push('inline-duty-duplicate-slot');
+      }
+    }
+    // (b) every ESTABLISHED listed duty rides its OWN persisted observation:
+    // present, established, pre-fence, and digest-bound to the duty's own
+    // identity (a foreign echo never binds, a listed-but-unbackable duty is
+    // named, never skipped).
+    for (const duty of listed) {
+      const dutyName = /** @type {any} */ (duty)?.duty;
+      const echo = slotByDuty[dutyName] ?? null;
+      if (/** @type {any} */ (duty)?.status === 'established' && !Array.isArray(slotByDuty[dutyName])
+        && (echo === null || (typeof echo === 'object' && echo.status !== 'established'))) {
+        refusals.push('inline-duty-observation-missing');
+        continue;
+      }
+      if (/** @type {any} */ (duty)?.status === 'established' && Array.isArray(slotByDuty[dutyName])) {
+        refusals.push('inline-duty-unbindable');
+        continue;
+      }
+      if (/** @type {any} */ (duty)?.status !== 'established') continue;
+      if (echo === null) {
+        refusals.push(`inline-duty-${dutyName}-unpersisted`);
+        continue;
+      }
+      if (!collectionIntervalValid(echo)) {
+        refusals.push('observation-interval-inverted');
+        continue;
+      }
+      // (Review round 22, Finding 2) a PRESENT-but-non-safe-integer identity
+      // read is MALFORMED evidence — it refuses by name and never falls back
+      // to the completion (the missing-instant semantics own ABSENT instants
+      // only): a numeric string like "25000" coerced through nothing and the
+      // earlier completion substituted for it.
+      if (echo.identityReadEpochMs !== undefined && echo.identityReadEpochMs !== null
+        && !Number.isSafeInteger(echo.identityReadEpochMs)) {
+        refusals.push('observation-identity-read-unprovable');
+        continue;
+      }
+      // (Review round 15, Finding 1) the echo's IDENTITY read must fall
+      // WITHIN its validated collection interval — the admission replay
+      // consumes identityReadEpochMs as evidence, so a post-fence identity
+      // instant cannot ride in through an earlier completion stamp.
+      if (Number.isSafeInteger(echo.identityReadEpochMs)
+        && (echo.identityReadEpochMs < echo.readStartedEpochMs || echo.identityReadEpochMs > echo.readEpochMs)) {
+        refusals.push('observation-identity-read-outside-interval');
+        continue;
+      }
+      if (!provesPreFenceCompletion(echo)) {
+        const echoVerdict = /** @type {any} */ (echo);
+        const completedAtMs = typeof echoVerdict?.readEpochMs === 'number' && Number.isSafeInteger(echoVerdict.readEpochMs) ? echoVerdict.readEpochMs : null;
+        const startedAtMs = Number.isSafeInteger(echoVerdict?.readStartedEpochMs) ? echoVerdict.readStartedEpochMs : null;
+        refusals.push(completedAtMs === null ? 'observation-instant-unprovable'
+          : startedAtMs === null ? 'observation-start-unprovable' : 'observation-at-or-after-fence');
+        continue;
+      }
+      // Digest binding: the duty's own identity equals the echo's observed
+      // identity (pid, start identity, the scope digest).
+      // (Review round 22, Finding 1) the echo's QUERY must identify the SAME
+      // process and scope it claims to have observed — an echo whose queried
+      // pid or nonce digest names a foreign target proves nothing about the
+      // observed process and never credits the duty.
+      const echoVerdict = /** @type {any} */ (echo);
+      const dutyIdentity = /** @type {any} */ (duty)?.identity ?? {};
+      const observedIdentity = echoVerdict?.observation ?? {};
+      if (dutyIdentity.pid !== observedIdentity.pid
+        || dutyIdentity.startIdentity !== observedIdentity.startIdentity
+        || dutyIdentity.nonceSha256 !== observedIdentity.nonceSha256
+        || echoVerdict?.queried?.pid !== observedIdentity.pid
+        || echoVerdict?.queried?.nonceSha256 !== observedIdentity.nonceSha256) {
+        refusals.push('inline-duty-identity-foreign');
+      }
+    }
+    return listed;
+  };
+  if (dutiesVerdict === null || typeof dutiesVerdict !== 'object' || dutiesVerdict.settled !== true) {
+    refusals.push('local-duties-unestablished');
+  } else {
+    inlineDutyReverification(block, refusals);
+    // (Review round 3, Finding 3) the persisted ADMISSIONS replay: a duty's
+    // OS observation alone admits nothing — the record must ALSO carry the
+    // startup-identity admission that authorized the observation (the
+    // §25.4/§25.5 pairing), bound to its own observation by role/pid/scope
+    // digest and completing strictly pre-fence. Deleted, foreign-bound, or
+    // post-fence admissions are named, never inferred from the observation.
+    const admissionReplay = (/** @type {string} */ slot, /** @type {string} */ expectedRole, /** @type {any} */ admission, /** @type {any} */ observation) => {
+      if (admission === null || admission === undefined || typeof admission !== 'object' || admission.status !== 'established'
+        || admission.identity === null || typeof admission.identity !== 'object') {
+        refusals.push(`inline-admission-${slot}-unpersisted`);
+        return;
+      }
+      const identity = /** @type {any} */ (admission).identity;
+      const observed = observation?.observation ?? null;
+      if (identity.role !== expectedRole
+        || observed === null || typeof observed !== 'object'
+        || identity.pid !== observed.pid || observed.nonceSha256 !== undefined
+          && (typeof identity.nonceSha256 !== 'string' || identity.nonceSha256 !== observed.nonceSha256)) {
+        refusals.push('inline-admission-observation-unbound');
+        return;
+      }
+      // (Review round 5, Finding 1) BOTH the admission and its observation
+      // must carry the block's DECLARED scope — a coherent foreign-scope
+      // subtree (a self-consistent admission+observation re-keyed to another
+      // capture) is exactly what the runtime's own scope checks reject.
+      if (declaredScope !== null && (identity.nonceSha256 !== declaredScope || observed.nonceSha256 !== declaredScope)) {
+        refusals.push('admission-scope-foreign');
+        return;
+      }
+      // (Review round 6, Finding 1) the ENTRY digest and the ARGV selector
+      // bind to the record's persisted capture declarations — the serialized
+      // admission status alone never binds the selector: the invocation
+      // admission's entry digest must equal the declaration gate's declared
+      // launcher digest and its argv the EXACT declared selector; the broker
+      // admission's entry digest the declared broker entry digest. A record
+      // without the declaration binds nothing (fail-closed, named).
+      const entryChecksStart = refusals.length;
+      if (expectedRole === 'invocation') {
+        const gate = captureDeclaration !== null && typeof captureDeclaration === 'object' ? captureDeclaration.gate ?? null : null;
+        const declaredEntry = gate !== null && typeof gate === 'object' && typeof gate.declaredEntryRealpathSha256 === 'string' && gate.declaredEntryRealpathSha256.length > 0
+          ? gate.declaredEntryRealpathSha256 : null;
+        const declaredArgv = gate !== null && typeof gate === 'object' && Array.isArray(gate.argv) ? gate.argv : null;
+        // Both selector facts are independent: an entry-digest mismatch and
+        // an argv-selector mismatch each ride their own name.
+        if (declaredEntry === null || identity.entryRealpathSha256 !== declaredEntry) {
+          refusals.push('admission-entry-unbound');
+        }
+        // (Review round 13, Finding 3) the FROZEN selector is enforced
+        // directly — the persisted declaration and admission AGREEING on a
+        // wrong selector (e.g. ['status','list']) never establishes this
+        // invocation role: the runtime's validateIdentityRecord accepts only
+        // the frozen argv selector for this role.
+        if (declaredArgv === null
+          || declaredArgv.length !== TERMINAL_ARGV_SELECTOR.length
+          || TERMINAL_ARGV_SELECTOR.some((/** @type {string} */ arg, /** @type {number} */ index) => declaredArgv[index] !== arg)) {
+          refusals.push('admission-selector-foreign');
+          return;
+        }
+        if (!Array.isArray(identity.argv)
+          || identity.argv.length !== TERMINAL_ARGV_SELECTOR.length
+          || TERMINAL_ARGV_SELECTOR.some((/** @type {string} */ arg, /** @type {number} */ index) => identity.argv[index] !== arg)) {
+          refusals.push('admission-selector-foreign');
+        }
+        if (refusals.length > entryChecksStart) {
+          return;
+        }
+      } else {
+        const brokerGate = captureDeclaration !== null && typeof captureDeclaration === 'object' ? captureDeclaration.brokerGate ?? null : null;
+        const declaredBrokerEntry = brokerGate !== null && typeof brokerGate === 'object' && typeof brokerGate.declaredBrokerEntryRealpathSha256 === 'string' && brokerGate.declaredBrokerEntryRealpathSha256.length > 0
+          ? brokerGate.declaredBrokerEntryRealpathSha256 : null;
+        if (declaredBrokerEntry === null || identity.entryRealpathSha256 !== declaredBrokerEntry) {
+          refusals.push('admission-entry-unbound');
+          return;
+        }
+      }
+      if (!collectionIntervalValid(admission)) {
+        refusals.push('admission-interval-inverted');
+        return;
+      }
+      if (!provesPreFenceCompletion(admission)) {
+        const completedAtMs = typeof admission?.readEpochMs === 'number' && Number.isSafeInteger(admission.readEpochMs) ? admission.readEpochMs : null;
+        const startedAtMs = Number.isSafeInteger(admission?.readStartedEpochMs) ? admission.readStartedEpochMs : null;
+        refusals.push(completedAtMs === null ? 'admission-instant-unprovable'
+          : startedAtMs === null ? 'admission-start-unprovable' : 'admission-at-or-after-fence');
+        return;
+      }
+      // (Review round 4, Finding 1) the FROZEN startup-generation rules
+      // re-applied against the persisted OS observation — the serialized
+      // established flag never overrules them: the record's precise start
+      // must live inside (or one whole second before) the observed creation
+      // second, the write must follow the start, and the observation's
+      // identity instant must postdate the record writer (the exact
+      // adjudicateLocalDuties containment/freshness family, mirrored on the
+      // digest-only persisted shapes).
+      const slotRefusalsBefore = refusals.length;
+      const observedStartIdentity = typeof observed.startIdentity === 'string' ? observed.startIdentity : '';
+      const startInstant = observed.startInstantEpochMs;
+      const recordStart = identity.startOriginMs;
+      const recordWrite = identity.firstWritePreciseMs;
+      if (!Number.isSafeInteger(startInstant) || typeof recordStart !== 'number' || typeof recordWrite !== 'number') {
+        refusals.push('admission-generation-unavailable');
+      } else if (recordStart > recordWrite) {
+        refusals.push('admission-start-after-record');
+      } else if (/^proc:\d+$/u.test(observedStartIdentity)) {
+        // Linux: the mirrored asymmetric creation-vs-write rule (the frozen
+        // ~10 ms resolution bound and the 1000 ms btime lower-bound window).
+        if (startInstant > recordWrite + LINUX_PROC_RESOLUTION_MS
+          || recordWrite < startInstant + LINUX_BTIME_UNCERTAINTY_MS) {
+          refusals.push('admission-start-mismatch');
+        }
+      } else {
+        // Darwin: whole-second containment (the observed creation second
+        // contains the record's precise start, or is its immediate
+        // predecessor — the frozen named bound).
+        const startSecond = Math.floor(recordStart / 1000) * 1000;
+        if (startInstant !== startSecond && startInstant !== startSecond - 1000) {
+          refusals.push('admission-start-mismatch');
+        }
+      }
+      if (refusals.length === slotRefusalsBefore) {
+        const evidenceEpochMs = Number.isSafeInteger(observation.identityReadEpochMs) ? observation.identityReadEpochMs : observation.readEpochMs;
+        if (!Number.isSafeInteger(evidenceEpochMs) || evidenceEpochMs < recordStart) {
+          refusals.push('admission-observation-stale');
+        }
+      }
+    };
+    if (block === null || typeof block !== 'object') refusals.push('inline-admission-invocation-unpersisted');
+    else {
+      admissionReplay('invocation', 'invocation', block.admission ?? null, block.presence ?? null);
+      admissionReplay('broker', 'broker-daemon', block.brokerAdmission ?? null, block.brokerObservation ?? null);
+    }
+  }
+  // (Review round 29, Finding 1) the PRE-INTERRUPTION baseline: the observed
+  // Companion generation must demonstrably predate the interrupt request —
+  // a launcher started AFTER the request lives on a different timeline and
+  // its subsequent presence/disappearance can never constitute the §25.4
+  // pre-interruption duties. When the record carries the ADMITTED request
+  // evidence (the call timestamp or either request bound), the invocation
+  // admission's record start must be STRICTLY earlier than the EARLIEST
+  // documented request instant (the record write follows the process start,
+  // so `recordStart < request` proves the launcher was running before the
+  // request); ordering that cannot be established — a post-request start, a
+  // start inside the request window, or an unprovable baseline — refuses by
+  // name. Records carrying NO request evidence keep the neutral legacy
+  // shape (the oracle's interrupt layer independently owns the delivery and
+  // timing proof).
+  const interruptRecord = /** @type {any} */ (interrupt);
+  const requestInstants = [interruptRecord?.callNotBeforeMs, interruptRecord?.callAtMs, interruptRecord?.callNotAfterMs]
+    .filter((/** @type {any} */ value) => typeof value === 'number' && Number.isFinite(value));
+  if (requestInstants.length > 0) {
+    const invocationAdmissionIdentity = block?.admission?.identity ?? null;
+    const baselineStart = typeof invocationAdmissionIdentity?.startOriginMs === 'number' ? invocationAdmissionIdentity.startOriginMs : null;
+    const requestEarliest = Math.min(.../** @type {number[]} */ (requestInstants));
+    // (Review round 34, Finding 1) the pre-interruption LIVENESS witness:
+    // an earlier process start alone does not establish the promised
+    // pre-interruption duties — at least one VERIFIED presence observation
+    // must have been collected BEFORE the request. The same
+    // conservative-strict ordering applies: only interval-valid,
+    // same-generation presence instants (the phase-2 presence slot, the
+    // refreshed companion endpoint, and the retained established reads —
+    // each bound to the admitted generation and its queried scope) are
+    // witnesses; a torn/unprovable candidate is no witness, and a witness
+    // set with nothing before the request refuses by name.
+    // The generation reference: the PHASE-2 presence slot's own observed
+    // start identity — the §25.5 admission replay binds that slot to the
+    // invocation admission, so its identity is the generation every other
+    // same-scope presence fact must match to count as a witness.
+    const baselinePresenceSlot = block?.presence ?? null;
+    const baselineGeneration = baselinePresenceSlot !== null && typeof baselinePresenceSlot === 'object'
+      && typeof baselinePresenceSlot?.observation?.startIdentity === 'string'
+      ? baselinePresenceSlot.observation.startIdentity : null;
+    const presenceWitnessFound = (() => {
+      if (baselineGeneration === null) return false;
+      const witnessSources = [];
+      if (baselinePresenceSlot !== null && typeof baselinePresenceSlot === 'object') witnessSources.push(baselinePresenceSlot);
+      const refreshedCompanion = block?.ancestryEndpoints?.companion ?? null;
+      if (refreshedCompanion !== null && typeof refreshedCompanion === 'object') witnessSources.push(refreshedCompanion);
+      if (Array.isArray(block?.reads)) witnessSources.push(...block.reads);
+      for (const witnessCandidate of witnessSources) {
+        if (witnessCandidate === null || typeof witnessCandidate !== 'object' || witnessCandidate.status !== 'established') continue;
+        if ((witnessCandidate?.observation ?? null)?.startIdentity !== baselineGeneration) continue;
+        if (witnessCandidate?.queried?.pid !== invocationAdmissionIdentity?.pid
+          || witnessCandidate?.queried?.nonceSha256 !== invocationAdmissionIdentity?.nonceSha256) continue;
+        // (Review round 35, Finding 1) the witness must be the invocation's
+        // OWN OS-observed identity: a retained read can QUERY the invocation
+        // pid/scope while OBSERVING a foreign pid/nonce digest — the
+        // round-20 queried-binding rule mirrored on the OBSERVED side (the
+        // observed pid and nonce digest must match the admitted invocation).
+        if (witnessCandidate?.observation?.pid !== invocationAdmissionIdentity?.pid
+          || witnessCandidate?.observation?.nonceSha256 !== invocationAdmissionIdentity?.nonceSha256) continue;
+        if (!Number.isSafeInteger(witnessCandidate.readStartedEpochMs) || !Number.isSafeInteger(witnessCandidate.readEpochMs)
+          || witnessCandidate.readStartedEpochMs > witnessCandidate.readEpochMs) continue;
+        const carriedWitness = Number.isSafeInteger(witnessCandidate.identityReadEpochMs) ? witnessCandidate.identityReadEpochMs : witnessCandidate.readEpochMs;
+        if (!Number.isSafeInteger(carriedWitness)) continue;
+        if (Number.isSafeInteger(witnessCandidate.identityReadEpochMs)
+          && (witnessCandidate.identityReadEpochMs < witnessCandidate.readStartedEpochMs || witnessCandidate.identityReadEpochMs > witnessCandidate.readEpochMs)) continue;
+        // (Review round 36, Finding 1) the FRESHNESS lower bound: the witness
+        // instant must be at/after the admitted generation's record start —
+        // the same lower bound the admission-observation-stale check
+        // enforces, and the strictest correct one (the round-19 rules
+        // already validate the record start against the observed creation
+        // within the documented platform uncertainty bounds, so this bound
+        // subsumes them): a carried instant BEFORE the process existed is
+        // temporally impossible cached evidence and is no witness.
+        if (baselineStart === null || carriedWitness < baselineStart) continue;
+        // (Review round 37, Finding 1) the §25.7 completion fence composed
+        // onto the witness rule: the witness's own collection must complete
+        // STRICTLY before the operative fence (provesPreFenceCompletion — a
+        // post-fence or unprovable-completion witness is no witness), and
+        // the runtime's own postFence naming is honored.
+        if (witnessCandidate.postFence === true) continue;
+        if (!provesPreFenceCompletion(witnessCandidate)) continue;
+        if (carriedWitness < requestEarliest) return true;
+      }
+      return false;
+    })();
+    if (baselineStart === null || !(baselineStart < requestEarliest) || !presenceWitnessFound) {
+      refusals.push('companion-baseline-unestablished');
+    }
+  }
+  // (Finding 2, offline ancestry) the persisted ancestry verdict is a
+  // REQUIRED composition (§25.4 item 4 both hops credited, the named
+  // per-hop refusals already riding): unattributed or absent never settles.
+  const ancestryVerdict = block?.ancestry ?? null;
+  const ancestryHops = Array.isArray(ancestryVerdict?.hops) ? ancestryVerdict.hops : null;
+  if (ancestryVerdict === null || typeof ancestryVerdict !== 'object') {
+    refusals.push('ancestry-unpersisted');
+  } else if (ancestryHops === null || ancestryVerdict.companionToTransportAttributed !== true) {
+    refusals.push('ancestry-hops-unattributed');
+  } else {
+    // (Review round 3, Finding 4) the chain is re-verified from the block's
+    // OWN facts — the serialized boolean and per-hop statuses alone never
+    // credit:
+    //   (1) BOTH NAMED hops must be listed established (a hop under a wrong
+    //       name or missing while the summary claims attributed is named);
+    for (const hopName of ['companion-to-daemon', 'daemon-to-transport']) {
+      const hop = ancestryHops.find((/** @type {any} */ entry) => entry?.hop === hopName) ?? null;
+      if (hop === null || hop?.status !== 'established') refusals.push('ancestry-hops-unattributed');
+    }
+    //   (2) the REFRESHED endpoint markers must persist (the runtime's
+    //       downstream-coverage compositions the hops claim to be made
+    //       from): the companion/daemon endpoint re-reads and the transport
+    //       marker (pid/ppid/nonce digest); missing or malformed never
+    //       credits.
+    const endpoints = typeof block === 'object' && block !== null ? block.ancestryEndpoints ?? null : null;
+    const endpointFor = (/** @type {string} */ which) => (endpoints !== null && typeof endpoints === 'object' ? endpoints[which] ?? null : null);
+    const marker = endpointFor('transportMarker');
+    // (Review round 4, Finding 2) the marker's OWN write instant is REQUIRED
+    // hop evidence — the offline daemon→transport lifetime can never be
+    // re-adjudicated without it (pre-round-4 blocks fail closed, named).
+    if (endpoints === null || typeof endpoints !== 'object'
+      || marker === null || typeof marker !== 'object'
+      || !Number.isSafeInteger(marker.pid) || marker.pid <= 0
+      || !Number.isSafeInteger(marker.ppid) || marker.ppid <= 0
+      || typeof marker.nonceSha256 !== 'string' || marker.nonceSha256.length === 0
+      || !Number.isSafeInteger(marker.markerEpochMs)) {
+      refusals.push('ancestry-endpoints-unpersisted');
+    } else {
+      //   (3) every endpoint is DIGEST-BOUND to the SAME generation the duty
+      //       slot rides (a refreshed read of a different generation is
+      //       named, never credited as this capture's ancestry).
+      for (const [which, slot] of /** @type {const} */ ([['companion', 'presence'], ['daemon', 'brokerObservation']])) {
+        const endpoint = endpointFor(which) ?? null;
+        const base = typeof block === 'object' && block !== null ? block[slot] ?? null : null;
+        if (endpoint === null || typeof endpoint !== 'object' || endpoint.status !== 'established'
+          || endpoint.observation === null || typeof endpoint.observation !== 'object'
+          || base === null || typeof base !== 'object' || base.status !== 'established') {
+          refusals.push('ancestry-endpoint-generation-foreign');
+          break;
+        }
+        // (Review round 5, Finding 1) the endpoint carries the block's
+        // DECLARED scope — a re-keyed subtree never binds.
+        if (declaredScope !== null && endpoint.observation.nonceSha256 !== declaredScope) {
+          refusals.push('ancestry-endpoint-scope-foreign');
+          break;
+        }
+        // (Review round 22, Finding 1) the endpoint's QUERY must identify
+        // the same process and scope its observation claims — a queried
+        // foreign target is generation-foreign evidence about this chain.
+        if (endpoint.queried?.pid !== endpoint.observation.pid
+          || endpoint.queried?.nonceSha256 !== endpoint.observation.nonceSha256) {
+          refusals.push('ancestry-endpoint-generation-foreign');
+          break;
+        }
+        if (endpoint.observation.pid !== base.observation?.pid
+          || endpoint.observation.startIdentity !== base.observation?.startIdentity
+          || endpoint.observation.nonceSha256 !== base.observation?.nonceSha256) {
+          refusals.push('ancestry-endpoint-generation-foreign');
+          break;
+        }
+        // (Review round 33, Finding 1) the endpoint's CREATION INSTANT must
+        // AGREE with its admission-backed observation (the §25.5 generation
+        // rules): the same pid/start identity/nonce with a DIFFERENT
+        // observed creation instant is contradictory generation evidence —
+        // the lifetime checks consume the endpoint's instant, so a
+        // conflicting one never credits the ancestry.
+        if (!Number.isSafeInteger(endpoint.observation.startInstantEpochMs)
+          || endpoint.observation.startInstantEpochMs !== base.observation?.startInstantEpochMs) {
+          refusals.push('ancestry-endpoint-instant-foreign');
+          break;
+        }
+      }
+      //   (4) the ppid chain the hops CLAIM is re-verified against the
+      //       persisted observations: the daemon's observed parentage is the
+      //       Companion's pid, the marker's parentage is the daemon's pid,
+      //       and the marker describes the SAME transport generation the
+      //       transport duty rides (pid + scope digest).
+      const presenceObservation = (typeof block === 'object' && block !== null ? block.presence ?? null : null)?.observation ?? null;
+      const daemonObservation = (typeof block === 'object' && block !== null ? block.brokerObservation ?? null : null)?.observation ?? null;
+      const transportObservationEcho = (typeof block === 'object' && block !== null ? block.transportObservation ?? null : null)?.observation ?? null;
+      // (Review round 8, Finding 3) the daemon's CAPTURE-TIME parent is
+      // proven by the OS-observed ppid OR by the ADMITTED, generation-bound
+      // startup record's ppid — the Companion may have exited between its
+      // presence observation and the broker's first read, so the OS ppid can
+      // already show the reparenting while the record carries the original
+      // parent. The admission's own binding is verified by the replay above.
+      const brokerAdmissionRecord = typeof block === 'object' && block !== null ? block.brokerAdmission ?? null : null;
+      const recordCaptureParent = brokerAdmissionRecord?.status === 'established'
+        && Number.isSafeInteger(brokerAdmissionRecord.identity?.ppid) ? brokerAdmissionRecord.identity.ppid : null;
+      // The record-based acceptance ONLY for the documented reparenting
+      // shape (the OS-observed parent is init, ppid 1): a foreign non-init
+      // OS parent contradicts the record and stays refused.
+      const recordCaptureParentAccepted = recordCaptureParent !== null
+        && recordCaptureParent === presenceObservation?.pid
+        && daemonObservation?.ppid === 1;
+      const daemonCaptureParentVerified = daemonObservation?.ppid === presenceObservation?.pid
+        || recordCaptureParentAccepted;
+      // (Review round 17, Finding 2) the SELECTED daemon endpoint — the
+      // persisted ancestry fact the hops are attributed from — re-verifies
+      // the SAME parentage rule: its observed parent is the Companion's pid
+      // (directly, or agreeing with the phase-3 capture-time read), or the
+      // documented init-reparenting shape (the endpoint observed init while
+      // the ADMITTED record carries the Companion as the capture-time
+      // parent — the round-7 two-fact rule). A foreign observed parent on
+      // the endpoint contradicts the chain it is claimed to prove — named,
+      // never credited.
+      const selectedDaemonEndpoint = endpointFor('daemon');
+      const selectedDaemonParentVerified = selectedDaemonEndpoint?.status === 'established'
+        && selectedDaemonEndpoint?.observation !== null && typeof selectedDaemonEndpoint?.observation === 'object'
+        && (selectedDaemonEndpoint.observation.ppid === presenceObservation?.pid
+          || selectedDaemonEndpoint.observation.ppid === daemonObservation?.ppid
+          || (recordCaptureParent !== null && recordCaptureParent === presenceObservation?.pid
+            && selectedDaemonEndpoint.observation.ppid === 1));
+      if (!daemonCaptureParentVerified
+        || !selectedDaemonParentVerified
+        || marker.ppid !== daemonObservation?.pid
+        || marker.pid !== transportObservationEcho?.pid
+        || marker.nonceSha256 !== transportObservationEcho?.nonceSha256
+        // (Review round 24, Finding 2) the marker's CAPTURED start identity
+        // binds the replayed transport observation: a successor generation
+        // under the same pid+nonce digest (a coherent replacement of the
+        // observation, the duty identity and the retry evidence) is exactly
+        // the generation change the runtime observer rejects against the
+        // captured start identity — the replay refuses it too. Markers
+        // persisted before this field exist keep their documented tolerance.
+        || (marker.startIdentity !== undefined
+          && marker.startIdentity !== transportObservationEcho?.startIdentity)) {
+        refusals.push('ancestry-ppid-chain-foreign');
+      }
+      //   (5) (Review round 4, Finding 2) the FROZEN ancestry adjudication
+      //       re-applied to the persisted endpoints: both endpoints must
+      //       complete strictly pre-fence (the same §25.7 credit predicate
+      //       as every observation echo), and the hop lifetime/creation
+      //       rules must hold at the round-19 uniform bound — the daemon's
+      //       creation + bound ≤ the Companion's endpoint read; the
+      //       Companion's creation + bound ≤ the daemon's endpoint read and
+      //       ≤ the daemon's creation; and the marker's persisted write
+      //       instant ∈ [daemonStart + bound, the daemon's endpoint read].
+      //       A violated or unprovable window is named, never credited.
+      if (!refusals.includes('ancestry-endpoint-generation-foreign')) {
+        for (const endpoint of [endpointFor('companion'), endpointFor('daemon')]) {
+          if (!collectionIntervalValid(endpoint)) {
+            refusals.push('observation-interval-inverted');
+            continue;
+          }
+          // (Review round 22, Finding 2) a PRESENT-but-non-safe-integer
+          // identity read is malformed evidence — it refuses by name and
+          // never falls back to the completion (the same rule the duty
+          // echoes carry).
+          if (endpoint.identityReadEpochMs !== undefined && endpoint.identityReadEpochMs !== null
+            && !Number.isSafeInteger(endpoint.identityReadEpochMs)) {
+            refusals.push('observation-identity-read-unprovable');
+            continue;
+          }
+          // (Review round 13, Finding 2) the endpoint's IDENTITY read must
+          // fall WITHIN its validated collection interval — the hop
+          // lifetimes consume identityReadEpochMs as evidence, so a
+          // post-fence identity instant cannot ride in through an earlier
+          // completion stamp.
+          if (Number.isSafeInteger(endpoint.identityReadEpochMs)
+            && (endpoint.identityReadEpochMs < endpoint.readStartedEpochMs || endpoint.identityReadEpochMs > endpoint.readEpochMs)) {
+            refusals.push('observation-identity-read-outside-interval');
+            continue;
+          }
+          if (!provesPreFenceCompletion(endpoint)) {
+            const completedAtMs = typeof endpoint?.readEpochMs === 'number' && Number.isSafeInteger(endpoint.readEpochMs) ? endpoint.readEpochMs : null;
+            const startedAtMs = Number.isSafeInteger(endpoint?.readStartedEpochMs) ? endpoint.readStartedEpochMs : null;
+            refusals.push(completedAtMs === null ? 'observation-instant-unprovable'
+              : startedAtMs === null ? 'observation-start-unprovable' : 'observation-at-or-after-fence');
+          }
+        }
+        const endpointCarriedRead = (/** @type {any} */ endpoint) => (Number.isSafeInteger(endpoint?.identityReadEpochMs) ? endpoint.identityReadEpochMs : endpoint?.readEpochMs);
+        const companionRead = endpointCarriedRead(endpointFor('companion'));
+        const daemonRead = endpointCarriedRead(endpointFor('daemon'));
+        const companionStart = (endpointFor('companion') ?? null)?.observation?.startInstantEpochMs;
+        const daemonStart = (endpointFor('daemon') ?? null)?.observation?.startInstantEpochMs;
+        const lifetimeVerified = Number.isSafeInteger(companionRead) && Number.isSafeInteger(daemonRead)
+          && Number.isSafeInteger(companionStart) && Number.isSafeInteger(daemonStart)
+          && daemonStart + LINUX_BTIME_UNCERTAINTY_MS <= companionRead
+          && companionStart + LINUX_BTIME_UNCERTAINTY_MS <= daemonRead
+          && companionStart + LINUX_BTIME_UNCERTAINTY_MS <= daemonStart
+          && daemonStart + LINUX_BTIME_UNCERTAINTY_MS <= marker.markerEpochMs
+          && marker.markerEpochMs <= daemonRead;
+        if (!lifetimeVerified) refusals.push('ancestry-endpoint-lifetime-unverifiable');
+      }
+    }
+  }
+  // (Review round 8, Finding 1) the TRANSPORT's own exit evidence: the
+  // applicable transport descendant contributes its live observation only —
+  // acceptance owes its generation-bound, PRE-FENCE confirmed absence too
+  // (a transport exiting during the teardown grace, after the fence, credits
+  // nothing, §25.7). Gate on the transport duty being composed at all (a
+  // missing/failed transport observation already refuses upstream).
+  const transportObservationEcho = block?.transportObservation ?? null;
+  if (transportObservationEcho !== null && typeof transportObservationEcho === 'object' && transportObservationEcho.status === 'established') {
+    const transportExitEcho = typeof block === 'object' && block !== null ? block.transportExit ?? null : null;
+    const transportScopeDigest = transportObservationEcho.observation?.nonceSha256;
+    const transportPid = transportObservationEcho.observation?.pid;
+    const transportExitGenerationBound = transportExitEcho !== null && typeof transportExitEcho === 'object'
+      && transportExitEcho.status === 'absent'
+      && transportExitEcho.absenceConfirmed === true
+      && transportExitEcho.observation === null
+      && transportExitEcho.queried !== null && typeof transportExitEcho.queried === 'object'
+      && transportExitEcho.queried.pid === transportPid
+      && transportExitEcho.queried.nonceSha256 === transportScopeDigest;
+    // (Review round 10, Finding 1) the transport PID-reuse LATCH: the
+    // runtime's terminal generation-change latch rides the block, and a
+    // transport exit fact carrying the generation-change shape (the named
+    // verdict, or a carried foreign observed identity) is the SAME refusal —
+    // the replacement's confirmed absence never credits the original
+    // transport.
+    const transportExitLatched = typeof block === 'object' && block !== null && block.transportExitGenerationLatched === true;
+    const transportExitShapeGenerationChanged = transportExitEcho !== null && typeof transportExitEcho === 'object' && (
+      (transportExitEcho.status !== 'absent' && transportExitEcho.reason === 'start-identity-generation-changed')
+      || (typeof transportExitEcho.observedStartIdentity === 'string'
+        && typeof transportObservationEcho.observation?.startIdentity === 'string'
+        && transportExitEcho.observedStartIdentity !== transportObservationEcho.observation.startIdentity));
+    // (Review round 20, Finding 1) the PERSISTED retry sequence is
+    // replacement evidence too: any generation-bound read in
+    // `transportPresenceReads` carrying a different start identity (an
+    // established different-start read, the named generation-change
+    // verdict, or a foreign observedStartIdentity) is the SAME terminal
+    // reuse latch the runtime applies — the sequence is never silently
+    // skipped as the horizon walk's non-contributors.
+    const transportPresenceSequence = typeof block === 'object' && block !== null && Array.isArray(block.transportPresenceReads)
+      ? block.transportPresenceReads : [];
+    const transportSequenceGenerationChanged = transportPresenceSequence.some((/** @type {any} */ presenceRead) => {
+      if (presenceRead === null || typeof presenceRead !== 'object') return false;
+      const presenceQueried = presenceRead?.queried;
+      if (presenceQueried === null || typeof presenceQueried !== 'object'
+        || presenceQueried.pid !== transportPid || presenceQueried.nonceSha256 !== transportScopeDigest) return false;
+      // The three disjuncts mirror the runtime latch exactly (the carried
+      // foreign observedStartIdentity is status-agnostic — the occupant may
+      // change DURING an otherwise same-generation established read).
+      if (presenceRead.status === 'unestablished'
+        && presenceRead.reason === 'start-identity-generation-changed') return true;
+      if (presenceRead.status === 'established'
+        && presenceRead.observation !== null && typeof presenceRead.observation === 'object'
+        && typeof transportObservationEcho.observation?.startIdentity === 'string'
+        && typeof presenceRead.observation.startIdentity === 'string'
+        && presenceRead.observation.startIdentity !== transportObservationEcho.observation.startIdentity) return true;
+      return typeof presenceRead.observedStartIdentity === 'string'
+        && typeof transportObservationEcho.observation?.startIdentity === 'string'
+        && presenceRead.observedStartIdentity !== transportObservationEcho.observation.startIdentity;
+    });
+    if (transportExitLatched || transportExitShapeGenerationChanged || transportSequenceGenerationChanged) {
+      refusals.push('transport-exit-generation-foreign');
+    } else if (!transportExitGenerationBound) {
+      refusals.push('transport-exit-unestablished');
+    } else if (!collectionIntervalValid(transportExitEcho)) {
+      refusals.push('transport-exit-interval-inverted');
+    } else if (!Number.isSafeInteger(transportExitEcho.readStartedEpochMs)) {
+      refusals.push('transport-exit-start-unprovable');
+    } else {
+      // (Review round 9, Finding 1) the SAME presence/absence ordering and
+      // generation rules the invocation exit replays apply to the transport
+      // exit: the collection must start at/after the transport's verified
+      // presence (an absence predating the presence proves nothing about
+      // what followed it), and an absence CARRYING a foreign observed
+      // identity is replacement evidence — never this generation's death.
+      // (Review round 19, Finding 1) the horizon is the LATEST verified
+      // presence across the FULL persisted sequence: the phase-3
+      // observation AND every persisted live same-generation retry read
+      // (`transportPresenceReads` — the evidence the runtime persists
+      // instead of overwriting). Each contributor binds to the transport
+      // generation (queried pid/nonce, the observed start identity) and its
+      // carried instant is evidence only INSIDE its validated collection
+      // interval — the same walk discipline as the invocation horizon.
+      let transportPresenceHorizon = Number.isSafeInteger(transportObservationEcho.identityReadEpochMs)
+        ? transportObservationEcho.identityReadEpochMs : transportObservationEcho.readEpochMs;
+      // (Review round 24, Finding 1) the RETAINED retry reads carry identity
+      // instants the horizon consumes — the duty-observation/ancestry-
+      // endpoint pattern applies: a present-but-malformed instant refuses by
+      // name, and a supplied instant must sit INSIDE its read's validated
+      // collection interval. A torn retained read never silently substitutes
+      // the completion nor skips as old evidence.
+      for (const presenceRead of transportPresenceSequence) {
+        if (presenceRead === null || typeof presenceRead !== 'object') continue;
+        // (Review round 25, Finding 1) the retained read's COLLECTION
+        // interval itself is validated explicitly — a true inversion and a
+        // missing start (when credit depends on it) are torn evidence in the
+        // established class names; the old silent skip let an inverted
+        // retained interval erase an otherwise contradictory replay.
+        if (Number.isSafeInteger(presenceRead.readStartedEpochMs) && Number.isSafeInteger(presenceRead.readEpochMs)
+          && presenceRead.readStartedEpochMs > presenceRead.readEpochMs) {
+          refusals.push('observation-interval-inverted');
+          break;
+        }
+        if (!Number.isSafeInteger(presenceRead.readStartedEpochMs)) {
+          refusals.push('observation-start-unprovable');
+          break;
+        }
+        // (Review round 26, Finding 1) the COMPLETION stamp validates too —
+        // a missing or nonnumeric completion cannot prove the read's window
+        // and must refuse by name BEFORE the horizon walk, never be silently
+        // excluded by the containment check (a torn retained read cannot
+        // erase a contradictory live observation).
+        if (!Number.isSafeInteger(presenceRead.readEpochMs)) {
+          refusals.push('observation-instant-unprovable');
+          break;
+        }
+        if (presenceRead.identityReadEpochMs !== undefined && presenceRead.identityReadEpochMs !== null
+          && !Number.isSafeInteger(presenceRead.identityReadEpochMs)) {
+          refusals.push('observation-identity-read-unprovable');
+          break;
+        }
+        if (Number.isSafeInteger(presenceRead.identityReadEpochMs)
+          && (presenceRead.identityReadEpochMs < presenceRead.readStartedEpochMs || presenceRead.identityReadEpochMs > presenceRead.readEpochMs)) {
+          refusals.push('observation-identity-read-outside-interval');
+          break;
+        }
+      }
+      for (const presenceRead of transportPresenceSequence) {
+        if (presenceRead === null || typeof presenceRead !== 'object' || presenceRead.status !== 'established') continue;
+        const presenceQueried = presenceRead?.queried;
+        if (presenceQueried === null || typeof presenceQueried !== 'object'
+          || presenceQueried.pid !== transportPid || presenceQueried.nonceSha256 !== transportScopeDigest) continue;
+        if (presenceRead.observation === null || typeof presenceRead.observation !== 'object') continue;
+        if (typeof transportObservationEcho.observation?.startIdentity === 'string'
+          && presenceRead.observation.startIdentity !== transportObservationEcho.observation.startIdentity) continue;
+        if (!collectionIntervalValid(presenceRead)) continue;
+        const carriedPresence = Number.isSafeInteger(presenceRead.identityReadEpochMs) ? presenceRead.identityReadEpochMs : presenceRead.readEpochMs;
+        const presenceContained = !Number.isSafeInteger(presenceRead.identityReadEpochMs)
+          || (Number.isSafeInteger(presenceRead.readStartedEpochMs) && carriedPresence >= presenceRead.readStartedEpochMs && carriedPresence <= presenceRead.readEpochMs);
+        if (!presenceContained) continue;
+        if (Number.isSafeInteger(carriedPresence) && (transportPresenceHorizon === null || carriedPresence > transportPresenceHorizon)) {
+          transportPresenceHorizon = carriedPresence;
+        }
+      }
+      // (Review round 10, Finding 2) the frozen conservative tie rule
+      // mirrored: an absence whose completion TIES with the transport's
+      // presence instant can never manufacture the transport's death — the
+      // completion must be STRICTLY later than the presence horizon.
+      if (!Number.isSafeInteger(transportExitEcho.readStartedEpochMs) || transportExitEcho.readStartedEpochMs < transportPresenceHorizon
+        || !Number.isSafeInteger(transportExitEcho.readEpochMs) || transportExitEcho.readEpochMs <= transportPresenceHorizon) {
+        refusals.push('transport-exit-overlaps-presence');
+      } else if (typeof transportExitEcho.observedStartIdentity === 'string'
+        && transportExitEcho.observedStartIdentity !== transportObservationEcho.observation.startIdentity) {
+        refusals.push('transport-exit-generation-foreign');
+      } else {
+        // (Review round 26, Finding 2) the SAME carried-instant validation
+        // the invocation absence carries (round 23): a SUPPLIED identity
+        // instant on the exit fact must be a safe integer INSIDE the
+        // validated collection interval — identity evidence stamped after
+        // the claimed completion (or past the fence) is torn evidence that
+        // never supports settlement.
+        for (const suppliedInstant of [transportExitEcho.observedIdentityReadEpochMs, transportExitEcho.identityReadEpochMs]) {
+          if (suppliedInstant === undefined || suppliedInstant === null) continue;
+          if (!Number.isSafeInteger(suppliedInstant)
+            || suppliedInstant < transportExitEcho.readStartedEpochMs || suppliedInstant > transportExitEcho.readEpochMs) {
+            refusals.push('transport-exit-carried-instant-outside-interval');
+            break;
+          }
+        }
+        const completedAtMs = typeof transportExitEcho.readEpochMs === 'number' && Number.isSafeInteger(transportExitEcho.readEpochMs)
+          ? transportExitEcho.readEpochMs : null;
+        if (transportExitEcho.postFence === true) {
+          // The runtime's own completion-side fence already named it.
+          refusals.push('transport-exit-at-or-after-fence');
+        } else if (completedAtMs === null) {
+          refusals.push('transport-exit-instant-unprovable');
+        } else if (operativeFenceMs !== null && completedAtMs >= operativeFenceMs) {
+          refusals.push('transport-exit-at-or-after-fence');
+        }
+      }
+    }
+  }
+  // The §25.4 item-6 local-cleanup fact: the invocation process must be
+  // positively adjudicated GONE with its first verified absence strictly
+  // before the operative fence — "still live" or "unknown" never settles.
+  const exitVerdict = block?.exit ?? null;
+  if (exitVerdict === null || exitVerdict?.status !== 'disappeared') {
+    refusals.push('local-exit-unestablished');
+  } else if (!provesPreFenceCompletion({
+    ...exitVerdict,
+    // The exit ADJUDICATION is not a read: its absence-verification window
+    // is [firstVerifiedAbsence, firstVerifiedAbsence] — both bounds carried
+    // so the interval/start checks compose without misfiring.
+    readStartedEpochMs: typeof exitVerdict.firstVerifiedAbsenceEpochMs === 'number' && Number.isSafeInteger(exitVerdict.firstVerifiedAbsenceEpochMs)
+      ? exitVerdict.firstVerifiedAbsenceEpochMs : null,
+    readEpochMs: typeof exitVerdict.firstVerifiedAbsenceEpochMs === 'number' && Number.isSafeInteger(exitVerdict.firstVerifiedAbsenceEpochMs)
+      ? exitVerdict.firstVerifiedAbsenceEpochMs : null,
+  })) {
+    refusals.push('local-exit-at-or-after-fence');
+  } else {
+    // (Finding 3) the persisted exit verdict is re-adjudicated from the
+    // persisted presence + confirmed-absence reads — the summary alone
+    // never credits:
+    //   (1) the bound identity DESCRIBES the invocation generation (it
+    //       equals the presence's observed identity digests);
+    const boundIdentity = exitVerdict.boundIdentity ?? null;
+    const presenceObserved = (/** @type {any} */ (block?.presence))?.observation ?? null;
+    const boundValid = boundIdentity !== null && typeof boundIdentity === 'object'
+      && Number.isSafeInteger(boundIdentity.pid) && boundIdentity.pid > 0
+      && typeof boundIdentity.startIdentity === 'string' && boundIdentity.startIdentity.length > 0
+      && typeof boundIdentity.nonceSha256 === 'string' && boundIdentity.nonceSha256.length > 0;
+    const presenceValid = presenceObserved !== null && typeof presenceObserved === 'object'
+      && Number.isSafeInteger(presenceObserved.pid) && presenceObserved.pid > 0
+      && typeof presenceObserved.startIdentity === 'string' && presenceObserved.startIdentity.length > 0
+      && typeof presenceObserved.nonceSha256 === 'string' && presenceObserved.nonceSha256.length > 0;
+    if (!boundValid) refusals.push('exit-bound-identity-foreign');
+    else if (!presenceValid) refusals.push('exit-presence-unpersisted');
+    else if (boundIdentity.pid !== presenceObserved.pid
+      || boundIdentity.startIdentity !== presenceObserved.startIdentity
+      || boundIdentity.nonceSha256 !== presenceObserved.nonceSha256) {
+      refusals.push('exit-bound-identity-foreign');
+    }
+    //   (2) the credited absence instant is realized in the record: at least
+    //       one confirmed absence read bound to the SAME generation, its
+    //       completed readEntity equal to the verdict's surviving instant,
+    //       and every other confirmed absence's completion no EARLIER (the
+    //       reported instant is the run's EARLIEST admitted absence);
+    const reads = Array.isArray(block?.reads) ? block.reads : [];
+    //   (2b) (Review round 15, Finding 2) the absence SHAPE: a confirmed
+    //       absence of the bound generation carrying a NON-NULL live
+    //       observation is contradictory evidence (a live verdict inside a
+    //       confirmed death) — named, never credited.
+    if (boundValid) {
+      const contradictoryAbsences = reads.filter((/** @type {any} */ read) => read?.status === 'absent'
+        && read?.absenceConfirmed === true
+        && read?.queried?.pid === boundIdentity.pid && read?.queried?.nonceSha256 === boundIdentity.nonceSha256
+        && read?.observation !== null && typeof read?.observation === 'object');
+      if (contradictoryAbsences.length > 0) refusals.push('exit-absence-contradictory');
+    }
+    /** @type {any[]} */
+    const matchingAbsences = reads.filter((/** @type {any} */ read) => read?.status === 'absent'
+      && read?.absenceConfirmed === true
+      && boundValid && typeof read?.queried === 'object' && read.queried !== null
+      && read.queried.pid === boundIdentity.pid
+      && read.queried.nonceSha256 === boundIdentity.nonceSha256);
+    if (matchingAbsences.length === 0) refusals.push('exit-absence-uncorrelated');
+    else {
+      // (Review round 16, Finding 2) the ADJUDICATOR's recency/admissibility
+      // rules apply BEFORE correlating — the walk happens after the horizon
+      // computation below: the confirmed absences are walked in completion
+      // order against the walked presence horizon, and only those STRICTLY
+      // after it (with a collection starting at/after it) are admitted — a
+      // tied absence is retained in the record but never correlated. The
+      // replay correlates exactly the absences adjudicateLocalExit admits
+      // (the credited firstVerifiedAbsenceEpochMs reads), not every
+      // confirmed read.
+      //   (3) every matched absence read's collection STARTS strictly after
+      //       the presence's identity instant — a collection overlapping the
+      //       presence evidence is no confirmation of what followed it
+      //       (round-36 re-verification). The horizon rides the presence
+      //       VERDICT's timestamps (the observation itself undiagnosed).
+      const presenceVerdict = /** @type {any} */ (block !== null && typeof block === 'object' ? block.presence : null);
+      const presenceHorizon = Number.isSafeInteger(presenceVerdict?.identityReadEpochMs)
+        ? presenceVerdict.identityReadEpochMs
+        : presenceVerdict?.readEpochMs;
+      // (Review round 5, Finding 3) the horizon is the LATEST same-generation
+      // verified presence in the WHOLE persisted sequence — the frozen exit
+      // advances its running presence with every same-generation established
+      // read, and an absence whose COLLECTION started before that latest
+      // presence proves nothing about the state after it (the round-36 rule
+      // at the walked horizon, not the initial baseline).
+      let finalPresenceHorizonMs = presenceHorizon;
+      // (Review round 8, Finding 2; round 9, Finding 3) the horizon walks the
+      // WHOLE persisted evidence: the phase reads AND the SELECTED refreshed
+      // companion endpoint (a same-generation presence positively observed
+      // alive after the claimed absence means the generation is not gone) —
+      // only when the bound identity is PROVEN (a torn boundIdentity guards
+      // every identity-dependent check, never a null dereference).
+      if (boundValid) {
+        // (Review round 32, Finding 1) the RETAINED invocation presence
+        // reads validate like the transport replay's retained reads (the
+        // round-24/25 pattern): a same-generation established read with a
+        // torn collection interval or unprovable timestamps refuses by name
+        // BEFORE the horizon and supersession walks — silently discarding
+        // it let contradictory later presence evidence vanish beside the
+        // credited absence.
+        for (const presenceRead of reads) {
+          if (presenceRead === null || typeof presenceRead !== 'object' || presenceRead.status !== 'established') continue;
+          const presenceQueried = presenceRead?.queried;
+          if (presenceQueried === null || typeof presenceQueried !== 'object'
+            || presenceQueried.pid !== boundIdentity.pid || presenceQueried.nonceSha256 !== boundIdentity.nonceSha256) continue;
+          if ((presenceRead?.observation ?? null)?.startIdentity !== boundIdentity.startIdentity) continue;
+          if (Number.isSafeInteger(presenceRead.readStartedEpochMs) && Number.isSafeInteger(presenceRead.readEpochMs)
+            && presenceRead.readStartedEpochMs > presenceRead.readEpochMs) {
+            refusals.push('observation-interval-inverted');
+            break;
+          }
+          if (!Number.isSafeInteger(presenceRead.readStartedEpochMs)) {
+            refusals.push('observation-start-unprovable');
+            break;
+          }
+          if (!Number.isSafeInteger(presenceRead.readEpochMs)) {
+            refusals.push('observation-instant-unprovable');
+            break;
+          }
+          if (presenceRead.identityReadEpochMs !== undefined && presenceRead.identityReadEpochMs !== null
+            && !Number.isSafeInteger(presenceRead.identityReadEpochMs)) {
+            refusals.push('observation-identity-read-unprovable');
+            break;
+          }
+          if (Number.isSafeInteger(presenceRead.identityReadEpochMs)
+            && (presenceRead.identityReadEpochMs < presenceRead.readStartedEpochMs || presenceRead.identityReadEpochMs > presenceRead.readEpochMs)) {
+            refusals.push('observation-identity-read-outside-interval');
+            break;
+          }
+        }
+        const horizonSources = [...reads];
+        const refreshedCompanionEndpoint = typeof block === 'object' && block !== null ? block.ancestryEndpoints?.companion ?? null : null;
+        if (refreshedCompanionEndpoint !== null && typeof refreshedCompanionEndpoint === 'object'
+          && refreshedCompanionEndpoint.status === 'established'
+          && refreshedCompanionEndpoint.observation?.startIdentity === boundIdentity.startIdentity) {
+          horizonSources.push(refreshedCompanionEndpoint);
+        }
+        for (const read of horizonSources) {
+          const queried = read?.queried;
+          if (queried === null || typeof queried !== 'object'
+            || queried.pid !== boundIdentity.pid || queried.nonceSha256 !== boundIdentity.nonceSha256) continue;
+          if (read?.status !== 'established') continue;
+          if ((read?.observation ?? null)?.startIdentity !== boundIdentity.startIdentity) continue;
+          // (Review round 13, Finding 2) the carried identity instant is
+          // evidence only INSIDE the read's validated collection interval —
+          // an out-of-interval instant is torn evidence that never walks the
+          // horizon.
+          const carried = Number.isSafeInteger(read?.identityReadEpochMs) ? read.identityReadEpochMs : read?.readEpochMs;
+          const contained = !Number.isSafeInteger(read?.identityReadEpochMs)
+            || (Number.isSafeInteger(read.readStartedEpochMs) && carried >= read.readStartedEpochMs && carried <= read.readEpochMs);
+          if (!contained) continue;
+          if (Number.isSafeInteger(carried) && carried > finalPresenceHorizonMs) finalPresenceHorizonMs = carried;
+        }
+      }
+      // (Review round 16, Finding 2) the ADJUDICATOR's recency/admissibility
+      // rules apply BEFORE correlating: the confirmed absences are walked in
+      // completion order against the walked presence horizon, and only those
+      // STRICTLY after it (with a collection starting at/after it) are
+      // admitted — a tied absence is retained in the record but never
+      // correlated. The replay correlates exactly the absences
+      // adjudicateLocalExit admits (the credited
+      // firstVerifiedAbsenceEpochMs reads), not every confirmed read.
+      // (Review round 18, Finding 1) an absence whose collection interval is
+      // INVERTED (its start stamps AFTER its claimed completion) is torn
+      // evidence: it can neither be admitted nor correlate the exit — the
+      // tear is named, never credited.
+      if (matchingAbsences.some((/** @type {any} */ read) => Number.isSafeInteger(read.readEpochMs)
+        && Number.isSafeInteger(read.readStartedEpochMs) && read.readStartedEpochMs > read.readEpochMs)) {
+        refusals.push('exit-absence-interval-inverted');
+      }
+      // (Review round 20, Finding 2) the timestamps must BE safe integers
+      // before any crediting comparison — numeric STRINGS coerce through the
+      // recency comparisons; a present-but-nonnumeric instant is torn
+      // evidence refused by name (missing instants stay in the
+      // overlaps-presence territory the admissibility walk owns).
+      if (matchingAbsences.some((/** @type {any} */ read) => read !== null && typeof read === 'object'
+        && ((read.readStartedEpochMs !== undefined && read.readStartedEpochMs !== null && !Number.isSafeInteger(read.readStartedEpochMs))
+          || (read.readEpochMs !== undefined && read.readEpochMs !== null && !Number.isSafeInteger(read.readEpochMs))))) {
+        refusals.push('exit-absence-interval-unprovable');
+      }
+      const admittedAbsences = matchingAbsences
+        .filter((/** @type {any} */ read) => Number.isSafeInteger(read.readStartedEpochMs) && Number.isSafeInteger(read.readEpochMs)
+          && read.readStartedEpochMs <= read.readEpochMs)
+        .slice()
+        .sort((/** @type {any} */ left, /** @type {any} */ right) => left.readEpochMs - right.readEpochMs)
+        .filter((/** @type {any} */ read) => Number.isSafeInteger(finalPresenceHorizonMs)
+          && read.readStartedEpochMs >= finalPresenceHorizonMs
+          && read.readEpochMs > finalPresenceHorizonMs);
+      if (admittedAbsences.length === 0) {
+        // No absence survives the adjudicator's recency/admissibility walk:
+        // the retained ties/overlaps are the named reason (a tied absence
+        // can never manufacture death, and a collection overlapping the
+        // horizon proves nothing about what followed it).
+        refusals.push('exit-absence-overlaps-presence');
+      } else {
+        const instants = admittedAbsences.map((/** @type {any} */ read) => read.readEpochMs);
+        if (exitVerdict.firstVerifiedAbsenceEpochMs !== Math.min(...instants)) {
+          refusals.push('exit-absence-uncorrelated');
+        }
+      }
+      //   (4b) the reuse LATCH re-verified over the WHOLE persisted read
+      //       sequence (review round 3, Finding 5) — the same
+      //       generation-change rules the runtime's own adjudication
+      //       applies, so the persisted evidence ORDER cannot smuggle a
+      //       successor past the exit: any same-scope read whose carried
+      //       identity instant is at/after the presence horizon and whose
+      //       identity PROVES a different generation (an established
+      //       different-start read, the named
+      //       start-identity-generation-changed verdict, or any read
+      //       carrying a foreign observedStartIdentity) latches the reuse
+      //       refusal — the original generation's disappearance stops being
+      //       creditable (later reads of the REPLACEMENT generation must
+      //       never convert it into the original's confirmed absence).
+      if (boundValid) {
+        const carriedInstant = (/** @type {any} */ read) => (Number.isSafeInteger(read?.observedIdentityReadEpochMs)
+          ? read.observedIdentityReadEpochMs
+          : Number.isSafeInteger(read?.identityReadEpochMs) ? read.identityReadEpochMs : read?.readEpochMs);
+        // (Review round 7, Finding 1) the PERSISTED ancestry-refresh evidence
+        // participates in the latch exactly like any other same-scope read
+        // carrying a generation change: the Companion refresh's verdict (the
+        // named generation change, a different-generation established read,
+        // or a carried foreign identity) rides beside the phase reads — the
+        // replacement's absence can never validate the original
+        // disappearance, on the runtime AND in a torn record.
+        const refreshEvidence = [];
+        const companionRefresh = (typeof block === 'object' && block !== null ? block.ancestryEndpointRefreshes ?? null : null)?.companion ?? null;
+        if (companionRefresh !== null && typeof companionRefresh === 'object') refreshEvidence.push(companionRefresh);
+        for (const read of [...reads, ...refreshEvidence]) {
+          const queried = read?.queried;
+          if (queried === null || typeof queried !== 'object'
+            || queried.pid !== boundIdentity.pid || queried.nonceSha256 !== boundIdentity.nonceSha256) continue;
+          // (Review round 23, Finding 1) a SUPPLIED carried identity instant
+          // is validated against its read's collection interval BEFORE the
+          // recency filtering: an instant outside the interval (or a
+          // malformed supplied instant) is torn/malformed replacement
+          // evidence — treated as "old" it bypasses this latch, and credited
+          // as latch evidence it would be unproven — so it refuses by name,
+          // never old evidence, never latch or benign. Absent instants keep
+          // the completion fallback (the pre-round-28 hand-built shapes).
+          for (const supplied of [read?.observedIdentityReadEpochMs, read?.identityReadEpochMs]) {
+            if (supplied === undefined || supplied === null) continue;
+            const intervalValid = Number.isSafeInteger(read.readStartedEpochMs) && Number.isSafeInteger(read.readEpochMs)
+              && read.readStartedEpochMs <= read.readEpochMs;
+            if (!Number.isSafeInteger(supplied) || !intervalValid
+              || supplied < read.readStartedEpochMs || supplied > read.readEpochMs) {
+              refusals.push('exit-reuse-carried-instant-outside-interval');
+              break;
+            }
+          }
+          if (refusals.includes('exit-reuse-carried-instant-outside-interval')) break;
+          let replacementDetected = false;
+          if (read?.status === 'established') {
+            const candidate = read.observation;
+            replacementDetected = candidate !== null && typeof candidate === 'object'
+              && candidate.pid === boundIdentity.pid
+              && candidate.startIdentity !== boundIdentity.startIdentity;
+          } else if (read?.status === 'unestablished') {
+            replacementDetected = read?.reason === 'start-identity-generation-changed'
+              || (typeof read?.observedStartIdentity === 'string' && read.observedStartIdentity !== boundIdentity.startIdentity);
+          } else if (read?.status === 'absent') {
+            // (Review round 5, Finding 2) the ROUND-29/31 observed-then-gone
+            // rule mirrored: an absence CARRYING a demonstrably different
+            // observed identity (the occupant disappeared DURING the
+            // inspection) is replacement evidence about whoever the read
+            // verified — the successor's mid-read absence is never the bound
+            // generation's death (the carried-instant ordering gate above is
+            // shared).
+            replacementDetected = typeof read?.observedStartIdentity === 'string'
+              && read.observedStartIdentity !== boundIdentity.startIdentity;
+          }
+          // (Review round 27, Finding 1) a read CLAIMING replacement evidence
+          // owes a valid completion timestamp — `adjudicateLocalExit` itself
+          // rejects reads without one. A torn replacement claim (missing or
+          // malformed completion, no supplied identity instants) must refuse
+          // by name, never be silently discarded as old evidence by the
+          // recency filter below (reads WITH supplied identity instants are
+          // already named by the round-23 validation above).
+          if (replacementDetected && !Number.isSafeInteger(read?.readEpochMs)) {
+            refusals.push('exit-reuse-read-instant-unprovable');
+            break;
+          }
+          const carried = carriedInstant(read);
+          if (!Number.isSafeInteger(carried) || carried < presenceHorizon) continue;
+          if (replacementDetected) {
+            refusals.push('exit-reuse-latched');
+            break;
+          }
+        }
+      }
+    }
+    //   (4) no persisted ESTABLISHED read of the SAME generation completes
+    //       at/after the verified absence (a later live read would re-win
+    //       the verdict — the aggregate's `disappeared` cannot claim it).
+    let superseded = false;
+    // (Review round 8, Finding 2; round 9, Finding 3) the SELECTED refreshed
+    // companion endpoint participates in the supersession check too: a
+    // same-generation presence completing at/after the verified absence
+    // re-wins the verdict — only when the bound identity is PROVEN.
+    const supersessionSources = !boundValid ? [] : [...reads, ...((typeof block === 'object' && block !== null
+      && block.ancestryEndpoints?.companion?.status === 'established'
+      && block.ancestryEndpoints?.companion?.observation?.startIdentity === boundIdentity.startIdentity)
+      ? [block.ancestryEndpoints.companion] : [])];
+    for (const read of supersessionSources) {
+      // (Review round 19, Finding 2) the comparison uses the read's
+      // IDENTITY-READ instant — the verified presence the horizon walk
+      // consumes — falling back to the completion only when the identity
+      // instant is absent: an ASYNC collection that completes after the
+      // verified absence never re-wins the verdict by its completion stamp
+      // alone (consistently with the carried-instant horizon calculation
+      // above).
+      const carriedSupersession = Number.isSafeInteger(read?.identityReadEpochMs) ? read.identityReadEpochMs : read?.readEpochMs;
+      if (read?.status === 'established'
+        && boundValid && typeof read?.queried === 'object' && read.queried !== null
+        && read.queried.pid === boundIdentity.pid
+        && read.queried.nonceSha256 === boundIdentity.nonceSha256
+        && Number.isSafeInteger(carriedSupersession)
+        && (Number.isSafeInteger(exitVerdict.firstVerifiedAbsenceEpochMs) && carriedSupersession >= exitVerdict.firstVerifiedAbsenceEpochMs)) {
+        superseded = true;
+        break;
+      }
+    }
+    if (superseded) refusals.push('exit-absence-superseded');
+  }
+  return {
+    contractVersion: LOCAL_PROCESS_DUTY_CONTRACT_VERSION,
+    settled: refusals.length === 0,
+    duties: Array.isArray(dutiesVerdict?.duties) ? dutiesVerdict.duties : [],
+    exit: exitVerdict ?? null,
+    fence: {
+      operativeAtMs: /** @type {number} */ (operativeFenceMs && Number.isSafeInteger(operativeFenceMs) ? operativeFenceMs : null),
+      kind: fenceKind,
+    },
+    refusals,
+  };
+}
 
 /**
  * The whitelisted per-sample projection consumed by the offline Gate-D join
@@ -4099,7 +6133,7 @@ function buildAdmittedSample(summary, attemptIndex, completedAtMs, timingState, 
  * adjudicator.
  * @param {Record<string, any>} record the persisted case record
  * @returns {{ delivery: { delivered: boolean | null, exactTargetMatch: boolean | null, aliasResolved: boolean | null,
- *   terminalBeforeInterruptBasis: string, terminalBeforeInterrupt: boolean | null, deliverySent: boolean | null, previousStatusOnly: boolean, unreadableContinuation: boolean, pendingWindowConfirmed: boolean | null, hostActivityAdmitted: boolean | null, acknowledgementAtResolution: string | null, relocatedWindowInputs: { callAtMs: number | null, callNotBeforeMs: number | null, callNotAfterMs: number | null, pendingBeforeCallAtMs: number | null } }, turnSettled: boolean | null, deliveryToSettlementMs: number | null, companionOutcome: 'ceased' | 'terminal-result' | 'survived-unsettled' | null, durableObligations: 'settled' | 'unresolved' | null, cleanupKill: boolean, survivalControl: Record<string, unknown> | null, terminalWinner: 'succeeded' | 'failed' | 'cancelled' | null, naturalCompletionObserved: boolean, statusObservationTimeoutOnly: boolean, durableReadPostCleanupBoundary: boolean, durableReadBoundaryBasis: string | null, measurementCutoffAtMs: number | null, gateDJoinVersion: number, spawnIdentityJoin: { exact: boolean, owningRootBound: boolean | null, executorVerified: boolean | null } | null, durableSamplesJoin: { considered: boolean, boundaryRecorded: boolean, settlementFallback: { used: boolean, basis: string, sample: Record<string, unknown> | null }, admitted: Record<string, unknown>[], refused: { attemptIndex: number | null, reason: string }[] } }}
+ *   terminalBeforeInterruptBasis: string, terminalBeforeInterrupt: boolean | null, deliverySent: boolean | null, previousStatusOnly: boolean, unreadableContinuation: boolean, pendingWindowConfirmed: boolean | null, hostActivityAdmitted: boolean | null, acknowledgementAtResolution: string | null, relocatedWindowInputs: { callAtMs: number | null, callNotBeforeMs: number | null, callNotAfterMs: number | null, pendingBeforeCallAtMs: number | null } }, turnSettled: boolean | null, deliveryToSettlementMs: number | null, companionOutcome: 'ceased' | 'terminal-result' | 'survived-unsettled' | null, durableObligations: 'settled' | 'unresolved' | null, cleanupKill: boolean, survivalControl: Record<string, unknown> | null, terminalWinner: 'succeeded' | 'failed' | 'cancelled' | null, localProcessDuties: { contractVersion: number, settled: boolean, duties: unknown[], exit: unknown, fence: { operativeAtMs: number | null, kind: 'measurement-cutoff' | 'termination-boundary' }, refusals: string[] } | null, naturalCompletionObserved: boolean, statusObservationTimeoutOnly: boolean, durableReadPostCleanupBoundary: boolean, durableReadBoundaryBasis: string | null, measurementCutoffAtMs: number | null, gateDJoinVersion: number, spawnIdentityJoin: { exact: boolean, owningRootBound: boolean | null, executorVerified: boolean | null } | null, durableSamplesJoin: { considered: boolean, boundaryRecorded: boolean, settlementFallback: { used: boolean, basis: string, sample: Record<string, unknown> | null }, admitted: Record<string, unknown>[], refused: { attemptIndex: number | null, reason: string }[] } }}
  */
 export function nativeInterruptionGateDInput(record) {
   if (!record || typeof record !== 'object') throw invalidCaseInput('the Gate D join needs the persisted case record.');
@@ -4704,6 +6738,17 @@ export function nativeInterruptionGateDInput(record) {
     // Join v4 (§24.8): the persisted measurement cutoff the fence consumed —
     // null on every legacy record (the fence arm inert).
     measurementCutoffAtMs,
+    // Join v6 (2026-10-30 local-settlement Task 3, report §25.10): the
+    // OFFLINE re-verified local-duty contract composed from the record's
+    // persisted local-observation block (every credit fence re-verified
+    // against the record's OWN stamps above). NULL on every legacy record
+    // and every unarmed case invocation — the frozen oracle refuses a null
+    // block by name (never a permissive legacy fallback).
+    localProcessDuties: (() => {
+      const block = (/** @type {any} */ (record)).localProcess ?? null;
+      if (block === null || typeof block !== 'object') return null;
+      return joinRecordLocalProcessDuties(block, (/** @type {any} */ (record)).interrupt ?? {}, (/** @type {any} */ (record)).stdoutCaptureDeclaration ?? null);
+    })(),
     turnSettled: typeof interrupt.settled === 'boolean' ? interrupt.settled : null,
     deliveryToSettlementMs: typeof interrupt.deliveryToSettlementMs === 'number' ? interrupt.deliveryToSettlementMs : null,
     companionOutcome,
@@ -4847,6 +6892,44 @@ export const MEASUREMENT_CUTOFF_ENABLED_CASES = Object.freeze(new Set(['rescue-i
 export const STDOUT_CAPTURE_REQUIRED_CASES = Object.freeze(new Set(['rescue-interrupt', 'rescue-long', 'rescue-repeat']));
 
 /**
+ * The registered local-settlement capability requirement (plan Task 3, the
+ * §25.8 applicability freeze): the case whose LIVE design requires the exact
+ * local Companion observation — the §25.4 contract's applicable mandatory
+ * layers (invocation process, declared broker daemon, declared transport
+ * descendant) on the registered V case. The set is CLOSED and this export is
+ * its PRODUCER (the §20.8 producer-map precedent, like
+ * {@link STDOUT_CAPTURE_REQUIRED_CASES}); the Task-4 ledger freeze extends
+ * the closed set at this definition if a future design ever needs the
+ * observation. A case not listed carries NO registered local-observation
+ * requirement and is never blocked by the check.
+ */
+export const LOCAL_OBSERVATION_REQUIRED_CASES = Object.freeze(new Set(['rescue-interrupt']));
+
+/**
+ * Compose the local-observation runtime declaration from an ARMED fixture
+ * (the executor's own arming source). Returns `null` when the case is not in
+ * the closed {@link LOCAL_OBSERVATION_REQUIRED_CASES} map or the fixture
+ * carries no armed capture handle — an unarmed declaration composes nothing
+ * and the held turn stays runtime-inert (schema stability), so the runtime's
+ * arming is only ever the fixture's OWN declaration (§25.4 item 2: the
+ * per-invocation fixture nonce, never a caller-supplied scope).
+ * @param {any} fixture the created fixture handle
+ * @param {string} caseLabel the validated case label
+ * @returns {{ captureDirectory: string, nonce: string, entryRealpath: string, brokerEntryRealpath: string } | null}
+ */
+export function localObservationDeclarationFor(fixture, caseLabel) {
+  if (!LOCAL_OBSERVATION_REQUIRED_CASES.has(caseLabel)) return null;
+  const capture = /** @type {any} */ (fixture)?.stdoutCapture ?? null;
+  if (capture === null || typeof capture !== 'object') return null;
+  const { captureDirectory, nonce, entryRealpath, brokerEntryRealpath } = capture;
+  if (typeof captureDirectory !== 'string' || captureDirectory.length === 0
+    || typeof nonce !== 'string' || nonce.length === 0
+    || typeof entryRealpath !== 'string' || entryRealpath.length === 0
+    || typeof brokerEntryRealpath !== 'string' || brokerEntryRealpath.length === 0) return null;
+  return { captureDirectory, nonce, entryRealpath, brokerEntryRealpath };
+}
+
+/**
  * The registered wrapped-interrupt reliance (codex round 4 — the
  * supported-path limitation's preflight arm): a rescue-interrupt design that
  * RELIES on the code-mode-wrapped delivery path is rejected BEFORE any host
@@ -4905,11 +6988,12 @@ export const SURVIVAL_CONTROL_DECLARATION_FACTS = Object.freeze({
  * pending state, retained host-event fields) stay facts the trial must
  * establish — never preflight-guessed booleans.
  * @param {{ case: string, survivalControlSelector: string | null, fixture: any, gateArtifacts?: { completionGatePath?: string, completionGateReachedPath?: string } }} input
- * @param {{ lstat?: typeof import('node:fs/promises').lstat, wrappedInterruptRequiredCases?: readonly string[] }} [dependencies]
+ * @param {{ lstat?: typeof import('node:fs/promises').lstat, readFile?: typeof import('node:fs/promises').readFile, wrappedInterruptRequiredCases?: readonly string[] }} [dependencies]
  * @returns {Promise<{ ok: boolean, reason: string | null }>}
  */
 export async function evaluateLiveLaunchPreflight(input, dependencies = {}) {
   const lstat = dependencies.lstat ?? (await import('node:fs/promises')).lstat;
+  const readFile = dependencies.readFile ?? (await import('node:fs/promises')).readFile;
   const wrappedRequired = dependencies.wrappedInterruptRequiredCases ?? WRAPPED_INTERRUPT_REQUIRED_CASES;
   // (0) The wrapped-path reliance gate (codex round 4): a case whose
   // registered design relies on the code-mode-wrapped interrupt is refused
@@ -4959,6 +7043,175 @@ export async function evaluateLiveLaunchPreflight(input, dependencies = {}) {
       return { ok: false, reason: 'the registered stdout capture preload is absent (the exact-output observer is known absent)' };
     }
   }
+  // (6) The local-settlement capability gate (plan Task 3, §25.3/§25.8; the
+  // producer map {@link LOCAL_OBSERVATION_REQUIRED_CASES}): every applicable
+  // mandatory local layer (the invocation process, the declared broker
+  // daemon, the declared transport descendant) requires the OBSERVER SOURCE
+  // / artifact / selection / declaration and its offline proof to be present
+  // on the fixture BEFORE any launch — the §24.13 amendment's registered
+  // deviation (a live launch without the capture armed) is refused here
+  // instead of repeated. A known-absent mechanism stays absent: no runtime
+  // fact may ever stand in for the arming (the runtime gates — the actual
+  // identity, pending state, model obedience, captured exit — remain facts
+  // the trial itself must establish and are never guessed by preflight).
+  if (LOCAL_OBSERVATION_REQUIRED_CASES.has(input.case)) {
+    if (localObservationDeclarationFor(fixture, input.case) === null) {
+      return { ok: false, reason: 'the local Companion observation seam is not armed (the local-settlement applies-mandatory observer is known absent: the fixture was not prepared with the capture seam this case requires)' };
+    }
+    const capture = fixture.stdoutCapture;
+    // The offline proof: the fixture's RECORD-level arming declaration (the
+    // artifact/selection binding that survives disposal) must exist and
+    // AGREE with the armed handle on every digest — a missing declaration,
+    // or one binding DIFFERENT bytes (a drifted/mismatched instrument), is
+    // refused pre-launch, exactly like the §24.11 control-declaration arm.
+    const arming = /** @type {any} */ (fixture.record)?.closureStdoutCapture ?? null;
+    if (arming === null || typeof arming !== 'object') {
+      return { ok: false, reason: 'the armed local-observation seam carries no fixture arming declaration (the record-time offline provenance is known absent)' };
+    }
+    if (typeof capture.brokerEntryRealpath === 'string'
+      && (arming.brokerGate === null || typeof arming.brokerGate !== 'object'
+        || arming.brokerGate.declaredBrokerEntryRealpathSha256 !== createHash('sha256').update(capture.brokerEntryRealpath).digest('hex'))) {
+      return { ok: false, reason: 'the fixture arming declaration disagrees with the declared broker-daemon entry digest (the mediation hop is undeclared or drifted) — the wrong instrument' };
+    }
+    if (typeof capture.entryRealpath === 'string'
+      && arming.gate?.declaredEntryRealpathSha256 !== createHash('sha256').update(capture.entryRealpath).digest('hex')) {
+      return { ok: false, reason: 'the fixture arming declaration disagrees with the declared launcher entry digest (the invocation selector is undeclared or drifted) — the wrong instrument' };
+    }
+    // (Review round 30, Finding 1) the DECLARED invocation selector is the
+    // frozen argv gate the runtime's validateIdentityRecord enforces — a
+    // declaration recording a foreign selector (e.g. ['status','list'])
+    // describes an instrument that can never qualify: the offline join would
+    // refuse admission-selector-foreign only AFTER a hosted launch was
+    // spent. The preflight refuses it BEFORE the launch (missing argv
+    // refuses fail-closed; the frozen selector is mirrored, never replaced).
+    if (!Array.isArray(arming.gate?.argv)
+      || arming.gate.argv.length !== TERMINAL_ARGV_SELECTOR.length
+      || TERMINAL_ARGV_SELECTOR.some((/** @type {string} */ arg, /** @type {number} */ index) => arming.gate.argv[index] !== arg)) {
+      return { ok: false, reason: 'the fixture arming declaration does not declare the frozen invocation selector (a known-unqualifiable instrument) — refused before spending a hosted launch' };
+    }
+    if (arming.preloadSha256 !== capture.preloadSha256) {
+      return { ok: false, reason: 'the fixture arming declaration disagrees with the executing preload digest (the observer artifact drifted) — the wrong instrument' };
+    }
+    // (Review round 5, Finding 4) the DECLARED digest must match the artifact
+    // ON DISK: the cached handle/declaration hashes agree by construction —
+    // only hashing the bytes the host will actually load catches a
+    // replaced/truncated/deleted preload (the fixture's frozen declaration
+    // vs the disk, drift refused BEFORE the launch).
+    if (typeof capture.preloadPath === 'string' && capture.preloadPath.length > 0) {
+      const diskBytes = await readFile(capture.preloadPath).catch(() => null);
+      const diskDigest = diskBytes !== null ? createHash('sha256').update(diskBytes).digest('hex') : null;
+      if (diskDigest === null || diskDigest !== arming.preloadSha256) {
+        return { ok: false, reason: 'the preload artifact on disk does not match the fixture arming declaration (the capture artifact drifted or is missing) — the host would launch without the capture mechanism' };
+      }
+    }
+    // (7) The EFFECTIVE launch environment (review round 2, Finding 4): the
+    // digests may agree while the executor is about to launch with an env
+    // that carries NO capture capability at all — every declared capture
+    // variable must be present in the effective env and agree with the
+    // armed handle, and NODE_OPTIONS must actually LOAD the declared
+    // preload artifact (a NODE_OPTIONS present without this --require never
+    // counts). Known pre-launch capability, never a runtime measurement.
+    const captureEnvInputs = [
+      [CAPTURE_DIRECTORY_VARIABLE, typeof capture.captureDirectory === 'string' ? capture.captureDirectory : null],
+      [CAPTURE_NONCE_VARIABLE, typeof capture.nonce === 'string' ? capture.nonce : null],
+      [CAPTURE_ENTRY_VARIABLE, typeof capture.entryRealpath === 'string' ? capture.entryRealpath : null],
+      [CAPTURE_MAX_BYTES_VARIABLE, typeof capture.maxBytes === 'number' && Number.isSafeInteger(capture.maxBytes) ? String(capture.maxBytes) : null],
+      [CAPTURE_BROKER_ENTRY_VARIABLE, typeof capture.brokerEntryRealpath === 'string' ? capture.brokerEntryRealpath : null],
+    ];
+    const effectiveEnv = /** @type {any} */ (fixture)?.env ?? null;
+    for (const [variable, expected] of captureEnvInputs) {
+      const actual = effectiveEnv !== null && typeof effectiveEnv === 'object' ? effectiveEnv[variable] : undefined;
+      if (expected === null || typeof expected !== 'string' || expected.length === 0 || actual !== expected) {
+        return { ok: false, reason: `the effective capture environment is missing the declared capture variable (${variable}) — the host would launch with no capture capability` };
+      }
+    }
+    // (Review round 31, Finding 1) the FROZEN preload contract: the
+    // generated preload's own environment gate (closure-preload ENV_OK)
+    // requires the FROZEN capture limit (STDOUT_CAPTURE_MAX_BYTES — a
+    // foreign limit like 2048 leaves BOTH identity-record writers INERT), an
+    // absolute capture directory and entry paths, and a 64-hex nonce. The
+    // handle/env pair AGREEING on any other shape is a known-unobservable
+    // configuration (the reviewer reproduced preflight ok:true with no
+    // identity record written): the handle values are validated against the
+    // same frozen contract BEFORE the launch — the environment is forced to
+    // agree with the handle, so it inherits the verdict.
+    const captureFrozenContract = [
+      [CAPTURE_DIRECTORY_VARIABLE, typeof capture.captureDirectory === 'string' && capture.captureDirectory.length > 0 && capture.captureDirectory.charAt(0) === '/'],
+      [CAPTURE_NONCE_VARIABLE, typeof capture.nonce === 'string' && /^[a-f0-9]{64}$/.test(capture.nonce)],
+      [CAPTURE_ENTRY_VARIABLE, typeof capture.entryRealpath === 'string' && capture.entryRealpath.length > 0 && capture.entryRealpath.charAt(0) === '/'],
+      [CAPTURE_MAX_BYTES_VARIABLE, capture.maxBytes === STDOUT_CAPTURE_MAX_BYTES],
+      [CAPTURE_BROKER_ENTRY_VARIABLE, typeof capture.brokerEntryRealpath === 'string' && capture.brokerEntryRealpath.length > 0 && capture.brokerEntryRealpath.charAt(0) === '/'],
+    ];
+    for (const [variable, frozenOk] of captureFrozenContract) {
+      if (!frozenOk) {
+        return { ok: false, reason: `the capture handle violates the frozen preload contract (${variable}) — the observer would stay inert and write no identity record; known-unobservable configuration` };
+      }
+    }
+    // (Review round 27, Finding 2) the NODE_OPTIONS string is parsed into
+    // its shell-ish OPTION TOKENS (whitespace-separated, ' and " quoting —
+    // backslash escapes inside double quotes — mirroring how Node itself
+    // splits the variable), and a real `--require` OPTION TOKEN must carry
+    // the declared preload path as its argument. The old SUBSTRING check
+    // accepted the fragment hiding inside ANOTHER option's value
+    // (`--title="--require "<path>""` tokenizes as the process title — Node
+    // starts WITHOUT requiring the preload, even if that file does not
+    // exist), permitting a host launch with the mandatory observer known
+    // absent.
+    // (Review round 28, Finding 2) the tokenizer matches Node's ACTUAL
+    // NODE_OPTIONS parsing rules (verified empirically against the running
+    // node binary): double quotes toggle in-string state and are consumed,
+    // a backslash escapes the next character ONLY inside double quotes
+    // (outside them it is an ordinary character), and apostrophes are
+    // ORDINARY characters — never quoting delimiters (`--title=it's` is one
+    // token and `--require '<path>'` fails to load, the apostrophes riding
+    // the filename).
+    const tokenizeNodeOptions = (/** @type {string} */ value) => {
+      const tokens = [];
+      let current = '';
+      let inString = false;
+      let inEscape = false;
+      let sawUnquotedTabOrNewline = false;
+      for (const character of value) {
+        if (inEscape) { current += character; inEscape = false; continue; }
+        if (inString && character === '\\') { inEscape = true; continue; }
+        if (character === '"') { inString = !inString; continue; }
+        if (!inString && character === ' ') {
+          if (current.length > 0) { tokens.push(current); current = ''; }
+          continue;
+        }
+        // (Review round 30, Finding 2) Node splits NODE_OPTIONS on SPACES
+        // only (verified empirically: `--require\t<path>` is rejected with
+        // `is not allowed in NODE_OPTIONS`, exit 9, BEFORE loading anything)
+        // — a tab or newline outside quotes is an ordinary character that
+        // combines the surrounding options into one invalid token: the
+        // environment is known-invalid and refuses by name.
+        if (!inString && (character === '\t' || character === '\n')) sawUnquotedTabOrNewline = true;
+        current += character;
+      }
+      if (current.length > 0) tokens.push(current);
+      // (Review round 29, Finding 2) an UNFINISHED quoting state means the
+      // environment is already known invalid: Node itself exits code 9
+      // (`invalid value for NODE_OPTIONS` — an unterminated string) BEFORE
+      // loading anything, so such an environment refuses by name instead of
+      // having its truncated tokens accepted.
+      return { tokens, complete: !inString && !inEscape, sawUnquotedTabOrNewline };
+    };
+    const declaredPreloadPath = capture.preloadPath;
+    const parsedNodeOptions = typeof effectiveEnv.NODE_OPTIONS === 'string' ? tokenizeNodeOptions(effectiveEnv.NODE_OPTIONS) : { tokens: [], complete: false, sawUnquotedTabOrNewline: false };
+    const loadsDeclaredPreload = parsedNodeOptions.complete && parsedNodeOptions.tokens.some((/** @type {string} */ token, /** @type {number} */ index, /** @type {string[]} */ tokens) => {
+      if (token === '--require') return index + 1 < tokens.length && tokens[index + 1] === declaredPreloadPath;
+      return token.startsWith('--require=') && token.slice('--require='.length) === declaredPreloadPath;
+    });
+    if (typeof effectiveEnv.NODE_OPTIONS === 'string' && !parsedNodeOptions.complete) {
+      return { ok: false, reason: 'the effective NODE_OPTIONS is invalid for the host launch (an unterminated double-quote or a dangling escape — Node itself would exit before loading the observer)' };
+    }
+    if (parsedNodeOptions.sawUnquotedTabOrNewline) {
+      return { ok: false, reason: 'the effective NODE_OPTIONS is invalid for the host launch (a tab or newline option separator — Node does not split NODE_OPTIONS on them and rejects the variable before loading the observer)' };
+    }
+    if (!loadsDeclaredPreload) {
+      return { ok: false, reason: 'the effective capture environment does not LOAD the declared preload (NODE_OPTIONS carries no --require option token whose argument is the declared preload path) — the host would launch with no capture capability' };
+    }
+  }
   // (4) The §24.8 choreography artifacts (native-acceptance Task 3): a run
   // that DECLARES the completion-gate seam requires both gate files on disk
   // BEFORE the launch — the fixture worker polls the gate and the held turn
@@ -4988,6 +7241,29 @@ export async function evaluateLiveLaunchPreflight(input, dependencies = {}) {
       if (/** @type {any} */ (declaration)[fact] !== expected) {
         return { ok: false, reason: `the declared survival-control fixture declaration disagrees with the frozen control sizing (${fact}) — the wrong instrument` };
       }
+    }
+  }
+  // (Review round 32, Finding 2) the DECLARED capture directory must EXIST
+  // and be a usable DIRECTORY before the launch: the preload never creates
+  // it and swallows identity-write failures, so a missing (or non-directory)
+  // path is the observer already known unavailable. The check composes LAST
+  // — every earlier named ground keeps its refusal, and only a fully armed
+  // shape reaches this final usability gate.
+  const tailCaptureHandle = /** @type {any} */ (fixture)?.stdoutCapture ?? null;
+  if (tailCaptureHandle !== null && typeof tailCaptureHandle === 'object'
+    && typeof tailCaptureHandle.captureDirectory === 'string' && tailCaptureHandle.captureDirectory.length > 0) {
+    const directoryStats = await lstat(tailCaptureHandle.captureDirectory).catch(() => null);
+    if (directoryStats === null || !directoryStats.isDirectory()) {
+      return { ok: false, reason: 'the declared capture directory is missing or is not a usable directory — the preload never creates it and swallows identity-write failures, so the observer is already known unavailable' };
+    }
+    // (Review round 33, Finding 2) the PRIVATE-permissions gate: the
+    // startup-record readers (requirePrivatePermissions) require the
+    // directory mode to be EXACTLY 0700 on POSIX — an existing 0755/0555
+    // directory passes the usability gate but the observer would reject
+    // every startup record: known-unobservable configuration, refused
+    // before the launch (the real composer mkdirs mode 0700).
+    if (process.platform !== 'win32' && (directoryStats.mode & 0o777) !== 0o700) {
+      return { ok: false, reason: 'the declared capture directory is not private (its permissions are not exactly 0700 on POSIX) — the startup-record readers reject every record the observer writes; known-unobservable configuration' };
     }
   }
   return { ok: true, reason: null };
@@ -5031,6 +7307,13 @@ export async function evaluateLiveLaunchPreflight(input, dependencies = {}) {
  *   readProcessIdentity?: (identity: unknown) => Promise<unknown>,
  *   terminateProcessIdentity?: (identity: unknown) => Promise<void>,
  *   waitForProcessExit?: (identity: unknown, phase: string) => Promise<void>,
+ *   localObservation?: { captureDirectory: string, nonce: string, entryRealpath: string, brokerEntryRealpath?: string },
+ *   captureLocalObservationIdentity?: (admissionInput: any) => Promise<any>,
+ *   observeLocalObservationIdentity?: (observationInput: any) => Promise<any>,
+ *   captureLocalBrokerObservationIdentity?: (admissionInput: any) => Promise<any>,
+ *   observeLocalBrokerObservationIdentity?: (observationInput: any) => Promise<any>,
+ *   observeLocalTransportObservationIdentity?: (observationInput: any) => Promise<any>,
+ *   localObservationObserverOptions?: Record<string, unknown>,
  *   releaseGate?: (gatePath: string) => Promise<void>,
  *   sleep?: (ms: number) => Promise<void>,
  *   now?: () => number,
@@ -5066,6 +7349,7 @@ export async function evaluateLiveLaunchPreflight(input, dependencies = {}) {
  *     measurementCutoffAtMs: number | null,
  *     holdDeadlineOverrunMs: number | null,
  *     identityEstablished: { established: boolean, capturedAtElapsedMs: number | null, basis: string | null },
+ *     localObservation?: unknown,  // the §25.10 digest-only block, armed-run only
  *   },
  *   postRelease?: Record<string, string>,
  *   timeline: HeldTurnTimeline,
@@ -6068,15 +8352,19 @@ async function executeDefaultLiveCaseBody({ input, fixture }) {
   // Codex round 1: the OBSERVED durable identity for the live status-wait
   // path (set inside the launch closure once the acknowledgement validates).
   const observedDurableIdentity = { jobId: /** @type {string | null} */ (null), ownerSessionId: /** @type {string | null} */ (null) };
+  // The ARMED local-observation declaration (null when the case/map/fixture
+  // is unarmed — the held turn stays runtime-inert). Composed once here so
+  // the spread below carries the same composition object.
+  const localObservationDeclaration = localObservationDeclarationFor(fixture, input.case);
 
-  const held = await runHeldHostTurn({
+  const held = await runHeldHostTurn(/** @type {any} */ ({
     gatePath,
     gateReachedPath,
     processPath,
     processNonce,
     holdMs: input.workerDurationMs,
     budgetMs: input.budgetMs,
-    launch: async (budgetContext) => {
+    launch: async (/** @type {any} */ budgetContext) => {
       // P2-3 round-15 fix: both Status turns share the experiment's
       // cancellation signal and run on the REMAINING experiment deadline —
       // never a fresh full budget per turn.
@@ -6177,12 +8465,12 @@ async function executeDefaultLiveCaseBody({ input, fixture }) {
       const result = runTurn(renderExecResumeLaunch(acknowledgement.launchSessionId, queryPrompt).args);
       return { result, terminate: async () => { for (const controller of controllers) controller.abort(); await result.catch(() => {}); } };
     },
-    waitForGate: (signal) => waitForCompletionGateReached(gateReachedPath, signal),
-    waitForObservation: (signal) => waitForLauncherObservation(fixture.codexHome, expectedCommand, signal),
+    waitForGate: (/** @type {any} */ signal) => waitForCompletionGateReached(gateReachedPath, signal),
+    waitForObservation: (/** @type {any} */ signal) => waitForLauncherObservation(fixture.codexHome, expectedCommand, signal),
     // The decisive poll's first observation is measured on the held turn's own
     // monotonic clock while the hold runs, so the record can carry an actual
     // poll-start remaining lifetime instead of the retired wall-time arithmetic.
-    waitForPollStart: (signal) => waitForPollObservation(fixture.codexHome, expectedCommand, signal),
+    waitForPollStart: (/** @type {any} */ signal) => waitForPollObservation(fixture.codexHome, expectedCommand, signal),
     // R3 background lifecycle + release-qualification Task 2 foreground
     // extension: the held turn stays open for the bounded Child-settlement
     // watch (the Child's own attached-Companion observation to terminal)
@@ -6191,9 +8479,9 @@ async function executeDefaultLiveCaseBody({ input, fixture }) {
     // AFTER THE JOIN (the gate-wins ordering) — a foreground host that ends
     // before the gate is a pinned early exit with no joined Child to settle.
     ...(spec.backgroundFlow === true
-      ? { waitForChildSettlement: (signal) => waitForChildSettlementObservation(fixture.codexHome, expectedCommand, signal) }
+      ? { waitForChildSettlement: (/** @type {any} */ signal) => waitForChildSettlementObservation(fixture.codexHome, expectedCommand, signal) }
       : runsChildSettlementWatch(input.case)
-        ? { waitForChildSettlementAfterJoin: (signal) => waitForChildSettlementObservation(fixture.codexHome, expectedCommand, signal) }
+        ? { waitForChildSettlementAfterJoin: (/** @type {any} */ signal) => waitForChildSettlementObservation(fixture.codexHome, expectedCommand, signal) }
         : {}),
     // 2026-10-21 evidence-closure Task 2: the passive durable snapshot runs at
     // settlement-layer construction (before cleanup) for the ONE case with a
@@ -6250,12 +8538,20 @@ async function executeDefaultLiveCaseBody({ input, fixture }) {
       // held-turn behavior.
       ...(MEASUREMENT_CUTOFF_ENABLED_CASES.has(input.case) ? { measurementCutoffSchedule: true } : {}),
     } : {}),
+    // Local-settlement Task 3 (§25.10; the §25.3 selected seam): the ARMED
+    // local observation for the registered case — the executor composes the
+    // runtime declaration from the FIXTURE'S OWN capture arming (the closed
+    // producer map {@link LOCAL_OBSERVATION_REQUIRED_CASES}); an unarmed
+    // run composes nothing and the held turn stays runtime-inert. The run
+    // may never reach the host with an unarmed applicable layer: the
+    // pipeline-level pre-host guard refuses that before the executor runs.
+    ...(localObservationDeclaration !== null ? { localObservation: localObservationDeclaration } : {}),
     // P2-1 round-7 fix: the Status deadline flow is OBSERVATION-ONLY — the
     // background launch reserves a queued job and the Status query measures
     // its own deadline, so the fake-peer completion gate is never part of the
     // contract and the query deadline expiry is the expected terminal.
     ...(input.case === 'status-wait' ? { statusDeadlineFlow: true } : {}),
-  });
+  }));
 
   let rollouts;
   let rolloutsError = null;
@@ -7663,6 +9959,15 @@ export function mapShellWaitLiveFacts(input, held, evidence, codexVersion, rollo
           : {}),
       },
       child: childSettlementFacts,
+      // Local-settlement Task 3 (the §25.10 persistence fence, schema-additive):
+      // the concurrent local-observation runtime block rides the live facts
+      // ONLY when the held record carried it (an armed run) — the digest-only
+      // bounded block persists exactly as the runtime composed it, so the
+      // offline join can re-verify every credit fence after disposal. Data
+      // from unarmed runners keeps the mapping schema byte-identical.
+      ...(/** @type {any} */ (held)?.cleanup?.localObservation !== undefined
+        ? { localProcess: /** @type {any} */ (held).cleanup.localObservation }
+        : {}),
       ...(waitPolicyObservation !== null ? { waitPolicyObservation } : {}),
       // The §16.4 survival verdict rides EVERY selector run — null when the
       // control could not be observed (fail closed, never fabricated).
@@ -7805,6 +10110,13 @@ export function mapShellWaitLiveFacts(input, held, evidence, codexVersion, rollo
         : {}),
     },
     child: childSettlementFacts,
+    // Local-settlement Task 3 (the §25.10 persistence fence, schema-additive:
+    // the same additive carriage as the supported branch — an ABORT/failure
+    // record carries whatever the runtime collected before the turn ended,
+    // never erased). Data from unarmed/pre-turn shapes stays byte-identical.
+    ...(/** @type {any} */ (held)?.cleanup?.localObservation !== undefined
+      ? { localProcess: /** @type {any} */ (held).cleanup.localObservation }
+      : {}),
     ...(waitPolicyObservation !== null ? { waitPolicyObservation } : {}),
     ...((input.survivalControlSelector ?? null) !== null ? { survivalControl: survivalControlVerdict, survivalControlInputs } : {}),
     statusQuery: statusQueryFacts,

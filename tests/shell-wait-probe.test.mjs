@@ -8,7 +8,7 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { chmod, cp, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -48,16 +48,138 @@ const localProcessEntry = 'tests/shell-wait-local-process.test.mjs';
 // through 25, 93 after round 26, 95 after round 27, 98 after round 28, 100
 // after round 29, 102 after round 30, 104 after round 31, 105 after round
 // 32, 106 after round 33, 107 after round 34, 108 after round 35 and 109
-// after round 36), so a wrong
+// after round 36; 156 at the local-settlement Task 3 registration; 165 after
+// the codex review round 3; 174 after the codex review round 4; 180 after
+// the codex review round 5; 186 after the codex review round 6; 190 after
+// the codex review round 7; 197 after the codex review round 8; 202 after
+// the codex review round 9; 205 after the codex review round 10; 209 after
+// the codex review round 11; 214 after the codex review round 12; 219 after
+// the codex review round 13 (the integer fence producer F1, the
+// identity-read containment check F2, the frozen-selector enforcement F3
+// the persisted block-version gate F4; 225 after the codex review
+// round 14: the tied-absence collection continuation F1, the
+// transport-exit recency/carried-identity re-adjudication F2 and the
+// incomplete-interval start refusals F3; 228 after the codex review
+// rounds 15 and 16: the duty-observation identity-read containment, the
+// contradictory invocation-absence shape refusal and the runtime
+// latest-same-generation-presence tie continuation, the selected
+// same-generation refresh joining the runtime exit horizon and the replay
+// correlating exactly the adjudicator-admitted absences; 233 after the
+// codex review rounds 17 and 18: the credited transport/invocation
+// absences validate their collection intervals, the SELECTED daemon
+// endpoint re-verifies its parentage and a tied transport absence keeps
+// the retry loop sampling; 237 after the codex review round 19: a live
+// same-generation transport retry advancing the presence horizon (and
+// persisting the full presence sequence for replay) and the exit
+// supersession comparing the identity-read instant; 241 after the codex
+// review round 20: the persisted transport retry sequence latching
+// replacement evidence and absence timestamps requiring safe integers
+// before crediting; 246 after the codex review round 22: every credited
+// observation binding its queried pid/scope digest to the observed identity
+// (the duty echoes and the ancestry endpoints) and a present-but-malformed
+// identity-read instant refusing by name instead of falling back to the
+// completion; 249 after the codex review round 23: a supplied carried
+// identity instant being validated against its read collection interval
+// before the reuse latch recency filtering (an out-of-interval or malformed
+// carried instant is torn replacement evidence refusing by name; 254 after
+// the codex review round 24: the retained transport retry reads validating
+// their identity instants and the captured transport start identity
+// persisting with the marker (schema-additive) binding the replayed
+// transport observation; 257 after the codex review round 25: a retained
+// transport retry read with an INVALID collection interval refusing
+// explicitly (a true inversion is observation-interval-inverted, a missing
+// start is observation-start-unprovable; 262 after the codex review round
+// 26: the retained transport reads validating their completion stamps and
+// the transport exit validating its supplied carried identity instants; 266
+// after the codex review round 27: a replacement-claiming retained
+// invocation read owing a valid completion timestamp and the NODE_OPTIONS
+// preflight parsing the string into shell-ish option tokens; 270 after the
+// codex review round 28: the fence echoes comparing symmetrically and the
+// NODE_OPTIONS tokenizer matching Node exactly; 274 after the codex review
+// round 29: the Companion baseline binding to the admitted request
+// timestamp/bounds and the NODE_OPTIONS tokenizer rejecting unfinished
+// quoting states; 276 after the codex review round 30: the preflight
+// refusing a foreign declared invocation selector before spending a hosted
+// launch and NODE_OPTIONS tab/newline separators being the known-invalid
+// environment; 278 after the codex review round 31: the preflight requiring
+// the FROZEN preload contract on the capture handle (the limit, the
+// directory, the entry paths and the nonce); 281 after the codex review
+// round 32: the retained invocation presence reads validating like the
+// transport replay and the preflight requiring a usable capture directory;
+// 284 after the codex review round 33: the refreshed endpoint creation
+// instant agreeing with its admission-backed observation and the private
+// capture-directory permissions gate; 287 after the codex review round 34:
+// the pre-interruption baseline owing a verified presence witness collected
+// before the admitted request; 290 after the codex review round 35: a
+// pre-request baseline witness being the invocation's own OS-observed
+// identity; 292 after the codex review round 36: a pre-request witness
+// postdating the admitted generation record start; 294 after the codex
+// review round 37: a pre-request witness owing the §25.7 completion fence),
+// so a wrong
 // selection (an extra or missing entry) or a silently
 // skipped contract test still breaks them.
-const shellSuiteSpawnedTestTotal = 206;
+const shellSuiteSpawnedTestTotal = 391;
 /** @param {number} count */
 const suiteCountPattern = (count) => new RegExp(`ℹ tests ${count}\\r?\\n`);
 /** @param {number} count */
 const suitePassPattern = (count) => new RegExp(`ℹ pass ${count}\\r?\\n`);
 const suiteFailZeroPattern = /ℹ fail 0\r?\n/;
 const repositoryRoot = fileURLToPath(new URL('..', import.meta.url));
+
+// Local-settlement Task 3 (report §25.10): an ARMED synthetic capture handle
+// plus the matching record-level arming declaration — the offline re-analysis
+// fixtures carry the same §25.3 arming the REAL fixture records, so the
+// residual serializer/mapper round-trips stay valid. The digests are derived
+// from the synthetic paths themselves (consistency: the record-binding
+// preflight would agree if it ran); no fixture bytes change.
+const syntheticArming = (entryRealpath, brokerEntryRealpath, preloadPath, captureDirectory) => {
+  const digest = (value) => createHash('sha256').update(value).digest('hex');
+  const stdoutCapture = {
+    preloadPath, preloadSha256: digest('the-executing-preload'),
+    captureDirectory, nonce: 'a'.repeat(64), maxBytes: 65536,
+    entryRealpath, brokerEntryRealpath,
+  };
+  const closureStdoutCapture = {
+    preload: 'closure-observe.mjs', preloadSha256: stdoutCapture.preloadSha256, maxBytes: 65536,
+    gate: { argv: ['invoke-prepared', 'rescue'], declaredEntryRealpathSha256: digest(entryRealpath) },
+    brokerGate: { declaredBrokerEntryRealpathSha256: digest(brokerEntryRealpath) },
+    identityRecord: { version: 2, roles: { invocation: 'identity.json', brokerDaemon: 'identity-broker.json' } },
+    environmentVariables: [],
+    selector: 'fixture-only capture environment present AND realpath(argv[1]) equal to the declared installed launcher realpath AND argv exactly [invoke-prepared, rescue]',
+  };
+  return { stdoutCapture, closureStdoutCapture };
+};
+
+/** @param {any} fixture the existing synthetic handle (workspace/codexHome/installedRoot/env/record) */
+function armSyntheticFixture(fixture) {
+  const entryRealpath = `${fixture.installedRoot}/skills/rescue/launcher.mjs`;
+  const brokerEntryRealpath = `${fixture.installedRoot}/scripts/zcode-broker.mjs`;
+  const preloadPath = `${fixture.codexHome}/closure-observe.cjs`;
+  const captureDirectory = `${fixture.codexHome}/stdout-capture`;
+  // (Review round 32, Finding 2) the REAL composer creates the capture
+  // directory (the preflight's usability gate verifies it); the synthetic
+  // helper mirrors it so the armed shapes reach their own named grounds.
+  mkdirSync(captureDirectory, { recursive: true, mode: 0o700 });
+  const { stdoutCapture, closureStdoutCapture } = syntheticArming(entryRealpath, brokerEntryRealpath, preloadPath, captureDirectory);
+  return { ...fixture, stdoutCapture, record: { ...(fixture.record ?? {}), closureStdoutCapture } };
+}
+
+/** The EFFECTIVE capture environment for an armed synthetic handle (review
+ * round 2): every declared capture variable binds the handle and
+ * NODE_OPTIONS loads the declared preload artifact — the shape the
+ * preflight's effective-env check verifies. */
+function syntheticCaptureEnv(handle) {
+  const BS = String.fromCharCode(92);
+  const quotedPreload = `"` + handle.preloadPath.replace(new RegExp(BS + BS, 'g'), BS + BS + BS + BS).replace(/"/g, BS + '"') + `"`;
+  return {
+    ZCODE_SHELL_WAIT_CAPTURE_DIR: handle.captureDirectory,
+    ZCODE_SHELL_WAIT_CAPTURE_NONCE: handle.nonce,
+    ZCODE_SHELL_WAIT_CAPTURE_ENTRY_REALPATH: handle.entryRealpath,
+    ZCODE_SHELL_WAIT_CAPTURE_MAX_BYTES: String(handle.maxBytes),
+    ZCODE_SHELL_WAIT_CAPTURE_BROKER_ENTRY_REALPATH: handle.brokerEntryRealpath,
+    NODE_OPTIONS: `--require ${quotedPreload}`,
+  };
+}
 
 /** @param {string} value */
 function escapeRegExp(value) {
@@ -527,6 +649,7 @@ if (process.env[selfTestGuard] === '1') {
   describe('runShellWaitCase', async () => {
     const { runShellWaitCase } = await import('../tools/shell-wait-probe/driver.mjs');
     const { createShellWaitFixture } = await import('../tools/shell-wait-probe/fixture.mjs');
+    const { EXECUTING_HELPER_MATERIALIZATION } = await import('../tools/shell-wait-probe/local-process-observation.mjs');
     const codexBinary = process.execPath;
 
     function emptyLiveFacts() {
@@ -801,8 +924,22 @@ if (process.env[selfTestGuard] === '1') {
       const closureSource = await readFile(fileURLToPath(new URL('../tools/shell-wait-probe/closure-observation.mjs', import.meta.url)));
       const driverSource = await readFile(fileURLToPath(new URL('../tools/shell-wait-probe/driver.mjs', import.meta.url)));
       const preloadSource = await readFile(fileURLToPath(new URL('../tools/shell-wait-probe/closure-preload.mjs', import.meta.url)));
+      // v8 (2026-10-30 local-settlement Task 3 review round 6, report
+      // §25.10): the held turn's concurrent local-observation runtime joined
+      // the construction, and the MATERIALIZED executing helper copies
+      // (scripts/lib/{fs,process,errors}.mjs) join it now.
+      const localProcessSource = await readFile(fileURLToPath(new URL('../tools/shell-wait-probe/local-process-observation.mjs', import.meta.url)));
+      // (Review round 21, report §25.10) the construction mirrors the
+      // driver's `executingHelperDigest`: the MATERIALIZED copy digests when
+      // materialization succeeded, else the PRODUCTION files' digest strings
+      // (the observer's own fallback loads those very modules) — so the
+      // expectation holds in BOTH supported states; empty-string
+      // placeholders diverge from the driver in the fallback environment.
+      const executingHelperDigest = async (/** @type {string} */ relative) => (EXECUTING_HELPER_MATERIALIZATION.dir !== null && EXECUTING_HELPER_MATERIALIZATION.bytes[relative] !== undefined
+        ? EXECUTING_HELPER_MATERIALIZATION.bytes[relative]
+        : createHash('sha256').update(await readFile(fileURLToPath(new URL(`../${relative}`, import.meta.url)))).digest('hex'));
       const expectedDigest = createHash('sha256')
-        .update('zcode-shell-wait-observer-v6\0')
+        .update('zcode-shell-wait-observer-v8\0')
         .update(evidenceSource)
         .update('\0')
         .update(shapeSource)
@@ -813,9 +950,20 @@ if (process.env[selfTestGuard] === '1') {
         .update('\0')
         .update(preloadSource)
         .update('\0')
+        .update(localProcessSource)
+        .update('\0')
         .update(driverSource)
+        .update('\0')
+        // (Review round 6, Finding 4) the MATERIALIZED executing helper-copy
+        // digests join the construction (the bytes the local-observation
+        // runtime actually loads).
+        .update(await executingHelperDigest('scripts/lib/fs.mjs'))
+        .update('\0')
+        .update(await executingHelperDigest('scripts/lib/process.mjs'))
+        .update('\0')
+        .update(await executingHelperDigest('scripts/lib/errors.mjs'))
         .digest('hex');
-      assert.equal(observer.digest, expectedDigest, 'the digest must hash the actual evidence.mjs + shape-diagnostic.mjs + release-qualification.mjs + closure-observation.mjs + closure-preload.mjs + driver.mjs working-tree contents');
+      assert.equal(observer.digest, expectedDigest, 'the digest must hash the actual evidence.mjs + shape-diagnostic.mjs + release-qualification.mjs + closure-observation.mjs + closure-preload.mjs + local-process-observation.mjs + driver.mjs working-tree contents');
       // Stability: two records built from the same tree carry the same digest.
       const second = await runShellWaitCase(caseInput({ output: secondOutput }), {
         createFixture: async () => fakeFixture,
@@ -5949,6 +6097,7 @@ if (process.env[selfTestGuard] === '1') {
     // observer-digest duty for every executing helper.
     const { readFileSync } = await import('node:fs');
     const { EXECUTING_OBSERVER_PROVENANCE, observerProvenance } = await import('../tools/shell-wait-probe/driver.mjs');
+    const { EXECUTING_HELPER_MATERIALIZATION } = await import('../tools/shell-wait-probe/local-process-observation.mjs');
     const { EXECUTING_EVIDENCE_SOURCE } = await import('../tools/shell-wait-probe/evidence.mjs');
     const { EXECUTING_SHAPE_DIAGNOSTIC_SOURCE } = await import('../tools/shell-wait-probe/shape-diagnostic.mjs');
     const { EXECUTING_RELEASE_QUALIFICATION_SOURCE } = await import('../tools/shell-wait-probe/release-qualification.mjs');
@@ -5956,12 +6105,25 @@ if (process.env[selfTestGuard] === '1') {
     const driverPath = fileURLToPath(new URL('../tools/shell-wait-probe/driver.mjs', import.meta.url));
     const oraclePath = fileURLToPath(new URL('../tools/shell-wait-probe/release-qualification.mjs', import.meta.url));
 
-    // The v6 construction adds the EXTRACTED closure-preload module bytes
-    // (the generated preload seam and its shared constants) after the
-    // closure-observation bytes.
+    // The v7 construction (2026-10-30 local-settlement Task 3, report
+    // §25.10) adds the local-process-observation module bytes after the
+    // extracted closure-preload bytes: the held turn's CONCURRENT
+    // local-observation runtime now executes those bytes during live
+    // observation (the startup-record admission, the OS live observation,
+    // the exit adjudication and the bounded duty verdict).
     const { EXECUTING_CLOSURE_PRELOAD_SOURCE: EXECUTING_CLOSURE_PRELOAD_SOURCE_SNAPSHOT } = await import('../tools/shell-wait-probe/closure-preload.mjs');
-    const digestV6 = (evidenceBytes, shapeBytes, oracleBytes, closureBytes, preloadBytes, driverBytes) => createHash('sha256')
-      .update('zcode-shell-wait-observer-v6\0')
+    const { EXECUTING_LOCAL_PROCESS_OBSERVATION_SOURCE } = await import('../tools/shell-wait-probe/local-process-observation.mjs');
+    // (Review round 21, report §25.10) the constructions mirror the driver's
+    // `executingHelperDigest`: the MATERIALIZED copy digests when
+    // materialization succeeded, else the PRODUCTION files' digest strings —
+    // the expectation holds in BOTH supported states (the seam-parameterized
+    // builder lets a test pin the unavailable state explicitly).
+    const executingHelperDigestWith = (/** @type {{ dir: string | null, bytes: Record<string, string> }} */ materialization) => (/** @type {string} */ relative) => (materialization.dir !== null && materialization.bytes[relative] !== undefined
+      ? materialization.bytes[relative]
+      : createHash('sha256').update(readFileSync(fileURLToPath(new URL(`../${relative}`, import.meta.url)))).digest('hex'));
+    const executingHelperDigest = executingHelperDigestWith(EXECUTING_HELPER_MATERIALIZATION);
+    const digestV8With = (/** @type {{ dir: string | null, bytes: Record<string, string> }} */ materialization) => (evidenceBytes, shapeBytes, oracleBytes, closureBytes, preloadBytes, driverBytes) => createHash('sha256')
+      .update('zcode-shell-wait-observer-v8\0')
       .update(evidenceBytes)
       .update('\0')
       .update(shapeBytes)
@@ -5972,12 +6134,23 @@ if (process.env[selfTestGuard] === '1') {
       .update('\0')
       .update(preloadBytes)
       .update('\0')
+      .update(EXECUTING_LOCAL_PROCESS_OBSERVATION_SOURCE)
+      .update('\0')
       .update(driverBytes)
+      .update('\0')
+      // (Review round 6, Finding 4) the MATERIALIZED executing helper-copy
+      // digests join the construction.
+      .update(executingHelperDigestWith(materialization)('scripts/lib/fs.mjs'))
+      .update('\0')
+      .update(executingHelperDigestWith(materialization)('scripts/lib/process.mjs'))
+      .update('\0')
+      .update(executingHelperDigestWith(materialization)('scripts/lib/errors.mjs'))
       .digest('hex');
+    const digestV8 = (evidenceBytes, shapeBytes, oracleBytes, closureBytes, preloadBytes, driverBytes) => digestV8With(EXECUTING_HELPER_MATERIALIZATION)(evidenceBytes, shapeBytes, oracleBytes, closureBytes, preloadBytes, driverBytes);
 
-    test('the executing digest binds the shape-diagnostic, release-qualification, closure-observation AND extracted closure-preload helper bytes under the versioned v6 construction', () => {
+    test('the executing digest binds the shape-diagnostic, release-qualification, closure-observation, extracted closure-preload AND local-process runtime bytes under the versioned v8 construction (round 6 adds the executing helper copies)', () => {
       const driverBytes = readFileSync(driverPath);
-      const expected = digestV6(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, EXECUTING_RELEASE_QUALIFICATION_SOURCE, EXECUTING_CLOSURE_OBSERVATION_SOURCE, EXECUTING_CLOSURE_PRELOAD_SOURCE_SNAPSHOT, driverBytes);
+      const expected = digestV8(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, EXECUTING_RELEASE_QUALIFICATION_SOURCE, EXECUTING_CLOSURE_OBSERVATION_SOURCE, EXECUTING_CLOSURE_PRELOAD_SOURCE_SNAPSHOT, driverBytes);
       assert.equal(EXECUTING_OBSERVER_PROVENANCE.digest, expected,
         'the digest must hash the executing evidence + shape-diagnostic + release-qualification + closure-observation + closure-preload + driver module-init bytes');
       assert.match(String(EXECUTING_OBSERVER_PROVENANCE.digestInput), /shape-diagnostic\.mjs/u,
@@ -5988,14 +6161,35 @@ if (process.env[selfTestGuard] === '1') {
         'the digest input description must name the closure-observation capture helper');
       assert.match(String(EXECUTING_OBSERVER_PROVENANCE.digestInput), /closure-preload\.mjs/u,
         'the digest input description must name the extracted preload module');
-      assert.match(String(EXECUTING_OBSERVER_PROVENANCE.digestInput), /v6|version/u,
+      assert.match(String(EXECUTING_OBSERVER_PROVENANCE.digestInput), /v8|version/u,
         'the construction version must be recorded explicitly');
+      assert.match(String(EXECUTING_OBSERVER_PROVENANCE.digestInput), /local-process-observation\.mjs/u,
+        'the digest input description must name the local-process runtime the held turn executes');
+    });
+
+    test('the expected-digest construction reproduces the executing digest under the unavailable-materialization seam (the round-12 production-file fallback; equal at rest in both states)', () => {
+      // (Review round 21, report §25.10) the explicitly supported fallback
+      // environment (a read-only node_modules: EXECUTING_HELPER_MATERIALIZATION
+      // reports `dir: null`) has the driver hash the PRODUCTION helper files
+      // — the constructions must mirror that fallback, because the
+      // byte-identical-copy invariant makes both states equal at rest: the
+      // SAME expected digest must come out of the construction with the seam
+      // injected (empty-string placeholders diverge — the shipped
+      // `bytes ?? ''` formula produced a different digest under this seam,
+      // failing the assertions in the supported environment).
+      const driverBytes = readFileSync(driverPath);
+      const underSeam = digestV8With({ dir: null, bytes: {} })(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, EXECUTING_RELEASE_QUALIFICATION_SOURCE, EXECUTING_CLOSURE_OBSERVATION_SOURCE, EXECUTING_CLOSURE_PRELOAD_SOURCE_SNAPSHOT, driverBytes);
+      assert.equal(EXECUTING_OBSERVER_PROVENANCE.digest, underSeam,
+        'with materialization unavailable the construction binds the PRODUCTION helper digest strings — the driver\'s own fallback loads those very modules, so the expectation and the executing digest agree at rest in BOTH states');
+      const available = digestV8(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, EXECUTING_RELEASE_QUALIFICATION_SOURCE, EXECUTING_CLOSURE_OBSERVATION_SOURCE, EXECUTING_CLOSURE_PRELOAD_SOURCE_SNAPSHOT, driverBytes);
+      assert.equal(EXECUTING_OBSERVER_PROVENANCE.digest, available,
+        'the available-materialization state keeps its existing equality');
     });
 
     test('the helper binding is load-bearing: omitting or changing any helper\'s bytes changes the digest', () => {
       const driverBytes = readFileSync(driverPath);
       const shapeOnlyConstruction = createHash('sha256')
-        .update('zcode-shell-wait-observer-v6\0')
+        .update('zcode-shell-wait-observer-v7\0')
         .update(EXECUTING_EVIDENCE_SOURCE)
         .update('\0')
         .update(EXECUTING_SHAPE_DIAGNOSTIC_SOURCE)
@@ -6006,23 +6200,23 @@ if (process.env[selfTestGuard] === '1') {
         'a construction without the release-qualification and closure bytes must not reproduce the executing digest');
       const mutatedOracle = Buffer.concat([EXECUTING_RELEASE_QUALIFICATION_SOURCE, Buffer.from('\n')]);
       assert.notEqual(
-        digestV6(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, mutatedOracle, EXECUTING_CLOSURE_OBSERVATION_SOURCE, EXECUTING_CLOSURE_PRELOAD_SOURCE_SNAPSHOT, driverBytes),
+        digestV8(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, mutatedOracle, EXECUTING_CLOSURE_OBSERVATION_SOURCE, EXECUTING_CLOSURE_PRELOAD_SOURCE_SNAPSHOT, driverBytes),
         EXECUTING_OBSERVER_PROVENANCE.digest,
         'a release-qualification-only byte change must change the digest',
       );
       const mutatedClosure = Buffer.concat([EXECUTING_CLOSURE_OBSERVATION_SOURCE, Buffer.from('\n')]);
       assert.notEqual(
-        digestV6(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, EXECUTING_RELEASE_QUALIFICATION_SOURCE, mutatedClosure, EXECUTING_CLOSURE_PRELOAD_SOURCE_SNAPSHOT, driverBytes),
+        digestV8(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, EXECUTING_RELEASE_QUALIFICATION_SOURCE, mutatedClosure, EXECUTING_CLOSURE_PRELOAD_SOURCE_SNAPSHOT, driverBytes),
         EXECUTING_OBSERVER_PROVENANCE.digest,
         'a closure-observation-only byte change must change the digest',
       );
       assert.notEqual(
-        digestV6(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, readFileSync(oraclePath), EXECUTING_CLOSURE_OBSERVATION_SOURCE, EXECUTING_CLOSURE_PRELOAD_SOURCE_SNAPSHOT, driverBytes),
-        digestV6(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, mutatedOracle, EXECUTING_CLOSURE_OBSERVATION_SOURCE, EXECUTING_CLOSURE_PRELOAD_SOURCE_SNAPSHOT, driverBytes),
+        digestV8(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, readFileSync(oraclePath), EXECUTING_CLOSURE_OBSERVATION_SOURCE, EXECUTING_CLOSURE_PRELOAD_SOURCE_SNAPSHOT, driverBytes),
+        digestV8(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, mutatedOracle, EXECUTING_CLOSURE_OBSERVATION_SOURCE, EXECUTING_CLOSURE_PRELOAD_SOURCE_SNAPSHOT, driverBytes),
       );
     });
 
-    test('the executing digest binds the EXTRACTED closure-preload module bytes (round-9 sweep: the round-8 split moved the preload generator and shared constants into closure-preload.mjs)', async () => {
+    test('the executing digest binds the EXTRACTED closure-preload module bytes (round-9 sweep; v7 adds the local-process runtime bytes the held turn executes)', async () => {
       // Changes confined to closure-preload.mjs (the generated preload source,
       // its frozen constants used by the stdout admission) change observation
       // behavior, so its module-init bytes must be bound — a construction
@@ -6030,7 +6224,7 @@ if (process.env[selfTestGuard] === '1') {
       const { EXECUTING_CLOSURE_PRELOAD_SOURCE } = await import('../tools/shell-wait-probe/closure-preload.mjs');
       const driverBytes = readFileSync(driverPath);
       const withPreload = createHash('sha256')
-        .update('zcode-shell-wait-observer-v6\0')
+        .update('zcode-shell-wait-observer-v8\0')
         .update(EXECUTING_EVIDENCE_SOURCE)
         .update('\0')
         .update(EXECUTING_SHAPE_DIAGNOSTIC_SOURCE)
@@ -6041,13 +6235,21 @@ if (process.env[selfTestGuard] === '1') {
         .update('\0')
         .update(EXECUTING_CLOSURE_PRELOAD_SOURCE)
         .update('\0')
+        .update(EXECUTING_LOCAL_PROCESS_OBSERVATION_SOURCE)
+        .update('\0')
         .update(driverBytes)
+        .update('\0')
+        .update(executingHelperDigest('scripts/lib/fs.mjs'))
+        .update('\0')
+        .update(executingHelperDigest('scripts/lib/process.mjs'))
+        .update('\0')
+        .update(executingHelperDigest('scripts/lib/errors.mjs'))
         .digest('hex');
       assert.equal(EXECUTING_OBSERVER_PROVENANCE.digest, withPreload,
         'the digest must bind the extracted closure-preload module bytes');
       assert.notEqual(
         createHash('sha256')
-          .update('zcode-shell-wait-observer-v6\0')
+          .update('zcode-shell-wait-observer-v7\0')
           .update(EXECUTING_EVIDENCE_SOURCE)
           .update('\0')
           .update(EXECUTING_SHAPE_DIAGNOSTIC_SOURCE)
@@ -6055,6 +6257,8 @@ if (process.env[selfTestGuard] === '1') {
           .update(EXECUTING_RELEASE_QUALIFICATION_SOURCE)
           .update('\0')
           .update(EXECUTING_CLOSURE_OBSERVATION_SOURCE)
+          .update('\0')
+          .update(EXECUTING_LOCAL_PROCESS_OBSERVATION_SOURCE)
           .update('\0')
           .update(driverBytes)
           .digest('hex'),
@@ -6073,6 +6277,8 @@ if (process.env[selfTestGuard] === '1') {
         'the record-time reader must hash the verdict helper too — a mid-run helper edit flips sourcesChangedDuringRun');
       assert.match(String(recordTime.digestInput), /closure-observation\.mjs/u,
         'the record-time reader must hash the closure capture helper too');
+      assert.match(String(recordTime.digestInput), /local-process-observation\.mjs/u,
+        'the record-time reader must hash the local-process runtime the held turn executes too (the v7 binding)');
       assert.equal(recordTime.model, null, 'the requested/effective model stays unknown in the observer provenance');
     });
   });
@@ -9138,12 +9344,13 @@ process.exit(result.status ?? 1);
       // …and the RETAINED record mirrors them (the projections agree).
       const root = await mkdtemp(join(tmpdir(), 'shell-wait-boundary-persist-'));
       t.after(() => rm(root, { recursive: true, force: true }));
-      const persistFixture = {
+      // Local-settlement Task 3: the armed re-analysis shape.
+      const persistFixture = armSyntheticFixture({
         workspace: '/private/tmp/i3-ws', codexHome: '/private/tmp/i3-home',
         installedRoot: '/private/tmp/i3-installed', env: { HOME: '/private/tmp/i3-home' },
         record: { variant: 'candidate', appliedArtifacts: [] },
         dispose: async () => {},
-      };
+      });
       const persistCase = { case: 'rescue-interrupt', codexBinary: process.execPath, sourceSha: 'a'.repeat(40), workerDurationMs: 420_000, capMs: 3_600_000, pollMs: 3_600_000, budgetMs: 1_200_000, output: root };
       const persisted = await runShellWaitCase(
         persistCase,
@@ -9721,7 +9928,7 @@ process.exit(result.status ?? 1);
       const record = await runShellWaitCase(
         { case: 'rescue-interrupt', codexBinary: process.execPath, sourceSha: 'a'.repeat(40), output, workerDurationMs: 1000, capMs: null, pollMs: 3_600_000, budgetMs: 2000 },
         {
-          createFixture: async () => ({
+          createFixture: async () => armSyntheticFixture({
             workspace: join(temporary, 'ws'), codexHome: join(temporary, 'home'),
             installedRoot: join(temporary, 'installed'), env: { CODEX_HOME: join(temporary, 'home') },
             record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
@@ -10605,6 +10812,7 @@ process.exit(result.status ?? 1);
         turnSettled: true, deliveryToSettlementMs: 5000, companionOutcome: 'terminal-result',
         durableObligations: 'settled', cleanupKill: false, survivalControl: { noCollateralQualified: true },
         terminalWinner: 'succeeded', naturalCompletionObserved: false, statusObservationTimeoutOnly: false,
+        localProcessDuties: { contractVersion: 1, settled: true, duties: [], exit: { status: 'disappeared' }, fence: { operativeAtMs: 20_000, kind: 'measurement-cutoff' }, refusals: [] },
       };
       const withoutAdmission = evaluateNativeInterruptionSettlement(base);
       assert.equal(withoutAdmission.qualified, false, 'the admission conjunct is REQUIRED (defaults are never a pass)');
@@ -10625,15 +10833,18 @@ process.exit(result.status ?? 1);
     });
 
     test('the interruption oracle carries its own version beside the unchanged family stamp', () => {
-      // v4 = the §24.4 relocated causal contract (2026-10-26 native-acceptance
-      // Task 2: the window conjunct binds to the REQUEST, the emission stamp's
+      // v5 (2026-10-30 local-settlement Task 3, report §25.10) = the
+      // local-duty conjunct: the final acceptance additionally composes the
+      // §25.5 applicable local duties (the §25.7-fenced join input); v4 = the
+      // §24.4 relocated causal contract (2026-10-26 native-acceptance Task 2)
+      // — the window conjunct binds to the REQUEST, the emission stamp's
       // relation to the resolution is the recorded
       // `acknowledgementAtResolution` shape, the two contradiction guards
-      // stay) — the delivery conjuncts are unchanged in form; v3 was the join
+      // stay — the delivery conjuncts are unchanged in form; v3 was the join
       // input-contract growth (PR #72 review findings 1-2), v2 the §19.4
       // admission conjunct, v1 the §16.5/§16.6 freeze (the §19.9 precedent
       // mechanism: old verdicts stand as history).
-      assert.equal(NATIVE_INTERRUPTION_ORACLE_VERSION, 4);
+      assert.equal(NATIVE_INTERRUPTION_ORACLE_VERSION, 5);
       assert.equal(RELEASE_QUALIFICATION_VERSION, 1, 'the shared exact-terminal/layer family stamp stays unchanged');
       const verdict = evaluateNativeInterruptionSettlement({
         delivery: {
@@ -10644,7 +10855,9 @@ process.exit(result.status ?? 1);
         turnSettled: true, deliveryToSettlementMs: 5000, companionOutcome: 'terminal-result',
         durableObligations: 'settled', cleanupKill: false, survivalControl: { noCollateralQualified: true },
         terminalWinner: 'succeeded', naturalCompletionObserved: false, statusObservationTimeoutOnly: false,
+        localProcessDuties: { contractVersion: 1, settled: true, duties: [], exit: { status: 'disappeared' }, fence: { operativeAtMs: 20_000, kind: 'measurement-cutoff' }, refusals: [] },
       });
+      assert.deepEqual(verdict.reasons, [], 'the complete-shape input (all five layers positive) qualifies under v5');
       assert.equal(verdict.nativeInterruptionOracleVersion, NATIVE_INTERRUPTION_ORACLE_VERSION);
     });
 
@@ -11888,9 +12101,35 @@ process.exit(result.status ?? 1);
       // is NOT exact-target attributable on this pin (the named limitation).
       const preloadPath = join(root, 'armed-preload.cjs');
       await writeFile(preloadPath, '// armed preload\n', 'utf8');
+      // Local-settlement Task 3: the §25.3 armed handle + record arming — the
+      // wrapped/direct scenarios assert their OWN refusals, so the fixtures
+      // carry the armed shape instead of tripping the local pre-host gate.
+      const armedForWrappedBase = armSyntheticFixture({
+        workspace, codexHome: join(root, 'home'), installedRoot: join(root, 'installed'),
+        env: { ZCODE_DATA_ROOT: dataRoot }, record: { variant: 'candidate', appliedArtifacts: [] },
+      });
+      // The preload artifact EXISTS on disk here (the §24.11 (3) check) and
+      // the effective env loads THIS artifact with the handle's own binding.
+      const armedForWrapped = {
+        ...armedForWrappedBase,
+        env: { ...armedForWrappedBase.env, ...syntheticCaptureEnv(armedForWrappedBase.stdoutCapture) },
+      };
+      // (Review round 5, Finding 4) the on-disk integrity check binds the
+      // REAL artifact's bytes: the handle AND the record declaration derive
+      // their digest from the actual file.
+      const armedPreloadSha = createHash('sha256').update('// armed preload\n').digest('hex');
+      const armedForWrappedReal = {
+        ...armedForWrapped,
+        stdoutCapture: { ...armedForWrapped.stdoutCapture, preloadPath, preloadSha256: armedPreloadSha },
+        env: { ...armedForWrapped.env, ...syntheticCaptureEnv({ ...armedForWrapped.stdoutCapture, preloadPath, preloadSha256: armedPreloadSha }) },
+        record: {
+          ...armedForWrapped.record,
+          closureStdoutCapture: { ...armedForWrapped.record.closureStdoutCapture, preloadSha256: armedPreloadSha },
+        },
+      };
       const wrappedDesign = await evaluateLiveLaunchPreflight({
         case: 'rescue-interrupt', survivalControlSelector: null,
-        fixture: { workspace, env: { ZCODE_DATA_ROOT: dataRoot }, stdoutCapture: { preloadPath } },
+        fixture: armedForWrappedReal,
       }, { wrappedInterruptRequiredCases: ['rescue-interrupt'] });
       assert.equal(wrappedDesign.ok, false);
       assert.match(String(wrappedDesign.reason ?? ''), /wrapped/i);
@@ -11901,12 +12140,13 @@ process.exit(result.status ?? 1);
       assert.equal(Object.isFrozen(WRAPPED_INTERRUPT_REQUIRED_CASES), true, 'the closed map is frozen');
       const directDesign = await evaluateLiveLaunchPreflight({
         case: 'rescue-interrupt', survivalControlSelector: null,
-        fixture: { workspace, env: { ZCODE_DATA_ROOT: dataRoot }, stdoutCapture: { preloadPath } },
+        fixture: armedForWrappedReal,
       });
       assert.equal(directDesign.ok, true);
     });
 
     test('the live preflight passes an armed fixture and stays neutral for unregistered cases', async (t) => {
+      let armedFixtureShape = null;
       const root = await mkdtemp(join(tmpdir(), 'shell-wait-preflight-ok-'));
       t.after(() => rm(root, { recursive: true, force: true }));
       const workspace = join(root, 'workspace');
@@ -11922,9 +12162,50 @@ process.exit(result.status ?? 1);
         // fixture's recorded declaration to match the frozen §16.4 design
         // facts (the exact-production-constants check is registered in the
         // driver itself, so the armed stub records the same facts).
+        // Local-settlement Task 3: the FULL armed shape (handle + record-level
+        // declaration with matching digests), with the §16.4 survival-control
+        // declaration the scenario asserts.
+        // The FULL armed shape: the REAL control-script file stands in as the
+        // preload artifact (the §24.11 (3) check needs it on disk), the
+        // record-level declaration binds it, and the EFFECTIVE env carries
+        // every capture variable + the NODE_OPTIONS fragment for THIS
+        // preload (review round 2).
         fixture: {
-          workspace, env: { ZCODE_DATA_ROOT: dataRoot }, survivalControlPath: controlPath, stdoutCapture: { preloadPath: controlPath },
-          record: { survivalControl: { selector: 'progress-terminal', lineCount: CONTROL_LINE_COUNT, cadenceMs: CONTROL_CADENCE_MS, designedExitCode: 0, emissionTagClock: 'control-process-monotonic-elapsed-ms-since-start' } },
+          workspace, env: (() => {
+            const digest = (value) => createHash('sha256').update(value).digest('hex');
+            const BS = String.fromCharCode(92);
+            const entryRealpath = join(root, 'installed', 'skills', 'rescue', 'launcher.mjs');
+            const brokerEntryRealpath = join(root, 'installed', 'scripts', 'zcode-broker.mjs');
+            // (Review round 5, Finding 4) the digest derives from the ACTUAL
+            // stand-in artifact bytes (the on-disk integrity check).
+            // (Review round 32, Finding 2) the REAL composer creates the
+            // capture directory; the helper mirrors it.
+            mkdirSync(join(root, 'cap'), { recursive: true, mode: 0o700 });
+            const stdoutCapture = { preloadPath: controlPath, preloadSha256: digest('#!/usr/bin/env node\n'), captureDirectory: join(root, 'cap'), nonce: 'a'.repeat(64), maxBytes: 65536, entryRealpath, brokerEntryRealpath };
+            const closureStdoutCapture = {
+              preload: 'closure-observe.mjs', preloadSha256: stdoutCapture.preloadSha256, maxBytes: 65536,
+              gate: { argv: ['invoke-prepared', 'rescue'], declaredEntryRealpathSha256: digest(entryRealpath) },
+              brokerGate: { declaredBrokerEntryRealpathSha256: digest(brokerEntryRealpath) },
+              identityRecord: { version: 2, roles: { invocation: 'identity.json', brokerDaemon: 'identity-broker.json' } },
+              environmentVariables: [],
+            };
+            armedFixtureShape = { stdoutCapture, closureStdoutCapture };
+            return {
+              ZCODE_DATA_ROOT: dataRoot,
+              ZCODE_SHELL_WAIT_CAPTURE_DIR: stdoutCapture.captureDirectory,
+              ZCODE_SHELL_WAIT_CAPTURE_NONCE: stdoutCapture.nonce,
+              ZCODE_SHELL_WAIT_CAPTURE_ENTRY_REALPATH: stdoutCapture.entryRealpath,
+              ZCODE_SHELL_WAIT_CAPTURE_MAX_BYTES: String(stdoutCapture.maxBytes),
+              ZCODE_SHELL_WAIT_CAPTURE_BROKER_ENTRY_REALPATH: stdoutCapture.brokerEntryRealpath,
+              NODE_OPTIONS: `--require "${controlPath.replace(new RegExp(BS + BS, 'g'), BS + BS + BS + BS).replace(/"/g, BS + '"')}"`,
+            };
+          })(),
+          survivalControlPath: controlPath,
+          stdoutCapture: armedFixtureShape.stdoutCapture,
+          record: {
+            closureStdoutCapture: armedFixtureShape.closureStdoutCapture,
+            survivalControl: { selector: 'progress-terminal', lineCount: CONTROL_LINE_COUNT, cadenceMs: CONTROL_CADENCE_MS, designedExitCode: 0, emissionTagClock: 'control-process-monotonic-elapsed-ms-since-start' },
+          },
         },
       });
       assert.deepEqual(armed, { ok: true, reason: null });
@@ -11984,6 +12265,62 @@ process.exit(result.status ?? 1);
         'the preflight stays scoped to the registered interrupt-case observers (the O1/O2 seam is enforced by arming plus the fail-closed admission, §20.8)');
     });
 
+    /** Local-settlement Task 3 (§25.10): a SETTLED armed local-observation
+     * block (the runtime's persisted, digest-only shape) whose fence facts
+     * agree with the fully-established record's own boundary — the local-duty
+     * conjunct the oracle v5 requires on the complete shape. */
+    function settledLocalProcessBlock() {
+      const digest = (value) => createHash('sha256').update(value).digest('hex');
+      const nonce = 'n'.repeat(64);
+      const transportNonce = 'f'.repeat(64);
+      const boundary = SETTLEMENT_MS + 60_000;
+      const invocationDigest = digest(nonce);
+      const transportDigest = digest(transportNonce);
+      const observation = (pid, startIdentity, scopeDigest, readEpochMs, ppid, startInstant = 1000) => ({
+        localProcessObservationVersion: 1, class: 'os-live-observation', status: 'established', reason: null,
+        observation: { pid, ppid, startIdentity, startInstantEpochMs: startInstant, ppidChangedFromCapture: null, nonceSha256: scopeDigest },
+        queried: { pid, nonceSha256: scopeDigest },
+        readStartedEpochMs: readEpochMs - 100, identityReadEpochMs: readEpochMs - 50,
+        readEpochMs, absenceConfirmed: null,
+      });
+      return {
+        version: 1, armed: true, clock: 'wall-epoch-ms', nonceSha256: invocationDigest,
+        admission: { localProcessObservationVersion: 1, class: 'startup-identity', status: 'established', reason: null, identity: { role: 'invocation', argv: ['invoke-prepared', 'rescue'], entryRealpathSha256: digest('launcher-entry'), pid: 60100, ppid: 600, firstWriteEpochMs: 1000, startOriginMs: 1000.1, firstWritePreciseMs: 1100.5, nonceSha256: invocationDigest }, readStartedEpochMs: 1000, readEpochMs: 1100 },
+        presence: observation(60100, 'S-COMPANION', invocationDigest, 1200, 600),
+        reads: [{ localProcessObservationVersion: 1, class: 'os-live-observation', status: 'absent', reason: 'no-such-process', observation: null, queried: { pid: 60100, nonceSha256: digest(nonce) }, readStartedEpochMs: boundary - 300, readEpochMs: boundary - 200, absenceConfirmed: true }],
+        exit: { localProcessObservationVersion: 1, class: 'exit-absence', status: 'disappeared', reason: null, boundIdentity: { pid: 60100, startIdentity: 'S-COMPANION', nonceSha256: digest(nonce) }, lastVerifiedPresenceEpochMs: 1150, firstVerifiedAbsenceEpochMs: boundary - 200, exitCorroboratedByMeta: false },
+        brokerAdmission: { localProcessObservationVersion: 1, class: 'startup-identity', status: 'established', reason: null, identity: { role: 'broker-daemon', argv: ['broker-entry'], entryRealpathSha256: digest('broker-entry'), pid: 60200, ppid: 60100, firstWriteEpochMs: 3000, startOriginMs: 3000.2, firstWritePreciseMs: 3100.6, nonceSha256: invocationDigest }, readStartedEpochMs: 1100, readEpochMs: 1150 },
+        brokerObservation: observation(60200, 'S-DAEMON', invocationDigest, 3300, 60100, 3000),
+        transportObservation: observation(60300, 'S-TRANSPORT', transportDigest, 1400, 60200, 5000),
+        // Review round 8 (Finding 1): the generation-bound PRE-FENCE
+        // transport-exit fact the transport's credit owes.
+        transportExit: { localProcessObservationVersion: 1, class: 'os-live-observation', status: 'absent', reason: 'no-such-process', observation: null, queried: { pid: 60300, nonceSha256: transportDigest }, readStartedEpochMs: 5200, identityReadEpochMs: 5250, readEpochMs: 5300, absenceConfirmed: true },
+        // Review round 3 (Finding 4); round 4 (Finding 2): the refreshed
+        // endpoint markers ride the honest positive — generation-bound to
+        // the duty slots, lifetime-consistent at the uniform bound, the
+        // marker claiming the daemon's parentage, the transport's OWN scope
+        // and its OWN persisted write instant.
+        ancestryEndpoints: {
+          companion: observation(60100, 'S-COMPANION', invocationDigest, 4500, 600, 1000),
+          daemon: observation(60200, 'S-DAEMON', invocationDigest, 4600, 60100, 3000),
+          transportMarker: { pid: 60300, ppid: 60200, nonceSha256: transportDigest, markerEpochMs: 4400 },
+        },
+        duties: { localProcessObservationVersion: 1, class: 'local-duty-verdict', settled: true, duties: [
+          { duty: 'invocation-process', status: 'established', reasons: [], identity: { pid: 60100, startIdentity: 'S-COMPANION', nonceSha256: invocationDigest } },
+          { duty: 'broker-daemon', status: 'established', reasons: [], identity: { pid: 60200, startIdentity: 'S-DAEMON', nonceSha256: invocationDigest } },
+          { duty: 'transport-descendant', status: 'established', reasons: [], identity: { pid: 60300, startIdentity: 'S-TRANSPORT', nonceSha256: transportDigest } },
+        ] },
+        stoppedAt: null, fenceAtMs: null,
+        cutoffAtMs: null, cleanupBoundaryAtMs: boundary, composedAtMs: boundary - 50,
+        // Review round 2: the persisted ancestry join (both hops credited —
+        // the same §25.4 two-hop attribution the offline join re-verifies).
+        ancestry: { localProcessObservationVersion: 1, class: 'ancestry-join', nonceSha256: invocationDigest, companionToTransportAttributed: true, hops: [
+          { hop: 'companion-to-daemon', status: 'established', reason: null },
+          { hop: 'daemon-to-transport', status: 'established', reason: null },
+        ] },
+      };
+    }
+
     /** A synthetic PERSISTED record in the exact buildCaseRecord schema, fully
      * established on every Gate D layer (each test mutates one dimension;
      * top-level overrides merge shallowly). */
@@ -12032,6 +12369,19 @@ process.exit(result.status ?? 1);
         // record carries an adjudicated control.
         survivalControlSelector: 'progress-terminal',
         survivalControl: { noCollateralQualified: true, reason: null, postDelivery: 'alive', releaseQualificationVersion: 1 },
+        // Local-settlement Task 3 (oracle v5): the local-duty block is a
+        // REQUIRED conjunct on the fully-established shape.
+        localProcess: settledLocalProcessBlock(),
+        // Review round 6 (Finding 1): the persisted capture declaration the
+        // offline join binds the admissions' entry digests and the argv
+        // selector against.
+        stdoutCaptureDeclaration: {
+          preload: 'closure-observe.mjs', preloadSha256: createHash('sha256').update('preload-bytes').digest('hex'), maxBytes: 65536,
+          gate: { argv: ['invoke-prepared', 'rescue'], declaredEntryRealpathSha256: createHash('sha256').update('launcher-entry').digest('hex') },
+          brokerGate: { declaredBrokerEntryRealpathSha256: createHash('sha256').update('broker-entry').digest('hex') },
+          identityRecord: { version: 2, roles: { invocation: 'identity.json', brokerDaemon: 'identity-broker.json' } },
+          environmentVariables: [],
+        },
       };
       if (typeof overrides === 'function') overrides(record);
       else if (overrides !== null && typeof overrides === 'object') Object.assign(record, overrides);
@@ -12406,7 +12756,7 @@ process.exit(result.status ?? 1);
       const record = await runShellWaitCase(
         { case: 'rescue-long', codexBinary: process.execPath, sourceSha: 'a'.repeat(40), output, workerDurationMs: 1000, capMs: null, pollMs: 3_600_000, budgetMs: 2000 },
         {
-          createFixture: async () => ({
+          createFixture: async () => armSyntheticFixture({
             workspace: join(temporary, 'ws'), codexHome: join(temporary, 'home'),
             installedRoot: join(temporary, 'installed'), env: { CODEX_HOME: join(temporary, 'home') },
             record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
@@ -12594,7 +12944,7 @@ process.exit(result.status ?? 1);
       const record = await runShellWaitCase(
         { case: 'rescue-interrupt', codexBinary: process.execPath, sourceSha: 'a'.repeat(40), output, workerDurationMs: 1000, capMs: null, pollMs: 3_600_000, budgetMs: 2000 },
         {
-          createFixture: async () => ({
+          createFixture: async () => armSyntheticFixture({
             workspace: join(temporary, 'ws'), codexHome: join(temporary, 'home'),
             installedRoot: join(temporary, 'installed'), env: { CODEX_HOME: join(temporary, 'home') },
             record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
@@ -16642,7 +16992,7 @@ process.exit(result.status ?? 1);
       const record = await runShellWaitCase(
         { case: 'rescue-long', codexBinary: process.execPath, sourceSha: 'a'.repeat(40), output, workerDurationMs: 1000, capMs: null, pollMs: 3_600_000, budgetMs: 2000 },
         {
-          createFixture: async () => ({
+          createFixture: async () => armSyntheticFixture({
             workspace: join(temporary, 'ws'), codexHome: join(temporary, 'home'),
             installedRoot: join(temporary, 'installed'), env: { CODEX_HOME: join(temporary, 'home') },
             record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
@@ -16818,7 +17168,7 @@ process.exit(result.status ?? 1);
       const record = await runShellWaitCase(
         { case: 'rescue-long', codexBinary: process.execPath, sourceSha: 'a'.repeat(40), output, workerDurationMs: 1000, capMs: null, pollMs: 3_600_000, budgetMs: 2000 },
         {
-          createFixture: async () => ({
+          createFixture: async () => armSyntheticFixture({
             workspace: join(temporary, 'ws'), codexHome: join(temporary, 'home'),
             installedRoot: join(temporary, 'installed'), env: { CODEX_HOME: join(temporary, 'home') },
             record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
@@ -18658,13 +19008,14 @@ process.exit(result.status ?? 1);
       t.after(() => rm(root, { recursive: true, force: true }));
       const captured = [];
       const executor = async () => ({ inconclusive: null, evidence: { count: 0, truncated: false, excerpts: [] } });
-      const bareFixture = {
+      // Local-settlement Task 3: the armed re-analysis shape.
+      const bareFixture = armSyntheticFixture({
         workspace: '/private/tmp/mx-ws', codexHome: '/private/tmp/mx-home',
         installedRoot: '/private/tmp/mx-installed', env: { HOME: '/private/tmp/mx-home' },
         survivalControlPath: '/private/tmp/mx-ws/survival-control.mjs',
         record: { variant: 'candidate', appliedArtifacts: [] },
         dispose: async () => {},
-      };
+      });
       await runShellWaitCase(
         {
           case: 'rescue-interrupt', codexBinary: process.execPath, sourceSha: 'a'.repeat(40),
@@ -18715,13 +19066,14 @@ process.exit(result.status ?? 1);
       const root = await mkdtemp(join(tmpdir(), 'shell-wait-matrix-record-'));
       t.after(() => rm(root, { recursive: true, force: true }));
       const executor = async () => ({ inconclusive: null, evidence: { count: 0, truncated: false, excerpts: [] } });
-      const bareFixture = {
+      // Local-settlement Task 3: the armed re-analysis shape.
+      const bareFixture = armSyntheticFixture({
         workspace: '/private/tmp/mxr-ws', codexHome: '/private/tmp/mxr-home',
         installedRoot: '/private/tmp/mxr-installed', env: { HOME: '/private/tmp/mxr-home' },
         survivalControlPath: '/private/tmp/mxr-ws/survival-control.mjs',
         record: { variant: 'baseline', appliedArtifacts: [] },
         dispose: async () => {},
-      };
+      });
       const canonicalFixture = {
         ...bareFixture,
         record: {
@@ -22443,6 +22795,11 @@ process.exit(result.status ?? 1);
       terminalWinner: 'succeeded',
       naturalCompletionObserved: false,
       statusObservationTimeoutOnly: false,
+      // Local-settlement Task 3 (oracle v5): the fully-established input
+      // composes the local-duty conjunct (the join's §25.7-fenced mapping of
+      // an armed, settled local-observation block) — the complete shape
+      // qualifies; its absence is the named-unadjudicated refusal.
+      localProcessDuties: { contractVersion: 1, settled: true, duties: [], exit: { status: 'disappeared' }, fence: { operativeAtMs: 20_000, kind: 'measurement-cutoff' }, refusals: [] },
       ...over,
     });
 
@@ -22450,7 +22807,7 @@ process.exit(result.status ?? 1);
       const result = evaluateNativeInterruptionSettlement(settlementInput());
       assert.equal(result.qualified, true);
       assert.deepEqual(result.reasons, []);
-      assert.deepEqual(result.layers, { delivery: true, turnSettlement: true, companion: true, durableObligations: true, noCollateral: true });
+      assert.deepEqual(result.layers, { delivery: true, turnSettlement: true, companion: true, durableObligations: true, noCollateral: true, localProcess: true });
       assert.equal(result.terminalWinner, 'succeeded', 'the production winner is recorded, never coerced');
     });
 
@@ -25544,7 +25901,7 @@ describe('cleanup-boundary attribution for exit-code settlements (round-9 review
       const record = await runShellWaitCase(
         { case: 'rescue-long', codexBinary: process.execPath, sourceSha: 'a'.repeat(40), output, workerDurationMs: 1000, capMs: null, pollMs: 3_600_000, budgetMs: 2000 },
         {
-          createFixture: async () => ({
+          createFixture: async () => armSyntheticFixture({
             workspace: join(temporary, 'ws'), codexHome: join(temporary, 'home'),
             installedRoot: join(temporary, 'installed'), env: { CODEX_HOME: join(temporary, 'home') },
             record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
@@ -26152,11 +26509,14 @@ describe('cleanup-boundary attribution for exit-code settlements (round-9 review
       cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: false, codexTerminated: false, nativeInterruptionClaimed: false, errors: [] },
       timeline: null,
     };
-    const fixtureStub = {
+    // Local-settlement Task 3: the armed shape rides the re-analysis stub (the
+    // round-trip pipeline constructor stays exercised; the offline join still
+    // maps its records as legacy unless they carry the block).
+    const fixtureStub = armSyntheticFixture({
       workspace: '/private/tmp/t4-ws', codexHome: '/private/tmp/t4-home',
       installedRoot: '/private/tmp/t4-installed', env: { HOME: '/private/tmp/t4-home' },
       record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
-    };
+    });
     /** The SAME watch/observer path: the REAL evidence observer aborts on the
      * unknown cell and its result feeds the REAL mapper. */
     const mapAbort = (rolloutsOverrides = {}) => {
@@ -26499,11 +26859,14 @@ describe('cleanup-boundary attribution for exit-code settlements (round-9 review
       cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: false, codexTerminated: false, nativeInterruptionClaimed: false, errors: [] },
       timeline: null,
     };
-    const fixtureStub = {
+    // Local-settlement Task 3: the armed shape rides the re-analysis stub (the
+    // round-trip pipeline constructor stays exercised; the offline join still
+    // maps its records as legacy unless they carry the block).
+    const fixtureStub = armSyntheticFixture({
       workspace: '/private/tmp/r2-ws', codexHome: '/private/tmp/r2-home',
       installedRoot: '/private/tmp/r2-installed', env: { HOME: '/private/tmp/r2-home' },
       record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
-    };
+    });
     /** The REAL evidence observer aborts on the unsupported shape and its
      * result feeds the REAL mapper — the same public seam as §23.4. */
     const mapRound2 = (overrides = {}) => {
@@ -26592,11 +26955,14 @@ describe('cleanup-boundary attribution for exit-code settlements (round-9 review
       ...overrides,
     });
     const identityUnobserved = () => ({ aggregate: 'unestablished', reasons: ['durable-identity-unobserved'] });
-    const fixtureStub = {
+    // Local-settlement Task 3: the armed shape rides the re-analysis stub (the
+    // round-trip pipeline constructor stays exercised; the offline join still
+    // maps its records as legacy unless they carry the block).
+    const fixtureStub = armSyntheticFixture({
       workspace: '/private/tmp/t3-sampling-ws', codexHome: '/private/tmp/t3-sampling-home',
       installedRoot: '/private/tmp/t3-sampling-installed', env: { HOME: '/private/tmp/t3-sampling-home' },
       record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
-    };
+    });
     const heldStub = {
       endedBeforeGate: false, budgetExpired: false, processAliveWhileHeld: true,
       result: { code: null, stdout: '', stderr: '' },
@@ -27313,11 +27679,14 @@ describe('cleanup-boundary attribution for exit-code settlements (round-9 review
       cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: false, codexTerminated: false, nativeInterruptionClaimed: false, errors: [] },
       timeline: null,
     };
-    const fixtureStub = {
+    // Local-settlement Task 3: the armed shape rides the re-analysis stub (the
+    // round-trip pipeline constructor stays exercised; the offline join still
+    // maps its records as legacy unless they carry the block).
+    const fixtureStub = armSyntheticFixture({
       workspace: '/private/tmp/fix1-ws', codexHome: '/private/tmp/fix1-home',
       installedRoot: '/private/tmp/fix1-installed', env: { HOME: '/private/tmp/fix1-home' },
       record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
-    };
+    });
     /** The REAL evidence observer aborts on the unknown cell and its result
      * feeds the REAL mapper — the same public seam as §23.4/§23.8. */
     const mapFix1 = (overrides = {}) => {
@@ -27556,8 +27925,8 @@ describe('cleanup-boundary attribution for exit-code settlements (round-9 review
     }
 
     test('the join carries its own versioned identity (the §19.9 v1/v2 precedent mechanism)', () => {
-      assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 5, 'join v5 = the preserved pre-cutoff snapshot: winner credit under its own pre-fence instant and owning-Root binding, plus latest-creditable layer evidence (§24.11 codex gate fixes A + round 3); v4 = the §24.8 wired-schedule input growth (v3 §24.4 relocated contract; v2 identity wiring + samples; v1 unversioned recorded behavior)');
-      assert.equal(NATIVE_INTERRUPTION_ORACLE_VERSION, 4, 'oracle v4 = the §24.4 relocated window contract (v3 join growth, v2 admission conjunct, v1 freeze, §19.9 precedent)');
+      assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 37, 'join v37 (2026-10-30 local-settlement Task 3 review round 37): a pre-request baseline witness owes the §25.7 completion fence (provesPreFenceCompletion — a post-fence or unprovable-completion witness is no witness, the runtime postFence naming honored);  a pre-request baseline witness must postdate the admitted generation record start (the admission-observation-stale lower bound — a carried instant before the process existed is temporally impossible cached evidence and is no witness);  (the observed pid and nonce digest must match the admitted invocation — a query addressed to the invocation never witnesses it, the round-20 queried-binding rule mirrored on the observed side);  the pre-interruption baseline owes a VERIFIED presence witness collected before the admitted request (at least one interval-valid same-generation presence instant strictly earlier than the request — an earlier process start alone never settles; the same conservative-strict ordering refuses companion-baseline-unestablished);  the refreshed ancestry endpoint creation instant must AGREE with its admission-backed observation (a conflicting instant refuses ancestry-endpoint-instant-foreign) and the preflight requires PRIVATE capture-directory permissions (exactly 0700 on POSIX — the record readers reject every startup record otherwise);  the retained invocation presence reads validate like the transport replay (the round-24/25 pattern — a torn interval or unprovable timestamps refuse by name before the horizon and supersession walks) and the preflight requires a usable capture directory;  the observed Companion generation must demonstrably predate the interrupt request (the admitted request timestamp/bounds bind the baseline — ordering that cannot be established refuses companion-baseline-unestablished) and the NODE_OPTIONS tokenizer rejects unfinished quoting states (an unterminated double-quote or a dangling escape refuses by name — the host would exit before loading the observer);  the fence echoes compare symmetrically (a missing-versus-present mismatch refuses cleanup-boundary-echo-mismatch / cutoff-echo-mismatch in both directions — cleanup-time evidence never credits across a missing echo) and the NODE_OPTIONS tokenizer matches Node exactly (apostrophes are ordinary characters, backslash escapes only inside double quotes — the inherited-apostrophe run passes, the apostrophe-quoted path refuses); v29 (round 27): a replacement-claiming retained invocation read owes a valid completion timestamp (a missing or malformed one refuses exit-reuse-read-instant-unprovable instead of being silently discarded by the recency filter), and the NODE_OPTIONS preflight parses the string into shell-ish option tokens (a --require fragment inside another option value never counts as loading the declared preload); v28 (round 26): the retained transport reads validate their completion stamps (a missing or nonnumeric completion refuses observation-instant-unprovable — torn evidence is never silently excluded from the presence horizon) and the transport exit validates its supplied carried identity instants (in-interval + safe integer, else transport-exit-carried-instant-outside-interval — the invocation-absence pattern);  a retained transport retry read with an INVALID collection interval refuses explicitly (a true inversion is observation-interval-inverted, a missing start when credit depends on it is observation-start-unprovable) — torn evidence cannot turn an otherwise contradictory replay into a credited local-process layer;  the retained transport retry reads validate their identity instants (the duty-observation/ancestry-endpoint pattern — malformed instants refuse by name, supplied instants must sit inside the validated collection interval) and the captured transport start identity persists with the marker (schema-additive) binding the replayed transport observation — a successor generation cannot settle the original transport duty;  a supplied carried identity instant is validated against its read collection interval BEFORE the reuse latch recency filtering — an out-of-interval or malformed carried instant is torn replacement evidence refusing by name (exit-reuse-carried-instant-outside-interval), never old evidence;  every credited observation binds its queried pid/scope digest to the observed identity (the duty echoes and the ancestry endpoints) and a present-but-malformed identity-read instant refuses by name instead of falling back to the completion;  the persisted transport retry sequence latches replacement evidence (any generation-bound read carrying a different start identity) and absence timestamps must be safe integers before crediting (nonnumeric instants refuse by name);  a live same-generation transport retry advances the presence horizon and persists the full presence sequence for replay, and the exit supersession compares the identity-read instant (an async completion never re-wins);  the correlated absence validates its collection interval (inverted intervals are torn evidence), the SELECTED daemon endpoint re-verifies its parentage against the presence/record rule and a tied transport absence keeps the retry loop sampling; v20 (round 16) = the duty-observation identity-read containment, the contradictory invocation-absence shape refusal and the runtime latest-same-generation-presence tie continuation; v19 (round 15) = the declared-scope binding, the identity-bearing absence reuse latch and the walked presence horizon; v18 (round 14) = the tied-absence collection continuation, the transport-exit recency/carried-identity re-adjudication and the incomplete-interval start refusals; v17 (round 13) = the identity-read containment check, the FROZEN argv selector enforced over mere persisted agreement, and the persisted block-version gate; v16 (round 12) = the collection-interval validity for every fence-crediting read + the consistent materialization-unavailable provenance fallback; v15 (round 11) = the invocation-absence strict tie, the contradictory-duplicate-duty-slot refusal and the selected-endpoint parentage rule covering a failed refresh; v14 (round 10) = the transport PID-reuse latch + the strict transport-absence tie rule; v13 (round 9) = the transport-exit recency/carried-identity re-adjudication; v12 (round 8) = the generation-bound PRE-FENCE transport-exit conjunct, the refreshed-presence horizon/supersession and the admitted-record capture-time parentage');
+      assert.equal(NATIVE_INTERRUPTION_ORACLE_VERSION, 5, 'oracle v5 (2026-10-30 local-settlement Task 3, report §25.10) = the local-duty conjunct composes the §25.5 applicable local duties into the final acceptance (legacy shapes fail closed by name)');
       const joined = nativeInterruptionGateDInput(fix2Record());
       assert.equal(joined.gateDJoinVersion, NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 'the join output marks its own version');
       const verdict = evaluateNativeInterruptionSettlement(joined);
@@ -27691,7 +28060,7 @@ describe('cleanup-boundary attribution for exit-code settlements (round-9 review
       const withoutSamples = nativeInterruptionGateDInput(fix2Record((record) => {
         delete record.child.durableSamples;
       }));
-      assert.equal(withoutSamples.gateDJoinVersion, 5, 'the output is marked as the new join version — never re-stamped as the old one');
+      assert.equal(withoutSamples.gateDJoinVersion, 37, 'the output is marked as the new join version — never re-stamped as the old one (the §25.10 local-duty join)');
       assert.deepEqual(withoutSamples.durableSamplesJoin, {
         considered: false,
         boundaryRecorded: true,
@@ -28187,11 +28556,14 @@ describe('cleanup-boundary attribution for exit-code settlements (round-9 review
       cleanup: { label: 'observation', releasedGate: true, verifiedProcessTerminated: false, codexTerminated: false, nativeInterruptionClaimed: false, errors: [] },
       timeline: null,
     };
-    const fixtureStub = {
+    // Local-settlement Task 3: the armed shape rides the re-analysis stub (the
+    // round-trip pipeline constructor stays exercised; the offline join still
+    // maps its records as legacy unless they carry the block).
+    const fixtureStub = armSyntheticFixture({
       workspace: '/private/tmp/r3-ws', codexHome: '/private/tmp/r3-home',
       installedRoot: '/private/tmp/r3-installed', env: { HOME: '/private/tmp/r3-home' },
       record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
-    };
+    });
     const mapMixed = () => {
       const rollouts = mixedRollouts();
       const evidence = inspectShellWaitEvidence({

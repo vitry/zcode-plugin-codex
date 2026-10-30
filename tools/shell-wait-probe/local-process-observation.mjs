@@ -183,7 +183,7 @@ function loadMaterializedHelperModules() {
  * identity, and fake-ZCode nonce environment marker were all re-verified. A
  * stale, reparented, restarted, or nonce-mismatched PID is never signalled.
  */
-const FAKE_ZCODE_NONCE_VARIABLE = 'FAKE_ZCODE_PROCESS_NONCE';
+export const FAKE_ZCODE_NONCE_VARIABLE = 'FAKE_ZCODE_PROCESS_NONCE';
 
 /** @param {string} nonce */
 export function validateProcessNonce(nonce) {
@@ -340,6 +340,13 @@ export async function inspectVerifiedProcessIdentity(pid, expectedNonce, nonceVa
   // platform/ps/environ seams — never a fabricated error string — so the
   // inspector's actual error paths are exercised on every host.
   const platform = osSeams.platform ?? process.platform;
+  // (Review round 6, Finding 3) the observation window: a caller-supplied
+  // abort signal honored BETWEEN the inspector's reads — no read may START
+  // after the window closed (a started read keeps its own semantics; only
+  // the NEXT one is prevented). The named error rides the caller's existing
+  // inspection-failure path.
+  const inspectorWindowClosed = () => (/** @type {any} */ (osSeams)).abortSignal?.aborted === true;
+  const windowClosedError = () => Object.assign(new Error('the observation window closed over the in-flight inspection'), { observationWindowClosed: true });
   // The seam path applies the SAME derivation as the real darwin reader
   // (startIdentity = the lstart text), so a supplied ps seam returns the
   // exact shape the real double-read produces.
@@ -352,7 +359,9 @@ export async function inspectVerifiedProcessIdentity(pid, expectedNonce, nonceVa
     : (platform === 'linux' ? readLinuxProcessStart : (/** @type {number} */ observedPid) => readMacProcessStart(observedPid, osSeams));
   const before = await readStart(pid);
   if (!before) return undefined;
+  if (inspectorWindowClosed()) throw windowClosedError();
   const markerState = osSeams.environ !== undefined ? osSeams.environ : await readProcessEnvironmentMarker(pid, expectedNonce, nonceVariable, osSeams);
+  if (inspectorWindowClosed()) throw windowClosedError();
   // ROUND-25: a NONCE-VERIFICATION failure is NOT an observed start-identity
   // change — its message deliberately does NOT carry 'identity changed', so
   // it maps to the named non-reuse torn class (never latched as reuse). Only
@@ -380,6 +389,7 @@ export async function inspectVerifiedProcessIdentity(pid, expectedNonce, nonceVa
     // mid-double-read reuse class).
     throw observedThenGoneError(before.startIdentity);
   }
+  if (inspectorWindowClosed()) throw windowClosedError();
   const after = await readStart(pid);
   if (!after) {
     // ROUND-28: the same ride when the pid vanished before the SECOND
@@ -625,6 +635,27 @@ function validateCaptureNonce(nonce, label) {
   }
 }
 
+/**
+ * The caller-supplied stamp clock: a FIXED epoch (number — every sample
+ * returns it, the pre-review contract) or a THUNK whose every call stamps
+ * ONE sample (the runtime's per-path completion discipline — a completion
+ * sampled after awaited work reflects the work's actual completion, never
+ * the dispatch instant). Undefined → Date.now(). Every sample is validated
+ * like the old fixed read start (fail-closed, never a guessed stamp).
+ * @param {number | (() => number) | undefined} clock
+ * @returns {() => number}
+ */
+function completionClock(clock) {
+  return () => {
+    const sampled = typeof clock === 'function' ? clock() : clock;
+    const value = sampled ?? Date.now();
+    if (!Number.isSafeInteger(value) || value <= 0) {
+      throw invalidLocalProcessInput('the read epoch must be a positive integer.');
+    }
+    return value;
+  };
+}
+
 /** @typedef {'invocation' | 'broker-daemon'} IdentityRole */
 
 /**
@@ -758,7 +789,7 @@ function validateIdentityRecord(record, role) {
  *   nonce: string,
  *   role?: IdentityRole,
  *   expectedEntryRealpath?: string,
- *   nowEpochMs?: number,
+ *   nowEpochMs?: number | (() => number),
  *   readRecordFile?: (root: string, path: string, maximumBytes: number) => Promise<unknown>,
  * }} input
  * @returns {Promise<StartupIdentityAdmission>}
@@ -776,10 +807,8 @@ export async function admitStartupIdentityRecord(input) {
   if (expectedEntry !== undefined && (typeof expectedEntry !== 'string' || expectedEntry.length === 0 || !isAbsolute(expectedEntry))) {
     throw invalidLocalProcessInput('the expected entry realpath must be an absolute path.');
   }
-  const readStartedEpochMs = input.nowEpochMs ?? Date.now();
-  if (!Number.isSafeInteger(readStartedEpochMs) || readStartedEpochMs <= 0) {
-    throw invalidLocalProcessInput('the read epoch must be a positive integer.');
-  }
+  const sampleStampMs = completionClock(input.nowEpochMs);
+  const readStartedEpochMs = sampleStampMs();
   if (input.readRecordFile !== undefined && typeof input.readRecordFile !== 'function') {
     throw invalidLocalProcessInput('the record read seam must be a function.');
   }
@@ -799,7 +828,7 @@ export async function admitStartupIdentityRecord(input) {
   // integrity checks. A record created during the awaits can never be
   // reported as observed before its own creation, and a read completing
   // after a cutoff carries a post-cutoff timestamp.
-  const sampleCompletion = () => input.nowEpochMs ?? Date.now();
+  const sampleCompletion = () => sampleStampMs();
   if (recordStats === 'unreadable') {
     return identityAdmissionVerdict('invalid', 'identity-record-unreadable', sampleCompletion(), readStartedEpochMs);
   }
@@ -972,7 +1001,7 @@ export async function confirmProcessAbsenceWithOs(pid, runProcessSeam, seams = {
  * documented /proc resolution bound for same-instant comparisons is
  * `LINUX_PROC_RESOLUTION_MS`.
  */
-const LINUX_BTIME_UNCERTAINTY_MS = 1000;
+export const LINUX_BTIME_UNCERTAINTY_MS = 1000;
 
 /**
  * The documented /proc creation-instant resolution bound (~10ms: starttime
@@ -980,7 +1009,7 @@ const LINUX_BTIME_UNCERTAINTY_MS = 1000;
  * record's write cannot be distinguished from the writer's own — named
  * `generation-start-ambiguous`, never established-by-default.
  */
-const LINUX_PROC_RESOLUTION_MS = 10;
+export const LINUX_PROC_RESOLUTION_MS = 10;
 
 /** The cached Linux boot clock ({ btimeMs, hz }); resolved once per process. @type {{ btimeMs: number, hz: number } | null} */
 let linuxBootClockCache = null;
@@ -1083,7 +1112,9 @@ async function resolveObservationStartInstantMs(startIdentity, deps = {}) {
  *   nonce: string,
  *   expectedStartIdentity?: string,
  *   capturedPpid?: number,
- *   nowEpochMs?: number,
+ *   nowEpochMs?: number | (() => number),
+ *   nonceVariable?: string,
+ *   abortSignal?: AbortSignal,
  *   inspect?: (pid: number, nonce: string) => Promise<{ pid: number, ppid: number, startIdentity: string, nonce: string } | undefined>,
  *   absenceConfirmation?: (pid: number) => Promise<'absent' | 'unconfirmed'>,
  *   linuxClock?: { statText?: string, clkTick?: string, clock?: { btimeMs: number, hz: number } },
@@ -1102,11 +1133,31 @@ export async function observeLocalProcess(input) {
   if (input.capturedPpid !== undefined && (!Number.isSafeInteger(input.capturedPpid) || input.capturedPpid <= 0)) {
     throw invalidLocalProcessInput('the captured ppid must be a positive safe integer.');
   }
-  const readStartedEpochMs = input.nowEpochMs ?? Date.now();
-  if (!Number.isSafeInteger(readStartedEpochMs) || readStartedEpochMs <= 0) {
-    throw invalidLocalProcessInput('the read epoch must be a positive integer.');
+  const sampleStampMs = completionClock(input.nowEpochMs);
+  const readStartedEpochMs = sampleStampMs();
+  // Review round 3 (Finding 1): the nonce VARIABLE the default inspector
+  // verifies is a caller option — the transport's marker machinery lives in
+  // FAKE_ZCODE_PROCESS_NONCE (its independently generated nonce, never the
+  // capture scope's variable its inherited environment also carries), while
+  // the invocation/broker records verify the capture scope variable.
+  if (input.nonceVariable !== undefined && (typeof input.nonceVariable !== 'string' || !/^[A-Z][A-Z0-9_]{0,63}$/u.test(input.nonceVariable))) {
+    throw invalidLocalProcessInput('the nonce variable must be an environment variable name.');
   }
-  const inspect = input.inspect ?? ((observedPid, observedNonce) => inspectVerifiedProcessIdentity(observedPid, observedNonce, CAPTURE_NONCE_VARIABLE, input.osSeams));
+  const nonceVariable = input.nonceVariable ?? CAPTURE_NONCE_VARIABLE;
+  // (Review round 6, Finding 3) the caller's abort signal is honored
+  // BETWEEN reads — here (entry, post-inspection, pre-confirmation,
+  // pre-boot-clock) and inside the default inspector (threaded through the
+  // osSeams so its double-read never starts a read after the window closed).
+  // A started read keeps its own semantics; only the NEXT one is prevented —
+  // observation work must not outlive the turn's teardown.
+  if (input.abortSignal !== undefined && (typeof input.abortSignal !== 'object' || typeof input.abortSignal.addEventListener !== 'function' || typeof input.abortSignal.aborted !== 'boolean')) {
+    throw invalidLocalProcessInput('the abort signal must be an AbortSignal-shaped object.');
+  }
+  const windowClosed = () => input.abortSignal?.aborted === true;
+  const inspectSeams = input.osSeams || input.abortSignal
+    ? { ...(input.osSeams ?? {}), ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}) }
+    : input.osSeams;
+  const inspect = input.inspect ?? ((observedPid, observedNonce) => inspectVerifiedProcessIdentity(observedPid, observedNonce, nonceVariable, inspectSeams));
   if (!isInspectFunction(inspect)) throw invalidLocalProcessInput('the inspection seam must be a function.');
   if (input.absenceConfirmation !== undefined && typeof input.absenceConfirmation !== 'function') {
     throw invalidLocalProcessInput('the absence confirmation seam must be a function.');
@@ -1128,6 +1179,9 @@ export async function observeLocalProcess(input) {
    * @returns {Promise<LocalProcessObservation>}
    */
   const absenceOutcome = async () => {
+    if (windowClosed()) {
+      return observationVerdict('unestablished', 'observation-window-closed', sampleCompletion(), queried, readStartedEpochMs);
+    }
     if (confirmAbsence === null) {
       return observationVerdict('absent', 'process-absent', sampleCompletion(), queried, readStartedEpochMs, null);
     }
@@ -1147,6 +1201,9 @@ export async function observeLocalProcess(input) {
     }
     return observationVerdict('absent', 'process-absent', completedEpochMs, queried, readStartedEpochMs, true);
   };
+  if (windowClosed()) {
+    return observationVerdict('unestablished', 'observation-window-closed', sampleStampMs(), queried, readStartedEpochMs);
+  }
   let observed;
   let inspectionError = null;
   try {
@@ -1154,11 +1211,17 @@ export async function observeLocalProcess(input) {
   } catch (error) {
     inspectionError = error;
   }
+  // The window closed over the in-flight inspection: the read is torn by
+  // the shared window — the NAMED unfinished fact, never the inspection's
+  // own classification.
+  if (windowClosed()) {
+    return observationVerdict('unestablished', 'observation-window-closed', sampleStampMs(), queried, readStartedEpochMs);
+  }
   // The COMPLETION instant is sampled per path, only after ALL awaited
   // evidence work on that path has finished (the inspection, and on absence
   // paths the whole OS confirmation) — never a pre-await sample, so no
   // verdict timestamp can predate the work that produced it.
-  const sampleCompletion = () => input.nowEpochMs ?? Date.now();
+  const sampleCompletion = () => sampleStampMs();
   if (inspectionError !== null) {
     const readEpochMs = sampleCompletion();
     // ROUND-23: an inspector-detected IDENTITY change (a PID reused between
@@ -1256,6 +1319,9 @@ export async function observeLocalProcess(input) {
   // identity reads' validity horizon), never on the whole-observation
   // completion.
   const identityReadEpochMs = sampleCompletion();
+  if (windowClosed()) {
+    return observationVerdict('unestablished', 'observation-window-closed', sampleCompletion(), queried, readStartedEpochMs);
+  }
   let startInstantEpochMs = null;
   try {
     startInstantEpochMs = await resolveObservationStartInstantMs(/** @type {any} */ (observed).startIdentity, input);
@@ -1721,6 +1787,7 @@ function joinEndpointFacts(observation, label) {
  *   transportMarker: { pid: number, ppid: number, nonce: string },
  *   expectedTransportNonce?: string,
  *   markerEpochMs?: number,
+ *   daemonCaptureParentPid?: number,
  * }} input
  * @returns {{ localProcessObservationVersion: number, class: 'ancestry-join', nonce: string, hops: AncestryHop[], companionToTransportAttributed: boolean }}
  */
@@ -1743,6 +1810,16 @@ export function joinAncestryHops(input) {
   // bound by ancestry alone and the marker nonce rides as its own fact.
   const expectedTransportNonce = input.expectedTransportNonce;
   if (expectedTransportNonce !== undefined) validateCaptureNonce(expectedTransportNonce, 'expected transport');
+  // (Review round 7, Finding 2) the CAPTURE-TIME parent of the daemon: when
+  // supplied (a positive pid), hop 1 verifies the ppid chain against THIS
+  // link — the same daemon generation observed LATER under a changed parent
+  // (the Companion exited; the detached broker reparented) demonstrates
+  // reparenting, never a generation change, and its LATER read provides the
+  // lifetime bound.
+  const daemonCaptureParentPid = input.daemonCaptureParentPid;
+  if (daemonCaptureParentPid !== undefined && (!Number.isSafeInteger(daemonCaptureParentPid) || daemonCaptureParentPid <= 0)) {
+    throw invalidLocalProcessInput('the daemon capture-time parent pid must be a positive integer.');
+  }
   // The marker's OWN time evidence (review round 17): when supplied, the
   // daemon→transport hop verifies generation-compatible lifetimes; when
   // absent, the hop is named-unestablished (never bridged).
@@ -1826,9 +1903,13 @@ export function joinAncestryHops(input) {
     companionToDaemon = hopVerdict('unestablished', 'hop-endpoint-unestablished', null);
   } else if (daemonFacts.nonce !== nonce || companionFacts.nonce !== nonce) {
     companionToDaemon = hopVerdict('unestablished', 'scope-nonce-mismatch', null);
-  } else if (daemonFacts.ppid !== companionFacts.pid) {
+  } else if ((Number.isSafeInteger(daemonCaptureParentPid) ? daemonCaptureParentPid : daemonFacts.ppid) !== companionFacts.pid) {
     // A changed parent NEVER proves death: the equality is a CAPTURE-TIME
-    // fact; reparenting after the Companion's exit is the expected shape.
+    // fact — verified against the capture-time parent link when the caller
+    // supplies one (the observed endpoint may be a LATER same-generation
+    // read under a changed parent), else against the observation's own
+    // capture-time ppid. Reparenting after the Companion's exit is the
+    // expected shape.
     companionToDaemon = hopVerdict('unestablished', 'daemon-ppid-mismatch-at-capture', 'capture-time-only');
   } else if (companionFacts.startInstantEpochMs === undefined || daemonFacts.startInstantEpochMs === undefined
     || !Number.isSafeInteger(companionReadEpochMs) || !Number.isSafeInteger(daemonReadEpochMs)
@@ -1894,6 +1975,49 @@ export function joinAncestryHops(input) {
     hops,
     companionToTransportAttributed: hops.every((hop) => hop.status === 'established'),
   };
+}
+
+/**
+ * Compose the RUNTIME ancestry join: the frozen {@link joinAncestryHops}
+ * verdict, or — when the available facts cannot compose a join at all (a
+ * missing transport marker, an unvalidated scope) — the NAMED uncomposable
+ * verdict with BOTH hops explicitly unestablished. The validation failure's
+ * free text is NEVER carried (it may embed private paths). The runtime
+ * composition always persists a verdict, so the offline join's gate can
+ * require it fail-closed.
+ * @param {{
+ *   nonce: string,
+ *   companionObservation?: any | null,
+ *   daemonObservation?: any | null,
+ *   transportMarker?: { pid: number, ppid: number, nonce: string } | null,
+ *   expectedTransportNonce?: string,
+ *   markerEpochMs?: number,
+ * }} input
+ * @returns {Record<string, any>}
+ */
+export function composeAncestryJoinForRuntime(input) {
+  /** @param {string} reason @param {string=} nonce */
+  const uncomposable = (reason, nonce) => ({
+    localProcessObservationVersion: LOCAL_PROCESS_OBSERVATION_VERSION,
+    class: 'ancestry-join',
+    ...(nonce !== undefined ? { nonce } : {}),
+    hops: [
+      { hop: 'companion-to-daemon', status: 'unestablished', reason },
+      { hop: 'daemon-to-transport', status: 'unestablished', reason },
+    ],
+    companionToTransportAttributed: false,
+  });
+  if (!isPlainObject(input)) return uncomposable('ancestry-uncomposable');
+  try {
+    validateCaptureNonce(input.nonce, 'scope');
+  } catch {
+    return uncomposable('ancestry-uncomposable');
+  }
+  try {
+    return joinAncestryHops(/** @type {any} */ (input));
+  } catch {
+    return uncomposable('ancestry-uncomposable', input.nonce);
+  }
 }
 
 /**
@@ -2067,14 +2191,25 @@ function joinLocalDuty(duty, fact, requireStartupRecord, label, requiredStartupR
  * evidence recorded by the caller) and NEVER carries stop authority; the
  * per-identity exit facts of the main duties ride `adjudicateLocalExit`
  * separately (§25.4 items 6/8) and are composed by the caller.
+ *
+ * Local-settlement Task 3 (the round-6 transport-scope rule carried to the
+ * duty aggregate): the transport descendant is scoped by its OWN declared
+ * nonce — the driver's `FAKE_ZCODE_PROCESS_NONCE`, generated independently
+ * of the capture scope — exactly like `joinAncestryHops`'
+ * `expectedTransportNonce`. When the caller declares it, the transport
+ * duty's scope check accepts that nonce INSTEAD of the capture scope nonce
+ * (the startup-backed duties keep the capture-scope rule unchanged); when
+ * it is not declared, the transport duty keeps the capture-scope check.
  * @param {{
  *   nonce: string,
  *   invocation?: any,
  *   broker?: any,
  *   transport?: any,
+ *   expectedTransportNonce?: string,
  *   identifiedDescendants?: { label?: string, startupRecord?: any, osObservation?: any, exit?: any }[],
+ *   ancestryEstablished?: boolean,
  * }} input
- * @returns {{ localProcessObservationVersion: number, class: 'local-duty-verdict', settled: boolean, duties: LocalDutyFact[] }}
+ * @returns {{ localProcessObservationVersion: number, class: 'local-duty-verdict', settled: boolean, duties: LocalDutyFact[], ancestryRefusal?: string }}
  */
 export function adjudicateLocalDuties(input) {
   if (!isPlainObject(input)) throw invalidLocalProcessInput('the local-duty adjudication input must be an object.');
@@ -2083,6 +2218,16 @@ export function adjudicateLocalDuties(input) {
   // carry it before the verdict may settle (one shared scope binding — facts
   // from concurrent fixture invocations are a named refusal).
   validateCaptureNonce(nonce, 'scope');
+  // The declared transport scope (see the JSDoc): validated like every
+  // nonce, and consumed ONLY by the transport slot below.
+  const expectedTransportNonce = input.expectedTransportNonce;
+  if (expectedTransportNonce !== undefined) validateCaptureNonce(expectedTransportNonce, 'expected transport');
+  // (Review round 7, Finding 2) the CAPTURE-TIME parent of the daemon: when
+  // supplied (a positive pid), hop 1 verifies the ppid chain against THIS
+  // link — the same daemon generation observed LATER under a changed parent
+  // (the Companion exited; the detached broker reparented) demonstrates
+  // reparenting, never a generation change, and its LATER read provides the
+  // lifetime bound.
   const descendants = input.identifiedDescendants ?? [];
   if (!Array.isArray(descendants)) throw invalidLocalProcessInput('the identified descendants must be a list of duty facts.');
   for (const descendant of descendants) {
@@ -2109,7 +2254,7 @@ export function adjudicateLocalDuties(input) {
   const duties = [
     joinLocalDuty('invocation-process', input.invocation ?? null, true, null, 'invocation', nonce),
     joinLocalDuty('broker-daemon', input.broker ?? null, true, null, 'broker-daemon', nonce),
-    joinLocalDuty('transport-descendant', input.transport ?? null, false, null, null, nonce),
+    joinLocalDuty('transport-descendant', input.transport ?? null, false, null, null, expectedTransportNonce ?? nonce),
     ...descendants.map((descendant) => ({
       ...joinLocalDuty('identified-descendant', descendant, false, descendant.label ?? null, null, nonce),
       ...(descendant.exit === null || descendant.exit === undefined ? {} : { exitStatus: descendant.exit.status }),
@@ -2147,10 +2292,25 @@ export function adjudicateLocalDuties(input) {
       && exit.boundIdentity.startIdentity === observation.startIdentity
       && exit.boundIdentity.nonce === observation.nonce;
   });
+  const settled = duties.every((duty) => duty.status === 'established') && descendantsSettled;
+  // The ancestry gate (review round 2, plan Task 3 / §25.4 item 4): when the
+  // caller composed the runtime ancestry join and it did NOT attribute the
+  // Companion→broker→transport chain, the local layer may NEVER settle — a
+  // failed or unestablished hop is a NAMED aggregate-level refusal, never
+  // silently dropped. Undefined keeps the legacy behavior byte-identical.
+  if (input.ancestryEstablished === false) {
+    return {
+      localProcessObservationVersion: LOCAL_PROCESS_OBSERVATION_VERSION,
+      class: 'local-duty-verdict',
+      settled: false,
+      duties,
+      ancestryRefusal: 'ancestry-hops-unattributed',
+    };
+  }
   return {
     localProcessObservationVersion: LOCAL_PROCESS_OBSERVATION_VERSION,
     class: 'local-duty-verdict',
-    settled: duties.every((duty) => duty.status === 'established') && descendantsSettled,
+    settled,
     duties,
   };
 }

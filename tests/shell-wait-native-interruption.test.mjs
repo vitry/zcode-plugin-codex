@@ -11,6 +11,7 @@
 // (tools/run-test-suite.mjs); it never imports another test entry, because
 // that would trigger the entry's test registrations.
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -120,10 +121,38 @@ const heldObservation = () => ({
   timeline: null,
 });
 
+/** Local-settlement review round: the arming declaration binds the REAL
+ * SHA-256 of the synthetic entry/broker realpaths (never hand-crafted
+ * digests) — the same derivation the fixture records at arming time. */
+const syntheticPathDigest = (value) => createHash('sha256').update(value).digest('hex');
+
 const mapperFixture = {
   workspace: '/private/tmp/native-interruption-ws', codexHome: '/private/tmp/native-interruption-home',
   installedRoot: '/private/tmp/native-interruption-installed', env: { HOME: '/private/tmp/native-interruption-home' },
-  record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
+  // Local-settlement Task 3 pre-host gate: an offline RE-ANALYSIS fixture
+  // still passes as an ARMED instrument (the synthetic armed handle + its
+  // record-level arming declaration) — the re-adjudication never launches
+  // anything, and the persisted records these tests build carry NO
+  // localProcess block, so the Gate-D join v6 still maps null and the
+  // oracle v5 still refuses legacy shapes by name.
+  stdoutCapture: {
+    preloadPath: '/private/tmp/native-interruption-preload.mjs', preloadSha256: 'p'.repeat(64),
+    captureDirectory: '/private/tmp/native-interruption-capture', nonce: 'a'.repeat(64),
+    maxBytes: 65536, entryRealpath: '/private/tmp/native-interruption-installed/skills/rescue/launcher.mjs',
+    brokerEntryRealpath: '/private/tmp/native-interruption-installed/scripts/zcode-broker.mjs',
+  },
+  record: {
+    variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [],
+    closureStdoutCapture: {
+      preload: 'closure-observe.mjs',
+      preloadSha256: 'p'.repeat(64),
+      maxBytes: 65536,
+      gate: { argv: ['invoke-prepared', 'rescue'], declaredEntryRealpathSha256: syntheticPathDigest('/private/tmp/native-interruption-installed/skills/rescue/launcher.mjs') },
+      brokerGate: { declaredBrokerEntryRealpathSha256: syntheticPathDigest('/private/tmp/native-interruption-installed/scripts/zcode-broker.mjs') },
+      identityRecord: { version: 2 },
+      environmentVariables: [],
+    },
+  },
 };
 
 // --- the real pipeline, end to end ------------------------------------------
@@ -752,11 +781,11 @@ test('already-dead-tolerance-not-a-resolution: the tolerated ThreadNotFound/Inte
 
 // --- versioning (the §24.4 duty: the changed contract is separately named) --
 
-test('the wired choreography is versioned: join v4 (the §24.8 cutoff fence) and oracle v4 over the unchanged family stamp', async () => {
+test('the wired choreography is versioned: join v6 (the §25.10 local-duty contract) and oracle v5 (the local-duty conjunct) over the unchanged family stamp', async () => {
   const { NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, MEASUREMENT_CUTOFF_ENABLED_CASES } = await import('../tools/shell-wait-probe/driver.mjs');
   const { NATIVE_INTERRUPTION_ORACLE_VERSION, RELEASE_QUALIFICATION_VERSION } = await import('../tools/shell-wait-probe/release-qualification.mjs');
-  assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 5, 'join v5: the preserved pre-cutoff snapshot grounds the winner under its own pre-fence instant and owning-Root binding and joins the layer-evidence selection (§24.11 codex gate fix A + round 3); v4 = the persisted §24.8 measurement cutoff as the second credit fence and the relocated window inputs (§24.8/§24.11)');
-  assert.equal(NATIVE_INTERRUPTION_ORACLE_VERSION, 4, 'oracle v4: the §24.4 relocated window contract (Task 3 grows only the JOIN input contract; the oracle logic is unchanged)');
+  assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 37, 'join v37 (2026-10-30 local-settlement Task 3 review round 37): a pre-request baseline witness owes the §25.7 completion fence (provesPreFenceCompletion — a post-fence or unprovable-completion witness is no witness, the runtime postFence naming honored);  a pre-request baseline witness must postdate the admitted generation record start (the admission-observation-stale lower bound — a carried instant before the process existed is temporally impossible cached evidence and is no witness);  a pre-request baseline witness must carry the invocation own OS-observed identity (the observed pid and nonce digest must match the admitted invocation — a query addressed to the invocation never witnesses it, the round-20 queried-binding rule mirrored on the observed side);  the pre-interruption baseline owes a VERIFIED presence witness collected before the admitted request (at least one interval-valid same-generation presence instant strictly earlier than the request — an earlier process start alone never settles; the same conservative-strict ordering refuses companion-baseline-unestablished);  the refreshed ancestry endpoint creation instant must AGREE with its admission-backed observation (a conflicting instant refuses ancestry-endpoint-instant-foreign) and the preflight requires PRIVATE capture-directory permissions (exactly 0700 on POSIX — the record readers reject every startup record otherwise);  the retained invocation presence reads validate like the transport replay (the round-24/25 pattern — a torn interval or unprovable timestamps refuse by name before the horizon and supersession walks) and the preflight requires a usable capture directory;  the observed Companion generation must demonstrably predate the interrupt request (the admitted request timestamp/bounds bind the baseline — ordering that cannot be established refuses companion-baseline-unestablished) and the NODE_OPTIONS tokenizer rejects unfinished quoting states (an unterminated double-quote or a dangling escape refuses by name — the host would exit before loading the observer);  the fence echoes compare symmetrically (a missing-versus-present mismatch refuses cleanup-boundary-echo-mismatch / cutoff-echo-mismatch in both directions — cleanup-time evidence never credits across a missing echo) and the NODE_OPTIONS tokenizer matches Node exactly (apostrophes are ordinary characters, backslash escapes only inside double quotes — the inherited-apostrophe run passes, the apostrophe-quoted path refuses); v29 (round 27): a replacement-claiming retained invocation read owes a valid completion timestamp (a missing or malformed one refuses exit-reuse-read-instant-unprovable instead of being silently discarded by the recency filter), and the NODE_OPTIONS preflight parses the string into shell-ish option tokens (a --require fragment inside another option value never counts as loading the declared preload); v28 (round 26): the retained transport reads validate their completion stamps (a missing or nonnumeric completion refuses observation-instant-unprovable — torn evidence is never silently excluded from the presence horizon) and the transport exit validates its supplied carried identity instants (in-interval + safe integer, else transport-exit-carried-instant-outside-interval — the invocation-absence pattern);  a retained transport retry read with an INVALID collection interval refuses explicitly (a true inversion is observation-interval-inverted, a missing start when credit depends on it is observation-start-unprovable) — torn evidence cannot turn an otherwise contradictory replay into a credited local-process layer;  the retained transport retry reads validate their identity instants (the duty-observation/ancestry-endpoint pattern — malformed instants refuse by name, supplied instants must sit inside the validated collection interval) and the captured transport start identity persists with the marker (schema-additive) binding the replayed transport observation — a successor generation cannot settle the original transport duty;  a supplied carried identity instant is validated against its read collection interval BEFORE the reuse latch recency filtering — an out-of-interval or malformed carried instant is torn replacement evidence refusing by name (exit-reuse-carried-instant-outside-interval), never old evidence;  every credited observation binds its queried pid/scope digest to the observed identity (the duty echoes and the ancestry endpoints) and a present-but-malformed identity-read instant refuses by name instead of falling back to the completion;  the persisted transport retry sequence latches replacement evidence (any generation-bound read carrying a different start identity) and absence timestamps must be safe integers before crediting (nonnumeric instants refuse by name);  a live same-generation transport retry advances the presence horizon and persists the full presence sequence for replay, and the exit supersession compares the identity-read instant (an async completion never re-wins);  the correlated absence validates its collection interval (inverted intervals are torn evidence), the SELECTED daemon endpoint re-verifies its parentage against the presence/record rule and a tied transport absence keeps the retry loop sampling; v20 (round 16) = the duty-observation identity-read containment, the contradictory invocation-absence shape refusal and the runtime latest-same-generation-presence tie continuation; v19 (round 15) = the declared-scope binding, the identity-bearing absence reuse latch and the walked presence horizon; v18 (round 14) = the tied-absence collection continuation, the transport-exit recency/carried-identity re-adjudication and the incomplete-interval start refusals; v17 (round 13) = the identity-read containment check, the FROZEN argv selector enforced over mere persisted agreement, and the persisted block-version gate; v16 (round 12) = the collection-interval validity for every fence-crediting read + the consistent materialization-unavailable provenance fallback; v15 (round 11): the invocation-absence strict tie against the walked presence horizon, the contradictory-duplicate-duty-slot refusal and the selected-endpoint parentage rule covering a failed refresh; v14 (round 10) = the transport PID-reuse latch + the strict transport-absence tie rule; v13 (round 9) = the transport-exit recency/carried-identity re-adjudication; v12 (round 8) = the generation-bound PRE-FENCE transport-exit conjunct, the refreshed-presence horizon/supersession and the admitted-record capture-time parentage; v11 (round 7) = the persisted ancestry-refresh evidence joining the offline reuse latch; v10 (round 6) = the admission entry-digest/argv-selector binding against the persisted capture declarations and the unsupported-duty-slot refusal; v9 (round 5) = the declared-scope binding (the startup-backed duties + the ancestry endpoints), the identity-bearing ABSENCE reuse latch and the walked presence horizon; v8 (round 4) = the persisted-admission generation re-adjudication + the ancestry endpoint pre-fence/lifetime/marker-epoch re-verification; v7 (round 3) = the admissions/named-hops/ppid-chain/generation-change replay; v6 = the local-duty input contract with the §25.7 offline credit fences (Task 3); v5 = the preserved pre-cutoff snapshot grounding the winner (§24.11); v4 = the §24.8 cutoff fence and the relocated window inputs');
+  assert.equal(NATIVE_INTERRUPTION_ORACLE_VERSION, 5, 'oracle v5 (2026-10-30 local-settlement Task 3, report §25.10): the local-duty conjunct composes the §25.5 applicable local duties into the final acceptance — a legacy input without the block fails closed by its own named reason');
   assert.equal(RELEASE_QUALIFICATION_VERSION, 1, 'the shared exact-terminal/layer family stamp stays unchanged');
   // The Task-3 schedule arms for the registered case(s) through the closed
   // producer map (the §20.8 precedent), never through call-site literals.
@@ -892,7 +921,7 @@ test('a legacy §19.4-era admission block (no acknowledgement fact) replays with
   const verdict = evaluateNativeInterruptionSettlement(input);
   assert.equal(verdict.qualified, false);
   assert.ok(verdict.reasons.includes('host-activity-unadmitted'), JSON.stringify(verdict.reasons));
-  assert.equal(verdict.nativeInterruptionOracleVersion, 4, 'the replay is stamped under the NEW version, never re-stamped as the old one');
+  assert.equal(verdict.nativeInterruptionOracleVersion, 5, 'the replay is stamped under the NEW version, never re-stamped as the old one (the §25.10 bump — the legacy verdict fields replay unchanged under the new stamp)');
 });
 
 // --- §24.4 RED: the item-at-resolution acknowledgement shape ----------------
@@ -1140,7 +1169,7 @@ test('the §24.8 measurement cutoff fences the offline join: pre-cutoff samples 
     survivalControl: null,
   };
   const input = pipeline.nativeInterruptionGateDInput(record);
-  assert.equal(pipeline.NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 5, 'the cutoff fence was the join v4 input-contract growth; v5 preserves the pre-cutoff snapshot (winner + own owner binding + layer evidence)');
+  assert.equal(pipeline.NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 37, 'the local-duty replay re-verification is the join v18 input-contract growth (2026-10-30 local-settlement Task 3 review round 13, report §25.10) = the identity-read containment check, the frozen-selector enforcement and the persisted block-version gate; v16 (round 12) = the collection-interval validity + the materialization-unavailable provenance fallback; v15 (round 11) = the invocation-absence strict tie + the duplicate-slot refusal + the selected-endpoint parentage rule; v14 (round 10) = the transport PID-reuse latch + the strict transport-absence tie rule; v13 (round 9) = the transport-exit recency/carried-identity re-adjudication; v12 (round 8) = the transport-exit conjunct + the refreshed-presence horizon + the record-based capture parentage; v11 (round 7) = the refresh-evidence latch; v10 (round 6) = the entry-digest/argv-selector binding + the unsupported-duty-slot refusal; v9 (round 5) = the declared-scope binding + the absence latch + the walked horizon; v8 (round 4) = the admission-generation re-adjudication + the endpoint pre-fence/lifetime/marker-epoch re-verification; v7 (round 3) = the admissions/named-hops/ppid-chain/generation-change replay; v6 = the local-duty composition (Task 3); v5 preserved the pre-cutoff snapshot (winner + own owner binding + layer evidence)');
   assert.equal(input.measurementCutoffAtMs, 20_000);
   assert.equal(input.durableReadPostCleanupBoundary, true, 'the final read completed at/after the cutoff — credit withheld');
   assert.equal(input.durableReadBoundaryBasis, 'durable-read-at-or-after-measurement-cutoff', 'the named cutoff basis rides');
@@ -1769,20 +1798,57 @@ test('the preflight rejects known-absent §24.8 choreography artifacts and wrong
   const controlPath = join(root, 'survival-control.mjs');
   await writeFile(controlPath, '#!/usr/bin/env node\n', { mode: 0o700 });
   const preloadPath = join(root, 'armed-preload.cjs');
+  const preloadSha256 = createHash('sha256').update('// armed preload\n').digest('hex');
   await writeFile(preloadPath, '// armed preload\n', 'utf8');
+  // (Review round 32, Finding 2) the REAL composer creates the capture
+  // directory (the preflight's usability gate verifies it); the helper
+  // mirrors it so the armed shape reaches its ok:true.
+  await mkdir(join(root, 'stdout-capture'), { recursive: true, mode: 0o700 });
   const declaration = { ...SURVIVAL_CONTROL_DECLARATION_FACTS, scriptSha256: 'b'.repeat(64) };
   const gateArtifacts = { completionGatePath: join(root, 'rescue-interrupt.completion.gate'), completionGateReachedPath: join(root, 'rescue-interrupt.completion.reached') };
   await writeFile(gateArtifacts.completionGatePath, 'hold', 'utf8');
   await writeFile(gateArtifacts.completionGateReachedPath, '', 'utf8');
+  // Local-settlement Task 3: the interrupt case's §25.3 arming — the FULL
+  // capture handle plus the record-level arming declaration with the CORRECT
+  // digests (the wrong-instrument refusals below still refuse every one of
+  // their own §24.8 scenarios, never the local gate's).
+  const entryRealpath = '/private/tmp/native-interruption-installed/skills/rescue/launcher.mjs';
+  const brokerEntryRealpath = '/private/tmp/native-interruption-installed/scripts/zcode-broker.mjs';
+  const armingDeclaration = () => ({
+    preload: 'closure-observe.mjs',
+    preloadSha256,
+    maxBytes: 65536,
+    gate: { argv: ['invoke-prepared', 'rescue'], declaredEntryRealpathSha256: createHash('sha256').update(entryRealpath).digest('hex') },
+    brokerGate: { declaredBrokerEntryRealpathSha256: createHash('sha256').update(brokerEntryRealpath).digest('hex') },
+    identityRecord: { version: 2 },
+    environmentVariables: [],
+  });
+  const stdoutCaptureHandle = {
+    preloadPath, preloadSha256,
+    captureDirectory: join(root, 'stdout-capture'), nonce: 'a'.repeat(64),
+    maxBytes: 65536, entryRealpath, brokerEntryRealpath,
+  };
+  // Review round 2: the EFFECTIVE environment carries the arming (every
+  // capture variable binds the handle and NODE_OPTIONS loads the declared
+  // preload) — the preflight verifies what the launch executes.
+  const effectiveCaptureEnv = {
+    ZCODE_SHELL_WAIT_CAPTURE_DIR: stdoutCaptureHandle.captureDirectory,
+    ZCODE_SHELL_WAIT_CAPTURE_NONCE: stdoutCaptureHandle.nonce,
+    ZCODE_SHELL_WAIT_CAPTURE_ENTRY_REALPATH: stdoutCaptureHandle.entryRealpath,
+    ZCODE_SHELL_WAIT_CAPTURE_MAX_BYTES: '65536',
+    ZCODE_SHELL_WAIT_CAPTURE_BROKER_ENTRY_REALPATH: stdoutCaptureHandle.brokerEntryRealpath,
+    NODE_OPTIONS: `--require "${preloadPath.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`,
+  };
   const armedFixture = {
-    workspace, env: { ZCODE_DATA_ROOT: dataRoot }, survivalControlPath: controlPath,
-    stdoutCapture: { preloadPath }, record: { survivalControl: declaration },
+    workspace, env: { ZCODE_DATA_ROOT: dataRoot, ...effectiveCaptureEnv }, survivalControlPath: controlPath,
+    stdoutCapture: stdoutCaptureHandle,
+    record: { survivalControl: declaration, closureStdoutCapture: armingDeclaration() },
   };
   // (4) A declared run whose §24.8 completion-gate artifacts are absent: the
   // gate release could never happen — known-absent choreography, rejected at
   // zero model turns.
   const missingGates = await evaluateLiveLaunchPreflight({
-    case: 'rescue-interrupt', survivalControlSelector: null, fixture: { ...armedFixture, record: {} },
+    case: 'rescue-interrupt', survivalControlSelector: null, fixture: { ...armedFixture, record: { closureStdoutCapture: armingDeclaration() } },
     gateArtifacts: { ...gateArtifacts, completionGatePath: join(root, 'gone.gate') },
   });
   assert.equal(missingGates.ok, false);
@@ -1791,7 +1857,7 @@ test('the preflight rejects known-absent §24.8 choreography artifacts and wrong
   // record could never bind the control bytes after disposal — the anchor is
   // known absent.
   const missingDeclaration = await evaluateLiveLaunchPreflight({
-    case: 'rescue-interrupt', survivalControlSelector: 'progress-terminal', fixture: { ...armedFixture, record: {} },
+    case: 'rescue-interrupt', survivalControlSelector: 'progress-terminal', fixture: { ...armedFixture, record: { closureStdoutCapture: armingDeclaration() } },
   });
   assert.equal(missingDeclaration.ok, false);
   assert.match(String(missingDeclaration.reason ?? ''), /declaration/iu);
@@ -1799,7 +1865,7 @@ test('the preflight rejects known-absent §24.8 choreography artifacts and wrong
   // the wrong instrument, rejected before any launch.
   const wrongSizing = await evaluateLiveLaunchPreflight({
     case: 'rescue-interrupt', survivalControlSelector: 'progress-terminal',
-    fixture: { ...armedFixture, record: { survivalControl: { ...declaration, lineCount: 30 } } },
+    fixture: { ...armedFixture, record: { closureStdoutCapture: armingDeclaration(), survivalControl: { ...declaration, lineCount: 30 } } },
   });
   assert.equal(wrongSizing.ok, false);
   assert.match(String(wrongSizing.reason ?? ''), /control (?:sizing|declaration)/iu);
