@@ -20655,3 +20655,372 @@ verdicts stand as history under the version stamps — every retained I/F/N reco
 `qualified: false`, and the §24.4 falsification replay duty is unchanged). `localProcess` block
 schema version 1 (new, digest-only). No §25.10 stdout-capture schema change: `CLOSURE_OBSERVATION_VERSION`
 stays 1 and the v1 meta field set is byte-intact.
+
+**2026-11-02 local-settlement Task 4 — the V PRE-LAUNCH FREEZE (offline; zero model turns, zero live launches in this
+subsection; the §24.12 native-acceptance freeze practice carried verbatim).** Task 4 of [the local-settlement
+plan](../superpowers/plans/2026-10-28-rescue-shell-wait-local-settlement.md) executes the finite live ledger of plan
+§4 — exactly ONE hosted case **V** (plus at most one conditional V-fix) after the independent pre-live review verdict
+CLEAR FOR LIVE LAUNCH on exactly these bytes. This subsection freezes V's registration BEFORE the launch; the
+execution and adjudication records follow in the dated Task-4 execution block below. This subsection is ADDITIVE;
+§25.1–§25.9 and the Task-2/Task-3 registrations stand byte-unchanged.
+
+**The exact frozen command** (the plan §4 invocation template with the four task-specific variables resolved to
+absolute values; every byte below is the registered launch command, validated against the merged
+`parseShellWaitArguments` OFFLINE before this freeze was written):
+
+```bash
+ZCODE_SHELL_WAIT_E2E=1 node tools/shell-wait-probe/driver.mjs \
+  --case rescue-interrupt \
+  --codex /Users/zhangzikai/.codex/packages/standalone/releases/0.163.0-aarch64-apple-darwin/bin/codex \
+  --source-sha e9cce50b68a3f89c99184cc1b0090918d10a7144 \
+  --output /tmp/shell-wait-local-settlement-v.0ae348d2/case-output \
+  --model gpt-6.1-sol \
+  --worker-duration-ms 420000 --poll-ms 3600000 --budget-ms 1200000 \
+  --cap-ms 3600000 --wait-policy config-default --exec-default-ms 3600000 \
+  --unclassified-structural-diagnostic 1 --unclassified-shape-diagnostic 1 \
+  --survival-control-selector progress-terminal
+```
+
+**The four resolved variables:**
+
+- `LOCAL_SETTLEMENT_CODEX_BINARY` =
+  `/Users/zhangzikai/.codex/packages/standalone/releases/0.163.0-aarch64-apple-darwin/bin/codex` — the §25.1 pin,
+  RE-VERIFIED at this freeze (2026-11-02): the file is PRESENT at its exact recorded absolute realpath (it resolves
+  to itself), a regular executable file (249952688 bytes, mode 0755), `--version` = `codex-cli 0.163.0`, SHA-256 =
+  `8813367285524ac798dd96d1b071aea30d58708c7226fd236cd275cf1cfdee31` — byte-identical to the
+  §16.1/§19.1/§21.1/§23.1/§23.12.1/§24.1/§25.1 pins. NO drift detected; no substitute executable is involved and no
+  evidence-applicability statement is owed; the ambient CLI stays recorded separately at its own realpath and is
+  never launched or blended (the §24.1/§25.1 discipline, carried).
+- `LOCAL_SETTLEMENT_PLUGIN_SHA` = `e9cce50b68a3f89c99184cc1b0090918d10a7144` — the committed installed-fixture
+  source SHA: this worktree's HEAD at the freeze (`git status --porcelain` EMPTY of tracked changes at the freeze),
+  verified resolvable by the fixture's own mechanism (`assertGitSource`, fixture.mjs:327 — a 40-character lowercase
+  hexadecimal commit SHA resolvable as `^{commit}`; the fixture installs a clean detached source worktree at EXACTLY
+  that SHA, fixture.mjs:534, so the fixture builds from the committed reviewed Task-3 bytes — the report's own
+  registration edit never enters the installed fixture). The driver's own gate (`assertSourceSha`, driver.mjs:422)
+  accepts the same value.
+- `LOCAL_SETTLEMENT_PRIVATE_OUTPUT` = `/tmp/shell-wait-local-settlement-v.0ae348d2/case-output` — a NEW private
+  fixture-owned directory OUTSIDE the repository (random hex suffix `0ae348d2`, created before the freeze, directory
+  mode 0700 — no group/other access, the fixture's privacy requirement, fixture.mjs:351), following the §21/§24
+  private-record convention (`/tmp/shell-wait-native-acceptance-n.d14e7297/case-output` et al.); the sibling
+  `…/task4/` directory holds this subsection's offline freeze artifacts (the provenance/parse script and its
+  captured output; the V launch's stdout/stderr capture joins the case-output root). NOTHING inside the worktree is
+  used as case output; no private record content ever enters the repository.
+- `LOCAL_SETTLEMENT_MODEL` = `gpt-6.1-sol` — the requested model, carried through §25.1 unchanged. **Supported-model
+  discovery deliberately NOT re-run** at this freeze: authenticated network discovery is out of scope per the
+  §24.1/§23.1 precedent (the §24.12 pre-launch re-pin is the most recent EXECUTED discovery record: 11 catalog
+  entries, `gpt-6.1-sol` `visibility: "list"` at `priority: 0`); observed effective model metadata stays the
+  `model: null` observer-provenance contract (driver.mjs:84) — requested and effective stay separate facts, never
+  blended.
+
+**The §25.1 re-pin duties RE-EXECUTED at this freeze on the FINAL bytes (the executing-observer provenance
+re-frozen per the §25.1 rule at V's own pre-launch duty; nothing copied forward):**
+
+- **Executing-observer provenance AT REST** (the module-INIT composite under tag `zcode-shell-wait-observer-v8` —
+  evidence.mjs ‖ shape-diagnostic.mjs ‖ release-qualification.mjs ‖ closure-observation.mjs ‖ closure-preload.mjs ‖
+  local-process-observation.mjs (the concurrent local-observation runtime the held turn executes) ‖ driver.mjs ‖
+  the three executing helper bindings scripts/lib/{fs,process,errors}.mjs, NUL-separated; read through the executing
+  module's exported `EXECUTING_OBSERVER_PROVENANCE`, `model: null`, `reachableToolFamily: null` — never inferred):
+  **`18d8e34dd4f970720e4efb8cc04b78e4cd04f66aa392298c88823dff87a1dae1`**. The record-time construction
+  (`observerProvenance()`) read AT REST on the same bytes returns the IDENTICAL digest (init == record-time, no
+  drift); the live record must carry this same digest at case start and record time with
+  `sourcesChangedDuringRun: false` — any other value at adjudication is a named provenance break.
+- **The local-process campaign's OWN evidence-closure digest** (tag `zcode-shell-wait-local-observer-v4`, the
+  separate construction per the v7 split documentation): **`e0094533062ec7d467ed8a9282c6ed0f9b165fedf5561a10ab7dc287b4101112`**
+  (`localProcessObserverProvenance()` at rest, materialization available — `revision: 'working-tree-uncommitted'`,
+  `model: null`).
+- **The generated capture preload digest** (the artifact the fixture will generate and install at arming, regenerated
+  and digested at this freeze per the §20.7 duty — never copied forward):
+  **`49cc2539fbcb23bcfc0003dd8afb8015d4f3976312f67c366de5c0295998ee75`** (`generatedPreloadSha256` from
+  `localProcessObserverProvenance()` — the sha256 of `closurePreloadSource()`; it differs from the §24.1/§25.1
+  historical `cb168b74…` F-record artifact digest because Task 2 extended the generated source with the startup
+  identity-record writer, exactly as registered in §25.10's Task-2 block — the historical value stays historical).
+- **Per-module SHA-256 on the frozen bytes** (the executing probe modules and bound helpers): `driver.mjs` =
+  `1f7a374373b6ec3fc5818514ed48d0f1a0bfad54ab946337773c5f974e955a78`, `evidence.mjs` =
+  `2cddad6744d3ef0c7b34e131d4a7cd002ed1f61e68f61b8e832c6109f54a6df1` (unchanged from §25.1),
+  `release-qualification.mjs` = `c8863ef6947e1e082d5727434894b50f53f0d3210ee35185956a0d3e603c8d84`,
+  `closure-observation.mjs` = `3a45f9db7bef21c60bc0a9f6093433eb9da90843def3019a424165c578c68451` (unchanged from
+  Task 2), `closure-preload.mjs` = `44fdd25d907236666f5ab19fe4eafe49bb93a971ec5f2b4aa820b2fb8df330ba` (unchanged),
+  `local-process-observation.mjs` = `980311ab48a2f6bdf8084a7e80604fd569f620980a0ee8333e6a8b163eea9873`,
+  `shape-diagnostic.mjs` = `b034c2b80ff9b59f45ce362fbe5ae889e9c34ebe7a1bfb0226d79bb285e6b35c` (unchanged),
+  `fixture.mjs` = `a1284c42f2c1a776e91cacd9ea96524e7594753f3de08499b5be9a54870c8a31` (unchanged),
+  `wait-comparison.mjs` = `eba75edbac4d69be42b312b7ff09582314e034d93aaa56cf73ba93024c622146` (unchanged),
+  `scripts/lib/fs.mjs` = `ea222a08c0eed1051e2143cfafc21c773c49a901637a7dfdc5e8c8c406512792`,
+  `scripts/lib/process.mjs` = `e3c95506d58b2d9f196b0f6469ac458206ee97320a6f6fb96bab701b9dc1aacb`,
+  `scripts/lib/errors.mjs` = `8fed9126621c61ba5d35091435ac734232116490acc94b68dfc84593c424752b` (all three helpers
+  unchanged). The changes against the §25.1 records are exactly Task 3's declared executing set (driver,
+  release-qualification, local-process-observation).
+- **Instruction/config/artifact pins (the §20.7 practice, the installed-artifact check against the committed
+  bytes):** the fixture installs a clean detached worktree at `--source-sha`, so the installed committed source IS
+  the HEAD tree; the committed blobs it will install were verified present and digested at this freeze —
+  `skills/rescue/launcher.mjs` = `c779ccb69ca16fd658c1fb25f407aa9ed13e39200486492cffccae019bde40bb`,
+  `scripts/zcode-broker.mjs` = `737b7e51fdb9a514e8e10c5bbe3c0479e45cc01b6d3440d1791e2372ebf62304`,
+  `scripts/zcode-companion.mjs` = `aa901ca989ccb3e6c3f60b4129fff80a10dcc1036d3c38c8c6b90daa286c4141`,
+  `tests/fixtures/fake-zcode-cli.mjs` = `43cfe4b7633831791fae29b758a16b9e18534b818f9fd9284d56e488d6a671ee`,
+  `scripts/lib/rescue-launcher-command.mjs` = `01a842fef76e7adf25ee6d2ff058ff334923a6b118575831f0cb3365d6ed5156`;
+  the worktree matches HEAD byte-identically across `skills/`/`scripts/`/`tests/fixtures/` (empty diff). The
+  per-run Gate-B instruction hashes (the fixture-normalized delivered-instruction digests) and the arming-declared
+  control/preload digests are computed by the fixture AT setup from these committed bytes and are verified AT
+  ADJUDICATION against the record's own provenance stamps (the §24.13 in-record practice; presenting them as
+  pre-launch values would fabricate per-run facts). Configuration layers REQUESTED (unchanged fixture policy, the
+  §25.1 values carried into the command verbatim): cap `background_terminal_max_timeout = 3600000`,
+  `--exec-default-ms 3600000`, `--poll-ms 3600000`, `--cap-ms 3600000`, wait-policy `config-default`, worker hold
+  420000 ms, total case budget ≤ 1200000 ms.
+
+**Offline parse validation (no live launch):** the exact 14-option flag list above was fed to the exported
+`parseShellWaitArguments` on the frozen bytes (the driver's own parser, imported and called WITHOUT executing the
+CLI — the CLI is entry-guarded, driver.mjs:10242); the parse SUCCEEDED and returned exactly: `case:
+"rescue-interrupt"`, `workerDurationMs: 420000`, `capMs: 3600000`, `pollMs: 3600000`, `budgetMs: 1200000`,
+`unclassifiedStructuralDiagnostic: true`, `unclassifiedShapeDiagnostic: true`, `model: "gpt-6.1-sol"`,
+`waitPolicy: "config-default"`, `execDefaultMs: 3600000`, `interruptBaselineSelector: null`,
+`survivalControlSelector: "progress-terminal"` (with the pinned `codexBinary`/`sourceSha`/`output` echoed verbatim).
+Every flag is a known option; NO unimplemented flag exists in the command; the per-case §16.6 policy combination
+gate accepted the combination.
+
+**The Task-1 schedule freeze confirmed ON THESE BYTES (the §25.7 values, read from the executing module's exported
+constants):** `MEASUREMENT_CUTOFF_AFTER_HOLD_MS` = 10000 (measurement cutoff = hold deadline + 10000 ms,
+persisted before planned teardown), `OBSERVATION_TEARDOWN_AFTER_CUTOFF_MS` = 5000 (observation teardown = cutoff +
+5000 ms — never a manufactured boundary), `OBSERVATION_REFRESH_LEAD_MS` = 1000, durable passive reads ≥ 1000-ms
+cadence / ≤ 600 attempts / ≤ 32 retained summaries (`DURABLE_SAMPLING_MIN_INTERVAL_MS`/`_MAX_ATTEMPTS`/`_MAX_SUMMARIES`),
+`MEASUREMENT_CUTOFF_ENABLED_CASES`/`DURABLE_SAMPLING_ENABLED_CASES`/`LOCAL_OBSERVATION_REQUIRED_CASES` = the
+interrupt case only, `NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION` = 37, `LOCAL_PROCESS_DUTY_CONTRACT_VERSION` = 1,
+the survival-control selector literal `progress-terminal`. The local-observer arming/persistence insertion stays
+the only new schedule element (§25.7); the 60000-ms native-responsiveness comparison applies ONLY on a causally
+admitted trial (not a production timeout). Worker hold 420000 ms, total case budget ≤ 1200000 ms, cap/poll
+3600000 ms — all inside the §25.7 frozen bounds; NO new duration/control value exists in this command.
+
+**The ledger statement (frozen BEFORE the launch):** V is about to be spent. Once the real hosted attempt starts,
+V is SPENT even if the model never calls Rescue, misses readiness, produces an unsupported shape, or deviates from
+model obedience; initialization/auth/provider failures after launch still consume V and are recorded with their
+exact failure shape. Pure offline pre-launch rejection (a pre-host gate refusal before any host/provider contact)
+consumes NO hosted case and is recorded verbatim. No hidden warm-up/debug launches exist or are authorized; no
+model shopping; no auto-update reset. Provider-write authority is unchanged: only harmless fake-ZCode fixture
+work, never real user-project/provider writes. V-fix stays conditional per plan §4 and is decided EXPLICITLY after
+V's adjudication; if V's responsiveness and all applicable duties are proven, V-fix is left unspent as
+`not-needed`. Hosted work STOPS after V (or V-fix if justified).
+
+**2026-11-02 local-settlement Task 4 — V EXECUTED once on the frozen command: the offline-refusal accounting, the persisted record, the three separate adjudication answers, and the V-fix disposition (ONE hosted case; hosted work stopped).**
+
+**Pre-launch accounting (named, ZERO hosted cases consumed):** the FIRST launch attempt (issued
+2026-11-01T18:56:08Z) was REFUSED by the driver's offline fixture-input validation before any fixture creation or
+host launch — `Invalid shell wait fixture input: output must be empty.` The refusal cause was the execution
+process's own capture arrangement: the V stdout/stderr capture files had been redirected INSIDE the `--output`
+directory, which the fixture requires to be EMPTY before arming. The output directory remained EMPTY (zero fixture
+entries — only the two caller-created capture logs, removed immediately after), stdout was 0 bytes, no codex
+process was launched, and the driver exited 1 within ~1 s — a PURE OFFLINE rejection, which per the plan §4 (and
+the §24.13 precedent) consumes NO hosted case. The refusal text is preserved verbatim outside the repository at
+`/tmp/shell-wait-local-settlement-v.0ae348d2/task4/refused-attempt-stderr.log`; the capture logs were moved to the
+sibling `task4/` directory (still inside the private output root, never inside the `--output` value), the
+`--output` directory was left empty, and the SAME frozen command was launched once more. That launch is V.
+
+**The execution record (V SPENT — 1 of 1):** launch command issued 2026-11-01T18:58:36Z (UTC;
+`task4/launch-instant2.txt`); the driver exited 0 at 2026-11-01T19:07:03.949Z (`executedAt`; ≈ 8 min 28 s wall;
+stderr EMPTY — 0 bytes; the stdout JSON record and the persisted record file are byte-IDENTICAL, `cmp` clean).
+Record: `/tmp/shell-wait-local-settlement-v.0ae348d2/case-output/rescue-interrupt.record.json` (mode 0600 inside
+the 0700 directory), SHA-256 `710c071e3da6939030a0a4493dd1bc7b778f80a7120aca703fe344dcea9d3ce0`, 1644122 bytes,
+`status: "executed"`, whole-case `inconclusive.reason` = `unsupported-call-shape: A collected tool call does not
+match a supported shape (direct call, simple wrapper, or linked outer continuation); the case needs manual
+adjudication.` **No other live launch of any kind occurred** (the refused attempt above is the complete launch
+history; the ambient codex processes visible on the host are pre-existing user processes, never enumerated or
+touched by the design).
+
+**Provenance on the record matches the freeze EXACTLY:** observer digest `18d8e34d…dae1` with
+`sourcesChangedDuringRun: false`; `sourceSha e9cce50b…a7144`; `codexVersion "0.163.0"` with
+`codexBinarySha256 881336…dee31` (the launched binary re-hashed in-record by `hashNativeExecutable`); requested
+model `gpt-6.1-sol`; wait-policy `config-default` with `execDefaultMs 3600000`; the normalized instruction hashes
+`2ea76cf0…`/`5800e3ab…` byte-identical to the §24.1 pins; cap/poll 3600000, worker 420000, budget 1200000;
+`capVerified: true`; isolated setup `roleStatus: "ready"` (2 setup attempts); `stdoutCaptureDeclaration.preloadSha256
+49cc2539…` = the freeze's `generatedPreloadSha256`; the survival-control declaration `scriptSha256 c510d81f…` = the
+§24.1 pin (60 lines @2000 ms, designed exit 0).
+
+**The execution timeline (each stamp in its OWN clock; the held→epoch wall mappings are consistency observations,
+never a clock join for credit):**
+
+| Instant | Value | Clock/source |
+| --- | --- | --- |
+| Command launch (wall) | 2026-11-01T18:58:36Z | `task4/launch-instant2.txt` |
+| Held-turn launch | held-clock 1 ms (fixture preparation ≈ 72 s) | `held.timeline.launchedAtElapsedMs` |
+| Companion (invocation) startup identity record written | epoch 1793559588497.99 = 18:59:48.498Z (record start +498 ms into the shared second 18:59:48Z) | `localProcess.admission.identity.firstWritePreciseMs` |
+| Companion OS identity read | epoch 1793559588524 (+524 ms) | `localProcess.presence.identityReadEpochMs` |
+| Broker-daemon record written / OS read | +722 ms / +740 ms into the same second | `localProcess.brokerAdmission.identity.firstWritePreciseMs` / `.brokerObservation.identityReadEpochMs` |
+| Transport (fake-ZCode) marker written / OS read | +816 ms / +850 ms into the same second | `localProcess.ancestryEndpoints.transportMarker.markerEpochMs` / `.transportObservation.readEpochMs` |
+| Durable baseline established | epoch 1793559583102 (pre-launch fixture window; identity established at sampling attempt 29) | `child.durableSamples.baseline` |
+| Child original-handle poll start | held 67520 (pending window open) | `held.timeline.pollStartedAtElapsedMs` |
+| **Interrupt request attributable position** | epoch 1793559679520 = 19:01:19.520Z — 56932 ms after the pending-window open, strictly inside the pending window | `interrupt.callAtMs` |
+| **Host submission-result item stamp AND native-cancellation marker** | epoch 1793559679523 = call + 3 ms; `acknowledgementAtResolution: "at"` (the recorded submission-result shape, F/I/N's shape reproduced on a FOURTH trial) | `interrupt.hostDelivery.completedAtMs` = `interrupt.cancelledAtMs` |
+| **Companion verified disappearance** | last verified presence 1793559712453 → first verified absence 1793559712508 = 19:01:52.508Z (call + 32.988 s) — LONG before the cutoff | `localProcess.exit` |
+| Genuine later session-end stop intent | 2026-11-01T19:01:52.544Z (call + 33.024 s; 36 ms AFTER the Companion's verified absence) | the job projection's `stopIntent` |
+| Held Root-side acknowledgement | held 160268 (call + ≈33.0 s; the held phase did not end on it — the gate-first ordering) | `held.timeline.rootAcknowledgementAtElapsedMs` |
+| Gate release (hold deadline) | held 453852 = observation detection 33852 + 420000 exactly (`holdDeadlineOverrunMs` 1.169) | `held.timeline.holdDeadlineElapsedMs` |
+| Authoritative pre-cutoff snapshot completed | epoch 1793560009739 = 19:06:49.739Z — strictly pre-cutoff | `child.preCutoffDurableSnapshot.completedAtMs` |
+| **Measurement cutoff** | epoch 1793560018923 = 19:06:58.923Z | `interrupt.measurementCutoffAtMs` |
+| Last durable read (strictly pre-cutoff, started 19:06:58.725) | the sampler then stopped by name: `durable-sampling-stopped-at-measurement-cutoff` | `child.durableSamples.stoppedReason` |
+| Window-end refresh snapshot completed | epoch 1793560022930 = 19:07:02.930Z — POST-cutoff, rides fenced (zero settlement credit) | `child.durableSnapshot.completedAtMs` |
+| Planned observation teardown | held 468854 = hold deadline + 15002 (the +15000 schedule + the 1.169-ms overrun) | `held.timeline.endedAtElapsedMs` |
+| Record written | 2026-11-01T19:07:03.949Z | `executedAt` |
+
+**Measurement/cleanup fences actually exercised (every one fired as registered):** the cutoff armed at hold
+deadline + 10000 (equality-anchored, overrun projected); the durable sampler stopped AT the cutoff with the named
+reason and its last read completed strictly pre-cutoff (465 ledger attempts, last start 19:06:58.725); the
+authoritative pre-cutoff snapshot persisted BEFORE teardown; the post-cutoff window-end refresh rides as a fenced
+observation; the pending window `pendingIntervalMs: 56932` with `pendingWindowObserved: true`; NO kill —
+`codexTerminated: false`, `verifiedTerminated: false`, `cleanup.label: "observation"` (no cleanup boundary
+manufactured), `cleanupBoundaryAtMs: null` in the local block, `fixtureDisposed: true`, `cleanupComplete: true`,
+`cleanupErrors.count: 0`; the budget (1200000 ms) never expired (≈ 508 s of held-turn wall).
+
+**The local-process layer (this campaign's NEW layer — the §25.4 contract measured live for the first time):**
+
+- **Startup identity records (item 3):** the invocation admission `established` (role `invocation`, argv the exact
+  declared selector, PID 56254, PPID 55807, first-write precise instant +498 ms into the shared second, nonce-keyed
+  scope digest `15c6902f…`, entry digest `75c0043d…` = the declared installed-launcher digest) and the broker
+  admission `established` (role `broker-daemon`, PID 56302, PPID 56254, config digest-only `ccbd936e…`, entry
+  digest `dd61f2e5…` = the declared installed-broker digest) — both records created at preload install, before the
+  entry bodies. The invocation and broker admissions pair with their OWN OS live observations
+  (`os-live-observation` `established`, start identity `Sun Nov  1 18:59:48 2026`, the §25.4 item-4 binding).
+- **OS live observation (item 4/5):** 1945 generation-bound reads, 1944 `established` + the final `absent`
+  (`process-absent`) — ALL strictly pre-fence (window 18:59:48.859Z → 19:01:52.508Z; cutoff 19:06:58.923Z), ZERO
+  `postFence` facts, `stoppedAt: null` (no unfinished observation), every read carrying its queried pid/scope and
+  collection interval. The transport observation `established` (PID 56330, PPID 56302, its OWN declared-transport
+  scope digest `f4b1d6f5…`).
+- **Exit/absence (item 6):** the invocation exit is POSITIVELY `disappeared` — the established generation's last
+  verified presence 19:01:52.453Z, first verified absence of the SAME pid and start identity 19:01:52.508Z (a 55-ms
+  double-read), bound identity equal to the admitted generation; `exitCorroboratedByMeta: false` (the stdout meta
+  stayed missing — the interruption shape; the OS observation is the termination authority, exactly as
+  preregistered). The transport's generation-bound exit read: `absent`/`absenceConfirmed: true` at 19:01:52.628Z —
+  the fake-ZCode transport did not survive its Companion.
+- **The bounded local-duty verdict (item 5/§25.5):** all THREE applicable duties individually `established` with
+  bound identities (invocation-process 56254, broker-daemon 56302, transport-descendant 56330) — BUT the aggregate
+  `settled: false` with `ancestryRefusal: "ancestry-hops-unattributed"`: BOTH frozen ancestry hops refused
+  `generation-lifetime-unverifiable`. The recorded ppids are EXACT (daemon observation ppid 56254 = the Companion's
+  pid; transport marker ppid 56302 = the daemon's pid; the marker's write instant +816 ms precedes the refreshed
+  daemon endpoint read +859 ms) — the ppid chain is perfect; what CANNOT be demonstrated is the frozen
+  round-17/18/19 generation-compatible LIFETIME window: Companion, daemon and transport were ALL created inside the
+  SAME wall-clock second (18:59:48Z, within ~500 ms of each other — the honest launcher→broker→transport startup
+  choreography), and darwin `ps lstart` start identities are WHOLE-SECOND, so the uniform +1000-ms uncertainty
+  bound requires `creation + 1000 ≤ read/creation` orderings that are arithmetically impossible inside one second
+  (hop 1: Companion creation + 1000 ≤ daemon read +740 needs Companion creation ≤ −260 ms; hop 2: marker +816 ≥
+  daemon creation + 1000 needs daemon creation ≤ −184 ms). The refusal is the measurement's DESIGNED conservative
+  behavior (the round-19 uniform bound; the §25.10 honest-choreography disclosure registered exactly this
+  same-second unresolvability), honestly named — never a guessed attribution. The offline join
+  (`joinRecordLocalProcessDuties`, join v37) re-verified the block and returned the SAME refusals
+  (`local-duties-unestablished`, `ancestry-hops-unattributed`) with the operative fence `measurement-cutoff` at
+  19:06:58.923Z.
+
+**Adjudication answer 1 of 3 — native responsiveness: NOT CREDITED; the causal admission REFUSED.** The §24.4
+three-leg rule: leg (a) f1 request-inside-pending-window — SUPPORTED on the record (`callCount: 1`,
+`orderingBound: true`, `pendingBeforeCallAtMs 1793559622588` ≤ `callAtMs 1793559679520` with the resolution ordered
+after, one epoch-ms rollout-event clock, `timingBasis: "rollout-event-timestamps"`, `pendingWindowObserved: true`,
+`pendingIntervalMs: 56932`, `previousStatus: "running"`); leg (b) f2 host-side submission — SUPPORTED
+(`delivered: true`, `itemPresent: true`, `interruptedItemCount: 1`, `joinedItemCount: 1`, `foreignItemCount: 0`,
+`idJoin: true` basis `outer-call-id`, `agentThreadIdMatch: true`, `rootRolloutOwned: true`, `insidePendingWindow:
+true`, `timed: true`); leg (c) f4 corresponding native resolution — the cancellation marker IS on the record
+(`cancelledAtMs 1793559679523`, 3 ms after the call) but its ATTRIBUTION TO THIS DELIVERY is REFUSED by the
+load-bearing complete-scan conjunct: one collected tool call did not match a supported shape, so the scan cannot
+prove exactly-one delivery or rule out a second interruption/explicit stop inside the unclassified cell. The exact
+refusal strings on the record: whole-case `inconclusive.reason` = `unsupported-call-shape` (verbatim above);
+`interrupt.hostDelivery.admitted: false` with `reasons: ["host-activity-call-scan-incomplete"]`;
+`interrupt.settled: null` with `settledBasis: "ambiguous-cell-scan-incomplete-not-attributed"`. Because the trial
+is not causally admitted, the 60000-ms comparison NEVER APPLIES (§24.4/§25.7) and `deliveryToSettlementMs: null`.
+What the record DOES prove, per the §24.4 declarations: the request's attributable position sits strictly inside
+the observed pending window on one clock (partial ordering form — a dispatch instant is NOT established,
+declaration (i)), and the host-side submission-result item was stamped AT the resolution instant
+(`acknowledgementAtResolution: "at"` — by itself neither a delivery failure nor request-timing proof).
+
+**Adjudication answer 2 of 3 — ALL applicable local/remote/durable/guard/no-collateral duties: adjudicated per the
+§24.7/§25.5 row sets; the aggregate is NOT full acceptance** (three coexisting independent refusals: the native
+admission refused, the survival control unadjudicated, the local-duty aggregate unsettled on the ancestry
+attribution):
+
+| Duty | V's record (evidence) | Verdict for the row |
+| --- | --- | --- |
+| Identity/generation | `spawnIdentity` `exact: true` (childThreadId `01a1987b-…`, parentThreadId `01a1987a-…`); the job projection's `ownerSessionId` EQUALS the spawn parent; `executorLinkage: "verified"`; `workerLeaseId 3ca692dd…` on the exact job `18d92d11…`; the job record's `childPid 56254` EQUALS the locally observed Companion PID (the durable record and the local observation bind the SAME process) | SUPPORTED (exact-identity join, now with the durable↔local PID agreement N could not observe) |
+| Native turn/cell | f1/f2 facts positive; the §19.4/§24.4 admission REFUSED (`host-activity-call-scan-incomplete`) | OBSERVED, NOT ADMITTED — no native turn/cell credit |
+| Remote result/winner | pre-cutoff authoritative snapshot (19:06:49.739Z): job `status: "cancelled"`, winner terminal/cancelled — with `stopCause: "session-end"` and `stopIntent { cause: "session-end", requestedAt 19:01:52.544Z }` | OBSERVED — but the winner's cause is the REAL session-end stop intent (its own stop cause), NEVER the interrupt's settlement; `settlementLayers.remoteTerminal: null` |
+| Local process cleanup (the §25.5 applicable trio) | all three duties `established` individually; the invocation exit POSITIVELY `disappeared` pre-fence; the transport exit confirmed absent; 1945/0 pre-fence reads; BUT the ancestry attribution refused (`generation-lifetime-unverifiable` on both hops — see the local-process layer above) | ESTABLISHED DUTIES, UNSETTLED AGGREGATE — the Companion↔transport attribution is unresolved, so the local layer is NOT full acceptance (`layers.localProcess: false` through join v37); per the plan, an unattributed applicable-descendant chain is not silently ignored and is not not-applicable |
+| Marked runner obligations | `runnerCleanupDuty: { applicable: false, reason: "not-applicable: the record carries no marked runner claim" }`; `endedObligation.settled: true` | genuine not-applicable shape |
+| Writable exclusion | `writableGuard: { applicable: false, retained: false, reason: "not-applicable" }` | genuine not-applicable shape |
+| Binding currency | `bindingCurrency: { state: "current", anchorsJob: "18d92d11…", reason: null }` | POSITIVELY current |
+| Unrelated survival control | DECLARATION verified (`scriptSha256 c510d81f…` = the §24.1 pin); OBSERVED facts: `survivalControl: null` — the control's launch/read statements could not be grounded in the collected rollouts (the §16.4 verdict is absent — fail-closed, never fabricated; the launch/read statements sit in the unclassified-cell family — PARSER UNCERTAINTY, never negative evidence) | UNADJUDICATED (`survival-control-unadjudicated`) — no-collateral NOT proven |
+| Stop-intent authority | the ONLY stop intent on the record is the genuine `session-end` receipt at 19:01:52.544Z with its own cause/timestamp — 33.024 s AFTER the interrupt item stamp and 36 ms AFTER the Companion's own verified disappearance; NO durable stop intent from the interrupt (the §16.2-frozen design, re-observed) | HELD (a genuine later SessionEnd is its own stop cause, never the earlier interrupt's settlement) |
+| Lifecycle epoch | `lifecycleEpoch: { applicable: false, reason: "not-applicable: no epoch was declared for this observation" }` | genuine not-applicable shape |
+
+`settlementLayers.durableObligations: "settled"` — grounded by the strictly-pre-cutoff consistent samples (463
+sampling attempts, zero omissions, zero interval shortfalls, 32 retained summaries with 403 named roll-offs,
+sampler stopped AT the cutoff by name) and the pre-cutoff authoritative snapshot (`snapshotEqual: true`, lock state
+present, enumeration within bounds, owner binding present) — BUT the settled state is the SESSION-END settlement
+described above; with the native admission refused, the survival control unadjudicated and the local aggregate
+unsettled, the owned/no-collateral settlement is NOT proven. The trial's own housekeeping observations — zero
+kills, zero cleanup errors, fixture disposal completed, safe resolution via the genuine session-end — stand
+SEPARATELY and are never evidence that no duty remains.
+
+**Adjudication answer 3 of 3 — production applicability: pins compose; no native-responsiveness or
+owned-settlement result exists to carry into production; the measured local-process facts apply to THIS cohort
+only.** The trial's pin set is byte-identical to the §24.1/§25.1 cohort pins (binary `0.163.0` @ `881336…dee31`
+re-hashed in-record; instruction hashes `2ea76cf0…`/`5800e3ab…`; sourceSha the committed Task-3 tree `e9cce50…`;
+cap/poll/wait-policy/exec-default values), so the composition precondition holds and this record's OBSERVED facts
+(the item-at-resolution shape on a FOURTH independent trial; the pending-window establishment; the session-end
+settlement discipline; the cutoff/cadence/teardown fences; and the NEW local-process facts — the §25.4 contract's
+startup identity records, 1945 strictly-pre-fence generation-bound OS reads, the POSITIVE pre-fence Companion
+disappearance, the confirmed transport exit and the durable↔local PID agreement) may be cited alongside the
+long/cadence/stdout cohort for those cohorts' own measured claims. NO claim of native responsiveness, owned
+settlement or local no-collateral cleanup transfers to production from V: the admission was refused, the control
+layer stayed unadjudicated, and the local ancestry attribution is unresolved on the measured darwin whole-second
+`lstart` configuration with this same-second startup choreography. Review/BG/shared-default compatibility remains
+NOT established by a Rescue result alone (the §1 deployment row, unchanged).
+
+**The offline oracle on the persisted record (join v37 / oracle v5):** `qualified: false` — layers `companion:
+true`, `durableObligations: true`, `delivery: false`, `turnSettlement: false`, `noCollateral: false`,
+`localProcess: false`; terminal winner `cancelled`; the nine named reasons VERBATIM: `alias-unresolved`,
+`terminal-state-unestablished`, `previous-status-snapshot-only`, `delivery-target-unmatched`,
+`host-activity-unadmitted`, `turn-settlement-unobserved`, `settlement-latency-unestablished`,
+`survival-control-unadjudicated`, `local-process-duty-unsettled`.
+
+**The unclassified-cell diagnostic outcome (both flags armed — the FOURTH independent instance of the same
+structural family, with fresh bytes):** the record carries ONE complete diagnostic excerpt (truncated: false;
+rolloutCount 2): classification `unclassified-script-cell`, tool `exec_command`, bodyType string, 2 input lines,
+228 bytes, no directive, line-1 prefix class `other`, endsWithSemicolon true, and the FULL shape block — a SINGLE
+statement (`statementCount: 1`), head `bound-await`, argument `literal-object`, lexical `complete`, tail
+`text-binding`, `bindingEquality: "equal"`, `parserStage: "wrapper"`, `wholeInputConsumed: true`,
+`retention: "full"`, `coverage: "complete"` — with the withheld body's identity anchor SHA-256
+`f90959ab3e7910950e207d5d16e888bd3bddfb7c45204199fcc92974423ce49a` (N's was `35d62ac0…`; F's `36c90344…`/`be3b9a1c…`
+— the same closed shape signature, NEW bytes). The registered collection surface worked exactly as designed; the
+raw body stays withheld by the privacy discipline.
+
+**Evidence omissions (named, never zero):** the whole-case inconclusive (`unsupported-call-shape`); the admission
+reasons list (`host-activity-call-scan-incomplete`); the refused settlement basis
+(`ambiguous-cell-scan-incomplete-not-attributed`); `deliveryToSettlementMs: null`; `exactTargetMatch: null` with
+the target suppressed by privacy (23 chars, `kind: "unknown"`); `survivalControl: null` (the observed facts
+unestablishable — fail-closed); `result.stdoutCapture { status: "incomplete", reason: "capture-meta-missing" }`
+(the interruption shape — the OS observation is the termination authority); `route.actual: null`;
+`childToolCallCount: null`; the `linkage` block's checked fields null; the `observations`/`waitPolicyObservation`
+decisive facts `null`/`unknown` with `remainingLifetimeBasis: "unavailable"`; `exitCorroboratedByMeta: false`;
+403 named summary roll-offs; both ancestry hops `generation-lifetime-unverifiable`. No omission was silently
+zeroed; no unknown was converted into zero or not-applicable.
+
+**The V-fix decision (explicit): V-fix is UNSPENT — 0 of 1 — reason: NOT ELIGIBLE (no bounded correction exists
+that changes the qualification outcome).** Grounds, each named: (1) the DOMINANT refusal is the §24.6-registered
+instrument-side scan-completeness blocker, NOT a newly demonstrated gap — F, I and N retained the same
+unclassified-wrapper family, §24.11 preregistered exactly this refusal, and V's cell is the FOURTH instance of the
+SAME closed shape signature with new bytes; the real cell's binding/sink lexemes remain withheld by the privacy
+discipline, so a grammar written from synthetic reconstructions could not prove, in an offline RED→GREEN, that it
+recognizes the REAL cell (the §24.13 C-decision grounds carry verbatim; the plan forbids exactly such ungrounded
+grammar growth). (2) The ancestry same-second refusal is the measurement's DESIGNED conservative behavior — the
+round-19 uniform whole-second uncertainty bound and the §25.10 honest-choreography disclosure registered exactly
+this same-second unresolvability; it is not a bytes defect. Refining the frozen rule to consume the precise
+record-write instants (the Companion's own record written +498 ms, the daemon's +722 ms — both nonce-keyed
+same-scope records whose daemon record names the Companion as parent) would be a NEW acceptance-rule decision — a
+relaxation of the 37-version anti-reuse family requiring its own preregistration, complete negative family and
+independent review before any launch — and could NOT flip V's verdict regardless, because ground (1)'s
+delivery-admission refusal and the unadjudicated survival control coexist independently. (3) NO product defect was
+observed: the host-side mechanics delivered (all f2 conjuncts positive; the +3 ms cancellation marker), the durable
+lifecycle behaved exactly as the §16.2-frozen design (the genuine session-end receipt settled the job 33.024 s
+after the item stamp; zero kills; zero cleanup errors), and the local-process observation itself worked exactly as
+built (every applicable duty individually established; the positive pre-fence Companion disappearance; the
+confirmed transport exit). `not-needed` is deliberately NOT claimed — that reason is reserved for a proven
+native-responsive-and-settled V, which this trial did not establish.
+
+**Hosted work STOPS (the explicit statement):** the finite live ledger of plan §4 is CLOSED — V: 1 of 1
+(spent-and-adjudicated); V-fix: 0 of 1 (unspent, not-eligible per the grounds above). Every real hosted/provider
+launch of this campaign is accounted above (one offline refusal consuming no slot; one hosted case). Any further
+hosted case requires NEW user authority. The campaign-level disposition statement (acceptance-proven /
+observer-blocked / production-defect-observed), the fuller supersession sweep and the final full battery are Task
+5's deliverables and are NOT claimed here.
