@@ -21481,3 +21481,17 @@ recorded in the immediately-following docs-only entry. **The campaign dispositio
 `do-not-adopt-yet` stands, the ledger stays CLOSED (V 1/1, V-fix 0/1), and this repair is to the EXISTING
 installed product's shared lock infrastructure — crash-class on current LTS hosts — not a shell-wait adoption
 step and not a production enablement.
+
+**The immediately-following docs-only entry (the promised `npm test` record):** the full `npm test` executed on the
+review-fix commit's exact clean tree (`c4e6a73`) returned **3398 tests / 3393 pass / 1 fail / 4 skipped** — the
+single failure was `marketplace provenance binds its source identity to the complete checked-in output without Git
+history`, the CHECKED-IN provenance manifest predating the mirror byte change (a release-process gate, not a runtime
+failure; the same run's marketplace install and critical-mirror tests passed), resolved by the immediately-following
+chore commit `96f2f71` regenerating `marketplace/.agents/plugins/provenance.json` against the new tree (source
+binding `c4e6a7371a69347e98865b15be60a40c52625a19`, 170 files, dependencyLock verified byte-unchanged) per the
+repo's established refresh-commit pattern. Re-run on the refresh head (`96f2f71`, whose only delta is that
+manifest): **3398 tests / 3394 pass / 0 fail / 4 skipped, exit 0** — the fourth named skip is this record's new
+regression test, skipping for absent `--expose-gc` — with the chained
+`node --test tests/integration/marketplace-snapshot-build.mjs` **2 tests / 2 pass / 0 fail**. The production-surface
+deviation therefore lands as TWO commits — the fix (`c4e6a73`) and its snapshot refresh (`96f2f71`) — both
+independently revertible.
