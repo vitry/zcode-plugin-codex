@@ -21405,3 +21405,79 @@ other byte of §25.1–§25.10 or of this section's battery records was touched)
 Spec/authority and implementation/evidence/privacy reviews have run on the actual FINAL revision, their verdicts and
 non-blocking observations are recorded here and in §25.10's round-38 review-history entry, zero blocking findings
 means no dated narrow recheck is owed, and no byte change resulted from either review.
+
+**The 2026-11-02 user-review round — the CI `lts/*` demand, the located defect, and the campaign's FIRST recorded
+production-surface deviation (dated; this is the review-fix record the closing rule above prescribes fresh applicable
+checks for, not another closing section; the Task-5 history above stays byte-unchanged):** the user review of the
+close-out head `28bd2885` accepted the Companion-observation proofs and issued three demands — the two spec
+corrections (both recorded: §25.10's dated re-assessment for the authorized-path evaluation and the V-fix
+re-assessment against the plan's actual bar, and the §25.11/§24.13 corrections above) and the CI demand: PR #74's
+three `lts/*` CI jobs fail while the three `22.13.0` jobs pass, the failing FileHandle is never explicitly closed,
+and the red must not be treated as green without the defect located and the baseline pinned.
+
+**The pinned version mechanism (from the actual failed-run logs, run `41397409719`):** `lts/*` on the runners now
+resolves to **Node 26.13.0** (all three OS jobs), which delivers a garbage-collection close of an open FileHandle as
+an **error — an uncaughtException the test runner reports after the enclosing suite finished** (`"A FileHandle object
+was closed during garbage collection. This used to be allowed with a deprecation warning but is now considered an
+error."`, descriptor path `…/cancel-locks/<jobId>.lock/advisory.lock`); the `22.13.0` jobs and local Node
+`v24.14.0` emit only the DEP0137 deprecation warning, which is why the failure was locally repro-negative in the
+pre-review attribution. The baseline attribution stands as recorded on the PR: attribution PR #75 (bytes identical
+to base `a8f54d0` plus an empty commit) failed its macos+ubuntu `lts` jobs identically, while main's own single
+re-run went 3/3 `lts` green and this branch went 9/9 red across three reruns — a load- and timing-dependent
+high-probability failure that pre-exists the branch's bytes and became chronic when GitHub's `lts/*` moved to the
+error-emitting Node 26 line after 2026-10-28.
+
+**The located defect (real, pre-existing, crash-class on current Node LTS):** every reachable path in
+`withFileLock` (`scripts/lib/fs.mjs`) already closes the advisory-lock descriptor explicitly — open failure,
+acquire failure, and the unconditional unlock+close after the operation settles. The leak is REACHABILITY, not a
+missing close: the staged recovery (`scripts/lib/rescue-child-reconciliation.mjs`, the `ranStage` shared-budget
+`Promise.race`) abandons the losing stage-operation promise when the budget expires mid-stage, and when the
+abandoned chain holds a `withJobCancellationLock` → `withFileLock` frame, the whole suspended frame — descriptor
+still open — becomes unreachable; the collector closes the descriptor, and Node 26 turns that into the recorded
+uncaughtException. In a long-lived plugin host the same abandonment happens on every budget-expired recovery pass,
+so the crash class is not test-only.
+
+**The fix and the boundary release (recorded as the deviation it is):** `withFileLock` now retains each pending
+operation promise in a module-level set until settlement, keeping the abandoned frame alive so its explicit
+unlock+close always runs; the entry is deleted at settlement, so nothing outlives a settled operation, and every
+existing awaiting caller observes identical semantics. This touches **production bytes** — the campaign's FIRST
+production-surface change: `scripts/lib/fs.mjs` digest `ea222a08…512792` (the Task-5 freeze's "never modified"
+claim was true AT THE TASK-5 CLOSE and is superseded from this fix forward) → `b36fb67c…5d938f`, with the
+marketplace mirror `marketplace/plugins/zcode/scripts/lib/fs.mjs` byte-identical at the same digest. The plan §2
+read-only boundary and the pre-review attribution comment's "this branch has no authority to touch it" paragraph
+are released by the user's explicit review directive ("处理 CI" on this PR); the release is one isolated,
+independently revertible commit. V's record stays bound to the bytes it executed on — the historical Task-5
+digests remain the authoritative description of V's runtime and are not retroactively edited. The battery rows
+above (prohibited-path diff EMPTY, npm test 3397) describe the Task-5 close; the new head carries THIS recorded
+deviation instead.
+
+**The regression test (deterministic RED→GREEN):** `tests/state.test.mjs` gains `an abandoned in-flight lock
+operation keeps its advisory handle out of the garbage collector` (file digest `56c13d7c…8e258c`), which drops the
+only reference to an in-flight `withFileLock` chain whose operation never resolves, forces collection twice with
+`--expose-gc`, and asserts no garbage-collection close was emitted through any channel. RED on the pre-fix bytes
+(local `v24.14.0`): both emission shapes captured — `"Closing file descriptor 14 on garbage collection"` and the
+DEP0137 `"Closing a FileHandle object on garbage collection is deprecated…"`; on Node 26 the same class arrives as
+the recorded uncaughtException error. GREEN on the fixed bytes. The test skips with a named reason when
+`--expose-gc` is absent, and its fatal-event capture is matching-only (any other fatal event keeps its crash
+semantics).
+
+**The fresh applicable checks on the changed bytes (the closing rule's requirement; every exit explicit):**
+`node --test tests/state.test.mjs` **106 tests / 105 pass / 1 skip** plain (the new test names its `--expose-gc`
+skip) and **106/106 pass with `--expose-gc`**; `node --test tests/rescue-child-reconciliation.test.mjs` **55/55**;
+`node --test tests/test-selection.test.mjs` **6/6**; the plan's focused Task-5 suites on the final bytes —
+preparation/binding/route-planner **417/417**, lifecycle/reconciliation/progress-relay **126/126**,
+job-control/mcp-result **213/213**; `npm run lint` clean; `npm run typecheck` clean; `git diff --check` clean;
+`node scripts/check-line-endings.mjs` 549 files, clean. `npm run test:shell-research` was executed four times
+back-to-back on these bytes: run 1 failed once (its truncated log shows the `1 !== 0` nested-child exit shape),
+run 2 green **1341/1341, exit 0**, run 3 failed once at `an underscore destination alias with a quoted spaced
+value is stripped` (`tests/shell-wait-probe.test.mjs:479`, the nested child exiting 1), run 4 — the once-only
+re-run — green **1341/1341, exit 0**. Both failures are the REGISTERED load-ranked nested-spawn contention family
+(each failing test re-executes the entire suite as a nested ~136 s child; the Task-5 battery recorded the same
+family failing at the sibling `:422` on the OLD bytes) and pre-date this fix; no failure was converted into a pass.
+The full `npm test` cannot run on an uncommitted tree (the marketplace clean-source gate refuses a dirty tree — an
+uncommitted-tree probe produced exactly that gate refusal twice, recorded as the gate's own behavior, not
+failures), so it executes on this commit's exact clean tree per the Task-5 equality structure and its result is
+recorded in the immediately-following docs-only entry. **The campaign disposition is unchanged by this round:**
+`do-not-adopt-yet` stands, the ledger stays CLOSED (V 1/1, V-fix 0/1), and this repair is to the EXISTING
+installed product's shared lock infrastructure — crash-class on current LTS hosts — not a shell-wait adoption
+step and not a production enablement.
