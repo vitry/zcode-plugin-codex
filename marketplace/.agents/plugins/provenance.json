@@ -1,15 +1,15 @@
 {
   "packageVersion": "0.1.0",
   "pluginVersion": "0.1.0",
-  "sourceRef": "c8822e80dd968bef8c8f1e541d6bd3327fc0d131",
-  "sourceSha": "c8822e80dd968bef8c8f1e541d6bd3327fc0d131",
+  "sourceRef": "c4e6a7371a69347e98865b15be60a40c52625a19",
+  "sourceSha": "c4e6a7371a69347e98865b15be60a40c52625a19",
   "dependencyLock": {
     "file": "npm-shrinkwrap.json",
     "sha256": "211027475798ba42d86ffba2312fc09834ac05239c6dcc8d6fb7e937a3ebb849"
   },
   "content": {
     "algorithm": "sha256",
-    "sha256": "ed1c8303c59f97fd0a4aec4b5f11208aa3cd9eb97fa7c66c0a5f1f5cc52e639d",
+    "sha256": "3eacb64c3a2b0231f6aa79829861b4e9ba321b48998bb8f82c5093dc523128d1",
     "files": [
       {
         "path": ".agents/plugins/marketplace.json",
@@ -558,8 +558,8 @@
       },
       {
         "path": "plugins/zcode/scripts/lib/fs.mjs",
-        "size": 24462,
-        "sha256": "ea222a08c0eed1051e2143cfafc21c773c49a901637a7dfdc5e8c8c406512792"
+        "size": 25489,
+        "sha256": "b36fb67c75b238eb49e3a2c8d4c1e00b6c9d400bbdf3d7c0f9282933a55d938f"
       },
       {
         "path": "plugins/zcode/scripts/lib/git.mjs",
