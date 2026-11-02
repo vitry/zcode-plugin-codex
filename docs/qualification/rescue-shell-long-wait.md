@@ -20680,6 +20680,20 @@ verdicts stand as history under the version stamps — every retained I/F/N reco
 schema version 1 (new, digest-only). No §25.10 stdout-capture schema change: `CLOSURE_OBSERVATION_VERSION`
 stays 1 and the v1 meta field set is byte-intact.
 
+**2026-11-02 review round 38 — the CAMPAIGN'S TWO MANDATED FINAL REVIEWS (ZERO blocking findings; NO fix round, NO
+byte change — the join version stays **v37** and every rounds-1–37 gate above stands on its own bytes; run at the
+ROOT level on the actual FINAL revision, the Task-5 close-out commit `7986c9b71b2579873545e8ebc06f1997a4dd8a28`, not
+the Task-2/3 bytes reviewed above; this entry CLOSES §25.10's review history):** the plan Task-5 checkbox-4 pair
+returned (1) **SPEC CLEAR** — the independent Spec/authority review (every completed checkbox honest against the §25
+records; supersession discipline clean; the `do-not-adopt-yet` decision grounded in measured facts; ledger V 1 of 1 /
+V-fix 0 of 1 with hosted work stopped; the plan byte-unmodified since Task 1; the prohibited-path diff re-verified
+EMPTY; two non-blocking P3 observations, recorded in §25.11); and (2) **EVIDENCE/PRIVACY CLEAR** — the independent
+implementation/evidence/privacy review (the private V record re-hashes to its registered SHA-256; the provenance
+digest and all 12 freeze module digests match HEAD bytes; the `localProcess` block digest-only; the oracle's
+`qualified: false` with its nine named reasons reproduces offline from the record's own fields; fail-closed
+discipline and non-interference verified in code; one non-blocking note, recorded in §25.11). Full dated records:
+§25.11. There was NO P1/P2 finding to RED-prove or fix, so no gate re-run and no version bump accompany this entry.
+
 **2026-11-02 local-settlement Task 4 — the V PRE-LAUNCH FREEZE (offline; zero model turns, zero live launches in this
 subsection; the §24.12 native-acceptance freeze practice carried verbatim).** Task 4 of [the local-settlement
 plan](../superpowers/plans/2026-10-28-rescue-shell-wait-local-settlement.md) executes the finite live ledger of plan
@@ -21278,8 +21292,35 @@ implementation bytes are the equality-proven tree (no test or source edit was ma
 **Unowned scratch:** the battery's logs live in disposable `/tmp/local-settlement-t5-battery/` (outside the
 repository, never staged); the worktree carried only the docs deltas above at commit time.
 
-**The independent final reviews are PENDING at the root level — NO completed-review checkbox exists.** Per the plan's
-Task-5 review duty and the §23.11.4/§24.14 precedent, the independent final Spec/authority review and the
-implementation/evidence/privacy review run on the actual FINAL revision as the root's separate step AFTER this
-commit; nothing in this section claims a completed review, and any finding will be recorded with its own dated
-narrow recheck.
+**The independent final reviews are COMPLETED AND RECORDED — both CLEAR, ZERO blocking findings (2026-11-02; the
+root's separate step on the actual FINAL revision, the Task-5 close-out commit
+`7986c9b71b2579873545e8ebc06f1997a4dd8a28`, per the plan's Task-5 review duty and the §23.11.4/§24.14 precedent).
+This record replaces the reserved pending note and is the review-outcome record that note anticipated — NOT a new
+closing section (the "no further closing records" rule above stands; the recording commit's only deltas are this
+replacement and §25.10's dated review-history addendum, both docs-only — no executable/test byte changed, and no
+other byte of §25.1–§25.10 or of this section's battery records was touched):**
+
+1. **Spec/authority review — SPEC CLEAR, zero blocking findings (2026-11-02, independent reviewer).** The review
+   walked plan Tasks 1–5 against the §25 records: every completed checkbox honest; supersession discipline clean
+   (the four dated §24 pointers supersede only the plan §1-authorized "no synthetic route" family; history appended,
+   not rewritten; live requirements preserved); the `do-not-adopt-yet` decision grounded strictly in measured facts
+   with no overclaim; ledger integrity clean (V 1 of 1, V-fix 0 of 1, hosted work stopped); the plan file
+   byte-unmodified since Task 1; and the prohibited-path diff re-verified EMPTY by the reviewer. Two NON-BLOCKING P3
+   observations recorded (each already self-disclosed in-record; no recheck owed): the `closure-preload.mjs`
+   extraction is not a §2 table row — self-corrected in-record; and the Task-2 files block predates that extraction —
+   disclosed later in the same section.
+2. **Implementation/evidence/privacy review — EVIDENCE/PRIVACY CLEAR, zero findings (2026-11-02, independent
+   reviewer).** The V record chain verified intact end to end: the private record re-hashes to its registered
+   SHA-256 (`710c071e…d3ce0`, mode 0600); `EXECUTING_OBSERVER_PROVENANCE.digest` equals the recorded value with
+   `sourcesChangedDuringRun: false`; all 12 freeze module digests match HEAD bytes; the `localProcess` block is
+   digest-only (no raw nonce values anywhere; the wrapper-cell raw body withheld inside the private record itself);
+   the oracle's `qualified: false` — the nine named reasons and both ancestry `generation-lifetime-unverifiable`
+   refusals — reproduces offline from the record's own fields; and the fail-closed discipline and non-interference
+   are verified in the code (spot-checked reviewer-round claims all implement what the report says). One
+   NON-BLOCKING note recorded (owing no recheck): the observer header's write-scope sentence coexists with the
+   registered materialization cache write — documented in the same header and §25.10 round 8.
+
+**With both reviews recorded, the Task-5 review checkbox is now honestly complete:** the mandated independent final
+Spec/authority and implementation/evidence/privacy reviews have run on the actual FINAL revision, their verdicts and
+non-blocking observations are recorded here and in §25.10's round-38 review-history entry, zero blocking findings
+means no dated narrow recheck is owed, and no byte change resulted from either review.
