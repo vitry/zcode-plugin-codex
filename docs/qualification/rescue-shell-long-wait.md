@@ -18988,8 +18988,11 @@ rewritten.
    bounded-name family IS a synthetic-grounded frozen grammar (RED→GREEN plus the complete negative family through
    the real extractor→mapper→serializer→join→oracle pipeline), and the local-settlement campaign executed its entire
    bounded local-process layer without any unredaction. What still stands is this step's narrow claim: a grammar
-   written from synthetic reconstructions cannot prove it recognizes the REAL withheld cells — that resolution
-   remains a human/user privacy decision (the §24.13 C-grounds carry verbatim into the V-fix disposition, §25.11).]**
+   written from synthetic reconstructions cannot prove it recognizes the REAL withheld cells — that grounding-on-
+   real-bytes route remains a human/user privacy decision (re-confirmed 2026-11-02: the §25.11 in-memory evaluation
+   proves the installed frozen grammar is NOT a missing entry — V's cell sits OUTSIDE it in a registered refusal
+   dimension — so only real or human-approved-equivalent bytes can ground a widening; the §24.13 C-grounds into the
+   V-fix disposition are RE-ASSESSED against the plan's bar in §25.10's dated correction).]**
 2. **What offline evidence would ground it (each step named):** (a) the three real bodies UNREDACTED into a private
    fixture-owned workspace OUTSIDE the repository — a privacy-release step that requires NEW user authorization
    (no plan or agent grants it unilaterally); (b) an offline RED reproduction on the real
@@ -21056,6 +21059,61 @@ built (every applicable duty individually established; the positive pre-fence Co
 confirmed transport exit). `not-needed` is deliberately NOT claimed — that reason is reserved for a proven
 native-responsive-and-settled V, which this trial did not establish.
 
+**The V-fix disposition RE-ASSESSED (dated 2026-11-02, the user-review correction — the original decision paragraph
+above stands byte-unchanged as the Task-4 adjudication record; this block supersedes its BAR, not its facts):** the
+original decision keyed NOT ELIGIBLE to "no bounded correction exists that changes the qualification outcome" and to
+a fix's inability to "flip V's verdict regardless" — that is NOT the plan's bar. Plan §4's actual bar (verbatim):
+V-fix is eligible given "a concrete causal diagnosis and offline RED→GREEN correction or tested supported choreography
+change", registering "the one named change, expected discriminating result, complete negative family and versioning",
+where "a demonstrated bounded parser, identity, collection or fence defect can qualify without recovering historical
+raw text" and "a new unclassified shape alone or retrying model obedience is not enough" — one fix NEVER has to
+eliminate all coexisting blockers or flip the overall qualified verdict. Re-assessed per candidate:
+
+1. **The wrapper-cell scan refusal — the authorized paths were EVALUATED, and the leading defect candidate is
+   REFUTED.** The PR #73 synthetic-grounded frozen wrapper grammar (`BOUND_RESULT_WRAPPER_PATTERN`, the §24.10
+   amendment, registered in native-acceptance Task 2 commit `562d158f` with its complete 18-shape negative family
+   through the real pipeline) IS installed in the exact bytes V ran on (the observer digest `18d8e34d…` covers it;
+   `evidence.mjs` byte-unchanged since §25.1), so the hypothetical "the scan's grammar table lacks the family entry"
+   was checked IN-MEMORY, OFFLINE, against V's retained content-free facts (plan: "analyze unsupported calls in
+   memory and retain allowed content-free facts"): every skeleton class V retained (single statement, `bound-await`
+   head, `exec_command`, single-line decodable literal-object argument, `text-binding` tail, `bindingEquality:
+   "equal"`, directive absent, one content line + the trailing-newline artifact, 228 bytes) sits INSIDE the family's
+   descriptor set, BUT the recorded `parserStage: "wrapper"` under complete coverage proves the strict head-side
+   spelling does NOT match the frozen family's pinned prefix — an ADMITTED family member always diagnoses
+   `parse-accepted` (reproduced offline on the shipped bytes: the pinned `r` form and a bounded non-`r` member both
+   admit with `parse-accepted`, while the `let`/`var` keyword, head-junction space-run, `$`-led name and
+   over-64-char-name deviations each reproduce V's retained signature field-for-field with `parserStage: "wrapper"`,
+   and the mismatched-sink negative-family member does NOT — it diagnoses `output`/`not-equal`). Outcome: **NO-MATCH**
+   — V's cell is provably OUTSIDE the frozen admitted family in exactly a REGISTERED refusal dimension (declaration
+   keyword, head-junction whitespace, or identifier charset/bound: the frozen zero-tolerance head junctions and the
+   negative family's own members), and which dimension is precisely the withheld lexeme. There is therefore NO parser
+   defect to fix — the scan refused correctly, by registered design — any widening toward a candidate dimension is
+   ungrounded grammar growth for unknown live content (plan Task 3: "Do not expand grammar in response to an unknown
+   live cell without its own bounded offline demonstration and negative family"; "a new unclassified shape alone… is
+   not enough"), and its offline RED would need the real bytes — unavailable, the §24.13 C-grounds stand, now with
+   their narrow synthetic-reconstruction claim RE-CONFIRMED by this evaluation. NOT ELIGIBLE: no demonstrated bounded
+   defect and no offline RED→GREEN — NOT because the fix would have to flip the verdict.
+2. **The survival control unadjudicated — same grounding gap, no collection defect.** The control's launch/read
+   statements sit in the SAME unclassified family (the §16.4 verdict absent — fail-closed, never fabricated), so the
+   NO-MATCH above applies to them identically; the collection surface itself worked exactly as designed (both
+   rollouts captured, evidence complete), so no demonstrated collection or choreography defect exists. NOT ELIGIBLE
+   for the same grounds as (1).
+3. **The same-second ancestry refusal — needs a NEW acceptance rule, not a fix.** A concrete causal diagnosis EXISTS
+   (same-second startup choreography vs. the whole-second darwin `lstart` granularity under the frozen round-19
+   bound), but it is the measurement's DESIGNED conservatism, not a parser/identity/collection/fence defect; its
+   refinement is a NEW acceptance-rule decision (preregistration + complete negative family + independent review
+   before any launch) — needs-new-acceptance-rule, NOT V-fix material, and do-not-weaken-acceptance stands. (The
+   original addendum "could NOT flip V's verdict regardless" is RETIRED as a ground — flip-ability is irrelevant
+   under the plan's bar; the actual grounds are: no defect, no offline RED→GREEN, acceptance-rule authority.)
+4. **No further candidates** exist in the Task-4 record: the `stdoutCapture { capture-meta-missing }` is the
+   preregistered interruption shape, and the `route`/`linkage`/decisive-poll nulls ride the same scan refusal.
+
+**Re-assessed disposition: V-fix REMAINS NOT ELIGIBLE — now stated strictly against the plan's own bar: no candidate
+carries (i) a demonstrated bounded parser/identity/collection/fence defect together with (ii) an offline RED→GREEN
+correction or tested supported choreography change yielding a discriminating result.** The slot stays 0 of 1 UNSPENT,
+no fix is registered, and NO executable byte changes (this re-assessment is docs-only; any future spending decision
+awaits the root's independent review and new user authority — §25.11).
+
 **Hosted work STOPS (the explicit statement):** the finite live ledger of plan §4 is CLOSED — V: 1 of 1
 (spent-and-adjudicated); V-fix: 0 of 1 (unspent, not-eligible per the grounds above). Every real hosted/provider
 launch of this campaign is accounted above (one offline refusal consuming no slot; one hosted case). Any further
@@ -21069,7 +21127,10 @@ Task 5 of [the local-settlement plan](../superpowers/plans/2026-10-28-rescue-she
 2026-11-02 in the same worktree (branch `docs/rescue-shell-wait-local-settlement`) on top of Task 4's closed commit
 `3d19ffb11dec5959356a34afc7fdd54ab14210f1`, with `git status --porcelain` EMPTY at battery start. Fully offline: zero
 model turns, zero `ZCODE_SHELL_WAIT_E2E=1` runs, zero host launches, no live case consumed — the finite ledger was
-already closed by Task 4 and this task spends nothing. This section is ADDITIVE — §25.1–§25.10 stand byte-unchanged —
+already closed by Task 4 and this task spends nothing. This section is ADDITIVE — §25.1–§25.10 stand byte-unchanged
+**except the single dated re-assessment block appended to §25.10's Task-4 V-fix disposition by the 2026-11-02
+user-review correction (this section's own decision records reference that correction; no other §25.1–§25.10 byte
+was touched)** —
 and it is the campaign's FINAL closing record: per the plan's equality rule the docs-only summary proves
 implementation-byte equality ONCE (below) and NO further closing records are added after it; any future executable or
 test byte change requires fresh applicable checks on the changed bytes, never another closing section. Research
@@ -21109,11 +21170,12 @@ re-hashed today is BYTE-IDENTICAL:
 **The ledger (final):** V = spent-and-adjudicated, **1 of 1** (launched once 2026-11-01T18:58:36Z on the §25.10
 frozen command, driver exit 0 at 19:07:03.949Z, record above; the 2026-11-01T18:56:08Z offline fixture-input refusal
 (`output must be empty`, pre-arming, zero host contact) consumed NO hosted case and is preserved verbatim outside the
-repository); V-fix = **UNSPENT, 0 of 1**, exact reason: **NOT ELIGIBLE — no bounded correction exists that changes
-the qualification outcome** (the three named grounds of §25.10's Task-4 block carry verbatim: the DOMINANT refusal is
-the §24.6-registered scan-completeness blocker whose resolution is a HUMAN PRIVACY DECISION, not a correctable bytes
-defect; the ancestry same-second refusal is the measurement's DESIGNED conservative behavior, whose refinement would
-be a NEW acceptance-rule decision and could not flip V's verdict regardless; NO product defect was observed).
+repository); V-fix = **UNSPENT, 0 of 1**, exact reason: **NOT ELIGIBLE** (re-assessed 2026-11-02 against the plan's
+actual §4 bar — §25.10's dated correction: no candidate carries a demonstrated bounded parser/identity/collection/
+fence defect together with an offline RED→GREEN correction or tested supported choreography change; the dominant
+refusal's cell is PROVABLY OUTSIDE the installed frozen wrapper family on the retained facts, so no entry is missing
+and no fix exists; the raw-body grounding route remains the user's decision; NOT because one fix must flip the
+overall verdict). The three original Task-4 grounds stand byte-unchanged in §25.10 with the re-assessment appended.
 `not-needed` is deliberately not claimed — reserved for a proven native-responsive-and-settled V. **Hosted work is
 STOPPED: any further hosted case requires new user authority; a smaller label, a new shell wrapper, or a new
 long-wait trial is not another quota. The local-settlement ledger is CLOSED.**
@@ -21203,15 +21265,28 @@ retires §24.13's registered named-unobservable FOR THE INSTRUMENTED FIXTURE PAT
 are placed at the four §24 locations; history is not rewritten). But Gate-D-style FULL ACCEPTANCE is NOT proven, by
 exactly two blocking facts, each with its own owner:
 
-1. **The inherited privacy-frozen unsupported-call-shape refusal (the FOURTH independent instance of the same
+1. **The inherited unsupported-call-shape refusal (the FOURTH independent instance of the same
    structural family).** V's unclassified cell carries the same closed shape signature as F/I/N with NEW bytes
    (anchor SHA-256 `f90959ab3e7910950e207d5d16e888bd3bddfb7c45204199fcc92974423ce49a`, beside the retained F/I/N
    family anchors `36c90344…`, `be3b9a1c…`, `35d62ac0…`; the diagnostic: single statement, head `bound-await`,
    argument `literal-object`,
    lexical `complete`, tail `text-binding`, `bindingEquality: "equal"`, `parserStage: "wrapper"`,
    `wholeInputConsumed: true` — the raw body withheld by the privacy discipline). The refusal is the §24.6-registered
-   designed fail-closed behavior, NOT a newly demonstrated gap; the §24.13 C-decision grounds carry verbatim, and its
-   resolution is a HUMAN PRIVACY DECISION on the withheld wrapper-cell shapes — no plan, agent or ledger grants it.
+   designed fail-closed behavior, NOT a newly demonstrated gap; the §24.13 C-decision grounds carry, AND the plan's
+   already-authorized routes were EVALUATED offline on the retained facts (2026-11-02, the user-review correction —
+   privacy release is NOT the only conceivable route): the PR #73 synthetic-grounded frozen wrapper grammar
+   (`BOUND_RESULT_WRAPPER_PATTERN` + its 18-shape negative family, registered in commit `562d158f`) is installed in
+   V's own observer bytes, and the in-memory content-free comparison returned **NO-MATCH** — every skeleton class V
+   retained sits inside the family's descriptor set, but the recorded `parserStage: "wrapper"` (complete coverage)
+   proves the strict head-side spelling deviates from the frozen family's pinned prefix in exactly a REGISTERED
+   refusal dimension (declaration keyword, head-junction whitespace, or identifier charset/bound — admitted members
+   always diagnose `parse-accepted`; the deviation reproductions and the per-field evidence are recorded in §25.10's
+   dated re-assessment), and WHICH dimension is precisely the withheld lexeme. Consequently: no grammar entry is
+   missing and no parser defect exists to fix; a NEW widening toward any candidate dimension is ungrounded grammar
+   growth for unknown live content (its offline RED would need the real bytes), which the plan forbids. The human
+   decision therefore remains a route ONLY for the RAW-BODY grounding material (real cells, or a human-approved
+   equivalent grounding, into a private out-of-repo workspace) — one route beside the already-executed authorized
+   ones, not a sole path; the forward-recognition design keeps every future authorized capture measurable regardless.
 2. **The designed same-second ancestry bound.** Both frozen ancestry hops refused `generation-lifetime-unverifiable`
    because the real startup choreography is same-second and the darwin measurement granularity is whole-second
    (§25.10 registered exactly this honest-choreography disclosure). Refining the frozen rule (e.g. consuming the
@@ -21225,7 +21300,8 @@ exactly two blocking facts, each with its own owner:
 cancellation marker), the durable lifecycle behaved exactly as the §16.2-frozen design (the genuine session-end
 receipt settled the job 33.024 s after the item stamp; zero kills; zero cleanup errors), and the local-process
 observation worked exactly as built. No product repair is proposed and no oracle is rewritten. V-fix is therefore
-NOT ELIGIBLE (no offline-grounded RED→GREEN correction exists that changes the qualification outcome), and the
+NOT ELIGIBLE per the plan's actual bar (no demonstrated bounded defect with an offline-grounded RED→GREEN
+correction — the re-assessed per-candidate grounds in §25.10's dated correction), and the
 ledger closes V 1/1, V-fix 0/1.
 
 **The smallest separately-authorized production integration work IF acceptance were later proven** (recorded per the
@@ -21240,10 +21316,15 @@ rollout by this research.
 **The bounded next actions (neither is another generic long-wait feasibility campaign; neither is authorized by this
 report):**
 
-1. **A user privacy decision on the withheld wrapper-cell shapes** — the exact §24.13 C-grounds: whether the real
-   bodies (or an equivalent human-approved grounding) may be released into a private out-of-repo workspace so an
-   offline RED→GREEN can ground the recognition surface on the REAL cells. Until that human decision, the fourth
-   instance stands refused and every hosted successor would refuse identically.
+1. **A user privacy decision on the withheld wrapper-cell RAW BODIES (or a human-approved equivalent grounding)** —
+   the exact §24.13 C-grounds, now scoped by the 2026-11-02 in-memory evaluation: whether the real bodies may be
+   released into a private out-of-repo workspace so an offline RED→GREEN can ground a registered recognition-surface
+   widening on the REAL cells. The evaluation (§25.10's dated re-assessment) already extracted the authorized
+   in-memory yield — V's cell is provably OUTSIDE the installed frozen family in exactly a registered refusal
+   dimension (declaration keyword, head-junction whitespace, or identifier charset/bound) — but no widening may be
+   registered without its own offline demonstration against real or human-approved-equivalent cells (the plan
+   forbids grammar growth for unknown live content). Until such a grounding exists, the fourth instance stands
+   refused and every hosted successor would refuse identically.
 2. **Optionally, a registered acceptance-rule decision on the same-second ancestry bound** — a new preregistered,
    negative-family-complete, independently reviewed rule consuming the precise record-write instants; it may only be
    created through its own offline grounding and never by editing V's recorded verdicts. This is optional: it cannot
