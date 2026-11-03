@@ -22017,3 +22017,386 @@ captured):**
 byte-wise (the section follows the file's existing LF/UTF-8/final-newline conventions and `git diff --check` covers the
 whitespace rules). No test or research suite is re-run for Task 1 — docs-only; the applicable batteries are Tasks 2–4's
 duty and the plan Task 6 requirement, per the plan's own gate lists.
+
+## 27. 2026-11-03 evidence-completion Task 2: the call-coverage union widened with ONE registered whole-body family — the successor registration, the RED→GREEN outcome record and the completed validation battery (offline; zero model turns, zero live launches)
+
+Task 2 of [the evidence-completion plan](../superpowers/plans/2026-11-03-rescue-shell-wait-evidence-completion.md), executed
+in worktree `.worktrees/rescue-shell-wait-evidence-completion` on Task 1's commit
+`6f5d117f8def52e5f1977856476fc44b72defa41`, registered directly after §26 (Task 1's record; §26 stands verbatim, nothing in
+it rewritten). This is the §26.7-required SUCCESSOR REGISTRATION of the §26.4 widening: the exact accepted spelling and
+bounds below are the binding contract, first frozen in the implementing module's freeze commit-comment
+(`WRAPPER_STATEMENT_PATTERN` and its sized freeze block, `tools/shell-wait-probe/evidence.mjs`) and reproduced here. The
+execution spanned continuation runs (the implementing delta was completed and owned by the final agent); every green
+milestone below is re-verified 2026-11-03 on the exact pre-commit bytes (§27.7), and the RED→GREEN separation was
+re-reproduced from scratch (§27.2). Offline end to end: zero model turns, zero `ZCODE_SHELL_WAIT_E2E=1` runs, zero host
+launches; the only writes are the four owned research files and this section. No join/oracle version bump: the change is
+extractor-side recognition growth with ZERO join/oracle output change — legacy persisted records replay byte-stable (the
+pinned F/I replay re-proves it on the new bytes), and the executing-observer provenance digest moves with the implementing
+bytes automatically (the v5 construction). No all-future-calls claim is made and no raw-text-is-the-only-route claim is
+made (§27.6).
+
+### 27.1 The registered admitted union (exact shape and bounds)
+
+ONE additive whole-body family beside the pinned skeleton (the pinned `r` wrapper families, the §24.11 anchored bounded
+non-`r` family, INLINE and PREPARATION stand byte-identical; the recognition union widens and retreats nothing):
+`WRAPPER_STATEMENT_PATTERN`, tried in `parseCallStatements` on the RAW input immediately after the two pinned whole-body
+exhibits (evidence.mjs, before the directive strip and the line splitter):
+
+```
+^(?:\/\/ @exec: ([\s\S]{1,512}?)\n)?(?:const|let|var)[ \t]{1,8}([\p{ID_Start}$_][\p{ID_Continue}$_]{0,63})[ \t]{0,8}=[ \t]{0,8}await[ \t]{1,8}tools\.(exec_command|write_stdin)\((\{[^\n]{1,4096}?\})\);[ \t]*(?:\r?\n[ \t]*)?text[ \t]{0,8}\([ \t]{0,8}\2[ \t]{0,8}\);?[ \t]*\r?\n?$
+```
+
+The four §26.7 property requirements hold by construction: (i) raw-input anchoring — the pattern spans the raw
+directive-prefixed input and every junction byte is checked on the raw bytes (never normalize-then-match, never a
+strip-first bypass); (ii) full-body consumption — the `$`-anchored statement consumes the cell's whole raw content (no
+partial admission); (iii) the ORIGINAL literal argument decoder (`parseWrapperArguments` — no eval, no generic JS rollout
+interpreter, no substring tool search, no schema-free argv/config bag); (iv) per-statement output ownership — one
+statement per recognized cell, joined through the canonical machinery exactly like the pinned wrapper statements.
+
+Registered bounds, all finite and checkable (each maps to one preregistered §26.4 dimension):
+
+- Declaration class (D1): EXACTLY `{const, let, var}`. Nothing beyond: an identifier-glued keyword refuses (the
+  minimum-junction rule below).
+- Name class (D2): the SHAPE classifier's own mechanical ECMA identifier class — `[\p{ID_Start}$_][\p{ID_Continue}$_]{0,63}`
+  (1–64 code points), mirrored verbatim from shape-diagnostic.mjs's class. The `r` spelling is admitted TOO (the §24.11
+  exclusivity was a compatibility device for the pinned patterns, which stand unchanged; the union admits more). Refused:
+  a leading digit, any >64-char name (either class), identifier-escape spellings (`re\u0061sult`-style — every spelling
+  becomes undecidable) and identifier-boundary homoglyph escapes (`await\u0069…`-style) — the §26.4 D2 counterexample
+  family survives.
+- Head junctions (D3): horizontal `[ \t]` runs ONLY, matched on the raw bytes: 1–8 (`[ \t]{1,8}`) at the keyword→name and
+  await→tools junctions (glue-avoiding minimum 1), 0–8 around the `=`. Runs of 9 refuse. The member-access, call-paren,
+  argument-object and declaration-semicolon junctions keep ZERO tolerance.
+- Literal-object (D7): ONE single-line literal object ≤4096 chars decoded by the SAME unchanged
+  `parseWrapperArguments`; interior newlines stay excluded; over-bound or undecodable arguments fall through to the
+  unchanged per-line verdict for the SAME bytes (fail closed for the frozen family, admitted only where an
+  already-supported shape exists) — never silently truncated, never decoded on another path.
+- Layout (D4): ONE content line, or the emission carried to ONE extra line through the declaration→emission junction
+  (`[ \t]*(\r?\n[ \t]*)?`) — horizontal whitespace plus at most ONE line break with horizontal whitespace on both sides
+  (LF and CRLF spellings). The object stays single-line. Refused: a blank separator line (two breaks), an interior break
+  inside the object or inside the emission tail, a real trailing blank line.
+- Emission junctions: the §23.2 `[ \t]{0,8}` runs at all three `text( <name> )` junctions (verbatim); the OPTIONAL
+  trailing `;` and the trailing-artifact `[ \t]*\r?\n?` (verbatim).
+- Sink (D5): the EQUAL text-binding tail ONLY — the structural backreference on the declared binding. Refused by
+  registration (the equal-only default stays): every changed sink — `text(other)`, property tails, `String()` tails, and
+  `text(JSON.stringify(<name>))` on any non-pinned spelling (the stringify tail stays EXCLUSIVE to the pinned `r`
+  WRAPPER family, whose own accepted set is byte-identical).
+- Directive (D6): ABSENT or ONE leading `// @exec: …\n` line with the DIRECTIVE_PATTERN's exact 1–512 lazy capture,
+  validated through the UNCHANGED framing probe (`parseWrappedToolInput` on the raw prefix plus the pinned wait probe): a
+  VALID directive attaches to the statement exactly like the per-line machinery attaches it (the same decoded object); an
+  INVALID (or out-of-bounds) directive NEVER strips into acceptance — the family skips it and the unchanged per-line
+  machinery renders the registered fail-closed refusal; a second directive line is never a captured prefix.
+- Tool set: the frozen §23.2 set `{exec_command, write_stdin}` (wait rides the INLINE/preparation paths only, unchanged).
+
+### 27.2 The §26.4 dimension outcomes (per-dimension; RED→GREEN measured)
+
+TDD protocol, measured 2026-11-03 in this worktree on the exact bytes of §27.7: with the two engine files
+(`evidence.mjs`, `shape-diagnostic.mjs`) reverted to Task 1's HEAD and the registration's tests present, the focused
+command (`--test-name-pattern='coverage-completion'`, both owned test entries) reported 12 tests / 4 pass / 8 fail; the
+eight failing names are the two native differential/withhold tests, five admit-dimension tests (declaration D1,
+identifier D2, junction D3, newline-layout D4, directive D6) and the union-validation test, whose failures
+print the SPECIFIC current failures per family — e.g. `the registered family must admit this body: let result = await
+tools.exec_command({cmd:…` (D1), `$-led binding` (D2), `8-run at the two equals junctions` (D3), `LF layout` (D4),
+`valid directive on a widened body` (D6), plus the differential/withhold pipeline levels. Restoring the delta restored
+12/12 pass. The argument (D7), sink (D5) and negative-family tests are GREEN in BOTH states because their registered
+states are PRESERVATION (the unchanged decoder, the equal-only refusal, the refusal families staying refused); their RED
+obligations ride the union-validation rows inside the admitted-spelling trial (the same 12-test suite). No
+implementation-coupled assertion exists: every admit assertion deepEqual-compares against the pinned control's parsed
+value at the `parseCallStatements` public seam, never against internals.
+
+| §26.4 dimension | §26.4 recorded current state (reproduced during the RED verify) | §27 outcome | Anchor |
+| --- | --- | --- | --- |
+| D1 declaration | `let`/`var` refused whole-body and per-line; classifier lexes all three `bound-await` | ADMIT let/var with the IDENTICAL single call value (deepEqual to the pinned control); tool set frozen under widened declarations | `coverage-completion declaration dimension` |
+| D2 identifier | ASCII charset bound; `$`-led/non-ASCII refused; classifier mechanical ECMA class lexed `bound-await` | ADMIT the mechanical class ($-led, mid-name `$`, non-ASCII ID_Start, astral, ZWNJ ID_Continue) bounded 1–64; digit-led/65-char/escape family refuses | `coverage-completion identifier dimension` |
+| D3 head junctions | zero tolerance head junctions; classifier tolerates | ADMIT registered runs 1–8/0–8 (raw bytes, never normalize-then-match); 9-run and glue refuse; other junctions zero tolerance | `coverage-completion junction dimension` |
+| D4 layout | one content line; the two-line classifier cells an explicit Task-2 RED obligation | ADMIT exactly ONE break (LF/CRLF, surrounding horizontal whitespace); the two-line cell values below now measured and registered | `coverage-completion newline-layout dimension` |
+| D5 sink | structural equal tail; stringify exclusive to pinned `r`; diagnosed `output`/`not-equal` | UNCHANGED equal-only refusal BY REGISTRATION; changed/stringify/property/String tails refuse; pinned `r` stringify parity stays through the unchanged per-line family | `coverage-completion sink dimension` |
+| D6 directive | wrap families directive-absent; per-line strip + framing validate; invalid never strips | ADMIT ONE valid directive over the RAW anchor with the unchanged attach (compose with the one-break layout); invalid/second/513-char refuse fail-closed | `coverage-completion directive dimension` |
+| D7 argument | unchanged literal decoder, 4096 bound, fall-through | UNCHANGED: the decoder still owns everything; in-bound admits (incl. the single-quote write_stdin fallback); template/identifier/call/spread/4097 fall through; over-limit named `over-limit`, never decoded | `coverage-completion argument dimension` |
+
+The §26.4 D4 RED obligation's measured two-line classifier cell values, now registered (v1 enum values; measured 2026-11-03):
+`inspectCallShape('const result = await tools.exec_command({cmd:"x"});\ntext(result);')` →
+`statements[0] = { head: 'bound-await', tool: 'exec_command', argument: 'literal-object', lexical: 'complete',
+tail: 'none' }`, `statements[1] = { head: 'emission', tool: 'no-call', argument: 'none', lexical: 'complete',
+tail: 'text-binding' }`, `statementCount: 2`, `tool: 'exec_command'`, `head: 'bound-await'`, `tail: 'text-binding'`,
+`bindingEquality: 'equal'`, `parserStage: 'parse-accepted'` (after the §27 admission), `directive: 'absent'`
+`wholeInputConsumed: true`, `coverage: 'complete'`.
+
+### 27.3 The complete negative family and union validation (forms deliberately refused, with the why)
+
+Every negative below is a DESIGNED refusal (the plan's rule: a fixture not corresponding to a selected contract is a
+negative, not a bug), exercised at the exact registered bounds and one step beyond, all fail-closed with the body
+withheld:
+
+- Extra leading/trailing statements and a hidden second awaited call (per-statement ownership: an admitted wrapper form
+  is its cell's ONLY statement; the pinned per-line composition machinery keeps its own behavior untouched); a
+  17-statement cell over the per-cell bound names `over-scope`.
+- Comments and directives: comment-only separator lines, comments inside junctions, an invalid directive, a second
+  directive line, a 513-char directive capture (all outside the registered framing — the invalid directive is never
+  stripped into acceptance).
+- Identifier/bound state: leading digit, 65-char names (ASCII and widened-class), identifier escapes, await-homoglyph
+  escapes (the D2 counterexample family), `constresult`/`awaittools` glue.
+- Head junction beyond bound: 9-runs at each registered junction and the member-access/call-paren/argument-object/
+  declaration-semicolon spacings (zero tolerance carried).
+- Layout beyond bound: blank separators, interior breaks inside the object or emission, trailing blank lines.
+- Changed sink (the registered equal-only default): `text(other)` under any declaration class, property/`String()` tails,
+  stringify on non-pinned spellings (diagnosed `not-equal` + `output`).
+- Arguments beyond the literal decoder: template literals, bare identifier, call-form and spread arguments (D7
+  exercise rows — nothing but the unchanged decoder's product is ever admitted), 4097-char objects.
+- Tool set: `wait` (and any other tool) outside the frozen wrapper-family set; the sanctioned private preparation keeps
+  its OWN unchanged path (the relaxed preparation emission refuses).
+- Loops and callbacks: loop-carried and callback-wrapped awaited calls refuse (whole-body consumption excludes them).
+- Quoted tool-like text inside one decoded string value is NOT a second statement (`{a:"});text(zzz);"`} decodes to the
+  literal; whole-body consumption holds).
+- Union validation: every admitted spelling yields the identical call under unchanged guards — a whole-body match
+  failing its decode keeps the exact unchanged per-line verdict for the SAME bytes; an invalid directive never strips
+  into acceptance on ANY admitted spelling; the pinned per-line composition machinery is unchanged.
+
+The five §23.2-era refusal rows whose EXACT spellings the union now admits (the two-line `r` split, the interior-CRLF
+`r` split, the two head-run spellings (`const` + two-space keyword junction, and the zero-pad `const r=` assignment
+junction), and ONE valid directive on the pinned `r` spelling) were updated inside their own suites with explicit §27
+supersession comments (the §26.4 rows recorded those refusals as the then-current state; §27 supersedes them
+prospectively at exactly those rows). Every negative whose registered BOUND did not widen carries unchanged — explicitly
+including the two §24.11-era rows that DID widen (the mid-name `$` spelling `re$sult` and the non-ASCII `résultat`
+binding joined the mechanical identifier class: their `rejected` rows became §27 admit assertions in the same diff) —
+and every not-widened bound's refusal (sinks, junctions beyond 0–8/1–8, statement bounds, directive framing, tool set)
+carries byte-identically. The full-file batteries all pass on the new bytes.
+
+### 27.4 Differential and withholding (per newly admitted form, through the REAL pipeline)
+
+- NINE newly admitted forms — let declaration, var declaration, $-led binding, mid-name dollar binding, non-ASCII
+  binding, astral binding, registered head-junction runs, one-break layout, directive-led raw anchor — each carried by
+  BOTH wrapper cells (the launch `exec_command` cell and the pending-poll `write_stdin` cell) through the REAL whole-case
+  scan and the REAL end-to-end pipeline (extractor → mapper → serializer → reload → join → oracle): each settling the
+  causal trial IDENTICALLY to the pinned `r` control — `evidence.status: 'supported'`; `interrupt.settled: true`;
+  `settledBasis: 'native-cancellation-settlement-after-delivery'`; `deliveryToSettlementMs: 5000`; acknowledgement
+  `'at'`; the persisted interrupt block IDENTICAL to the control's apart from the rollout-bytes digest
+  (`partialFacts.sourceRolloutsSha256`, excluded from the comparison by construction and carried by the pipeline); call
+  ids, outputs, timestamps and the spawn-acknowledgement identity join stay byte-identical (the launch/poll handles are
+  untouched; the spelling is never a verdict input); the falsifiability control leg stays green beside every trial.
+- The withhold behavior EXISTS and is tested: ONE unclassified cell beside the newly admitted forms keeps
+  `evidence.status: 'inconclusive'` with reason `unsupported-call-shape` and the untouched withheld body (no escaped
+  content rides the persisted excerpt); `interrupt.hostDelivery.admitted: false` with reason
+  `host-activity-call-scan-incomplete`; the recognized call facts survive as partial facts; `interrupt.settled: null`
+  with `settledBasis: 'ambiguous-cell-scan-incomplete-not-attributed'` — complete-scan-dependent native settlement and
+  survival facts stay unestablished, and the failure sits on the SCAN, never credited by recognition or persistence.
+- A recognized syntax form does not prove the tool ran or a later await began; the actual response sequence stays the
+  measured native-settlement machinery's input (the §26.3 operational join), unchanged by this task.
+
+### 27.5 The diagnostic register (NO schema-version bump; two named diagnosis corrections)
+
+- `SHAPE_DIAGNOSTIC_SCHEMA_VERSION` stays 1; every enum member, byte/slot cap and privacy rule of §26.5 carries
+  byte-identically (input ≤8192, slots ≤16, argument width ≤4096, excerpt 2048/64, the two opt-in arming flags,
+  absent-by-default, truncation/unknown states, gated persistence and the privacy canaries through
+  serializer/reload all unchanged — the existing v1 batteries prove them on the new bytes). NO new persisted field and
+  no semantic reassignment; the union-validation test asserts the version stays the additive v1 baseline.
+- Any form the parser admits now diagnoses `parse-accepted` (equal sink, complete coverage, `bound-await` head) — D1–D3
+  and D4 admitted bodies classify identically to the `const` control (deepEqual). No lexical identifier, argument value,
+  task fragment or raw body is persisted by any diagnostic (the privacy rule is absolute).
+- TWO NAMED diagnosis corrections (classifier-side, diagnosis accuracy only): (1) the whole-body mirror previously
+  omitted the §23.2 emission-junction exhibit's admitted `text (r)` spacing, diagnosing an ADMITTED body at the
+  `output` stage — the §27 registered whole-body mirror now matches the admitted union, so admitted bodies diagnose
+  `parse-accepted` (the §26.5 definition: `parse-accepted` is a DIAGNOSIS of `parseCallStatements`' response); (2) the
+  per-line mirror previously applied the whole-body BOUND_RESULT branch to per-line inputs, misdiagnosing directive-led
+  bounded bodies as onward-admissible before the parser's own branch — the whole-body branch is now mirrored SEPARATELY
+  exactly where the parser applies it. NO version bump is owed for these corrections: no persisted enum value's defined
+  MEANING changed (each still diagnoses `parseCallStatements`'/the branch's response), no old record is re-adjudicated,
+  and V's recorded facts and bytes are untouched.
+- The classifier's wrapper-head prefix mirror widened to the registered statement family's head grammar, so the §26.4
+  refusal dimensions now spread into their REAL downstream stages (e.g. a two-line + mismatched-sink refusal names
+  `not-equal`/`output`; a digit-led name names `unknown` head/`partial` coverage) instead of masking as the wrapper
+  stage — again diagnosis-only, never admission.
+
+### 27.6 Historical V spelling status (UNCHANGED) and the future-failure discriminators
+
+- NO-MATCH remains exactly the registered scoped finding: "not in the current admitted set" (§26.3's frozen wording).
+  The §27 union is prospective; the historical V record's content-free facts, withheld bytes and digest anchor
+  (`f90959ab3e79…74423ce49a`) are unchanged and unre-adjudicated; independent byte-level replay of the withheld cell remains
+  UNAVAILABLE; no raw-body recognition is promised and the possibility that V's withheld bytes sat inside the pre-§27
+  admitted set or inside the §27 union is unevaluatable — the record proves non-admission under the AS-RECORDED set and
+  nothing more. No all-future-calls claim; no raw-text-is-the-only-route claim.
+- What further content-free facts would discriminate a future failure under the §27 union: the recorded signature class
+  (`bound-await` head, equal tail, literal-object argument, complete coverage, directive absent) now localizes a
+  residual NO-MATCH into the NAMED groups — head junction beyond the registered runs (0–8/1–8 bounds, glue, or the
+  zero-tolerance member/argument/semicolon junctions), the identifier/state group (digit-led, >64 chars, escapes), the
+  directive group (invalid/second/over-512 capture), the sink group (any changed tail), the statement-count group
+  (extra statements, over-16 cells) and the tool-set group. The §26.5 diagnostic's existing line-slot facts (prefix
+  class, `braceDepthEnd`, `endsWithSemicolon`, `tools`), the `directive`/`bindingEquality`/`parserStage`/`coverage`
+  enums and the `inputBytes`/`inputLines` bounds carry all of this WITHIN the schema; which exact member inside a
+  group (the precise junction run length, the precise identifier) still requires the withheld body, and a future
+  excerpt's digest anchor remains the only byte-level link.
+
+### 27.7 The gate battery (executed 2026-11-03 in this worktree on the exact pre-commit bytes; results verbatim)
+
+| Command | Result | Exit |
+| --- | --- | --- |
+| `node --test --test-name-pattern='coverage-completion' tests/shell-wait-probe.test.mjs tests/shell-wait-native-interruption.test.mjs` | 12 pattern-matched tests (10 in the probe entry: the seven dimension tests, the trial control, the negative family and the union validation; 2 in the native entry: the differential and the withhold), 12 pass, 0 fail, each with by-name visibility | 0 |
+| `node --test tests/test-selection.test.mjs` | 6 tests, 6 pass, 0 fail | 0 |
+| `npm run lint` | clean | 0 |
+| `npm run typecheck` | clean | 0 |
+| `git diff --check` | no output | 0 |
+| `node --test tests/shell-wait-probe.test.mjs` (the full probe entry, including the spawned three-entry shell-research selection runs) | 961 tests, 961 pass, 0 fail | 0 |
+| `node --test tests/shell-wait-native-interruption.test.mjs` (the full native entry) | 98 tests, 98 pass, 0 fail — exactly the registered 96 + the two §27 differential/withhold tests | 0 |
+
+The registration's tests use the literal `coverage-completion` prefix (the focused command's nonzero executed count);
+import-only/zero-test success is not claimed anywhere, and the native entry's count (98) proves no silently skipped
+native contract test.
+
+**Registration boundary:** the §27 union does NOT claim coverage of every future call shape; a NO-MATCH under the
+ CURRENTLY registered set remains the correct fail-closed answer for anything outside §27.1's bounds, and the
+ bounded investigation stays open exactly as §26 so records it.
+
+### 27.8 Self-review corrections (2026-11-03 fix round; §27's Task 1 content untouched; v1 schema NOT bumped)
+
+Same day, same worktree, same offline discipline (zero model turns, zero live launches); every fix below is verified by
+the §27.7-style gates re-run 2026-11-03 on the amended bytes. This is explicitly NOT a version event: no schema field's
+semantic meaning changed, no enum value was reinterpreted, admission/credit is untouched — every fix is either a
+diagnosis-accuracy fix or a documentation/hardening fix.
+
+1. **The framing-verdict mirror fix (P2, diagnosis accuracy; a §27.5 SUPPORT fix, not a contract change).** The
+   whole-body mirror's directive validation (`shape-diagnostic.mjs`, `wholeBodyStageAccepts`) passed the FRAMED string
+   `// @exec: …` to `directiveVerdict`, whose JSON probe always throws on the framing bytes — so EVERY directive-led
+   admitted body fell through to the per-line mirror (which cannot parse a widened whole-body statement) and
+   misdiagnosed the stage as `output`, directly contradicting §27.5's "any form the parser admits now diagnoses
+   parse-accepted" claim for the D6 differential form. TDD fix: the RED classification pin
+   (`coverage-completion D6 classification pin` — `inspectCallShape` of the directive-led §27 body deepEqual-compares
+   against the pinned-r control's facts plus `directive: 'valid'`; RED: actual `parserStage: 'output'` vs expected
+   `'parse-accepted'`), then the mirror reads the BARE capture exactly like its sibling call sites and the real framing
+   probe (GREEN 11/11 probe-focused + direct probe: `parse-accepted`/`valid`/`complete`/`equal`/`wholeInputConsumed`),
+   with the invalid-directive-on-widened-body fail-closed row still refusing (`parseCallStatements` → `null`). No enum
+   meaning changed: `valid`/`invalid` still mean the framing probe's verdict on the capture; NO version bump owed.
+2. **§27.2 wording correction (P3):** the reproduced RED set is 2 native + FIVE admit-dimension tests (D1, D2, D3, D4,
+   D6) + the union-validation test — the earlier "six admit-dimension tests" phrasing is corrected so the sentence and
+   its enumeration agree.
+3. **§27.3 wording correction (P3):** "every OTHER negative carries unchanged" was over-broad — the same admission diff
+   rewrote two §24.11-era rows (the mid-name `$` `re$sult` and non-ASCII `résultat` bindings, refused → admitted). The
+   corrected scope: every negative whose registered bound did not WIDEN carries unchanged, with the two §24.11
+   supersessions named explicitly.
+4. **Pipeline-hardening (P3, the §27.4 evidence):** the §27 differential now also asserts the REAL oracle verdict —
+   the persisted record's offline adjudication deepEqual-compares to the pinned-r control's verdict beside every form
+   (with the offline fixture's expected `local-process-observation-unadjudicated` named refusal of the local-duty
+   conjunct asserted by name, never a silent pass), and the §27 withhold test now asserts the survival side explicitly
+   (with the fixture's `survivalControlSelector: null`, NO survival-control verdict is invented while the scan is
+   incomplete — the §26.3 withheld state `survivalControl: null`).
+5. **Gate re-run of this fix round on the amended bytes:** focused `coverage-completion` = **13 tests (10 prior probe
+   dimension/union tests + the new D6 classification pin + the 2 native tests), 13 pass, 0 fail**; `test-selection`
+   6/6; `npm run lint` clean; `npm run typecheck` clean; `git diff --check` no output; the full native entry
+   = **98 tests, 98 pass, 0 fail** (unchanged count — the hardening added assertion rows inside the existing two
+   differential/withhold tests, not new registered tests). The full 961-test probe battery is not re-run for this
+   diagnosis fix round (the probe file's §27 rows cover the mirror's changed surface); it stands as registered above for
+   the pre-fix bytes, and any contradiction found by the focused battery would have forced its re-run.
+
+6. **The codex-review framing-fidelity fix (P2, mirror fidelity; 2026-11-03 codex-review round).** **The finding:** with
+   a blank line after the directive, the registered whole-body pattern's lazy capture absorbs the extra newline (regex
+   backtracking yields `{"…"}\n` + the blank line's newline consumed by the pattern's literal `\n`), the capture still
+   JSON-decodes (JSON tolerates trailing whitespace), and the whole-body mirror diagnosed `parse-accepted` for a body
+   the parser REFUSES — the parser's reconstructed framing probe leaves the blank line before the pinned wait
+   statement, the probe's line-bound strip leaves `\ntext(await…` (outside the `^`-anchored INLINE shape) and returns
+   null, so the registered fall-through keeps the refusal. A MULTILINE JSON directive capture broke the same way: it
+   decoded through the whole-body capture (multiline JSON is valid) and mis-diagnosed acceptance while the classifier's
+   own line-bound directive classing read `invalid`, a doubly-inconsistent diagnosis. Both false diagnoses reproduced
+   on the pre-fix bytes (RED): `(a)` blank-line → `parse-accepted`/`directive valid`/`complete`/`equal` while
+   `parseCallStatements` returns null; `(b)` multiline → `parse-accepted`/`directive invalid`/`partial`, refuses below.
+   **The fix:** `wholeBodyStageAccepts` now validates the SAME FRAMED PREFIX the parser validates — the
+   invocation-verbatim mirror of the registered branch's probe: the reconstructed string
+   `// @exec: <capture>\ntext(await tools.wait({cell_id:"directive"}));` evaluated through THIS module's own verbatim
+   framing path (`existingLineParses`: the line-bound strip, the bare-capture JSON verdict, the wrapper/inline match,
+   the bound and the decode). No second hand-rolled framing rule was introduced and no import from evidence.mjs was
+   added (the module's comment contract requires staying import-cycle-free); the evaluation reuses the per-line
+   branch's own already-mirrored machinery. **No parser change:** the anti-widening controls assert
+   `parseCallStatements` REFUSES both layouts today (measured refusals inside the new tests) — both layouts sit in §27's
+   deliberately-refused class by registration (§27.1 admits only ONE directly-attached directive line; a blank
+   separator after the directive is the refused layout class; a multiline capture leaves the registered 1–512
+   LINE-bound framing), so this is registered as a mirror-fidelity correction, never a grammar change. **RED→GREEN:**
+   the two new tests (`coverage-completion framing-mirror fidelity` ×2 — blank-line and multiline-JSON pins)
+   re-verified-failed on the pre-fix bytes (2 tests, 0 pass: actual `parse-accepted` vs the expected
+   `output`/`wrapper`) and pass on the amended bytes; all previously-verified rows stay green (the round-1 D6
+   classification pin, the invalid-directive fail-closed row and the two-line exhibit classifications). **Post-fix
+   pinned classifications (measured):** `(a)` → `parserStage: 'output'` with `directive: 'valid'` (the capture decodes;
+   the FRAMING fails); `(b)` → `parserStage: 'wrapper'` with `directive: 'invalid'` (the line-bound framing reads the
+   first line only). **NOT a version event:** no enum value's meaning changed — the stage diagnosis now matches the
+   parser for these refused inputs (the same diagnosis-accuracy class as items 1 and 5); the v1 schema stays the
+   baseline. **Gates re-run on the amended bytes:** focused `coverage-completion` (both files) = **15 tests, 15 pass,
+   0 fail** (13 probe: the 11 prior + the two framing-fidelity pins; 2 native); `node --test tests/test-selection.test.mjs`
+   6/6; `npm run lint` clean; `npm run typecheck` clean; `git diff --check` no output; the full native entry
+   = **98 tests, 98 pass, 0 fail**; and the full probe battery — re-run THIS round because the finding touches the diagnostic mirror
+   used across shape classification — = **964 tests, 964 pass, 0 fail** (the arithmetic is honest: the §27.7
+   registration's 961 was measured on the PRE-§27.8 bytes; item 1's D6 classification pin added one registered test and
+   was NOT re-batteried in the round-1 close-out, and this round's two framing-fidelity pins add two more: 961 + 1 + 2
+   = 964 — the mirror-behavior change flipped NO other row: zero failures, zero re-classifications beyond the intended
+   fix).
+
+7. **The codex-review argument-stage fidelity fix (P2, diagnosis fidelity; 2026-11-03 codex-review round).** **The
+   finding:** for a decoder-refused argument on a WIDENED wrapper spelling —
+   e.g. `let result = await tools.exec_command({cmd:"\x41"}); text(result);` — the literal decoder refuses the
+   argument (the lexer still lexes the escape token, so the slot's `argument` enum reads `literal-object`; the DECODER
+   is what refuses), but `inspectCallShape` reported `parserStage: 'output'` — a collapsed, misleading
+   sink/output-stage diagnosis — while the pinned `const result` spelling of the SAME body reported the correct
+   `arguments` stage (its §24.11 anchored pattern is a `slotArgumentRejected` member). **The fix:** `slotArgumentRejected`
+   now recognizes the §27 registered wrapper-statement family beside the pinned patterns — a pattern-matched registered
+   statement asks the SAME literal decoder (`decodeBoundedLiteralObject`), so a decoder-refused argument classifies as
+   the ARGUMENT stage exactly like the pinned spelling beside it, and a DECODABLE registered argument still returns
+   false (equal-decision parity: pattern-matching is not a refusal). Diagnosis-only: WHICH spellings reach the existing
+   argument-rejected classification extended, with zero admission/credit change, zero parser change, zero grammar
+   widening, and zero enum-meaning change (`wholeBodyStageAccepts` itself is untouched — its decode check already
+   returned false for these bodies; the stage diagnosis lives in the slots path). **No previous row depended on the
+   misleading class:** the §27 suites' only `parserStage: 'output'` classification rows pin the SINK dimension
+   (decoder-valid arguments with changed sinks — a genuine output-stage refusal, untouched), so no supersession of an
+   older expectation was owed (checked honestly across the coverage-completion suite's classification pins).
+   **RED→GREEN (two new `coverage-completion` tests):** `(1)` the escape-homoglyph argument
+   (`let … {cmd:"\x41"} …`, deepEqual against the pinned `const` spelling's classification facts): RED on the pre-fix
+   bytes (both new tests 0/2 pass — actual `parserStage 'output'` vs the control's `'arguments'`, every other fact
+   field identical); `(2)` the raw-control-character argument on the `var` declaration spelling
+   (`var … {cmd:"a<TAB>b"} …` — the docstring-named raw-control-character class, second registered spelling × second
+   §27-refused argument encoding): RED identical. GREEN on the amended bytes: both deepEqual against their pinned
+   controls, with the anti-panic controls asserted inside the tests — `parseCallStatements()` refuses both trial
+   argument-encodings TODAY (argument-stage refusal, measured, unchanged before and after — the refusals are the
+   §27-registered decode-fall-through class), and the pinned `const` controls keep their `'arguments'` facts (the
+   `boundResult` branch answers first for them, byte-unchanged). Post-fix the equivalence generalizes: directive-led
+   combined bodies (`// @exec: …\n` + widened spelling + refused argument) classify `arguments` on BOTH spellings,
+   and every admitted body stays `parse-accepted` (D6 pin, two-line exhibit, pinned control re-verified green). **NOT
+   a version event:** no enum value's meaning changed — the argument stage now diagnoses the spellings it already
+   meant to diagnose; the v1 schema stays the baseline. **Gates re-run on the amended bytes:** focused
+   `coverage-completion` (both files) = **17 tests, 17 pass, 0 fail** (15 probe: the 13 prior + the two
+   argument-stage fidelity pins; 2 native); `node --test tests/test-selection.test.mjs` 6/6; `npm run lint` clean;
+   `npm run typecheck` clean; `git diff --check` no output; the full native entry = **98 tests, 98 pass, 0 fail**; the
+   full probe battery (re-run because the classification extension touches the shared slots diagnosis) = **966 tests,
+   966 pass, 0 fail** (item 6's 964 + this round's two argument-stage fidelity pins = 966; the registered-family branch
+   flipped NO other row: zero failures, zero re-classifications beyond the intended equivalence extension).
+
+8. **The codex adversarial-review stage-parity fix (medium, classification-order fidelity; 2026-11-03 codex
+   adversarial-review round).** **The finding (title verbatim):** "Registered wrappers collapse directive and residual
+   failures into output." The widened head check recognized let/var, but `slotMatchesPinnedSkeleton` omitted the
+   registered family, so `outputStageFails` intercepted otherwise-valid registered wrappers BEFORE the
+   directive/residual checks: reproduced on the pre-fix bytes — `// @exec: broken\nlet result…` reported `output`
+   while the identical pinned-const body reported `directive`; appending two newlines reported `output` versus the
+   const `residual`; `var` behaved identically to `let`. All spellings correctly refused parsing — the diagnostic
+   falsely blamed the sink, defeating the registered refusal discrimination. **The fix (the round-4 parity principle,
+   §27.8 item 7, applied to the skeleton recognizer):** `slotMatchesPinnedSkeleton` now recognizes the §27 registered
+   wrapper-statement family beside the pinned patterns — a registered spelling counts as a RECOGNIZED skeleton when
+   its structural statement shape matches AND its argument is the original decoder's sayable product (parity with the
+   boundResult branch), after which the existing ordering gives the directive and residual stages their own verdicts.
+   Diagnosis-only classification-order/skeleton-recognition correction: zero admission/credit change, zero parser
+   change, zero grammar widening, zero enum-meaning change. **RED→GREEN (two new `coverage-completion` tests):**
+   Test A — the invalid-directive body (`// @exec: broken` + a valid widened statement), deepEqual THREE-spelling
+   parity pin (const control facts ← let ← var): RED on the pre-fix bytes (0/2, actual `parserStage 'output'` side),
+   GREEN after the fix with every spelling deep-equal to the const `directive` facts; Test B — the trailing-residual
+   body (an otherwise valid intended body + TWO appended newlines, the empty-line-after-last-content refusal class),
+   three-spelling residual parity: RED identical, GREEN with the const `residual` facts. **Anti-panic controls inside
+   both tests:** `parseCallStatements()` refuses ALL THREE spellings of both bodies today (framing-stage refusals,
+   measured; unchanged before and after — NO parser change); the round-4 argument bodies still classify `arguments`
+   on both spellings; the D6 admitted body still deep-equals its canonical classification pin. **One supersession,
+   recorded:** the round-2 blank-line row — §27.8 item 6 registered its post-fix state as `parserStage: 'output'`
+   with `directive: 'valid'` — that recorded expectation was itself an instance of THIS item's collapsed-stage defect
+   (the pinned-const equivalent of the same body has ALWAYS diagnosed `unknown`, so the parity facts are the const
+   control's); the row's expectation is corrected to the parity deepEqual (absorbing the const facts verbatim,
+   `directive: 'valid'` kept) and the §27.8 item 6 registered value `parserStage: 'output'` is SUPERSEDED at that row
+   by `unknown`. No other pre-existing row pinned the collapsed `output` class for a let/var
+   invalid-directive/residual body (checked honestly — the sink-dimension `output` rows are decoder-valid changed-sink
+   refusals, a genuine output-stage class, untouched). **NOT a version event:** the stage enum's members and their
+   meanings are unchanged; the v1 schema stays the baseline. **Gates re-run on the amended bytes:** focused
+   `coverage-completion` (both files) = **19 tests, 19 pass, 0 fail** (17 probe: the 15 prior + the two parity pins;
+   2 native); `node --test tests/test-selection.test.mjs` 6/6; `npm run lint` clean; `npm run typecheck` clean;
+   `git diff --check` no output; the full native entry = **98 tests, 98 pass, 0 fail**; the full probe battery
+   = **968 tests, 968 pass, 0 fail** (item 7's 966 + this round's two parity pins = 968; the skeleton recognizer
+   extension flipped NO other row — the corrected blank-line row above is the single intended
+   re-classification, exactly the defect's purpose).

@@ -371,12 +371,14 @@ test('the complete negative family still aborts the REAL scan fail-closed with t
     ['unknown property tail', 'const result = await tools.exec_command({cmd:"node launcher"}); text(result.status);\n'],
     ['unknown String tail', 'const result = await tools.exec_command({cmd:"node launcher"}); text(String(result));\n'],
     ['stringify tail under the anchored family', 'const result = await tools.exec_command({cmd:"node launcher"}); text(JSON.stringify(result));\n'],
-    ['let declaration', 'let result = await tools.exec_command({cmd:"node launcher"}); text(result);\n'],
+    // Report §27 (evidence-completion Task 2): four §24.11-era negative rows
+    // JOINED the admitted union and moved to the coverage-completion
+    // differential below — the `let`/`var` declaration class, a mid-name `$`
+    // (the mechanical ECMA identifier class), ONE framing-validated directive
+    // line, and the ONE-break layout. They are registered admissions, not
+    // regressions; every other negative stays frozen here.
     ['over-64-char binding name', `const ${'a'.repeat(65)} = await tools.exec_command({cmd:"node launcher"}); text(${'a'.repeat(65)});\n`],
-    ['dollar character in the name', 'const re$sult = await tools.exec_command({cmd:"node launcher"}); text(re$sult);\n'],
     ['leading digit in the name', 'const 1result = await tools.exec_command({cmd:"node launcher"}); text(1result);\n'],
-    ['valid directive still not in the family', '// @exec: {"yield_time_ms": 3600000}\nconst result = await tools.exec_command({cmd:"node launcher"}); text(result);\n'],
-    ['interior newline (same-line rule)', 'const result = await tools.exec_command({cmd:"node launcher"});\ntext(result);\n'],
     ['trailing blank line', 'const result = await tools.exec_command({cmd:"node launcher"}); text(result);\n\n'],
     ['over-limit argument', `const result = await tools.exec_command({cmd:"${'x'.repeat(4090)}"}); text(result);\n`],
     ['truncated emission', 'const result = await tools.exec_command({cmd:"node launcher"}); text(result\n'],
@@ -388,6 +390,125 @@ test('the complete negative family still aborts the REAL scan fail-closed with t
     assert.equal(evidence.status, 'inconclusive', `${label}: must stay fail-closed`);
     assert.equal(evidence.inconclusive.reason, 'unsupported-call-shape', label);
     assert.equal(JSON.stringify(evidence.inconclusive.excerpt).includes('node launcher'), false, `${label}: the body content stays withheld`);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Coverage-completion Task 2 (report §27, the §26.4 successor registration):
+// the admitted UNION WIDENED with registered whole-body statement families.
+// Each §26.4 form that joined the union runs through the REAL whole-case scan
+// and the REAL pipeline — extractor → mapper → serializer → reload → join →
+// oracle — reaching the IDENTICAL native marker settlement as the pinned `r`
+// control, with the launch/poll handles (call ids, outputs, stamps) untouched,
+// so the differential isolates the registered spelling (the spelling is never
+// a verdict input). One unclassified cell beside the acknowledged forms still
+// withholds the complete-scan-dependent native settlement (fail-closed by the
+// scan, never credit). Bodies are SYNTHETIC and content-free (the launcher
+// harness text); the historical F/I/N/V bodies are not claimed and their
+// digests remain the only historical link.
+// ---------------------------------------------------------------------------
+const coverageCompletionInterruptBlock = (interruptBlock) => {
+  const clone = structuredClone(interruptBlock);
+  if (clone.partialFacts && typeof clone.partialFacts === 'object') delete clone.partialFacts.sourceRolloutsSha256;
+  return clone;
+};
+/** The §27-registered raw statement spellings, one per joined §26.4 form;
+ * every binding stays inside the registered name class (≤64 chars). */
+const coverageCompletionFormBody = {
+  'let declaration': (name, tool, valueJson) => `let ${name} = await tools.${tool}(${valueJson}); text(${name});\n`,
+  'var declaration': (name, tool, valueJson) => `var ${name} = await tools.${tool}(${valueJson}); text(${name});\n`,
+  '$-led binding': (name, tool, valueJson) => `const ${name} = await tools.${tool}(${valueJson}); text(${name});\n`,
+  'mid-name dollar binding': (name, tool, valueJson) => `const ${name} = await tools.${tool}(${valueJson}); text(${name});\n`,
+  'non-ASCII binding': (name, tool, valueJson) => `const ${name} = await tools.${tool}(${valueJson}); text(${name});\n`,
+  'astral binding': (name, tool, valueJson) => `const ${name} = await tools.${tool}(${valueJson}); text(${name});\n`,
+  'registered head-junction runs': (name, tool, valueJson) => `let  ${name}  =  await  tools.${tool}(${valueJson}); text(${name});\n`,
+  'one-break layout': (name, tool, valueJson) => `const ${name} = await tools.${tool}(${valueJson});\ntext(${name});\n`,
+  'directive-led raw anchor': (name, tool, valueJson) => `// @exec: {"yield_time_ms":60000}\nconst ${name} = await tools.${tool}(${valueJson}); text(${name});\n`,
+};
+const coverageCompletionFormName = {
+  'let declaration': 'result', 'var declaration': 'result', '$-led binding': '$result7',
+  'mid-name dollar binding': 're$result7', 'non-ASCII binding': 'résultat7', 'astral binding': '𝕏3',
+  'registered head-junction runs': 'result', 'one-break layout': 'result', 'directive-led raw anchor': 'result',
+};
+/** wrapperCausalRollouts with BOTH wrapper cells (the launch exec_command
+ * cell and the pending-poll write_stdin cell) carried by the given §27 form;
+ * call ids, outputs, timestamps and the spawn-acknowledgement identity join
+ * stay byte-identical to the causal shape. */
+const coverageCompletionRollouts = (form) => {
+  const rollouts = wrapperCausalRollouts('r');
+  const recell = (callId, tool, valueJson) => {
+    const index = rollouts[1].findIndex((event) => /** @type {any} */ (event)?.payload?.call_id === callId && event.payload.type === 'custom_tool_call');
+    rollouts[1][index] = {
+      type: 'response_item',
+      payload: { type: 'custom_tool_call', name: 'exec', call_id: callId, input: coverageCompletionFormBody[form](coverageCompletionFormName[form], tool, valueJson) },
+    };
+  };
+  recell('launch-1', 'exec_command', '{cmd:"node launcher"}');
+  recell('poll-1', 'write_stdin', '{session_id:5,chars:"",yield_time_ms:60000}');
+  return rollouts;
+};
+
+test('coverage-completion §27 differential: every newly admitted form settles the causal trial IDENTICALLY to the pinned r control through the real pipeline (the launch/poll handles unchanged)', async (t) => {
+  // The falsifiability control stays GREEN: the §27 union never alters the
+  // pinned families' accepted sets or verdicts — each form below is judged
+  // against the IDENTICAL persisted interrupt block the r control reaches.
+  const control = await adjudicate(t, wrapperCausalRollouts('r'), scanWrapperCausal('r'));
+  assert.equal(control.facts.interrupt.settled, true, 'the r control control leg');
+  // Self-review fix round (report §27.8): the ORACLE verdict itself is now
+  // part of the differential. The offline fixture's records carry NO
+  // localProcess block by design, so every verdict here refuses the
+  // §25.10 local-duty conjunct BY NAME (never a pass) while the interrupt
+  // legs settle — and each §27 form must reach the IDENTICAL verdict as the
+  // pinned r control (the spelling is never a verdict input).
+  assert.ok(control.verdict.reasons.includes('local-process-observation-unadjudicated'),
+    JSON.stringify(control.verdict.reasons));
+  for (const form of Object.keys(coverageCompletionFormBody)) {
+    const rollouts = coverageCompletionRollouts(form);
+    const evidence = scanRollouts(rollouts);
+    assert.equal(evidence.status, 'supported', `${form}: the §27 union classifies the whole case`);
+    assert.equal(JSON.stringify(evidence.inconclusive?.excerpt ?? '').includes('node launcher'), false, `${form}: no withheld-body content rides`);
+    const { facts, record, verdict } = await adjudicate(t, rollouts, evidence);
+    assert.equal(facts.interrupt.settled, true, `${form}: the actual native marker settlement`);
+    assert.equal(facts.interrupt.settledBasis, 'native-cancellation-settlement-after-delivery', form);
+    assert.equal(facts.interrupt.deliveryToSettlementMs, 5000, form);
+    assert.equal(record.interrupt.hostDelivery.acknowledgementAtResolution, 'at', form);
+    assert.ok(verdict.reasons.includes('local-process-observation-unadjudicated'),
+      `${form}: the local-duty conjunct refuses by name on the offline fixture (never a silent pass)`);
+    assert.deepEqual(verdict, control.verdict,
+      `${form}: the persisted record's offline oracle verdict is IDENTICAL to the pinned r control's (spelling never a verdict input)`
+    );
+    assert.deepEqual(coverageCompletionInterruptBlock(record.interrupt), coverageCompletionInterruptBlock(control.record.interrupt),
+      `${form}: the persisted interrupt block is IDENTICAL to the r control's (apart from the rollout-bytes digest)`);
+  }
+});
+
+test('coverage-completion withhold: one unclassified cell beside the newly admitted §27 forms still withholds the complete-scan-dependent native settlement (never credit)', () => {
+  // Exactly-one delivery requires the COMPLETE scan: any ONE unclassified
+  // cell — even with every §27 form recognized in its earlier slots — keeps
+  // the admission refused, the settlement withheld and the survival-side
+  // complete-scan credit unestablished.
+  for (const form of ['let declaration', 'one-break layout', 'directive-led raw anchor']) {
+    const rollouts = coverageCompletionRollouts(form);
+    rollouts[1].push({
+      type: 'response_item',
+      payload: { type: 'custom_tool_call', name: 'exec', call_id: 'unknown-1', input: 'console.log("synthetic-unknown-cell");\n' },
+    });
+    const evidence = scanRollouts(rollouts);
+    assert.equal(evidence.status, 'inconclusive', `${form}: the unclassified cell still aborts the scan`);
+    assert.equal(evidence.inconclusive.reason, 'unsupported-call-shape', form);
+    assert.equal(JSON.stringify(evidence.inconclusive.excerpt).includes('synthetic-unknown-cell'), false, `${form}: the withheld body stays withheld`);
+    const facts = mapCausal(rollouts, evidence);
+    assert.equal(facts.interrupt.attempted, true, `${form}: the recognized call facts survive the aborted scan`);
+    assert.equal(facts.interrupt.hostDelivery.admitted, false, form);
+    assert.ok(facts.interrupt.hostDelivery.reasons.includes('host-activity-call-scan-incomplete'), JSON.stringify(facts.interrupt.hostDelivery.reasons));
+    assert.equal(facts.interrupt.settledBasis, 'ambiguous-cell-scan-incomplete-not-attributed', form);
+    assert.equal(facts.interrupt.settled, null, form);
+    // §27.4 withhold clause, survival side asserted explicitly: the fixture
+    // wires survivalControlSelector null, so NO survival-control verdict is
+    // invented while the scan is incomplete — the survival-side
+    // complete-scan-dependent facts stay unestablished (absent), exactly as
+    // §26.3 records the withheld state (`survivalControl: null`).
+    assert.ok(!('survivalControl' in facts), `${form}: no survival-control verdict is invented while the scan is incomplete`);
   }
 });
 

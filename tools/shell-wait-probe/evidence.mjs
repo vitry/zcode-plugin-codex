@@ -147,6 +147,87 @@ const EMISSION_JUNCTION_WRAPPER_PATTERN = /^const r = await tools\.(exec_command
 // re-proves it on the new bytes), and the executing-observer provenance
 // digest moves with these bytes automatically (the v5 construction).
 const BOUND_RESULT_WRAPPER_PATTERN = /^const (?!(?:r) = await )([A-Za-z_][A-Za-z0-9_]{0,63}) = await tools\.(exec_command|write_stdin)\((\{[^\n]{1,4096}?\})\);[ \t]*text[ \t]{0,8}\([ \t]{0,8}\1[ \t]{0,8}\);?[ \t]*\r?\n?$/u;
+// The evidence-completion Task 2 freeze (2026-11-03, BEFORE implementation —
+// the §23.2/§24.11 discipline carried; the §26.7 successor registration,
+// report §27): ONE additive registered whole-body family completing the
+// finite call coverage over §26.4's SELECTED dimensions — against the
+// §25.10/§26.3 reproduced refusal dimensions {declaration keyword,
+// head-junction whitespace, identifier charset/bound} plus the registered
+// layout/directive candidates. Accepted form (ONE additive family beside the
+// untouched pinned skeleton above — the pinned families' accepted sets stay
+// byte-identical; the recognition union widens):
+//
+//   [ // @exec: <directive>\n ]  (const|let|var) <name> = await
+//   tools.(exec_command|write_stdin)(<literal-object>); text(<name>);
+//
+// Registered bounds, all finite and checkable:
+// - declaration class: EXACTLY {const,let,var} (the §26.4 D1 admit; the
+//   §25.10 `let`/`var` reproductions). Nothing beyond the three keywords: an
+//   identifier-glued keyword refuses (the minimum junction below).
+// - <name>: the SHAPE classifier's own mechanical ECMA identifier class —
+//   `[\p{ID_Start}$_][\p{ID_Continue}$_]{0,63}` (1–64 chars, the §24.11
+//   64-char bound carried; shape-diagnostic.mjs's IDENTIFIER_START_CLASS/
+//   IDENTIFIER_CONTINUE_CLASS constants mirrored verbatim) — grounded by the
+//   classifier's own bound-await lexing of the §25.10 `$`-led reproductions
+//   (§26.4 D2). The pinned `r` spelling is admitted TOO (the §24.11
+//   exclusivity was a compatibility device for the pinned patterns, which
+//   stand unchanged; the union admits more). A backslash escape anywhere in
+//   the head, a leading digit and any >64-char name stay refused.
+// - head junctions: horizontal `[ \t]` runs only, bounded like the §23.2
+//   relaxation: 1–8 (`[ \t]{1,8}`) at the keyword→name and await→tools
+//   junctions (glue-avoiding minimum 1), 0–8 around the `=` (§26.4 D3;
+//   "never normalize-then-match" — the runs are matched on the raw bytes).
+//   Runs of 9 refuse; the member and call-paren junctions and the
+//   declaration's `;` keep ZERO tolerance.
+// - <literal-object>: ONE single-line literal object ≤4096 chars decoded by
+//   the SAME unchanged `parseWrapperArguments` (the original literal decoder;
+//   no eval, no general interpreter, no substring tool search). Interior
+//   newlines stay excluded.
+// - layout (§26.4 D4): ONE content line, or the emission carried to ONE extra
+//   line through the declaration→emission junction: `[ \t]*(\r?\n[ \t]*)?` —
+//   horizontal whitespace plus at most ONE line break with horizontal
+//   whitespace on both sides; a blank separator line (two breaks) refuses;
+//   the object stays single-line.
+// - emission junctions: the §23.2 `[ \t]{0,8}` runs at all three
+//   `text( <name> )` junctions (verbatim); the OPTIONAL trailing `;` and the
+//   trailing-artifact `[ \t]*\r?\n?` (verbatim).
+// - sink: the EQUAL text-binding tail ONLY — the structural backreference on
+//   the declared binding; `text(JSON.stringify(<name>))` and every other
+//   changed sink stay refused (the §26.4 D5 refusal: changed-sink admission
+//   is not registered — the default stays equal-only refuse; the stringify
+//   tail stays exclusive to the pinned `r` WRAPPER family).
+// - directive (§26.4 D6): ABSENT or ONE leading `// @exec: …\n` line with
+//   the DIRECTIVE_PATTERN's exact 1–512 lazy capture, validated through the
+//   UNCHANGED framing (`parseWrappedToolInput(prefix + the pinned wait
+//   probe)`): a VALID directive attaches to the statement exactly like the
+//   per-line machinery; an INVALID (or out-of-bounds) directive NEVER strips
+//   into acceptance — the family skips it and the unchanged per-line
+//   machinery renders the registered refusal. Raw anchoring: the family
+//   matches over the RAW directive-prefixed input (the directive is part of
+//   the anchored pattern), never a strip-first bypass.
+// - arguments (§26.4 D7): over-the-bound or undecodable → the whole-cell
+//   match falls through to the unchanged per-line verdict (fail closed for
+//   the frozen family, admitted only where an already-supported shape
+//   exists) — never silently truncated, never decoded on another path.
+//
+// The four §26.7 property requirements hold by construction: raw-input
+// anchoring (the pattern spans the raw directive-prefixed input and every
+// junction byte is checked on the raw bytes), full-body consumption (the
+// `$`-anchored statement consumes the cell's whole raw content — no partial
+// admission), the ORIGINAL literal argument decoder, and per-statement
+// output ownership (one statement per recognized cell, joined through the
+// canonical machinery exactly like the pinned wrapper statements).
+//
+// GROUNDING BOUNDARY, explicit: every admitted spelling is grounded by the
+// offline SYNTHETIC RED→GREEN demonstration and the complete negative family
+// (the `coverage-completion` suites); historical F/I/N/V bodies are NOT
+// claimed — the withheld historical V spelling stays "not in the current
+// admitted set" as a scoped fact, and no raw-body recognition is promised.
+// No join/oracle version bump: extractor-side recognition growth with zero
+// join/oracle output change — legacy persisted records replay byte-stable
+// (the pinned F/I replay re-proves it on the new bytes), and the
+// executing-observer provenance digest moves with these bytes automatically.
+const WRAPPER_STATEMENT_PATTERN = /^(?:\/\/ @exec: ([\s\S]{1,512}?)\n)?(?:const|let|var)[ \t]{1,8}([\p{ID_Start}$_][\p{ID_Continue}$_]{0,63})[ \t]{0,8}=[ \t]{0,8}await[ \t]{1,8}tools\.(exec_command|write_stdin)\((\{[^\n]{1,4096}?\})\);[ \t]*(?:\r?\n[ \t]*)?text[ \t]{0,8}\([ \t]{0,8}\2[ \t]{0,8}\);?[ \t]*\r?\n?$/u;
 // The installed 0.160.1 host additionally observes the inline wrapper form
 // `text(await tools.<tool>({...}));` (first live observation 2026-10-06, Task 4
 // Case 0: `text(await tools.exec_command({cmd:"cat …",max_output_tokens:20000}));`).
@@ -802,6 +883,33 @@ export function parseCallStatements(event) {
     if (value) return [{ kind: boundResultBody[2], value, directive: null, wrapped: true }];
     // Identical fall-through: an argument over the bound or undecodable keeps
     // the unchanged per-line verdict for the same bytes.
+  }
+  // The §27-registered wrapper-statement family (the freeze comment on the
+  // pattern above): the SAME whole-body recognition for the §26.4 registered
+  // dimensions, tried after the two pinned whole-body exhibits with the
+  // identical fall-through rule. The optional leading directive is validated
+  // through the UNCHANGED framing probe on the raw prefix (never a strip-first
+  // bypass, never an invalid directive stripped into acceptance) and attached
+  // exactly like the per-line machinery attaches it.
+  const registeredStatement = WRAPPER_STATEMENT_PATTERN.exec(source);
+  if (registeredStatement) {
+    let directive = null;
+    let framingValid = true;
+    if (registeredStatement[1] !== undefined) {
+      const framed = parseWrappedToolInput(`// @exec: ${registeredStatement[1]}\ntext(await tools.wait({cell_id:"directive"}));`);
+      if (!framed) framingValid = false; // an invalid directive never strips into acceptance: keep the fail-closed per-line verdict
+      else directive = framed.directive;
+    }
+    if (framingValid) {
+      const value = parseWrapperArguments(registeredStatement[4]);
+      if (value) return [{ kind: registeredStatement[3], value, directive, wrapped: true }];
+      // The registered fall-through: an argument over the bound or
+      // undecodable keeps the unchanged per-line verdict for the same bytes —
+      // never silently truncated, never decoded on another path.
+    }
+    // An invalid directive falls through: the unchanged per-line machinery
+    // fails the framing probe for the same raw prefix and renders the
+    // registered fail-closed refusal for the whole cell.
   }
   let prefix = '';
   const directive = DIRECTIVE_PATTERN.exec(source);
