@@ -18993,6 +18993,14 @@ rewritten.
    proves the installed frozen grammar is NOT a missing entry — V's cell sits OUTSIDE it in a registered refusal
    dimension — so only real or human-approved-equivalent bytes can ground a widening; the §24.13 C-grounds into the
    V-fix disposition are RE-ASSESSED against the plan's bar in §25.10's dated correction).]**
+   **(2026-11-03 review-round-2 correction: the preceding "so only real or human-approved-equivalent bytes can
+   ground a widening" is RE-SCOPED — it supersedes the round-1 phrasing here. The NO-MATCH proves non-admission
+   under the CURRENTLY frozen grammar only (`BOUND_RESULT_WRAPPER_PATTERN`, `evidence.mjs:149`, digest-verified
+   installed in V's bytes); it cannot close the plan-already-authorized routes. A synthetic-grounded widening with
+   its own bounded offline demonstration, complete negative family and independent review is an established
+   precedent route — the frozen grammar itself was so grounded (commit `562d158f`) — and further in-memory /
+   content-free structural diagnostics remain investigable; real-body grounding is one route beside them, never
+   the sole ground.)**
 2. **What offline evidence would ground it (each step named):** (a) the three real bodies UNREDACTED into a private
    fixture-owned workspace OUTSIDE the repository — a privacy-release step that requires NEW user authorization
    (no plan or agent grants it unilaterally); (b) an offline RED reproduction on the real
@@ -21093,6 +21101,14 @@ eliminate all coexisting blockers or flip the overall qualified verdict. Re-asse
    not enough"), and its offline RED would need the real bytes — unavailable, the §24.13 C-grounds stand, now with
    their narrow synthetic-reconstruction claim RE-CONFIRMED by this evaluation. NOT ELIGIBLE: no demonstrated bounded
    defect and no offline RED→GREEN — NOT because the fix would have to flip the verdict.
+   **(2026-11-03 review-round-2 correction: the round-1 derivation above — "any widening… is ungrounded grammar
+   growth for unknown live content" and "its offline RED would need the real bytes" — is RE-SCOPED, superseding the
+   round-1 phrasing here. The plan forbids grammar growth only WITHOUT its own bounded offline demonstration and
+   negative family, and a synthetic-grounded demonstration is the registered precedent — the frozen grammar itself,
+   commit `562d158f` — so the synthetic-fixture and in-memory/content-free structural-diagnostics routes stay OPEN
+   beside the real-body route; the NO-MATCH establishes only that no PROVEN bounded fix exists TODAY under the
+   currently frozen grammar, not a permanent sole-route bar. The NOT-ELIGIBLE verdict and its grounds (no
+   demonstrated bounded defect, no offline-grounded RED→GREEN registered) stand UNCHANGED.)**
 2. **The survival control unadjudicated — same grounding gap, no collection defect.** The control's launch/read
    statements sit in the SAME unclassified family (the §16.4 verdict absent — fail-closed, never fabricated), so the
    NO-MATCH above applies to them identically; the collection surface itself worked exactly as designed (both
@@ -21281,12 +21297,23 @@ exactly two blocking facts, each with its own owner:
    proves the strict head-side spelling deviates from the frozen family's pinned prefix in exactly a REGISTERED
    refusal dimension (declaration keyword, head-junction whitespace, or identifier charset/bound — admitted members
    always diagnose `parse-accepted`; the deviation reproductions and the per-field evidence are recorded in §25.10's
-   dated re-assessment), and WHICH dimension is precisely the withheld lexeme. Consequently: no grammar entry is
-   missing and no parser defect exists to fix; a NEW widening toward any candidate dimension is ungrounded grammar
-   growth for unknown live content (its offline RED would need the real bytes), which the plan forbids. The human
-   decision therefore remains a route ONLY for the RAW-BODY grounding material (real cells, or a human-approved
-   equivalent grounding, into a private out-of-repo workspace) — one route beside the already-executed authorized
-   ones, not a sole path; the forward-recognition design keeps every future authorized capture measurable regardless.
+   dated re-assessment), and WHICH dimension is precisely the withheld lexeme. Consequently, AS OF TODAY: no
+   grammar entry is missing, no parser defect has been demonstrated to fix, and no proven bounded fix exists — no
+   offline-grounded correction is registered (a current state under the currently frozen grammar, not a permanent
+   property). Whether a FUTURE widening can be grounded is an OPEN question pursued under the plan's own
+   registration discipline: grammar growth for unknown live content WITHOUT its own bounded offline demonstration,
+   complete negative family and independent review stays forbidden — but such a demonstration need not consume real
+   bytes, and the synthetic-grounded frozen wrapper grammar itself (commit `562d158f`) is the registered precedent.
+   The grounding routes therefore remain OPEN beside one another: (a) synthetic-fixture grounding —
+   candidate-deviation fixtures for the retained skeleton classes, per the `562d158f` precedent; (b) further
+   in-memory analysis and content-free structural diagnostics on the retained facts — the NO-MATCH itself is that
+   already-partially-executed yield, and whether it can reach a grounded widening is an open, investigable question,
+   not a closed one; (c) the human/user privacy decision on the RAW-BODY grounding material (real cells, or a
+   human-approved equivalent grounding, into a private out-of-repo workspace) — one route beside (a)/(b), never a
+   precondition; the forward-recognition design keeps every future authorized capture measurable regardless.
+   **(2026-11-03 review-round-2 correction: these operative sentences supersede the round-1 phrasing here, which
+   derived "widening = ungrounded growth; its offline RED would need the real bytes" and made the human decision a
+   route ONLY for the raw-body grounding material.)**
 2. **The designed same-second ancestry bound.** Both frozen ancestry hops refused `generation-lifetime-unverifiable`
    because the real startup choreography is same-second and the darwin measurement granularity is whole-second
    (§25.10 registered exactly this honest-choreography disclosure). Refining the frozen rule (e.g. consuming the
@@ -21317,14 +21344,24 @@ rollout by this research.
 report):**
 
 1. **A user privacy decision on the withheld wrapper-cell RAW BODIES (or a human-approved equivalent grounding)** —
-   the exact §24.13 C-grounds, now scoped by the 2026-11-02 in-memory evaluation: whether the real bodies may be
-   released into a private out-of-repo workspace so an offline RED→GREEN can ground a registered recognition-surface
-   widening on the REAL cells. The evaluation (§25.10's dated re-assessment) already extracted the authorized
-   in-memory yield — V's cell is provably OUTSIDE the installed frozen family in exactly a registered refusal
-   dimension (declaration keyword, head-junction whitespace, or identifier charset/bound) — but no widening may be
-   registered without its own offline demonstration against real or human-approved-equivalent cells (the plan
-   forbids grammar growth for unknown live content). Until such a grounding exists, the fourth instance stands
-   refused and every hosted successor would refuse identically.
+   ONE open grounding route beside the synthetic-fixture and in-memory/structural-diagnostics routes, never a
+   precondition: the exact §24.13 C-grounds, now scoped by the 2026-11-02 in-memory evaluation — whether the real
+   bodies may be released into a private out-of-repo workspace so an offline RED→GREEN can ground a registered
+   recognition-surface widening on the REAL cells. The evaluation (§25.10's dated re-assessment) already extracted
+   the authorized in-memory yield — under the CURRENTLY frozen grammar, V's cell is provably non-admitted in
+   exactly a registered refusal dimension (declaration keyword, head-junction whitespace, or identifier
+   charset/bound), and which dimension is the withheld lexeme. Today NO PROVEN bounded fix exists: no widening may
+   be registered without its own bounded offline demonstration, complete negative family and independent review —
+   but that demonstration need not consume real or human-approved-equivalent cells: candidate-deviation synthetic
+   fixtures for the retained skeleton classes (the `562d158f` precedent — the frozen grammar itself was
+   synthetic-grounded) and further in-memory/content-free structural diagnostics are equally investigable routes;
+   only grammar growth for unknown live content WITHOUT such a demonstration stays forbidden. Until a grounding
+   exists through any of these routes, the fourth instance stands refused under the current frozen grammar — and
+   hosted work is already stopped by the closed ledger (any hosted case needs new user authority) INDEPENDENT of
+   the refusal; a registered widening through an authorized route could change the refusal, with no guarantee of
+   refusal and no promise of recognition for the historical bodies. **(2026-11-03 review-round-2 correction: these
+   operative sentences supersede the round-1 phrasing here, which barred any widening lacking a demonstration on
+   real or human-approved-equivalent cells and asserted every hosted successor would refuse identically.)**
 2. **Optionally, a registered acceptance-rule decision on the same-second ancestry bound** — a new preregistered,
    negative-family-complete, independently reviewed rule consuming the precise record-write instants; it may only be
    created through its own offline grounding and never by editing V's recorded verdicts. This is optional: it cannot
