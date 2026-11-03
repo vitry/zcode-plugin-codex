@@ -21532,3 +21532,488 @@ regression test, skipping for absent `--expose-gc` — with the chained
 `node --test tests/integration/marketplace-snapshot-build.mjs` **2 tests / 2 pass / 0 fail**. The production-surface
 deviation therefore lands as TWO commits — the fix (`c4e6a73`) and its snapshot refresh (`96f2f71`) — both
 independently revertible.
+
+## 26. 2026-11-03 evidence-completion Task 1: the call-coverage and same-second ancestry proof-obligation preregistration (offline; zero model turns, zero live launches)
+
+Task 1 of [the evidence-completion plan](../superpowers/plans/2026-11-03-rescue-shell-wait-evidence-completion.md),
+executed 2026-11-03 in worktree `.worktrees/rescue-shell-wait-evidence-completion` (branch
+`docs/rescue-shell-wait-evidence-completion`, base `9c337403658ed8cb5319e5da75635154ba4aa851`). Read-only and offline
+throughout: zero model turns, zero `ZCODE_SHELL_WAIT_E2E=1` runs, zero host launches, no production/source/config edit;
+the only writes are this section and the untracked plan file committed beside it. This registration PREREGISTERS the two
+proof obligations — Task 2's finite call-coverage recognition and Task 3's safe same-second ancestry witness — and their
+bounded candidate routes BEFORE any implementation; it is not a live result and it changes no past verdict. The
+2026-11-03 review-round-2 corrections at §24.13 (line-level) and §25.10/§25.11 carry verbatim and supersede every older
+"real text is the only route" or "every successor fails" phrasing quoted there: a synthetic-grounded widening with its
+own bounded offline demonstration, complete negative family and independent review is an established precedent route
+(the frozen wrapper grammar itself, commit `562d158f`), in-memory/content-free structural diagnostics remain
+investigable, and the human privacy decision is ONE route beside them — never a precondition.
+
+### 26.1 Pins (checkbox 1; all commands executed 2026-11-03 inside the worktree; nothing trusted forward)
+
+- Plugin worktree: branch `docs/rescue-shell-wait-evidence-completion`; `git rev-parse HEAD` =
+  `9c337403658ed8cb5319e5da75635154ba4aa851` (the plan §1 fresh base, the PR #74 merge); `git status --porcelain` at
+  writing time = ONLY the untracked plan file `docs/superpowers/plans/2026-11-03-rescue-shell-wait-evidence-completion.md`
+  — the tracked tree is CLEAN (zero modified tracked files); `.worktrees` is ignored and parent scratch/`.zcode/` were
+  untouched.
+- **Selected trial binary — the retained measured 0.163.0 executable, STILL AVAILABLE, re-verified today:** absolute
+  realpath `/Users/zhangzikai/.codex/packages/standalone/releases/0.163.0-aarch64-apple-darwin/bin/codex` (it resolves
+  to itself), `--version` = `codex-cli 0.163.0`, SHA-256 =
+  `8813367285524ac798dd96d1b071aea30d58708c7226fd236cd275cf1cfdee31` — byte-identical to the §16.1/§19.1/§21.1/§23.1/
+  §23.12.1/§24.1/§25.1 pins. Every existing long-wait/cadence/stdout/identity-layer conclusion composes with a trial on
+  this binary WITHOUT any cross-version claim; no substitute executable is launched and no applicability statement is
+  owed. **Cross-version applicability limits (carried, now stated for this campaign): a launch on any other binary
+  repeats no measured cohort; Review/Adversarial/Status/background/shared-default behavior stays unestablished on ANY
+  binary (the §25.11 Q5 row); and the native source mechanism cites are `dffa0deb…` source-generation facts, not
+  byte-level statements about the installed 0.163.0 bundle.**
+- Ambient CLI, re-recorded SEPARATELY at its own realpath (never blended, never launched by this design): `command -v
+  codex` resolves to `/Users/zhangzikai/.local/bin/codex`, whose realpath is
+  `/Users/zhangzikai/.codex/packages/standalone/releases/0.166.0-aarch64-apple-darwin/bin/codex`, `--version` =
+  `codex-cli 0.166.0`, SHA-256 =
+  `39acf979729dd290f9a24ee38b2914e036c91b65952872e28ae2a6b88a7db7c1` — a FURTHER host drift beyond §24.1's recorded
+  ambient 0.164.0 and §25.1's recorded ambient 0.165.0 (neither older ambient state re-verified here; their §-recorded
+  digests stand as history). The exact 0.163.0 absolute path is what any future registered command binds.
+- **[Dated renewal note, 2026-11-03 post-commit — the pinned 0.163.0 install was REMOVED by the ambient auto-update
+  sweep; the historical facts above were TRUE at commit time and are retained unchanged.]** Registration commit
+  `5ca377a` at `2026-11-03 15:40:35 +0800`; the sweep removed
+  `/Users/zhangzikai/.codex/packages/standalone/releases/0.163.0-aarch64-apple-darwin` at `15:41:15` (the releases
+  directory's own mtime; re-verified AFTER the commit). OBSERVED releases-directory contents now (previously recorded
+  subtree install mtimes, untouched by the sweep): `0.162.1-aarch64-apple-darwin` (Oct 10 04:32),
+  `0.164.0-aarch64-apple-darwin` (Oct 23 14:06), `0.165.0-aarch64-apple-darwin` (Oct 28 05:19),
+  `0.166.0-aarch64-apple-darwin` (Oct 30 04:28) — the 0.163.0 entry is GONE (`stat`/`ls`: no such file or directory).
+  CONSEQUENCE (registered obligation, not an auto-action): **re-provisioning and re-pinning of the EXACT measured
+  binary (same realpath/version/SHA-256 `881336…dee31`) is an explicit duty at Task 5's pre-launch freeze — the
+  driver's preflight fails closed on the absent path — and no ambient/updated host (0.162.1/0.164.0/0.165.0/0.166.0)
+  may be silently substituted** (the plan's carry rule; the §26.9 item 6 owner statement extended). Until a
+  re-provisioned byte-identical 0.163.0 exists again, every binary-dependent claim in §26 stays a COMPOSITION claim
+  proven on the recorded cohort, and no new binary-dependent fact is measurable on it.
+- REQUESTED model: `gpt-6.1-sol` — carried from the §16.1/§20.2–§20.3/§25.1 registration; its most recent EXECUTED
+  supported-model discovery record remains the §24.12 pre-launch re-pin (`codex debug models` on the pinned binary:
+  11 catalog entries, `gpt-6.1-sol` `visibility: "list"` at `priority: 0`). NOT re-run here (authenticated network
+  discovery outside this analysis-only task — the §24.1/§25.1 precedent). OBSERVED effective model metadata stays the
+  `model: null` provenance contract (`model: null` in `EXECUTING_OBSERVER_PROVENANCE`, driver.mjs:133; every prior live
+  record carried effective `null`). Requested and effective stay SEPARATE facts, never blended, and **the effective
+  model identity the installed host actually executes — and its agreement with any requested spelling — is an
+  INVESTIGATION OBLIGATION of this campaign (§26.9, owned by Task 5's pre-launch pin duty), never a guessed name
+  recorded as proven.**
+- Configuration layers, REQUESTED (unchanged fixture policy, carried §25.1): fixture cap
+  `background_terminal_max_timeout = 3600000` with the in-fixture `capVerified` re-read at setup; `--exec-default-ms
+  3600000`; `--poll-ms 3600000`; `--cap-ms 3600000`; wait-policy `config-default`; worker hold 420000 ms; total case
+  budget ≤ 1200000 ms; the V2 wait feature bounds at the source pin (min 10000 / default 30000 / max 3600000). The
+  recorded candidate instruction hashes are the §24.1 recorded forms `2ea76cf0…` (named-role) / `5800e3ab…` (generic)
+  @3600000; that campaign's records show them byte-identical through N and V (§25.10 provenance). **No
+  Role/instruction hash is recomputed in this section** — those hashes are per-run Gate-B preconditions (the
+  §17.3–§17.4/§20.4/§25.1 practice): Task 5's pre-launch freeze re-executes the instruction/config/artifact pins for
+  ITS launch, and this report records the §24.1 values in their 8-hex truncated form only; any future launch recomputes
+  and records them whole.
+- Retained fixture-artifact provenance (read back today FROM V's retained record): `stdoutCaptureDeclaration.preloadSha256`
+  = `49cc2539fbcb23bcfc0003dd8afb8015d4f3976312f67c366de5c0295998ee75`;
+  `survivalControlDeclaration.scriptSha256` = `c510d81f296881a9e4e3c174429758c3e2f26c08cf7a63b26ac75d2e5ca30172`
+  (60 lines @2000 ms, designed exit 0); `provenance.sourceSha` = `e9cce50b68a3f89c99184cc1b0090918d10a7144`;
+  `codexVersion "0.163.0"` with in-record `codexBinarySha256 = 881336…dee31` (the launched binary re-hashed by the
+  driver — equal to today's re-verification). These are the recorded provenance of V's run only; every executing fixture
+  artifact for a future launch is regenerated and digested at that launch's own freeze (the §20.7 duty), never copied
+  forward.
+- Retained records TODAY: V's private record re-verified byte-identical —
+  `/tmp/shell-wait-local-settlement-v.0ae348d2/case-output/rescue-interrupt.record.json` = SHA-256
+  `710c071e3da6939030a0a4493dd1bc7b778f80a7120aca703fe344dcea9d3ce0` (1644122 bytes, mode 0600 inside the 0700
+  directory), matching the §25.10 Task-4 registration. **The N private record is NO LONGER PRESENT** (verified absent
+  today — OS temp cleanup since §25.1's 2026-10-29 re-verification; its §24.13/§25.1-recorded digest
+  `df45756b787a3d6ac90ed7d69db700e90112267d179fe152f8358f458abdb0d8` remains a historical identifier). No campaign
+  verdict depends on a record that no longer exists: §24.13 and §25 stand on their own registers.
+- Probe module digests on THIS worktree's bytes (SHA-256, recomputed today; compared against the §25.1 register):
+  `evidence.mjs` = `2cddad6744d3ef0c7b34e131d4a7cd002ed1f61e68f61b8e832c6109f54a6df1` — BYTE-IDENTICAL to §25.1 and
+  therefore to V's executing bytes (proof the §26.4 matrix below describes the exact bytes that ran V);
+  `shape-diagnostic.mjs` = `b034c2b80ff9b59f45ce362fbe5ae889e9c34ebe7a1bfb0226d79bb285e6b35c` (byte-identical to §25.1);
+  `wait-comparison.mjs` = `eba75edbac4d69be42b312b7ff09582314e034d93aaa56cf73ba93024c622146` (byte-identical to §25.1);
+  `driver.mjs` = `1f7a374373b6ec3fc5818514ed48d0f1a0bfad54ab946337773c5f974e955a78` (≠ §25.1's `be27d9e4…` — the
+  local-settlement Tasks 2–3 gains), `release-qualification.mjs` = `c8863ef6947e1e082d5727434894b50f53f0d3210ee35185956a0d3e603c8d84`
+  (≠ `9663d733…`), `closure-observation.mjs` = `3a45f9db7bef21c60bc0a9f6093433eb9da90843def3019a424165c578c68451`
+  (≠ `46b7f5e2…`), `fixture.mjs` = `a1284c42f2c1a776e91cacd9ea96524e7594753f3de08499b5be9a54870c8a31` (≠ `4730908d…`),
+  `local-process-observation.mjs` = `980311ab48a2f6bdf8084a7e80604fd569f620980a0ee8333e6a8b163eea9873` (the
+  local-settlement Task-2 runtime) and `closure-preload.mjs` = `44fdd25d907236666f5ab19fe4eafe49bb93a971ec5f2b4aa820b2fb8df330ba`
+  (the extracted preload seam). The executing-observer digest tag on the current bytes is `zcode-shell-wait-observer-v8`
+  (driver.mjs:81; the construction history driver.mjs:60–79: v6 = the closure-preload extraction, v7 =
+  local-settlement Task 3's concurrent local-observation runtime — §25.1's v5 description predates those gains); the
+  tag's exact digest is recomputed at any launch's pre-launch duty, never copied forward.
+- The evidence-completion ledger (plan §Task 5) contains ONLY E (1) and E-fix (1 total, conditional). NO
+  long-wait/repeat/cadence trial is added to it and no prior allowance (the F/I/N/V family) is reopened.
+
+### 26.2 Local Codex read-only source pin (checkbox 2; confirmed, not corrected)
+
+- `/Users/zhangzikai/Workspace/Codes/github/codex` (`../../../codex` from this worktree): `git rev-parse HEAD` =
+  **`dffa0deb69268ed4ac31578794c9ea897b336ae3`**, and `git status --porcelain` = 0 lines (**clean**). The drafting pin
+  in plan Task-1 checkbox 2 is CONFIRMED exactly as written. It is a citation pin, NOT an established binary mapping: the
+  §16.2/§19.4 native mechanism traces remain `git show <pin>:<path>` facts, and no binary on disk today is claimed to be
+  built from those source bytes. Any task touching native semantics cites the stable
+  `git show dffa0deb…:<path>` form; moved paths are discovered inside the pinned source (a missing file at a cited
+  path is a discovery problem, never an API requirement to import).
+
+### 26.3 V's retained redacted record: the exact known-vs-withheld facts (checkbox 3; both digests verified BEFORE use)
+
+The retained record is present and was re-hashed BEFORE any use (§26.1): `710c071e…d3ce0` matches the §25.10 Task-4
+registration, so every fact below is read from the same byte-for-byte record that Task 4 adjudicated. The registered
+identity anchor of the withheld body was ALSO verified before use: the record's single diagnostic excerpt embeds
+`"sha256": "f90959ab3e7910950e207d5d16e888bd3bddfb7c45204199fcc92974423ce49a"` (the withheld raw body's digest, carried
+as a content-free fact), the exact §25.10/§25.11-registered value.
+
+**KNOWN (persisted content-free facts, read from the record today):** one complete diagnostic excerpt
+(`evidence.excerpts` count 1, `truncated: false`, `rolloutCount: 2`) with `kind: "unsupported-call-shape"` and the
+closed repr: `suppressed` = "the call body could not be classified as a supported shape; its raw content is withheld";
+`classification: "unclassified-script-cell"`; `tool: "exec_command"`; `bodyType: "string"`; `inputLines: 2`;
+`directivePresent: false`; `directiveKeys: null`; `withheldDirectiveKeys: 0`; `inputBytes: 228`;
+`diagnostic.wholeBodyStatementMatch: false`; the line-1 slot `{ line: 1, prefix: "other", braceDepthEnd: 0,
+endsWithSemicolon: true, tools: ["exec_command"] }`; the withheld-body digest above; and the COMPLETE shape block
+`{ version: 1, coverage: "complete", statements: [{ head: "bound-await", tool: "exec_command", argument:
+"literal-object", lexical: "complete", tail: "text-binding" }], statementCount: 1, tool: "exec_command", head:
+"bound-await", tail: "text-binding", bindingEquality: "equal", parserStage: "wrapper", directive: "absent",
+wholeInputConsumed: true, retention: "full" }`. Alongside it, the record's operative join/admission state (read
+verbatim today): `inconclusive.reason` = "unsupported-call-shape: A collected tool call does not match a supported
+shape (direct call, simple wrapper, or linked outer continuation); the case needs manual adjudication." (verbatim);
+`interrupt.hostDelivery.admitted: false` with `reasons: ["host-activity-call-scan-incomplete"]`;
+`interrupt.settled: null` with `settledBasis: "ambiguous-cell-scan-incomplete-not-attributed"`;
+`interrupt.pendingWindowObserved/pendingIntervalMs` and the f1/f2 leg facts POSITIVE (callCount 1, ordering bound,
+host items joined, `idJoinBasis: "outer-call-id"`, `agentThreadIdMatch/rootRolloutOwned/insidePendingWindow/timed` all
+true); `survivalControl: null`; `route.actual: null`; the localProcess block with BOTH ancestry hops
+`{"status":"unestablished","reason":"generation-lifetime-unverifiable"}` verbatim and
+`companionToTransportAttributed: false` (and the verified pending-window values `pendingWindowObserved: true`,
+`pendingIntervalMs: 56932`).
+
+**WITHHELD (never persisted anywhere; unrecoverable):** the raw body itself — the 228 bytes behind the anchor digest —
+and with it every lexical feature the record does NOT name: the exact declaration keyword (const/let/var), the exact
+binding identifier (spelling/charset/class/length), the head-junction spacing spellings, the line-2 layout, and any
+other glyph. No field of the retained record discriminates among these; the record proves the cell's SHAPE class and
+its NON-membership in the admitted set, and that is all it proves. Consequently **independent replay of the WITHHELD
+CELL at the byte level is UNAVAILABLE** (the record enables offline re-adjudication of its own content-free facts —
+exactly what §25.10/§25.11 performed — and no raw-body recognition); the only raw-body grounding routes remain the
+authorized ones the 2026-11-03 corrections enumerate (real cells, a human-approved equivalent, or
+synthetic-grounds-with-the-`562d158f`-precedent), each with its own demonstration/negative-family/review duty.
+
+**NO-MATCH wording (frozen; supersedes any narrower reading):** under the CURRENTLY frozen admitted set (the pinned
+`const r` families `WRAPPER_PATTERN`/`EMISSION_JUNCTION_WRAPPER_PATTERN`/`INLINE_WRAPPER_PATTERN`/`PREPARATION_PATTERN`
+— evidence.mjs:55/:83/:153/:167 — plus the anchored bounded non-`r` family `BOUND_RESULT_WRAPPER_PATTERN`,
+evidence.mjs:149, byte-impact verified by the §26.1 evidence.mjs digest equality), V's cell is **"not in the current
+admitted set."** This states a scoped finding of NON-ADMISSION for the as-recorded head side, NOT proof of one uniquely
+known spelling deviation and NOT proof of a missing grammar entry: the recorded `parserStage: "wrapper"` under complete
+coverage localizes the failure DOWNSTREAM of the wrapper skeleton (the accepted head families' spelling did not match),
+and the registered refusal-dimension set is exactly {declaration keyword, head-junction whitespace, identifier
+charset/bound} (§25.11 block 1, carrying the 2026-11-02 in-memory evaluation; the §25.10 reproductions — `let`/`var`,
+head-junction space-run, `$`-led name, over-64-char-name each field-for-field `parserStage: "wrapper"`; mismatched sink
+diagnoses `output`/`not-equal` instead — back each member). WHICH member is the real one is the withheld lexeme.
+
+**Trace obligations the unknown cell currently blocks (named, not inferred INTO the cell):** the whole-case
+complete-scan conjunct — `interrupt.hostDelivery.admitted: false` (`host-activity-call-scan-incomplete`) — cannot
+certify exactly-one delivery or exclude a second interruption/explicit-stop inside the unclassified cell, so legs (c)
+native-resolution attribution and the 60000-ms comparison stay inapplicable (`deliveryToSettlementMs: null` — verified
+on the record), the survival control's launch/read statements cannot be grounded (`survivalControl: null` — the §16.4
+verdict absent, fail-closed, never fabricated), `route`/`childToolCallCount`-class completion facts stay unestablished,
+and S2's complete single-poll/no-duplicate discipline stays unestablished as installed behavior on V (§25.11 map).
+Both statements hold BY THE SCAN refusal, not BY content inside one known cell; they are not claims about what the
+cell "must contain."
+
+### 26.4 The candidate discrimination matrix preregistration (checkbox 4; small, harmless, SYNTHETIC — one dimension at a time)
+
+Every candidate body starts from ONE identical known skeleton (`const r = await tools.exec_command({…}); text(r);`
+canonical form, equal-sink, single content line, directive absent, argument within 4096 chars) and varies EXACTLY ONE
+dimension per trial. Trials are synthetic, fixture-controlled, content-free; they carry no task text, no credentials,
+no private payload. **No requirement exists to admit every candidate, and NO attempt is promised to match V's lost
+bytes** — a candidate refuses and stays refused unless its own offline RED→GREEN demonstration plus the complete
+negative family plus independent review establish the wider admission (the 2026-11-03-corrected rule).
+
+Per-dimension CURRENT expected behavior (against the §26.1-verified bytes; each row is FALSIFIABLE and the RED tests
+proving it land in Tasks 2–3's focused suites):
+
+| Dimension | Current parser expected result (evidence.mjs) | Current classifier expected result (shape-diagnostic.mjs) | What a prospective admission must establish |
+| --- | --- | --- | --- |
+| `const`/`let`/`var` | `const` only admitted (all three wrapper-family heads pin `const`); `let`/`var` are REGISTERED negatives (evidence.mjs:129–137) — refused, whole-body and per-line, with the body withheld | head stays `bound-await` (the classifier legitimately lexes all three keywords — DECLARATION_PATTERN `^(?:const\|let\|var)`, shape-diagnostic.mjs:453 — and reproduces the §25.10 field-for-field `parserStage: "wrapper"` signature) | bounds-anchored head class, full-body consumption, literal argument decoding, per-statement output ownership; AND proof the widened union keeps every existing negative family refused |
+| bounded ordinary name vs `$`/non-ASCII | admitted identifier class is EXACTLY `[A-Za-z_][A-Za-z0-9_]{0,63}` with `r` routed exclusively through the pinned families (evidence.mjs:149 lookahead); `$`-led, digit-led and non-ASCII names are refused (charset bound; the §25.10 `$`-led reproduction carries) | the classifier's mechanical identifier class IS the ECMA Unicode class `\p{ID_Start}$_` + `\p{ID_Continue}$_*` (shape-diagnostic.mjs:440–447), so a `$`-led/non-ASCII binding still lexes `bound-await`/equal tail and surfaces `parserStage: "wrapper"` — the recorded V-signature | the same four properties (bounds-anchored, full-body-consuming, literal-argument-decoding, per-statement output ownership); a widening of the identifier class must pin a finite charset/bound (the 64-char bound is the anchored bound) and survive the counterexample family on the recognition side: over-long names, identifier escapes, identifier-boundary homoglyphs with `await\u0061`-style spellings (the AWAIT_KEYWORD boundary shape-diagnostic.mjs:448) |
+| head `=`/`await` junction spacing | the WHOLE-body families pin the head junctions at ZERO tolerance (`const ` / ` = await ` / ` tools.` verbatim — evidence.mjs:83/:149; only the three EMISSION junctions and the `text`-tail keep the `[ \t]{0,8}` relaxation, evidence.mjs:113–115); a head-junction space-run is refused | the classifier is junction-tolerant by design (lexes over `\s*`), so a spacing deviation also reproduces the field-for-field `parserStage: "wrapper"` signature (the §25.10 head-junction reproduction) | same four properties + a registered finite spacing bound (if any) pinned in the contract §26.7 BEFORE implementation; never "normalize-then-match" |
+| same-line vs newline layout | currently the wrap families are ONE content line (+ the optional trailing-newline artifact): the literal-object group excludes `\n` (evidence.mjs:83/:149 `[^\n]{1,4096}`), the declaration→`text` junction `[ \t]*` cannot span lines, and a line-split wrapper fails both whole-body and the per-line splitter (each half alone matches no supported shape) — fail-closed, never a cell-level partial admission. NOT previously measured live end-to-end for the line-split-skeleton variants: the exact classifier cell values for a two-line wrapper are a Task-2 RED obligation, not asserted here | (same statement; only the parser expectation is pre-registered here) | per-statement output ownership (the canonical per-line machinery already owns one output per statement — `statementOutputAt`, evidence.mjs:4443) and full-body consumption across however many content lines are admitted |
+| equal vs changed sink | the equal text-binding tail is STRUCTURAL (the `\1` backreference, evidence.mjs:119); `text(JSON.stringify(<name>))` stays EXCLUSIVE to the pinned `r` WRAPPER family, and every changed-mismatched sink is refused — the §25.10 mismatched-sink reproduction diagnosed `output`/`not-equal` (NOT the V-signature fields) | `bindingEquality` becomes `not-equal` (enum, shape-diagnostic.mjs:152) with `parserStage: "output"` | a changed-sink ADMISSION must re-establish result ownership and void-vs-value semantics explicitly in the contract — the default stays equal-only refuse |
+| raw valid / invalid directive | the three wrap families register with directive ABSENT (a `^const` anchor cannot match behind a directive line — evidence.mjs:120–121); the per-line path strips ONE lazy directive line (DIRECTIVE_PATTERN, 1–512 chars, evidence.mjs:171) and validates it through the unchanged framing (`parseWrappedToolInput`, evidence.mjs:1046): a VALID directive attaches to the per-line statement, an INVALID directive fails the whole cell closed (never stripped into acceptance) | `directive` enum `absent\|valid\|invalid\|unknown` (shape-diagnostic.mjs:143); the §26.3 V excerpt showed `absent`/`directiveKeys: null`/`withheldDirectiveKeys: 0` | any prospective directive-bearing admission preserves raw directive validation/retention and never strips an invalid directive into acceptance (the Task-2 bullet verbatim) |
+| argument decode / limit | the literal-object argument is decoded ONLY by the unchanged bounded decoder `parseWrapperArguments` (evidence.mjs:1002); > 4096 chars or undecodable → the whole-body match falls through to the unchanged per-line verdict (fail closed for the frozen family, admitted only where an already-supported shape exists), never silently truncated | argument enum `literal-object\|unsupported\|none\|over-limit` (shape-diagnostic.mjs:138); over-limit is named, never decoded | any widened argument form is STILL the literal decoder's product — no eval, no generic JS interpreter, no substring tool search, no schema-free argv/config bag (the §24/§23.2 rules carried) |
+
+**Explicit matrix prohibitions:** no candidate is admitted on parser test health alone; the complete accepted union
+(including every fallback path) must be re-proven to enforce the enforced bounds; supported private preparation stays
+its own unchanged PREPARATION_PATTERN path; a fixture family not covered by the registered contract is a designed
+negative, never a bug claim by definition (the plan's Task-2 wording, carried).
+
+### 26.5 The additive versioned diagnostic preregistration (checkbox 4, design clause; classifier today = the v1 baseline)
+
+The shape diagnostic is ADDITIVE and versioned, and the current implementation is the registered baseline: schema
+version `SHAPE_DIAGNOSTIC_SCHEMA_VERSION = 1` (shape-diagnostic.mjs:84), fixed closed enums over PUBLIC syntax
+relations only — head `bound-await\|bare-await\|emission\|other\|unknown`, tool
+`exec_command\|other\|no-call\|unknown`, argument `literal-object\|unsupported\|none\|over-limit`, lexical
+`complete\|unterminated\|invalid\|unsupported-syntax`, tail `text-binding\|text-stringify-binding\|text-public-field\|text-other\|none\|unknown`,
+coverage `complete\|partial\|over-budget\|over-scope`, parserStage
+`parse-accepted\|wrapper\|arguments\|output\|residual\|directive\|unknown`, directive
+`absent\|valid\|invalid\|unknown`, plus `bindingEquality equal\|not-equal\|unrelated\|unknown` and the boolean
+`wholeInputConsumed` (shape-diagnostic.mjs:136–157). Explicit byte/slot caps REAL today: input ≤ 8192 bytes
+(`MAX_SHAPE_INPUT_BYTES`), statement slots ≤ 16 (`MAX_SHAPE_STATEMENT_SLOTS`), argument width ≤ 4096 chars
+(`MAX_SHAPE_ARGUMENT_CHARS`) — shape-diagnostic.mjs:96–98 — and the excerpt budget 2048 chars/64 excerpts come from
+evidence.mjs:47/:50 through the driver.
+
+Named omitted/unknown states are REQUIRED: every enum exposes its `unknown`/`other`/`none` members, a withheld/truncated
+excerpt is recorded as truncated-with-bound (V's excerpt: `truncated: false`, an 898-char closed repr), an unlexable slot is
+`lexical: "unsupported-syntax"` with head/tool withheld to `unknown`, and an empty diagnostic slot never becomes a
+guessed shape. **The privacy rule is absolute and already enforced by the implementing module's own comment contract
+(shape-diagnostic.mjs:62–75): no spelling, argument values, task fragments or raw body are ever persisted; the
+classifier stores no string extracted from input; `parse-accepted` is a DIAGNOSIS of `parseCallStatements`' response,
+NEVER an admission verdict and never complete-scan credit.**
+
+Version policy (binding BEFORE implementation): any change to the SEMANTIC meaning of a persisted enum value or
+consumed field ⇒ a schema-version bump of the owning contract (`SHAPE_DIAGNOSTIC_SCHEMA_VERSION`, and for the ancestry
+side `LOCAL_PROCESS_OBSERVATION_VERSION`/`NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION` per applicable growth), with old
+records replaying under their OWN recorded versions; pure enum-member ADDITIONS register the new members by name and
+leave every old verdict's semantics untouched; old diagnostics retain their own version and limits (the Task-2 bullet
+verbatim). The two arming flags (`unclassified-structural-diagnostic`/`unclassified-shape-diagnostic`) stay
+explicitly-opt-in CLI arguments (both V-record boolean fields `true`; default absent behavior unchanged), and the
+diagnostic channel classifies but never by itself grants complete-scan credit — the scan-completeness gate stays
+joined to the orchestrating scan, not to a diagnostic enum.
+
+### 26.6 The same-second ancestry obligation and its bounded route candidates (checkboxes 5–6; field-verified on the shipped bytes)
+
+**The carried refusal (verbatim from plan §1's table and re-confirmed on V's record):** BOTH ancestry hops refused
+`generation-lifetime-unverifiable`; the actual test: the launcher-Companion (start identity record written +498 ms into
+the shared second 18:59:48Z, PID 56254), the broker daemon (record +722 ms, PID 56302, ppid 56254) and the
+fake-ZCode transport (marker +816 ms, PID 56330, ppid 56302) were ALL created inside ONE wall-clock second; the
+uniform round-19 +1000-ms uncertainty bound (every OS start instant — darwin `ps lstart` and Linux btime — carries a
+1000-ms whole-second lower-bound uncertainty; `LINUX_BTIME_UNCERTAINTY_MS = 1000` at
+local-process-observation.mjs:1004, applied uniformly by `startBoundMs` :1897 and the hop orderings :1920–1922 and
+:1955–1962) requires `creation + 1000 ≤ read/creation` orderings that are arithmetically impossible inside one second
+(V's record: hop 1 needs Companion creation ≤ −260 ms; hop 2 needs daemon creation ≤ −184 ms). The measured ppids are
+EXACT (daemon ppid = the Companion's pid; the marker's ppid = the daemon's pid; marker write +816 precedes the
+refreshed endpoint read +859). **Rejection is NOT proof of an actual wrong-parent process** — it is the measurement's
+designed conservative behavior, honestly named (§25.10/§25.11).
+
+**What a startup write PRECISELY proves and cannot prove alone (frozen):** a nonce-keyed startup identity record's
+write instant (`firstWritePreciseMs = performance.timeOrigin + performance.now()` of the WRITER itself,
+closure-preload.mjs:124–125/:155/:174, alongside the epoch-clock `firstWriteEpochMs = Date.now()` :153/:172) proves
+THAT ITS WRITER EXISTS by that moment, in the writer's own clock. It CANNOT prove alone: the kernel's actual start
+ORDER between two processes (no cross-process clock merge), the absence of PID reuse (a reused PID is a different
+process; a fresh start identity is the discriminator), or any reliable cross-clock arithmetic (the held-turn
+monotonic elapsed clock, the epoch wall clock, the preload's timeOrigin-composed instant and the OS's own clock are
+FOUR separate clocks; §25.4 item 5). The registered `firstWritePreciseMs` and `startOriginMs` are INVESTIGATION
+CANDIDATES — precise write facts, never relabeled precise BIRTH instants (the plan's wording; the §25.4 item-3/6
+distinction carried).
+
+**Route candidates (each only if its anti-reuse argument survives the counterexample family):**
+
+- **(a) Corroborated startup/write/OS-generation bounds with positive scope/entry/parent binding and explicitly
+  justified clock intervals.** Positive witnesses per hop: BOTH endpoints' bound identity (PID + OS start identity +
+  scope/entry/argv binding per §25.4 item 4 — the scope nonce binds a SCOPE not a role: the daemon demonstrably
+  inherits the Companion's env, zcode-broker.mjs:600, so the role selector is the entry/argv shape), each record's
+  first-write instants, each OS identity read with its query instant and integrity class, and the parent-chain ppids
+  compared at CAPTURE time (`daemonCaptureParentPid` — local-process-observation.mjs:1813–1822; the two-fact rule:
+  the refreshed reparented endpoint provides the LIFETIME bound while the capture-time link satisfies the ppid hop —
+  the round-5 registration, report §25.10, driver re-application). A POSITIVE rule upgrade would consume these facts
+  through explicitly registered cross-clock interval rules whose every assumption is named — never by blending clocks.
+  Required counterexample survival: the full §25.10 negative family (same-second PID reuse before/after the marker;
+  stale/foreign/cross-scope records; inherited nonce in a wrong role; contradictory duty slots; forged/inconsistent
+  user-space times; coarse equal bounds with no causal witness) must still refuse under any new predicate.
+- **(b) A fixture-only capture-time causal witness at the real parent spawn boundary, or a fresh exact
+  parent/child generation observation.** The capture seam may observe ITS OWN spawn boundary for the processes the
+  fixture owns (the Companion→daemon detached spawn is the actual boundary, scripts/zcode-broker.mjs:600 +
+  scripts/lib/process.mjs:80–88 — a new POSIX process group; the daemon→transport boundary is the daemon's protocol
+  spawn, scripts/zcode-broker.mjs:1012 with the app-server exec scripts/lib/zcode-protocol.mjs:494–497): a witness
+  recorded AT that boundary (fixture-owned, private, identity-scoped, runtime-echo-safe like the existing pair —
+  `captureVerifiedProcessIdentity` (local-process-observation.mjs:422) and `inspectVerifiedProcessIdentity`
+  (local-process-observation.mjs:333), re-exported at fixture.mjs:1264–1265) can
+  establish parent→child SPAWN causality as a CAPTURE-TIME fact (ingress observation on the parent side and the
+  child's start record on the other side, both bounded inside one verified parent presence interval). A fresh exact
+  parent/child generation pair (both identities positively captured around ONE spawn) is the equivalent second
+  witness. Required scope: fixture-only capture, private files, unchanged canonical production source/stdout/preparation/lifetime/stop
+  authority; the anti-reuse argument (a reused PID ON THE CHILD side cannot create a forged parent relationship
+  because the witness binds the child's own start identity and the parent's capture-time presence interval).
+- **(c) Platform-supported higher-resolution exact-PID generation evidence via existing local seams if available.**
+  The existing local seams' named precision bounds are the honest floor to beat or to cite as unavailable: Linux
+  `/proc` btime+ticks with `LINUX_PROC_RESOLUTION_MS = 10` (local-process-observation.mjs:1012) and darwin `lstart`
+  whole-second; any higher-resolution mechanism (a kernel-addressed PID generation/birth token, a launchd/proc_info
+  surface, an OS API exposing a non-reused generation counter for the exact PIDs) must be DISCOVERED against the
+  pinned binary/platform and justified as EXACT per-platform with its own uncertainty named — a missing platform
+  capability is a NAMED unavailable route, never approximated and never synthesized.
+
+**Registered global prohibitions (each binding; verbatim carried from plan Task 1):** no global process enumeration;
+no fabricated nonce authority (the nonce binds scope, never role); no added launch delay solely to cross a second
+boundary; no changed startup choreography to hide the defect; and a pure comparison of two user-space timestamps or
+PPID equality alone is INSUFFICIENT as sufficiency (ppid equality remains a REQUIRED conjunct, never a credit alone —
+the round-17 rule verbatim).
+
+**Existing inspection targets with their current file:line cites (the seam state this registration freezes):**
+the two-hop machine itself `joinAncestryHops` local-process-observation.mjs:1794 (hop verdicts and refusal names
+:1836/:1903–1965, `companionToTransportAttributed` :1976), the uniform +1000-ms bound application :1854/:1897–1926
+(hop 1) and :1944–1965 (marker time), the identity-read horizon :1868–1879; the STARTUP record admission and its
+per-role closed-field whitelist `validateIdentityRecord` (local-process-observation.mjs:719–777; the per-role key
+sets at :726–727, the `firstWriteEpochMs` positive-integer rule at :737–739, the
+`startOriginMs`/`firstWritePreciseMs` nullable-positive rules at :744–749, the write>=start order rule at
+:750–753, and the role/argv-or-config binding at :754–761) whose OPENER is the recorded admission
+`admitStartupIdentityRecord` (:797), with the precise-instant producer in closure-preload.mjs:120–125/:153–174; the
+local aggregate `adjudicateLocalDuties` :2214 (V's verdict shape: all three duties established, aggregate
+`settled: false` with the ancestry refusal — the round-4+ replay re-verifications `ancestry-endpoints-unpersisted`,
+marker `markerEpochMs` REQUIRED, pre-fence completions and the round-19 bound at the report's §25.10 round-4
+registration), the runtime composition `composeAncestryJoinForRuntime` :1998 and the driver's runtime wiring
+driver.mjs:5436–5465 (the transport-exit generation latch); LINUX/BTIME constants :1004/:1012; and the existing test
+seams: the pairwise +1000-ms uncertainty tests — tests/shell-wait-local-process.test.mjs:1519 ("Linux lower-bound
+start instants propagate their uncertainty into hop lifetime checks") and :1576 ("darwin whole-second `lstart`
+carries the same rounding uncertainty in hop lifetime checks") plus :1613 ("PPID+nonce equality alone is not
+ancestry"), :1372 (the two-hop join established ONLY with both endpoints positively captured and ppids equal at
+capture) and :1736 (endpoint lifetimes anchor on the IDENTITY-READ instant) — and, on the recognition side, the
+bounded-name/negative-family regression entries tests/shell-wait-probe.test.mjs:4155 (the changed-bounded-binding
+admission), :26319 (the frozen bounded-name family suite) and
+tests/shell-wait-native-interruption.test.mjs:363 (the complete negative family aborts the REAL scan fail-closed,
+each frozen negative under one named shape). Capture-time PPIDs, scopes, reparenting and PID reuse are covered by the
+existing reuse/foreign-absence/generation-latch tests (tests/shell-wait-local-process.test.mjs:646/:842/:1162/:1197)
+and the §25.4 item-4 capture-time-only discipline.
+
+### 26.7 The contract FREEZE before implementation (checkbox 7; binding for Tasks 2–3's code and Task 4's integration)
+
+1. **Accepted forms and bounds skeleton (Task 2's recognizer):** the current admitted union stands as the skeleton —
+   the pinned `r` families (WRAPPER_PATTERN multi-line tolerated form; the §23.2 single-line emission-junction form;
+   INLINE_WRAPPER_PATTERN; PREPARATION_PATTERN) plus the anchored bounded non-`r` BOUND_RESULT family — each with its
+   exact bytes-copied head identity, tool set {exec_command, write_stdin} (the §23.2 frozen set; `wait` rides
+   INLINE/preparation paths only), single-line literal-object ≤ 4096 chars, the structural equal sink, the `[ \t]{0,8}`
+   emission junctions, and the whole-cell discipline: no interior newline inside a whole-body statement, ≤ 16
+   statements per cell (`MAX_STATEMENTS_PER_CELL`), directive line-bound rules UNCHANGED. Any candidate-dimension
+   widening (§26.4) registers its EXACT accepted spelling/bounds in this section's successor registration BEFORE
+   implementation, with all four property requirements (§26.4 final column) satisfied by construction: raw-input
+   anchoring (match on the RAW directive-prefixed input, never a strip-first bypass), full-body consumption
+   (`wholeInputConsumed` semantics), the ORIGINAL literal argument decoder, per-statement output ownership.
+2. **Schema/contract version policy (semver-style rules for changed semantic fields):** additive production of new
+   enum members ⇒ minor-style registration (members named in a dated registration; old verdicts byte-stable);
+   change/removal/re-interpretation of a persisted field's meaning ⇒ major-style bump of the owning version
+   (`SHAPE_DIAGNOSTIC_SCHEMA_VERSION` v1, `LOCAL_PROCESS_OBSERVATION_VERSION` 1, the gate-D join
+   `NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION` 37 — the versioned lineage already in effect, driver.mjs:4910 — each
+   bumped per consumed semantic field) with old records replaying under their recorded versions; the release
+   qualification's own oracle register (release-qualification.mjs oracle v5) follows the same rule. A new join version
+   must never silently reclassify a recorded old verdict; the V-fix-style retained-record re-adjudications stay
+   SEPARATELY NAMED.
+3. **Required witnesses per route (§26.6 routes (a)/(b)/(c)):** route (a) — bound identity + scope/entry/parent
+   binding for every endpoint, BOTH precise-write instants and BOTH OS identity reads per hop, provenance-tagged
+   origin classes (pre-launch control / live observation / housekeeping, §25.4 item 9), and an explicitly justified
+   interval derivation per consumed cross-ordering; route (b) — the fixture-owned capture-time causal record whose
+   file identity, writer identity and creator identity are all positively captured (a harness cannot play it back
+   by hand-editing an `established` boolean); route (c) — a named platform mechanism with its exact-ness argument
+   and its bounded uncertainty, or the route stays named unavailable. A missing witness NEVER flips: valid new routes
+   may establish previously unknown facts, but no missing witness is ever reinterpreted as true.
+4. **Clock/error assumptions:** four clocks in play (held-turn monotonic elapsed, epoch wall, preload
+   timeOrigin-composed, OS query returns); cross-ordering credit requires rules that name WHICH two instants are
+   compared IN WHICH clock, the derivation of each uncertainty interval (whole-second rounding for lstart/btime;
+   ~10 ms /proc resolution; fork→init residual folded into the named uncertainty, never guessed away), and NO implicit
+   clock join. Observed-but-unrequested clock skew is a NAMED fact.
+5. **Each missing/contradictory case's refusal behavior:** every current named reason keeps its semantics
+   (`generation-lifetime-unverifiable`, `hop-endpoint-unestablished`, `scope-nonce-mismatch`,
+   `daemon-ppid-mismatch-at-capture` (capture-time-only), `marker-ppid-mismatch-at-capture`,
+   `transport-nonce-mismatch` — local-process-observation.mjs:1903–1965; the run-time persistence family
+   `ancestry-endpoints-unpersisted`/`ancestry-endpoint-lifetime-unverifiable`/`ancestry-endpoint-instant-foreign`
+   from the report's §25.10 round-4/round-33 registrations); NEW refusals (a new route's own negative outcomes) are
+   named fresh labels, never folded into old ones (the §25.8 no-fold rule); contradictory facts refuse (never
+   pick-one), absent facts stay absent, and post-cutoff evidence cannot credit (the §25.7 fence).
+6. **Privacy/side-effect scopes:** identity reads are bounded (per-read 2-s timeout, 4 KiB output cap —
+   local-process-observation.mjs:973), pinned-env (round-32: no ambient locale in any identity query, :972–973);
+   fixture-owned records stay private 0600/0700 outside the repository; no identifier/lexical/argument/task text in
+   any persisted fact; every executing/generated helper byte rides the observer provenance
+   (`EXECUTING_HELPER_MATERIALIZATION`, local-process-observation.mjs:123; the driver's construction driver.mjs:103+);
+   no new file outside the declared fixture scopes; no ambient process interaction or enumeration.
+7. **The independence clause (verbatim plan wording, binding):** each seam stands alone — the inability to fix the
+   call-coverage recognition does NOT stop useful offline work on the ancestry witness or vice versa, and neither
+   repair requires a global `qualified` flip; the Task-4 oracle consumes BOTH proof chains per its own conjuncts and
+   one conjunct may improve while the verdict stays false (V's three coexisting independent refusals are the worked
+   example).
+
+### 26.8 Observability and live-readiness freeze (checkbox 8; carried schedule verbatim, per-layer readiness)
+
+- **Every mandatory native/local/durable/control layer needs an implemented measurement path and COMPLETE offline
+  counterexamples BEFORE any launch** (plan wording, carried): no E launch without both §26.4/§26.6 routes either
+  implemented-and-reviewed or precisely-blocked; actual model adherence, observed call shapes and runtime outcomes
+  remain MEASURED facts, never preflight guesses; preflight may reject only KNOWN-absent
+  mechanisms/artifacts/configuration (Task 4's wired preflight duty), never predict model obedience.
+- **The carried frozen schedule (rows unchanged from §25.7, itself §24.8-carried):** candidate empty-observation
+  (cap)/poll 3600000 ms; worker hold 420000 ms anchored at observation detection; total case budget ≤ 1200000 ms
+  (never a production timeout; the 100-hour ceiling unchanged); readiness cutoff = the survival control's designed
+  end (line index 60, ≈120 s; `readiness-cutoff-exceeded`), floor index 40 (evidence.mjs:3295); gate release AT the
+  hold deadline; measurement cutoff = hold deadline + 10000 ms (`MEASUREMENT_CUTOFF_AFTER_HOLD_MS`, driver.mjs:6831),
+  persisted BEFORE planned teardown; observation teardown = cutoff + 5000 ms
+  (`OBSERVATION_TEARDOWN_AFTER_CUTOFF_MS`, driver.mjs:6840) — never a manufactured boundary; durable passive reads
+  ≥ 1000-ms cadence, ≤ 600 attempts, ≤ 32 retained summaries (§23.5/§24.8 carried); every NEW read this campaign adds
+  is bounded BY THE SAME CASE DEADLINE and completes strictly pre-cutoff for credit (§25.7's local-read row carried).
+- **Responsiveness comparison 60000 ms** (`RESPONSIVENESS_BOUND_MS = 60_000`, release-qualification.mjs:806) — ONLY
+  on a causally admitted trial; the request/acknowledgement/resolution contract, the pending-window relocation rule
+  (§24.4) and the emission-after-dispatch ordering discipline are carried unchanged; latency endpoints stay the
+  §19.6 named clocks.
+- **Candidate cap/poll 3600000 ms** — the plan's Task-5 registered command shape: `--worker-duration-ms 420000
+  --poll-ms 3600000 --budget-ms 1200000 --cap-ms 3600000 --wait-policy config-default --exec-default-ms 3600000
+  --unclassified-structural-diagnostic 1 --unclassified-shape-diagnostic 1 --survival-control-selector
+  progress-terminal`, with `--codex`/`--source-sha`/`--output`/`--model` resolved by Task 5's frozen pins; any
+  implementation-added selector is published and parsed offline BEFORE launch.
+- **Registered worker/control lifetimes, cutoff and teardown RELATIVE to their own starts** (the plan's new wording,
+  made definite here): the worker hold is measured from ITS OWN launch-and-detection instant (never from a phase
+  boundary the worker cannot see); the survival control's designed lifetime (60 lines @ 2000 ms ≈ 120 s, exit 0) is
+  measured from ITS OWN process start; the measurement cutoff and teardown instants anchor on the HOLD DEADLINE
+  (which itself anchors on observation detection) — and the PRE-CUTOFF collection window after any lawful in-budget
+  finish (the 10000-ms gate-release→cutoff window, §24.8-carried) still collects a naturally finishing worker WITHOUT
+  assuming worker start == initial detection. All of these remain OBSERVATION bounds only, never production
+  timeouts, detectors or ceilings (§25.7's clause verbatim).
+
+### 26.9 Unknowns become agent investigation tasks (checkbox-1 complements; each owned by a file/task)
+
+1. **The effective model identity of the installed host** (requested `gpt-6.1-sol` recorded; observed effective
+   ALWAYS `null` so far) — owner: Task 5's pre-launch pin duty in `tools/shell-wait-probe/driver.mjs` (the
+   `EXECUTING_OBSERVER_PROVENANCE` block, driver.mjs:103–140): a real preflight/search that resolves what the
+   launched binary actually executes, recorded next to the requested spelling; never guessed.
+2. **The V withheld-cell lexical dimension** (which of declaration keyword / head-junction whitespace / identifier
+   charset-vs-bound is the real deviation) — owner: Task 2 (`tools/shell-wait-probe/evidence.mjs` recognition side +
+   `tools/shell-wait-probe/shape-diagnostic.mjs` diagnostic side): the identification is possible WITHOUT the raw
+   bytes only as a family-wide result (each candidate dimension grounding its own synthetic RED), so the per-candidate
+   outcomes live in the §26.4 matrix's successor registration.
+3. **The prospective admission per candidate dimension** — owner: Task 2; each candidate demands the four-property
+   demonstration plus the complete negative family before any §26.7 successor registration widens the frozen union.
+4. **Whether route (b)'s spawn-boundary witness can be implemented without violating the two-fact/capture-time
+   discipline for the DAEMON hop** (the detached-spawn boundary is real source mechanics, but the daemon was not
+   verifiably CAPTURED at its birth in the V run) — owner: Task 3 (`tools/shell-wait-probe/local-process-observation.mjs`
+   + the capture seam in `tools/shell-wait-probe/fixture.mjs`/`closure-preload.mjs`); a missing design is a named
+   not-yet-designable, not an impossibility.
+5. **Route (c)'s platform profile on darwin/aarch64 Linux counterparts** (does an exact-PID generation surface exist
+   for the pinned binaries' processes?) — owner: Task 3; discovery via existing local reads only, no enumeration.
+6. **Ambient-binary drift hygiene AND the post-commit removal of the pinned 0.163.0 install** (the §26.1 renewal
+   note: the ambient auto-update sweep of 2026-11-03 15:41:15 removed
+   `~/.codex/packages/standalone/releases/0.163.0-aarch64-apple-darwin`, one minute after this registration's commit;
+   the releases directory now holds only 0.162.1/0.164.0/0.165.0/0.166.0) — owners: Task 5's freeze command binds and
+   RE-VERIFIES the absolute 0.163.0 path (realpath/version/SHA-256 `881336…dee31`) at its pre-launch pin duty, and a
+   byte-identical re-provisioning is required when the path is absent (the driver's PREFLIGHT throws at case-input
+   validation — `assertCodexBinaryExists`, driver.mjs:913–921, called unconditionally at :631: the ENOENT throw at
+   :918 (`the exact Codex executable recorded by the caller does not exist (<code>)`) and the not-a-regular-file
+   throw at :920 — so a launch on the registered case cannot otherwise arm; the separate DIGEST side is NOT the
+   preflight: `hashNativeExecutable` (driver.mjs:813–822, called :640 for WAIT-POLICY runs only per the round-5
+   comment :635–639) never throws — it returns `digest: null` with the error recorded, and the comparison adjudicator
+   refuses a missing digest as missing identity evidence, the digest-provenance gate); no
+   ambient/updated host is substituted silently, every binary-dependent claim stays a recorded-cohort composition
+   claim until the re-pin exists, and the §26.1 limits carry.
+7. **The two instruction hashes recorded only in truncated §24.1 form** — owner: Task 5's launch freeze (recompute
+   whole; §26.1's per-run Gate-B duty).
+
+### 26.10 Exit, gates and the handoff to Tasks 2–4
+
+**Exit (plan Task 1):** both seams are preregistered as falsifiable prospective designs with per-candidate refusals,
+required witnesses, contracts frozen BEFORE implementation, and the schedule/budget freeze carried verbatim — with the
+missing/unknown items named and owned (§26.9), not papered over. No candidate of §26.4 is promised admission; no route
+of §26.6 is promised success; the NO-MATCH statement is the registered scoped finding; and V's executed verdicts stand
+byte-unchanged. **Gates for this docs-only task (all executed in this worktree on these exact bytes immediately before
+the commit; the full implementation batteries are Tasks 2–4's duty, NOT re-run here):** `npm run lint`, `npm run
+typecheck` and `git diff --check` on the registration bytes — their verbatim results are in the heading line below.
+**Handoff:** Task 2 RED-tests each SELECTED dimension (the
+`coverage-completion` prefix), Task 3 RED-tests the selected ancestry route (the `same-second-completion` prefix),
+Task 4 wires both into the executor under this freeze; the plan's §3 drafting checks (selection 6/6, bounded-name
+8/8, abandoned-lock 1/1, tracked-LF 549 files) were the drafting-time baseline and are NOT re-claimed here.
+
+**The Task-1 gate battery (executed 2026-11-03 in this worktree on the exact registration bytes above; every exit
+captured):**
+
+| Command | Result | Exit |
+| --- | --- | --- |
+| `npm run lint` | clean | 0 |
+| `npm run typecheck` | clean | 0 |
+| `git diff --check` | no output | 0 |
+
+`node scripts/check-line-endings.mjs` is the plan's Task-6 gate, not Task 1's list; the docs discipline here is enforced
+byte-wise (the section follows the file's existing LF/UTF-8/final-newline conventions and `git diff --check` covers the
+whitespace rules). No test or research suite is re-run for Task 1 — docs-only; the applicable batteries are Tasks 2–4's
+duty and the plan Task 6 requirement, per the plan's own gate lists.
