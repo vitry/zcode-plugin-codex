@@ -52,7 +52,7 @@
  */
 import { createHash } from 'node:crypto';
 import { constants, readFileSync } from 'node:fs';
-import { lstat, open, readdir, realpath, writeFile } from 'node:fs/promises';
+import { lstat, open, readdir, realpath } from 'node:fs/promises';
 import { isAbsolute, join, normalize, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { fileURLToPath } from 'node:url';
@@ -71,22 +71,42 @@ import { evaluateExactTerminalLinkage } from './release-qualification.mjs';
 /** The closed version carried by every admission verdict of this module. */
 export const CLOSURE_OBSERVATION_VERSION = 1;
 
-/** The frozen §19.3 fail-closed terminal stdout capture bound. */
-export const STDOUT_CAPTURE_MAX_BYTES = 65_536;
+// The GENERATED PRELOAD seam moved to closure-preload.mjs (review round 8)
+// and re-exported here unchanged: closurePreloadSource, writeClosurePreload
+// and every frozen constant the generated source and the read side share.
+export {
+  BROKER_IDENTITY_SUFFIX,
+  CAPTURE_BROKER_ENTRY_VARIABLE,
+  CAPTURE_DIRECTORY_VARIABLE,
+  CAPTURE_ENTRY_VARIABLE,
+  CAPTURE_MAX_BYTES_VARIABLE,
+  CAPTURE_NONCE_VARIABLE,
+  CLOSURE_PRELOAD_FILE_NAME,
+  IDENTITY_RECORD_MAX_BYTES,
+  IDENTITY_RECORD_VERSION,
+  INVOCATION_IDENTITY_SUFFIX,
+  STDOUT_CAPTURE_MAX_BYTES,
+  TERMINAL_ARGV_SELECTOR,
+  closurePreloadSource,
+  writeClosurePreload,
+} from './closure-preload.mjs';
 
-/** The frozen exact terminal argv selector (launcher.mjs ALLOWED set). */
-const TERMINAL_ARGV_SELECTOR = Object.freeze(['invoke-prepared', 'rescue']);
-
-/** Fixture-only capture environment variables (the (1) gate of §19.3(b)). */
-export const CAPTURE_DIRECTORY_VARIABLE = 'ZCODE_SHELL_WAIT_CAPTURE_DIR';
-export const CAPTURE_NONCE_VARIABLE = 'ZCODE_SHELL_WAIT_CAPTURE_NONCE';
-export const CAPTURE_ENTRY_VARIABLE = 'ZCODE_SHELL_WAIT_CAPTURE_ENTRY_REALPATH';
-export const CAPTURE_MAX_BYTES_VARIABLE = 'ZCODE_SHELL_WAIT_CAPTURE_MAX_BYTES';
+// Local bindings for this module's own admission/composition code.
 
 /** Bounded meta record size (the meta contract is a small closed JSON). */
 const CAPTURE_META_MAX_BYTES = 4 * 1024;
+import {
+  CAPTURE_BROKER_ENTRY_VARIABLE,
+  CAPTURE_DIRECTORY_VARIABLE,
+  CAPTURE_ENTRY_VARIABLE,
+  CAPTURE_MAX_BYTES_VARIABLE,
+  CAPTURE_NONCE_VARIABLE,
+  STDOUT_CAPTURE_MAX_BYTES,
+  TERMINAL_ARGV_SELECTOR,
+} from './closure-preload.mjs';
 
-/** Module-INIT snapshot of THIS module's executing source (the same provenance discipline as evidence.mjs/release-qualification.mjs). */
+// Module-INIT snapshot of THIS module's executing source (the same provenance
+// discipline as evidence.mjs/local-process-observation.mjs).
 export const EXECUTING_CLOSURE_OBSERVATION_SOURCE = readFileSync(fileURLToPath(import.meta.url));
 
 const HEX_64 = /^[a-f0-9]{64}$/u;
@@ -102,241 +122,16 @@ function isPlainObject(value) {
 }
 
 /**
- * The fixture-generated passive stdout capture preload source (CJS, loaded
- * through `--require`). Pure text: no repository import, no research-module
- * import, and no template literal of its own — the executable copy exists
- * only inside the disposable fixture. Codex round 11: the preload is the
- * COMPLETE structural rewrite against the P1-P5 specification (report
- * §19.8): P1 gate; P2 interception with a hasher-authoritative digest over
- * the INTERCEPTED bytes (the capture file is never read back for the
- * digest) and default-encoding resolution for every write form; P3
- * last-writer-wins finalization meta (closed field set, finalization
- * bookkeeping, no forced exit); the read side (P4) verifies the file
- * against the hasher and the exit code against the handle-linked authority.
- */
-export function closurePreloadSource() {
-  return `'use strict';
-// Fixture-generated passive stdout capture preload (research-only; report
-// §19.3 + the round-11 P1-P5 structural rewrite). Generated into the
-// disposable fixture by the research fixture; the repository never ships an
-// executable copy.
-// P1 GATE: active only when the fixture-only capture environment is present
-// and well-formed (absolute capture directory, 64-hex nonce, absolute
-// declared entry, maxBytes exactly 65536), the child's entry realpaths to
-// the declared launcher realpath, and argv.slice(2) deep-equals
-// ['invoke-prepared','rescue']. Any other process installs NOTHING.
-// P2 INTERCEPTION: process.stdout.write is wrapped — every call form
-// (chunk) / (chunk, encoding) / (chunk, callback) / (chunk, encoding,
-// callback) computes the DELIVERED bytes (Buffer/TypedArray as-is; string
-// through the explicit encoding, else the stream's tracked default
-// encoding), feeds them to the AUTHORITATIVE running SHA-256 hasher, and
-// appends them to the wx 0600 capture file, subject to the 64 KiB cap
-// (exceeding sets truncated). The original call is forwarded unchanged (same
-// arguments, same return value, callback untouched, errors propagate); a
-// capture-side fs error names captureError and stops capturing without ever
-// altering delivery. The digest is derived ONLY from the intercepted bytes
-// (the capture file is never read back for it).
-// P3 FINALIZATION: last-writer-wins meta at two idempotent points — the
-// 'exit' listener (registered at install and re-ordered to the END of the
-// listener list on beforeExit, so on the natural drain it runs after the
-// application listeners registered so far) and the wrapped
-// process.reallyExit (the authoritative last word on explicit exits). No
-// forced exit, no exitCode mutation. A write landing after a finalization
-// increments writesAfterFinalization, still appends+hashes, and immediately
-// republishes the meta.
-(function () {
-  var FS = require('node:fs');
-  var PATH = require('node:path');
-  var CRYPTO = require('node:crypto');
-  var DIRECTORY = process.env[${JSON.stringify(CAPTURE_DIRECTORY_VARIABLE)}];
-  var NONCE = process.env[${JSON.stringify(CAPTURE_NONCE_VARIABLE)}];
-  var ENTRY = process.env[${JSON.stringify(CAPTURE_ENTRY_VARIABLE)}];
-  var MAX_BYTES = Number(process.env[${JSON.stringify(CAPTURE_MAX_BYTES_VARIABLE)}]);
-  // ---- P1 gate ----
-  if (typeof DIRECTORY !== 'string' || DIRECTORY.length === 0 || DIRECTORY.charAt(0) !== '/') return;
-  if (typeof NONCE !== 'string' || !/^[a-f0-9]{64}$/.test(NONCE)) return;
-  if (typeof ENTRY !== 'string' || ENTRY.length === 0 || ENTRY.charAt(0) !== '/') return;
-  if (!Number.isSafeInteger(MAX_BYTES) || MAX_BYTES !== ${JSON.stringify(STDOUT_CAPTURE_MAX_BYTES)}) return;
-  if (process.argv.length !== ${2 + TERMINAL_ARGV_SELECTOR.length}) return;
-  if (process.argv[2] !== ${JSON.stringify(TERMINAL_ARGV_SELECTOR[0])} || process.argv[3] !== ${JSON.stringify(TERMINAL_ARGV_SELECTOR[1])}) return;
-  var entryRealpath;
-  try { entryRealpath = FS.realpathSync(process.argv[1]); } catch (error) { return; }
-  if (entryRealpath !== ENTRY) return;
-  // ---- P2 install ----
-  var capturePath = PATH.join(DIRECTORY, NONCE + '.stdout');
-  var metaPath = PATH.join(DIRECTORY, NONCE + '.meta.json');
-  var META_VERSION = 1;
-  var hash = CRYPTO.createHash('sha256');
-  var startedAtMs = Date.now();
-  var fd = null;
-  var bytes = 0;
-  var truncated = false;
-  var captureError = null;
-  var finalized = false;
-  var finalizedBy = null;
-  var finalizations = 0;
-  var writesAfterFinalization = 0;
-  var metaWritten = false;
-  var defaultEncoding = 'utf8';
-  function errorCode(error) { return error && typeof error.code === 'string' ? error.code : 'unknown'; }
-  try { fd = FS.openSync(capturePath, 'wx', 0o600); }
-  catch (error) { captureError = 'capture-file-unavailable:' + errorCode(error); }
-  function resolveEncoding(encoding) {
-    // Codex round 12 (finding 2): Node treats an EMPTY encoding argument as
-    // unspecified — resolve it (and any non-string) to the tracked stream
-    // default; only a nonempty string encoding is used as given.
-    if (typeof encoding === 'string' && encoding !== '') return encoding;
-    return defaultEncoding;
-  }
-  function toBuffer(chunk, encoding) {
-    return typeof chunk === 'string'
-      ? Buffer.from(chunk, encoding)
-      : Buffer.isBuffer(chunk)
-        ? chunk
-        : ArrayBuffer.isView(chunk)
-          ? Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength)
-          : Buffer.from(String(chunk));
-  }
-  function currentExitCode() { return typeof process.exitCode === 'number' ? process.exitCode : 0; }
-  // ---- P3 last-writer-wins meta publication (closed field set) ----
-  function publishMeta(basis) {
-    finalizations += 1;
-    finalizedBy = basis;
-    var digest = null;
-    if (captureError === null) {
-      // The hasher is AUTHORITATIVE: digest a COPY of its live state over
-      // exactly the intercepted bytes — the capture file is never read back
-      // for the digest, so file tamper can never manufacture a match.
-      try { digest = hash.copy().digest('hex'); } catch (error) { digest = null; }
-    }
-    var meta = {
-      version: META_VERSION,
-      nonce: NONCE,
-      entryRealpath: entryRealpath,
-      argv: process.argv.slice(2),
-      byteCount: bytes,
-      captureSha256: digest,
-      truncated: truncated,
-      maxBytes: MAX_BYTES,
-      exitCode: currentExitCode(),
-      finalizedBy: basis,
-      finalizations: finalizations,
-      writesAfterFinalization: writesAfterFinalization,
-      durationMs: Math.max(0, Date.now() - startedAtMs),
-    };
-    if (captureError !== null) meta.captureError = captureError;
-    // One capture per fixture nonce: a foreign meta is never overwritten
-    // (first publication 'wx'; our own republications 'w').
-    try { FS.writeFileSync(metaPath, JSON.stringify(meta) + '\\n', { mode: 0o600, flag: metaWritten ? 'w' : 'wx' }); metaWritten = true; } catch (error) { /* named by the surviving capture pair */ }
-  }
-  function finalizeMeta(basis) {
-    finalized = true;
-    publishMeta(basis);
-  }
-  function record(chunk, encoding) {
-    if (captureError !== null) return;
-    var buffer;
-    try { buffer = toBuffer(chunk, resolveEncoding(encoding)); }
-    catch (error) { captureError = 'capture-encode-failed:' + errorCode(error); return; }
-    if (finalized) writesAfterFinalization += 1;
-    if (!truncated) {
-      // Codex round 12 (finding 3): truncation is declared ONLY when bytes
-      // were DISCARDED — a capture totaling exactly the cap keeps every byte
-      // and stays complete.
-      var take = bytes + buffer.length > MAX_BYTES ? buffer.subarray(0, MAX_BYTES - bytes) : buffer;
-      var discarded = buffer.length - take.length;
-      if (take.length > 0) {
-        try { hash.update(take); } catch (error) { captureError = 'capture-hash-failed:' + errorCode(error); return; }
-        try { FS.writeSync(fd, take); bytes += take.length; }
-        catch (error) { captureError = 'capture-write-failed:' + errorCode(error); return; }
-      }
-      if (discarded > 0) truncated = true;
-    }
-    if (finalized) publishMeta(finalizedBy);
-  }
-  if (fd !== null) {
-    var originalWrite = process.stdout.write;
-    // The stream's tracked default encoding (initial 'utf8') resolves an
-    // OMITTED encoding for every write form, including the callback form.
-    var originalSetDefaultEncoding = /** @type {any} */ (process.stdout).setDefaultEncoding;
-    if (typeof originalSetDefaultEncoding === 'function') {
-      /** @type {any} */ (process.stdout).setDefaultEncoding = function (encoding) {
-        if (typeof encoding === 'string' && Buffer.isEncoding(encoding)) defaultEncoding = encoding;
-        return originalSetDefaultEncoding.apply(this, arguments);
-      };
-    }
-    process.stdout.write = function (chunk, encoding, callback) {
-      // Codex round 12 (finding 1): the ORIGINAL write runs FIRST. A
-      // synchronous rejection propagates unchanged and records NOTHING (the
-      // caller's bytes were never accepted by stdout); the bytes are
-      // recorded only after the write returned — async failures (EPIPE via
-      // the callback) do NOT invalidate the capture (the established
-      // round-4 contract: the bytes were accepted/queued).
-      var result = originalWrite.apply(process.stdout, arguments);
-      record(chunk, encoding);
-      return result;
-    };
-  }
-  // ---- P3 finalization points ----
-  var exitFinalizer = function () { finalizeMeta('exit-listeners'); };
-  process.once('exit', exitFinalizer);
-  process.on('beforeExit', function () {
-    // Re-order ONLY our own listener to the END of the 'exit' listener list:
-    // on the natural drain it finalizes AFTER the application listeners
-    // registered so far. No exit is forced; the business exit status is
-    // never touched.
-    process.removeListener('exit', exitFinalizer);
-    process.once('exit', exitFinalizer);
-  });
-  if (typeof process.reallyExit === 'function') {
-    var originalReallyExit = process.reallyExit;
-    process.reallyExit = function () {
-      // The authoritative LAST word on explicit exits: it republishes the
-      // meta with the final business exit code (last-writer-wins).
-      finalizeMeta('really-exit');
-      return originalReallyExit.apply(process, arguments);
-    };
-  }
-})();
-`;
-}
-
-export const CLOSURE_PRELOAD_FILE_NAME = 'closure-stdout-preload.cjs';
-
-/**
- * Write the fixture-generated preload into a private directory. The write is
- * the only side effect and happens after the directory validation.
- * @param {string} directory an absolute private directory (the disposable
- *   fixture root or an offline test's temp root)
- * @returns {Promise<{ path: string, sha256: string, nodeOptionsFragment: string }>}
- */
-export async function writeClosurePreload(directory) {
-  if (typeof directory !== 'string' || directory.length === 0 || !isAbsolute(directory)) {
-    throw invalidClosureInput('the preload directory must be an absolute path.');
-  }
-  const source = closurePreloadSource();
-  const path = join(directory, CLOSURE_PRELOAD_FILE_NAME);
-  await writeFile(path, source, { mode: 0o600 });
-  // Codex round 2: the fragment QUOTES the complete preload path per Node's
-  // NODE_OPTIONS parsing (only U+0020 separates arguments; a double quote
-  // opens a quoted segment; inside quotes a backslash escapes the next
-  // character) — an unquoted path with spaces (custom TMPDIR) would split
-  // into multiple arguments and node would exit before any entry runs.
-  const quotedPath = `"${path.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
-  return {
-    path,
-    sha256: createHash('sha256').update(source, 'utf8').digest('hex'),
-    nodeOptionsFragment: `--require ${quotedPath}`,
-  };
-}
-
-/**
  * Compose the fixture-only capture environment for one fresh capture scope
  * (one nonce). Validates every option BEFORE returning; no side effects.
+ * The optional `brokerEntryRealpath` additionally arms the broker-daemon
+ * identity-record gate (local-settlement Task 2); without it the broker gate
+ * stays disabled and the environment is byte-identical to the §19.3 seam.
  * @param {{
  *   captureDirectory: string,
  *   nonce: string,
  *   entryRealpath: string,
+ *   brokerEntryRealpath?: string,
  *   maxBytes?: number,
  *   baseEnv?: NodeJS.ProcessEnv,
  *   nodeOptionsFragment?: string,
@@ -369,11 +164,16 @@ export function captureEnvironment(input) {
   if (fragment !== undefined && (typeof fragment !== 'string' || !fragment.startsWith('--require '))) {
     throw invalidClosureInput('the preload NODE_OPTIONS fragment must be a --require fragment.');
   }
+  const brokerEntryRealpath = input.brokerEntryRealpath;
+  if (brokerEntryRealpath !== undefined && (typeof brokerEntryRealpath !== 'string' || brokerEntryRealpath.length === 0 || !isAbsolute(brokerEntryRealpath))) {
+    throw invalidClosureInput('the declared broker entry realpath must be an absolute path.');
+  }
   const baseEnv = input.baseEnv ?? {};
   const existingOptions = typeof baseEnv.NODE_OPTIONS === 'string' && baseEnv.NODE_OPTIONS.length > 0
     ? `${baseEnv.NODE_OPTIONS} `
     : '';
-  return {
+  /** @type {Record<string, string | undefined>} */
+  const composed = {
     ...baseEnv,
     [CAPTURE_DIRECTORY_VARIABLE]: captureDirectory,
     [CAPTURE_NONCE_VARIABLE]: nonce,
@@ -381,6 +181,14 @@ export function captureEnvironment(input) {
     [CAPTURE_MAX_BYTES_VARIABLE]: String(maxBytes),
     ...(fragment === undefined ? {} : { NODE_OPTIONS: `${existingOptions}${fragment}` }),
   };
+  // The broker gate is DISABLED BY DEFAULT: an inherited broker variable in
+  // the base environment must never survive into the fresh scope — with no
+  // declared broker entry the variable is explicitly removed (otherwise a
+  // stale declaration could write an undeclared broker identity record under
+  // the new nonce); a supplied entry always replaces the inherited one.
+  if (brokerEntryRealpath === undefined) delete composed[CAPTURE_BROKER_ENTRY_VARIABLE];
+  else composed[CAPTURE_BROKER_ENTRY_VARIABLE] = brokerEntryRealpath;
+  return composed;
 }
 
 /**

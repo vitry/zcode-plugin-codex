@@ -2253,6 +2253,59 @@ test('non-mutating advisory lock mode rejects permission drift before entering t
   }
 });
 
+test('an abandoned in-flight lock operation keeps its advisory handle out of the garbage collector', { skip: typeof globalThis.gc !== 'function' ? 'Forcing collection deterministically requires --expose-gc.' : false }, async () => {
+  const { root } = await fixture();
+  const lockPath = join(root, 'abandoned.lock');
+  const entrySignal = join(root, 'operation-entered');
+  /** @type {{channel: string, message: string}[]} */
+  const gcClosed = [];
+  // The test-level skip guard guarantees the collector entry point exists.
+  const forceCollection = /** @type {() => void} */ (globalThis.gc);
+  // The staged recovery (rescue-child-reconciliation ranStage) races each
+  // stage against its shared budget and abandons the losing operation
+  // promise, leaving the suspended advisory-lock frame unreachable while
+  // its descriptor is open. On current Node LTS a garbage-collection close
+  // is an error delivered as an uncaughtException, not a deprecation
+  // warning — retention inside withFileLock must keep the frame alive
+  // until its explicit unlock+close runs. Matching-only capture: any other
+  // fatal event keeps its crash semantics.
+  const capture = (/** @type {string} */ channel) => (/** @type {Error} */ event) => {
+    // Both emission shapes name the mechanism: the FileHandle error ("A
+    // FileHandle object was closed during garbage collection") and the
+    // descriptor warning ("Closing file descriptor N on garbage collection").
+    if (!/garbage collection/i.test(String(event?.message))) throw event;
+    gcClosed.push({ channel, message: String(event.message) });
+  };
+  const onWarning = capture('warning');
+  const onError = capture('error');
+  const onUncaught = capture('uncaughtException');
+  process.on('warning', onWarning);
+  process.on('error', onError);
+  process.on('uncaughtException', onUncaught);
+  try {
+    {
+      void withFileLock(lockPath, async () => {
+        await writeFile(entrySignal, 'entered', { mode: 0o600 });
+        await new Promise(() => {});
+      });
+    }
+    for (let entered = false; !entered;) {
+      entered = await access(entrySignal).then(() => true, () => false);
+    }
+    forceCollection();
+    forceCollection();
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
+    forceCollection();
+    forceCollection();
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
+    assert.deepEqual(gcClosed, []);
+  } finally {
+    process.off('warning', onWarning);
+    process.off('error', onError);
+    process.off('uncaughtException', onUncaught);
+  }
+});
+
 test('concurrent first use publishes one valid advisory lock layout', async () => {
   const { root } = await fixture(); const lockPath = join(root, 'concurrent-layout.lock'); let inside = 0; let maximumInside = 0;
   try {

@@ -17036,7 +17036,7 @@ the responsiveness verdict.
 | Root/Child/job/owner/executor + runtime generation | `observeSpawnAcknowledgementIdentity` exact spawn join (evidence.mjs:2683-2696); `interruptDurableSnapshotSupplier` owner = observed PARENT + `expectedExecutorAgentId` = observed Child (driver.mjs:2688-2713); binding identity via the exported `rescueBindingAuthorityView` (`childAuthority.childAgentId`, `anchorJobId`/`currentJobId` — rescue-binding.mjs:28-36); generation carried by `rescueExecutionReservation` + `workerLeaseId` on the exact job record (state.mjs:78; recovery.mjs:74; binding-guard stale detection returns `kind: 'stale'` at state.mjs:397-407, with the guard constructing `currentJobId`/`workerLeaseId` at :402-405, and the `RESCUE_BINDING_STALE` error itself defined by `staleRescueBinding()` at state.mjs:2675) | the exact spawn acknowledgement recovered from raw rollouts; the owner-index join resolving EXACTLY ONE validated entry; `executorLinkage: "verified"` (the F record: owner `01a16e88-920e-…` = the spawn parent; job `3b3cbaed536d…bba7683b`) | exact-identity-only; BOTH identities required (either missing ⇒ NO supplier, named); any disagreement ⇒ `owning-root-identity-conflict` hard refuse (close-out 6's union: spawn recovery + supported linkage) | an inexact spawn recovery keeps BOTH ids null with its named reason (`observeSpawnAcknowledgementIdentity`); a missing/ambiguous/unreadable owner index is the named `owner-binding-missing`/`owned-job-ambiguous`/`owner-binding-entry-unreadable` state |
 | Native turn/cell | the §19.4 admission (conjuncts 1/2/3/5 + the §24.4-relocated f1 window) + `interruptDeliveryAttributionGuard` (evidence.mjs:4008-4022) + the settlement basis chain (driver.mjs:5474-5530) | the admitted host item; `delivered`/`deliverySent`; the settlement basis; `cancelledAtMs`; `pendingWindowObserved` | every §19.4/§24.4 counterexample fails closed; latency computed ONLY on the exact-target attributed settlement (driver.mjs:5624-5636) | the specific named conjunct failure (the admission reasons list) — never a guessed positive |
 | Remote result/winner | TERMINAL = {succeeded, failed, cancelled} (recovery.mjs:18); consumed ONLY from a positively observed final durable snapshot (join v2; samples never ground it) | the production-published terminal winner in the exact job record (F: `cancelled` via session-end) | the §19.5 TERMINAL set guards it; `cancelling` is a RETAINED GUARD, never terminal; natural winners stay natural | an unobserved winner ⇒ `terminal-winner-unobserved` (never inferred from terminality alone) |
-| Local Companion/process cleanup | the registered named-unobservable limitation (§19.9 codex round 3); verified process identity machinery (`captureVerifiedProcessIdentity`/`inspectVerifiedProcessIdentity`, driver.mjs:1306-1320) for DECLARED fixture-owned identities | `localProcessReaping: null` on the interrupt path — NEVER inferred | exact verified identity/nonce/start identity/ancestry; never PID reuse or a process-name change as termination proof | the completion-shaped watch is frozen out of the interrupt case, the Child's post-abort rollout carries no Companion exit, and the fixture identity watch tracks the host process — the layer is genuinely unobservable on this path (registered, never fabricated) |
+| Local Companion/process cleanup | the registered named-unobservable limitation (§19.9 codex round 3); verified process identity machinery (`captureVerifiedProcessIdentity`/`inspectVerifiedProcessIdentity`, driver.mjs:1306-1320) for DECLARED fixture-owned identities | `localProcessReaping: null` on the interrupt path — NEVER inferred | exact verified identity/nonce/start identity/ancestry; never PID reuse or a process-name change as termination proof | the completion-shaped watch is frozen out of the interrupt case, the Child's post-abort rollout carries no Companion exit, and the fixture identity watch tracks the host process — the layer is genuinely unobservable on this path (registered, never fabricated). **[Dated supersession pointer, 2026-11-02 (local-settlement §25.11):** on the instrumented fixture path the named-unobservable is CLOSED BY MEASUREMENT — the fixture-only preload seam (§25.3) observes the REAL Companion's identity and exit without any host-binary change, and case V measured the frozen §25.4 contract live (all three applicable duties established, 1945 strictly-pre-fence generation-bound OS reads, the positive pre-fence Companion disappearance; §25.11). This row's verification requirements (never PID reuse, never a name change, verified identity/nonce/start identity/ancestry) carry unchanged — they are exactly what V's established duties satisfy.]** |
 | Marked runner obligations | `isMarkedRunnerClaim` (recovery.mjs:237-240) + `endedObligationSettled` (recovery.mjs:148-158): terminal + marked claim ⇒ outstanding duty | the F record's genuine shape: `runnerCleanupDuty: {applicable: false, reason: "not-applicable: the record carries no marked runner claim"}` | exported production predicates only; a terminal status alone never proves duties discharged | a marked claim riding a terminal record is the named outstanding duty — never silently discarded |
 | Writable exclusion | a nonterminal writable rescue job holds the workspace writable guard (state.mjs:1539-1543) | `writableGuard: {applicable: false, retained: false, reason: "not-applicable"}` when the production not-retained state is observed; otherwise retained-guard = SAFE unresolved | "guard retained" is never a failure of settlement and never readable as success; the F run observed the job `running` (guard held) through 15:32:37.651Z, then settled by session-end | an unknown guard state stays named-unestablished, never folded into another layer |
 | Binding currency | the rescue-binding partition, `RESCUE_BINDING_VERSION` 3 (rescue-binding.mjs:11-20); `bindingCurrent` conjunct (§19.3(d)) | `bindingCurrency: {state: "current", anchorsJob: 3b3cbaed536d…}` (F final sample) | a positively resolved binding pair matching the observed Child is POSITIVELY current; absent pair/no anchor ⇒ `binding-executor-linkage-unverified`, never settled (§19.9 codex round 2); stale/advanced is unproven, never false-by-guess | unknown stays named |
@@ -18733,6 +18733,17 @@ verbatim to the Companion at the next trial — grounding never again depends on
 spent while a duty layer is known-unobservable without that capture armed.** Live-trial eligibility is pending
 the user's adjudication; the N/C ledger stays closed until the user grants it (§24.14 addendum).
 
+**[Dated supersession pointer, 2026-11-02 (local-settlement §25.11):** the verdict above — the REAL Companion's
+local process cleanup UNOBSERVABLE, with mechanism 2 "NOT implementable for the real Companion within research
+authority" — is SUPERSEDED for the local-settlement plan: the fixture-only `NODE_OPTIONS --require` preload seam
+(§25.3) observes the real Companion's startup identity and exit WITHOUT patching the host binary (the
+native-acceptance plan's unproved assertion that every Companion-side marker requires host patching is retired by
+measurement), and case V measured the frozen §25.4 contract live — invocation/broker/transport identities
+established, 1945 strictly-pre-fence generation-bound OS reads, the POSITIVE pre-fence Companion disappearance and
+the confirmed transport exit (§25.11). The STANDING PROHIBITION above (remote surfaces never substitute for local
+proof) is NOT superseded — V observed the local layer locally, and the prohibition carried verbatim through V's
+adjudication.]**
+
 ### 24.14 2026-10-28 native-acceptance Task 5: the final battery on unchanged implementation bytes, the closing requirement map and the campaign disposition — Gate D NOT proven; native delivery/response OBSERVER-BLOCKED by the pre-registered scan-completeness blocker (offline; zero model turns, zero live launches)
 
 Task 5 of [the native-acceptance plan](../superpowers/plans/2026-10-26-rescue-shell-wait-native-acceptance.md), executed
@@ -18972,6 +18983,24 @@ rewritten.
    `bindingEquality: "equal"`, `parserStage: "wrapper"`, `wholeInputConsumed: true`) — are digest-only WITHHELD by
    the privacy discipline. A grammar written from synthetic reconstructions cannot prove, in an offline RED→GREEN,
    that it recognizes the REAL cells — the exact ground Task 4's C-refusal registered.
+   **[Dated supersession pointer, 2026-11-02 (local-settlement §25.11):** read WITH the correction addendum below —
+   "no synthetic grounding exists" is superseded for the local-settlement plan: the §24.10-amendment anchored
+   bounded-name family IS a synthetic-grounded frozen grammar (RED→GREEN plus the complete negative family through
+   the real extractor→mapper→serializer→join→oracle pipeline), and the local-settlement campaign executed its entire
+   bounded local-process layer without any unredaction. What still stands is this step's narrow claim: a grammar
+   written from synthetic reconstructions cannot prove it recognizes the REAL withheld cells — that grounding-on-
+   real-bytes route remains a human/user privacy decision (re-confirmed 2026-11-02: the §25.11 in-memory evaluation
+   proves the installed frozen grammar is NOT a missing entry — V's cell sits OUTSIDE it in a registered refusal
+   dimension — so only real or human-approved-equivalent bytes can ground a widening; the §24.13 C-grounds into the
+   V-fix disposition are RE-ASSESSED against the plan's bar in §25.10's dated correction).]**
+   **(2026-11-03 review-round-2 correction: the preceding "so only real or human-approved-equivalent bytes can
+   ground a widening" is RE-SCOPED — it supersedes the round-1 phrasing here. The NO-MATCH proves non-admission
+   under the CURRENTLY frozen grammar only (`BOUND_RESULT_WRAPPER_PATTERN`, `evidence.mjs:149`, digest-verified
+   installed in V's bytes); it cannot close the plan-already-authorized routes. A synthetic-grounded widening with
+   its own bounded offline demonstration, complete negative family and independent review is an established
+   precedent route — the frozen grammar itself was so grounded (commit `562d158f`) — and further in-memory /
+   content-free structural diagnostics remain investigable; real-body grounding is one route beside them, never
+   the sole ground.)**
 2. **What offline evidence would ground it (each step named):** (a) the three real bodies UNREDACTED into a private
    fixture-owned workspace OUTSIDE the repository — a privacy-release step that requires NEW user authorization
    (no plan or agent grants it unilaterally); (b) an offline RED reproduction on the real
@@ -18990,6 +19019,12 @@ rewritten.
    background/shared-default compatibility remains unestablished pending any future Gate-D proof under separate
    authorization. If the privacy release is declined, no bounded correction exists to register — the observer block
    stands as the campaign's final state.
+   **[Dated supersession pointer, 2026-11-02 (local-settlement §25.11):** "declining unredaction leaves no bounded
+   option" is SUPERSEDED for the local-settlement plan: declining did not leave the campaign without a bounded
+   option — the local-settlement plan WAS that bounded option (the missing-local-observer gate plus the fixture-only
+   preload layer), executed to its evidence-complete close with zero unredacted bytes (local-process observability
+   PROVEN; the explicit `do-not-adopt-yet` decision; the ledger closed). The do-not-adopt state, the hosted-case
+   authority boundary and every other boundary of this step carry unchanged.]**
 
 **Post-fix fresh checks (applicable; executable bytes unchanged, equality proven above):** the focused native suite
 **92/92 pass, 0 failed, 0 cancelled, exit 0** and selection **6/6, exit 0**, re-run after the two fixes; the docs
@@ -19088,3 +19123,2412 @@ about later bytes).
 **96/96 pass, 0 failed, 0 cancelled, clean self-exit** (92 + the four grammar-amendment tests); the probe suite,
 shell-research total, selection, lint, typecheck, `git diff --check`, check-line-endings and the EMPTY
 prohibited-path diff re-run on the final rebased bytes — counts recorded in the §24.11 round record below.
+
+## 25. 2026-10-29 local-settlement Task 1: the actual-target map and the local observation-contract preregistration (offline; zero model turns, zero live launches)
+
+Task 1 of [the local-settlement plan](../superpowers/plans/2026-10-28-rescue-shell-wait-local-settlement.md), executed
+2026-10-29 in worktree `.worktrees/rescue-shell-wait-local-settlement` (branch
+`docs/rescue-shell-wait-local-settlement`). Read-only and offline throughout: zero model turns, zero
+`ZCODE_SHELL_WAIT_E2E=1` runs, zero host launches, no production/source/config edit. The only executed code was a set
+of HARMLESS LOCAL Node controls (trivial child processes under the OS temp directory, exercising the fixture-generated
+preload source against a fixture-declared stand-in entry — never the installed launcher, never any companion/provider
+binary), plus `stat`/`shasum`/`ps` reads of locally owned processes and files. This section is ADDITIVE — every prior
+section stands byte-unchanged. It PREREGISTERS the actual-target map and the observation contract Tasks 2–4 implement
+and execute; it is not a live result and it changes no past verdict.
+
+### 25.1 Pins (checkbox 1; all commands executed 2026-10-29 inside the worktree; nothing trusted forward)
+
+- Plugin worktree: branch `docs/rescue-shell-wait-local-settlement`; `git rev-parse HEAD` =
+  `a8f54d06f640777d539e8b6b44bb23dc924bec5f` (the plan §1 fresh base, the PR #73 merge); `git status --short` = ONLY
+  the untracked plan file — the tracked tree is clean, zero modified tracked files.
+- **Selected trial binary — the retained measured 0.163.0 executable, STILL AVAILABLE, re-verified today:**
+  `/Users/zhangzikai/.codex/packages/standalone/releases/0.163.0-aarch64-apple-darwin/bin/codex` (absolute realpath —
+  it resolves to itself), `--version` = `codex-cli 0.163.0`, SHA-256 =
+  `8813367285524ac798dd96d1b071aea30d58708c7226fd236cd275cf1cfdee31` — byte-identical to the §16.1/§19.1/§21.1/§23.1/
+  §23.12.1/§24.1 pins. Every existing long-wait/cadence/stdout/identity conclusion composes with a trial on this
+  binary WITHOUT any cross-version claim; no substitute executable is launched and no applicability statement is owed.
+- Ambient CLI, re-recorded SEPARATELY at its own realpath (never blended, never launched by this design): `command -v
+  codex` now resolves to `/Users/zhangzikai/.codex/packages/standalone/releases/0.165.0-aarch64-apple-darwin/bin/codex`,
+  `--version` = `codex-cli 0.165.0`, SHA-256 =
+  `a45099154d7fb4a5ed8a56f40966a95deb938e508bab23e6985035c709e9a85a` — a FURTHER host drift beyond the §24.1-recorded
+  ambient 0.164.0, whose binary is still present at its recorded path with its recorded digest
+  (`d8990e3ee7acfbc2…` — first 16 hex chars re-verified today). Host drift is NOT an experiment-budget reset: the
+  exact 0.163.0 absolute path is what any future command binds; a launch on any other version stays on that version
+  with cross-version applicability UNESTABLISHED (the §24.1 rule, carried).
+- REQUESTED model: `gpt-6.1-sol` — carried from the §16.1/§20.2/§20.3 registration; its most recent EXECUTED
+  supported-model discovery record is the §24.12 pre-launch re-pin (`codex debug models` on the pinned binary:
+  11 catalog entries, `gpt-6.1-sol` `visibility: "list"` at `priority: 0`). NOT re-run here (authenticated network
+  discovery outside this analysis-only task — the §24.1 precedent); the pre-launch duty re-executes it immediately
+  before any V launch. OBSERVED EFFECTIVE model metadata stays the `model: null` contract (driver.mjs:84, inside the
+  `EXECUTING_OBSERVER_PROVENANCE` object, driver.mjs:69-87); requested and effective stay separate facts, never
+  blended.
+- Configuration layers, REQUESTED (unchanged fixture policy): fixture cap `background_terminal_max_timeout =
+  3600000` (in-fixture `capVerified` re-read at setup); `--exec-default-ms 3600000`; `--poll-ms 3600000`;
+  `--cap-ms 3600000`; wait-policy `config-default` (the fixture's `configDefaultWaitingParagraph` @3600000);
+  worker hold 420000 ms; total case budget ≤ 1200000 ms; the V2 wait feature bounds at the source pin (min 10000 /
+  default 30000 / max 3600000). No new measured value exists in this section.
+- Installed-fixture artifact provenance: the fixture-generated capture preload's digest recomputed on THIS worktree's
+  bytes (the control harness below) = `cb168b74d5175b9915d12cbc3e37f3655403cfdb4611940b2694f7196020e362` —
+  byte-identical to the §24.1 installed F-record artifact digest, so the preload bytes are provenance-continuous
+  across the merged PR #73 bytes. The §20.4 instruction hashes and the §24.1 fixture declarations remain the recorded
+  provenance of THEIR runs; every executing fixture artifact for any future V launch is regenerated and digested at
+  V's own freeze (the §20.7 duty), never copied forward. **Explicit deferral of the plan checkbox-(a) item
+  "Role/instruction provenance": NO Role/instruction hash is recomputed in this section — those hashes are per-run
+  Gate-B preconditions (the §17.3–§17.4/§20.4 practice), and the V pre-launch freeze re-executes the
+  instruction/config/artifact pins as recorded facts of THAT launch; presenting them here as settled would be a
+  partial deviation, so the item is named deferred rather than claimed re-pinned.**
+- Retained records: the N private record STILL EXISTS and re-verified byte-identical TODAY —
+  `/tmp/shell-wait-native-acceptance-n.d14e7297/case-output/rescue-interrupt.record.json` = SHA-256
+  `df45756b787a3d6ac90ed7d69db700e90112267d179fe152f8358f458abdb0d8` (95712 bytes, mode 0600 inside the 0700
+  directory), matching the §24.13 recording. The F/I records at their §24.1 `/tmp/shell-wait-interrupt-closure-*`
+  paths are NO LONGER PRESENT (verified absent 2026-10-29; OS temp cleanup) — their §24.1-recorded digests remain
+  historical identifiers, and §17.12/§23.12/§21.2 remain the records of those runs.
+- Probe module digests on THIS worktree's bytes (SHA-256; all match the §24.14 final-bytes record):
+  `driver.mjs` = `be27d9e489fb3910fc373cfe64a9c5834ba99d18dd7519fa0cc834e01523fc06`, `evidence.mjs` =
+  `2cddad6744d3ef0c7b34e131d4a7cd002ed1f61e68f61b8e832c6109f54a6df1`, `release-qualification.mjs` =
+  `9663d73393097ce1e1345e4772e76e91c6b0b73609c34549a83dda5abb2f8b43`, `closure-observation.mjs` =
+  `46b7f5e282b811c3bb88518a6f2d36f54da2f586eac74fe40c134978a90f6fa7`, `shape-diagnostic.mjs` =
+  `b034c2b80ff9b59f45ce362fbe5ae889e9c34ebe7a1bfb0226d79bb285e6b35c`, `fixture.mjs` =
+  `4730908d388f4ebc8124e6f599c71f5c925607d1bac482382e7aa402bd11b877`, `wait-comparison.mjs` =
+  `eba75edbac4d69be42b312b7ff09582314e034d93aaa56cf73ba93024c622146`. The executing-observer provenance digest
+  recomputed on these bytes = `16b4735e1f4f0a86e20730787b1a69d1bbcb6ac204584fba0a6614db29f5d472` — exactly the
+  §24.14-recorded successor value (`driver.mjs:69-87`; tag `zcode-shell-wait-observer-v5`, `model: null`); N's frozen
+  `5b30f9c4…` stays the historical digest on N's own record. Any observer bytes this campaign adds (Task 2) change
+  this digest, which is RE-FROZEN at V's own pre-launch duty.
+- The local-settlement ledger (plan §4) contains ONLY V (1) and V-fix (1 conditional) — NO long-wait/repeat/cadence
+  trial is added to it and no prior allowance is reopened.
+
+### 25.2 The actual foreground Companion process (checkbox 2; exact mapping, no command-name search, no ambient enumeration)
+
+- **The invocation surface is exact and source-pinned.** The managed Role/skill instructs the Child to run exactly
+  `node "<installed launcher path>"` where the path ends in `/skills/rescue/launcher.mjs`
+  (`renderRescueLauncherCommand`, scripts/lib/rescue-launcher-command.mjs:27-41, command rendered at :38, leaf
+  suffix :7). The launcher's argv whitelist accepts exactly the six fixed command shapes including
+  `['invoke-prepared','rescue']` (skills/rescue/launcher.mjs:11-18).
+- **The Companion IS the launcher OS process — in-process dispatch, no second OS process.** The launcher imports
+  `runCompanionCli` (launcher.mjs:9) and its entry guard dispatches it in-process for the launcher's own invocation
+  (launcher.mjs:30-36, default dispatch parameter launcher.mjs:21-27). `runCompanionCli` runs the direct
+  `invoke-prepared rescue` invocation through `runDirectInvocation` in the SAME process (scripts/zcode-companion.mjs:2740,
+  function at :2722), writes the bounded public success envelope to stdout (`process.stdout.write(formatted.text)`,
+  zcode-companion.mjs:2751; exit code at :2753) or the bounded error envelope (:2761-2768), and its own module-entry
+  guard is the same realpath shape (zcode-companion.mjs:2773, `sameEntryPath` :2775+). A different JavaScript module
+  therefore does NOT imply another OS process: exactly ONE Node process plays the launcher and the Companion.
+- **The transport layer is broker-mediated — the Companion never spawns the ZCode process directly.** The Companion
+  resolves the ZCode CLI through `discoverLaunch` → `discoverZCode({ explicitPath: env.ZCODE_PATH })`
+  (zcode-companion.mjs:2318-2320; candidate order scripts/lib/zcode-discovery.mjs:42-49) and creates its client ONLY
+  through `createManagedZCodeClient` (zcode-companion.mjs:150/:166/:231/:1624/:1819/:1952/:2283; import :21), which
+  calls `ensureZCodeBroker` (scripts/lib/zcode-client.mjs:288-294, call :292). That ensure path launches a SEPARATE
+  DETACHED DAEMON process (`spawnDaemon({ command: process.execPath, args: [<installed zcode-broker.mjs>] },
+  { args: [configPath], cwd: tmpdir(), env: options.env })`, scripts/zcode-broker.mjs:600; `detached: true` + `unref`,
+  scripts/lib/process.mjs:80-88 — on POSIX a NEW PROCESS GROUP, not a double fork, so the daemon's OS parent is the
+  Companion while the Companion lives), and the Companion then CONNECTS to it over IPC (`createZCodeClient` with
+  `brokerEndpoint` → `connectZCodeBroker`, zcode-client.mjs:269-278; zcode-protocol.mjs:502+). The DAEMON owns the
+  protocol spawn: `initializeProtocolGeneration` → `spawnZCodeProtocol(this.options.launch, …)` (zcode-broker.mjs:1011-1012)
+  → `spawnProcess(launch, { args: ['app-server'] })` (scripts/lib/zcode-protocol.mjs:494-497). The fixture pins the
+  launched binary to the fake-ZCode fixture via `ZCODE_PATH` (tools/shell-wait-probe/fixture.mjs:564, constant :56),
+  so the fixture-path chain is EXACTLY Companion → broker daemon → the fake-ZCode app-server process, which writes
+  its own marker `{pid, ppid, nonce?}` at startup (tests/fixtures/fake-zcode-cli.mjs:23-25) — **the marker's `ppid`
+  is the BROKER DAEMON's PID, never the Companion's** (this section's original Task-1 claim recorded the marker's
+  `ppid` as the Companion PID; corrected by the codex review round, 2026-10-29). The daemon also inherits the
+  Companion's environment at its spawn (zcode-broker.mjs:600 passes `env: options.env`), so fixture capture-env
+  values — including the capture nonce — are NOT role-distinguishing between Companion and daemon; the role selector
+  is the entry/argv shape, never the nonce alone. This is the "fake-peer" the §24.7 identity watch tracks: the
+  existing `captureVerifiedProcessIdentity` reads the FAKE-ZCODE marker file (fixture.mjs:1342-1381) and
+  `inspectVerifiedProcessIdentity` re-verifies THE FAKE process (fixture.mjs:1315-1333) — it has never captured the
+  Companion itself, and neither the fake-peer marker nor a verified fake-ZCode PID proves the real Companion's
+  identity.
+- **The selected Child is NOT an OS process.** A managed V2 Child is an in-process agent session of the SAME codex
+  host OS process that owns the Root; its unified-exec process manager spawns the launcher invocation as ONE PTY
+  child of that host process (the §19.3(a) pinned spawn chain: separate stdout/stderr receivers merged before any
+  observation surface, `codex-rs/utils/pty/src/process.rs:320-344`; env inheritance from the default all-inherit
+  shell-environment policy, `config/src/shell_environment_policy.rs:135-136`). Exact Child identity is the host-side
+  thread/agent id namespace (the spawn acknowledgement's `agent_thread_id`), joined through the existing
+  identity/owner machinery — never an OS PID.
+- **The exact mapping, end to end:** selected Child (in-process session, exact agent id from the spawn
+  acknowledgement) → its process manager's ONE `invoke-prepared rescue` PTY cell → the launcher/Companion OS process
+  (Node, argv[1] = the installed launcher realpath, argv[2..] = `invoke-prepared rescue`) → its DETACHED broker-daemon
+  child (the `ensureZCodeBroker` spawn, zcode-broker.mjs:600; daemon `ppid` = the Companion PID at capture time,
+  subject to reparenting after the Companion's exit) → the daemon's ZCode app-server spawn (the fake-ZCode process;
+  marker `ppid` = the broker-daemon PID) → the durable job/executor/generation facts (job id +
+  `rescueExecutionReservation` + `workerLeaseId` + `ownerLifecycleEpoch` on the exact job record, owner-index join;
+  §24.7 row 1). No shell-level intermediate is assumed beyond the pinned PTY spawn; each OS parentage fact is
+  established AT CAPTURE TIME by the Task-2 observer (the §25.4 ancestry rule), never by a process-tree walk.
+
+### 25.3 The fixture-only preload seam: verdict, propagation and process selection (checkbox 3; harmless local controls EXECUTED 2026-10-29)
+
+**The candidate EXISTS and is selected** (plan §2: "If an existing helper suffices, document that decision"):
+`closurePreloadSource`/`writeClosurePreload`/`captureEnvironment` (tools/shell-wait-probe/closure-observation.mjs:117-302,
+:313-331, :346-384) and the fixture's arming block (tools/shell-wait-probe/fixture.mjs:623-657 — preload written into
+the disposable fixture root :626, declared entry = the installed launcher realpath :627, per-scope 64-hex nonce :624,
+capture dir 0700 :628, `NODE_OPTIONS` composed :629-637, bounded declaration recorded :646-656). The gate is the
+frozen §19.3(b) selector: the four fixture-only capture env vars present and well-formed (closure-observation.mjs:81-84,
+:156-159), `realpathSync(argv[1])` equal to the declared launcher realpath (:163-164), argv strictly
+`['invoke-prepared','rescue']` (:160-161) — INERT in every other process. On match it creates the wx 0600 capture
+file AT PRELOAD INSTALL (closure-observation.mjs:182-183 — i.e., BEFORE the launcher's own module body runs),
+intercepts stdout writes (P2), and registers exit bookkeeping at two idempotent points (`exit` re-ordered listener +
+wrapped `process.reallyExit`, :281-299), publishing the closed meta record (:202-231).
+
+**Harmless controls executed (zero host/provider launches; stand-in entry under the OS temp directory; the generated
+preload digest `cb168b74…` = the §24.1 installed artifact digest):**
+
+| Control | Setup | Result |
+| --- | --- | --- |
+| Gated activation + exit meta | exact entry/argv/env through `captureEnvironment` with the `--require` fragment | capture + meta written; `admitStdoutCapture` = `complete` with `exitAttribution: "verified"` against the supplied expected exit; digest re-verification passed |
+| Positive startup capture | poll the nonce-keyed capture path from the parent while the child runs | capture file EXISTS ~22-35 ms after spawn, while the child is alive — created at preload install, before the entry module executes |
+| OS identity + nonce readability of a launcher-like process | `ps -o pid= -o ppid= -o lstart= -p <pid>` and `ps eww -o command= -p <pid>` on the live child | lstart triple parses (the fixture's `readMacProcessStart` shape, fixture.mjs:1255-1262); the nonce env var IS readable via `ps eww` (the fixture's `readProcessEnvironmentMarker` macOS read, fixture.mjs:1302-1304) |
+| Inert elsewhere | foreign `node -e`; wrong argv (`role-status rescue`); capture env absent | all three run normally, ZERO capture files — the entry+argv+env selector rejects every non-declared invocation |
+| Propagation depth | parent node (NODE_OPTIONS set) spawns a nested node grandchild with a sentinel-writing tap | BOTH parent and grandchild load the preload — `NODE_OPTIONS --require` propagates through nested node descendants; PROCESS SELECTION is the gate, not propagation |
+| Selection under propagation | grandchild + C-run descendants under the armed env | capture directory gains exactly the gated invocation's nonce-keyed pair — no foreign nonce keys |
+
+**Propagation through the ACTUAL Child spawn is live-established, not source-presence only:** the §19.3(e) item-1
+blocker is CLOSED by recorded outcomes — §21.1 recorded `NODE_OPTIONS=--require …` verified live on the actual
+spawned host process environment at the I launch, and the I/F/N records' stdout-capture admissions read
+`{status: "incomplete", reason: "capture-meta-missing"}` (§21.2/§23.12.7/§24.13; re-read byte-identical from the
+retained N record today). By the admission's own ordering (`admitStdoutCapture`, closure-observation.mjs:549-559) a
+`capture-meta-missing` verdict requires the capture FILE to exist — and that file is created ONLY by the P1 gate
+matching the exact installed launcher realpath + argv + fixture env. Three independent live runs therefore observed
+the preload loading in the REAL launcher process. **The same records name the seam's residual gap:** the meta
+(exit bookkeeping) was missing on every interrupted run — exit listeners do not survive uncatchable termination, so
+exit/absence evidence can never rest on the meta alone (the §25.4 contract below makes OS-side observation the
+termination authority and the meta mere corroboration).
+
+**Why the other candidate seams are not selected (each with its reason, none required to succeed):** a Companion-side
+exit marker written by the pinned host binary is a production change outside research authority (§24.13 mechanism 2);
+ancestry-scoped `ps` descendant snapshots anchored at the fake-ZCode host break when the host's own disappearance
+re-parents the descendants before the Companion cleanup instant (§24.13 mechanism 4 — the anchor-breaking record);
+command-name search and ambient process enumeration are prohibited by this plan; a second app-server or a replaced
+launcher/renderer is prohibited. No supported seam is blocked: the preload candidate carries identity/exit metadata
+without changing canonical code or the host binary.
+
+### 25.4 The frozen process-evidence contract (checkbox 4; binding for Task 2's implementation and every V adjudication)
+
+1. **Real Companion role and exact invocation binding:** the observed process is the real Companion ONLY with ALL of:
+   the fixture-declared installed launcher realpath equal to `realpath(argv[1])`, argv exactly
+   `['invoke-prepared','rescue']`, and the per-invocation fixture capture env present — the §19.3(b) selector
+   verbatim. A fake-peer identity (the fake-ZCode marker) never attests the Companion; a marker written by one
+   process never attests another merely because they inherited a nonce.
+2. **Per-invocation nonce:** a fresh 64-hex value per fixture invocation scope, generated by the fixture
+   (fixture.mjs:624), carried in the private capture env, NEVER reused across invocations and NEVER persisted in any
+   record (only its digest-bearing meta contract is).
+3. **Positive startup capture:** the nonce-keyed capture pair's creation is the startup existence fact (created at
+   preload install, before the entry body — control-verified above), to be recorded with its first-observation
+   timestamp and, per Task 2's extension, an identity record (pid, OS start identity, first-write instant). A MISSING
+   startup marker is a NAMED observer fact (`capture-file-missing`) — it is NEVER "never launched" and NEVER launch
+   readiness: three live runs show meta-missing with the file present, and a failed/torn capture write can leave no
+   file at all.
+4. **PID plus OS start identity and the justified ancestry links:** identity = PID + OS start identity (`lstart` on
+   darwin / `starttime` on Linux — fixture.mjs:1255-1278) + the environment-nonce verification, captured and
+   re-verified by the race-safe double-read (fixture.mjs:1315-1333) against the capture nonce variable — the existing
+   helper already accepts the variable name parameter (fixture.mjs:1315). The nonce binds an invocation SCOPE, not a
+   role: the broker daemon demonstrably inherits the Companion's environment at its spawn (zcode-broker.mjs:600), so
+   the same nonce can appear in several same-scope processes, and the ROLE selector is the entry/argv shape (the
+   item-1 selector for the Companion; the daemon identified by its own zcode-broker.mjs argv + fixture config path;
+   the transport by its marker). The justified ancestry chain is the TWO-hop join verified at this revision:
+   (a) the transport's marker `ppid` equals the captured BROKER-DAEMON PID (fake-zcode-cli.mjs:24 — the daemon owns
+   the protocol spawn, zcode-broker.mjs:1012), checked in BOTH directions at capture; (b) the broker daemon's own
+   `ppid` equals the captured Companion PID at capture time (the `spawnDaemon` parentage, zcode-broker.mjs:600 +
+   scripts/lib/process.mjs:80-88 — the POSIX detached spawn is a new process group, not a double fork), likewise a
+   CAPTURE-TIME fact only: after the Companion's exit the daemon is reparented, and a changed parent NEVER proves
+   death — for the daemon or any other link; reparenting never destroys an already captured start identity. If a
+   hop's endpoints are not BOTH positively captured, the join across that hop stays NAMED-unestablished — the
+   Companion↔transport attribution never crosses an unestablished hop by inference, and a marker's `ppid` equality
+   with an UNCAPTURED assumed parent is never positive evidence.
+5. **Local observation timestamps/clock:** probe-side instants on the held-turn monotonic elapsed clock
+   (driver.mjs:1413-1414, `held-turn-monotonic-elapsed-ms`) plus wall-clock epoch ms (driver.mjs:1355) for
+   comparability with the §23.5 sampling instants and rollout timestamps; the OS `lstart` string is recorded verbatim
+   as its own fact. A value that cannot be established stays null/unknown, never zero.
+6. **Exit/absence evidence:** termination of the previously established generation = verified presence (double-read)
+   earlier + verified absence of the SAME pid + start identity later, at/after the planned endpoint and before the
+   measurement cutoff for credit. A process is NOT proven gone because its parent changed, its nonce read failed,
+   permission was denied, or a reused PID differs (a different start identity is a DIFFERENT process). The exit META
+   corroborates identity/outcome on a normal exit only — it cannot cover uncatchable termination (the three live
+   `capture-meta-missing` records are the measured demonstration). Observation failure (ps failure, env truncation,
+   torn read, watcher losing the exit race) is NAMED and keeps the layer unestablished.
+7. **Applicability:** per the §25.5 table; unknown is neither not-applicable nor settled; `not-applicable` requires
+   its demonstrated production-path reason on the record (the §23.6 genuine-shapes rule).
+8. **Integrity (per evidence class — never one admission gate for all):** `admitStdoutCapture` is the admission
+   route for the TERMINAL STDOUT layer ONLY — bounded files, 0600 in the nonce-keyed fixture directory,
+   hasher-authoritative digest re-verification before use, closed meta shape and captureError vocabulary
+   (closure-observation.mjs:410-477, :526-665); tampered/foreign/truncated/oversize captures are named failures
+   exposing no bytes. It is NOT the admission route for the process-evidence contract: an invocation killed before
+   its exit bookkeeping necessarily yields `incomplete`/`capture-meta-missing` (the meta lstat and its named verdict,
+   closure-observation.mjs:555-559), so routing process evidence through it would block exactly the interrupted-run
+   case this campaign targets and would contradict item 6. The startup identity record and the OS-side observations
+   (liveness/absence double-reads, the §25.4 item-4 ancestry joins) carry their OWN independent integrity admission —
+   bounded record shapes, source binding (nonce + start identity + argv shape), capture/read timestamps — specified
+   and tested by Task 2. Missing exit metadata NEVER blocks process-evidence admission, and a missing/incomplete
+   stdout capture never erases positively admitted identity or absence facts.
+9. **Causal/measurement/cleanup origin:** every persisted fact names its origin — pre-launch offline control, live
+   observation, or cleanup housekeeping — and respects the §25.7 fences; observer write failure is a named
+   missing-observation fact, never a replaced business result; cleanup-side facts (fixture disposal, termination
+   machinery) keep `nativeInterruptionClaimed: false` and never seed settlement.
+
+**The one-sentence falsifiable observation contract:** IF the selected Child's `invoke-prepared rescue` launcher
+invocation launches under the armed fixture capture environment, THEN within the §25.7 observation window the
+fixture-owned capture directory MUST gain that invocation's nonce-keyed capture file (its meta pair completed only
+at a lawful exit) and Task-2 identity record bound to one (PID, OS start identity, two-hop ancestry join through the
+positively captured broker daemon) whose OS-side double-read later reports verified absence strictly before the
+registered measurement cutoff — and any missing/torn/foreign nonce, failed OS read, missing exit metadata, or
+identity change is a NAMED unestablished/observer fact that never becomes death, never becomes "never launched",
+and never becomes settlement.
+
+### 25.5 The local duty table (checkbox 5; frozen from the actual production predicates, this worktree's bytes)
+
+| Duty | Predicate (exact source) | Observation on the actual path | Status on this path |
+| --- | --- | --- | --- |
+| The invocation process (real Companion) | the §25.4 selector; launcher in-process dispatch (launcher.mjs:9, :21-27, :30-36) | the §25.3 preload seam + OS-side identity verification | APPLICABLE — the campaign's target layer; unobserved stays unestablished, never inferred |
+| The declared transport descendant (fake-ZCode) | the fixture-pinned `ZCODE_PATH` (fixture.mjs:564) + the fake marker (fake-zcode-cli.mjs:23-25); spawned by the BROKER DAEMON (zcode-broker.mjs:1012), never the Companion | the existing verified-identity machinery: capture/inspect/terminate (fixture.mjs:1342-1381, :1315-1333, :1394-1460) | APPLICABLE — already observable; its exit is a fixture-owned fact, never the Companion's |
+| The broker daemon (the declared `ensureZCodeBroker` spawn) | the detached daemon spawn (zcode-broker.mjs:600) with its config under the fixture broker partition; the mediation hop of the §25.2 map | its OWN positive capture (zcode-broker.mjs argv + fixture config path; `ppid` = Companion PID at capture time only) | APPLICABLE as the mediation hop of the ancestry join (§25.4 item 4) — never collapsed into the Companion or the transport; unestablished when not positively captured |
+| Positively identified surviving descendants | only identities positively captured under a declared nonce | per-identity observation, each with its own nonce/start identity | APPLICABLE ONLY as positively identified — no full-machine process-tree requirement; an unknown extra descendant is named unknown, never silently ignored, and the anchor-breaking limit of §24.13 mechanism 4 stands |
+| Marked runner claims | `isMarkedRunnerClaim` = writable rescue + marked runner version + digest `workerLeaseId` + positive `childPid` (recovery.mjs:237-240); terminal + marked claim ⇒ outstanding duty (recovery.mjs:148-158) | the passive durable reader over the exact job record | APPLICABLE when the exact job record carries the claim; a marked claim on a terminal record is the named outstanding duty |
+| Writable exclusion | a nonterminal writable rescue job holds the workspace guard (`WRITABLE_JOB_EXISTS`, state.mjs:1537-1543) | the passive durable reader | SEPARATE duty — retained guard = SAFE unresolved, never a settlement failure, never success |
+| Binding currency | the rescue-binding partition, `RESCUE_BINDING_VERSION` 3 (§19.5 item 6) | the existing binding authority view | SEPARATE duty — carried unchanged from §24.7 |
+| Remote result/winner + durable obligations | `TERMINAL` = {succeeded, failed, cancelled} (recovery.mjs:18); `endedObligationSettled` (recovery.mjs:148-158) | the §19.5 passive snapshot strategy | SEPARATE duties — NEVER substitutes for the local process layers (the §24.13 standing prohibition, carried verbatim) |
+
+Never-substitute rules carried verbatim from §24.7: a terminal job or a fake-ZCode exit never substitutes for the
+local process duties; every positive requires positive integrity proof; `not-applicable` is claimed ONLY with its
+demonstrated production-path reason; unknown stays named.
+
+### 25.6 Native-interrupt and downstream lifecycle authority (checkbox 6; epoch/receipt provenance frozen)
+
+- **Native interrupt authority is unchanged:** ONE `interrupt_agent` call to the exact Child id, admitted through
+  the §19.4 six-conjunct set on the owning Root's rollout, with the request/acknowledgement/resolution separation and
+  the relocated pending-window comparison (§24.4) — the 60000-ms responsiveness comparison applies ONLY on a causally
+  admitted trial (release-qualification.mjs:806 defined; :923-927 applied) and is never a production timeout.
+- **Downstream stop authority is EXACTLY three-legged** (`stopCauseFor`, scripts/lib/rescue-lifecycle.mjs:114-122):
+  an explicit stop intent; a SessionEnd receipt matching the job's owning lifecycle epoch (`:119` — the receipt
+  evidence is computed as `matching` vs `older` from the epoch comparison, recovery.mjs:427, against the
+  `ownerLifecycleEpoch` host-lifecycle field, state.mjs:64); or attached-foreground host-coordination loss
+  (rescue-lifecycle.mjs:120, gate :126-137). A delivered foreign-origin interrupt is none of these: NO durable stop
+  intent may exist from the interrupt itself (the §16.2 frozen boundary, reproduced at §24.2 step 6).
+- **Epoch/receipt provenance for a genuine production SessionEnd:** the real receipt's own cause, timestamp and
+  matching-epoch fact ride the record as the SESSION-END settlement (the F/N measured shape: the genuine
+  `'session-end'` stop intent settled the job 21.526 s / 14.342 s after the interrupt item stamp) — a later SessionEnd
+  is NEVER relabeled as the earlier interrupt, is NEVER inferred from timing alone, and an unrelated/unknown-origin
+  SessionEnd, gate release or harness cleanup cannot backfill native proof.
+- **Natural success and safe unresolved retention are preserved without fabricating cancellation:** a natural
+  terminal winner stays natural (never relabeled; the misclassification guard release-qualification.mjs:970-972); an
+  interrupted Child that leaves a running job safely guarded is reported as the actual unresolved-guard state, never
+  completed by any hidden cancel/reconcile act.
+
+### 25.7 The observation schedule freeze (checkbox 7; frozen BEFORE any implementation; observation bounds only)
+
+The §24.8 schedule is carried VERBATIM as the starting bounds (same executor, same case family), with the
+local-observer duties inserted:
+
+| Quantity | Frozen value | Origin |
+| --- | --- | --- |
+| Candidate empty observation (cap) / poll | 3600000 ms | §16.1/§20.3/§24.8, carried |
+| Worker hold (fixture work) | 420000 ms, anchored at the observation-detection instant | §20.2/§23.12.2/§24.8, carried |
+| Total case budget | ≤ 1200000 ms (never a production timeout; the 100-hour ceiling unchanged) | §23.5/§20.5 item 5, carried |
+| Readiness cutoff | the survival control's designed end (line index 60, ≈120 s after control start; named `readiness-cutoff-exceeded` outcome) | §24.8, carried |
+| Gate release | AT the hold deadline (driver.mjs hold loop + release site per §24.8 row) | §24.8, carried |
+| Measurement cutoff | hold deadline + 10000 ms (`MEASUREMENT_CUTOFF_AFTER_HOLD_MS`, driver.mjs:4760), persisted BEFORE planned teardown | §24.8, carried |
+| Observation teardown | cutoff + 5000 ms (`OBSERVATION_TEARDOWN_AFTER_CUTOFF_MS`, driver.mjs:4769) — never a manufactured boundary | §24.8, carried |
+| Durable passive reads | ≥ 1000-ms cadence, ≤ 600 attempts, ≤ 32 retained summaries (`sampleDurableSnapshots`, driver.mjs:4978-4986) | §23.5/§24.8, carried |
+| Local-process observation reads (NEW) | armed BEFORE the launch (pre-host gate), sampled concurrently with the held turn on the SAME monotonic clock, bounded by the SAME case deadline and the §24.8 instants — additional local reads add NO separate budget and every read completes before the measurement cutoff for credit | this freeze (plan checkbox 7: "explicitly bound additional local reads on the same case deadline") |
+| Pre-cutoff collection window | the gate-release→cutoff window (10000 ms, exceeding the ≥1000-ms read floor + read duration): a lawful in-budget natural finish is collected BEFORE the cutoff, never assuming worker startup equals initial detection | §24.8, carried |
+| Native responsiveness comparison | 60000 ms, ONLY on a causally admitted trial; not a production timeout | §16.5/§24.8, carried |
+
+No value above becomes a new production timeout, detector, or ceiling change. The local-observer arming/persistence
+insertion is the ONLY new schedule element this campaign adds; its runtime enforcement (arming pre-host, persistence
+before disposal, cutoff fences) is Task 3's tested wiring.
+
+### 25.8 Schema/platform, failure labels, applicability decisions and the selected seam (checkbox 8; frozen BEFORE implementation)
+
+- **Platform of record:** darwin/aarch64 (this host), with the Linux reads (`/proc`) carried by the existing helpers
+  (fixture.mjs:1266-1278, :1293-1301); the macOS `ps eww` environment read and `lstart` identity read were both
+  exercised live in the §25.3 controls.
+- **Failure-label vocabulary (closed, reused or newly owned by this campaign's layers):** capture admission statuses
+  `complete | missing | incomplete | truncated | invalid` with the named reasons (`capture-file-missing`,
+  `capture-meta-missing`, `capture-meta-nonce-mismatch`, `entry-realpath-mismatch`, `byte-count-mismatch`,
+  `capture-exit-code-mismatch`, `write-after-finalization`, `capture-truncated`, `capture-digest-mismatch`,
+  `capture-utf8-invalid`, and the closed `capture-*` captureError vocabulary, closure-observation.mjs:393-404, :410-477);
+  identity facts `ZCODE_SHELL_WAIT_MARKER_ABSENT` (confirmed absence, never launch liveness),
+  `ZCODE_SHELL_WAIT_MARKER_INVALID`, `ZCODE_SHELL_WAIT_PROCESS_EXITED` (confirmed permanent disappearance of the
+  DECLARED identity, fixture.mjs:1355-1378); termination outcomes `{attempted, signalled, exited, failure}`
+  (fixture.mjs:1481-1489); the named schedule outcomes (`readiness-cutoff-exceeded`, the post-cutoff limit, the
+  missing-exit outcome, `natural-completion-misclassified-as-cancelled`); the §19.4/§24.4 admission reasons; and the
+  campaign-level dispositions `acceptance-proven | observer-blocked | production-defect-observed` (plan Task 5).
+  Unknown cells of ANY new fact stay named-unknown with their own reason — no new label may silently fold into an
+  existing one, and the existing stdout-capture schema (version 1) is preserved unless a versioned change is
+  registered and compatibility-tested (Task 2's duty).
+- **Applicability decisions (frozen):** the invocation process, the declared broker daemon, and the declared
+  transport descendant are APPLICABLE on every V case; positively identified surviving descendants are APPLICABLE
+  only as captured; marked-runner, writable-guard, binding, remote and durable duties keep their §24.7/§25.5
+  separations; `localProcessReaping` ceases to be the named-unobservable ONLY when the §25.4 contract's facts are
+  actually captured on a trial — until then the layer stays unestablished, and a launch without the capture armed is
+  the §24.13 amendment's registered deviation, not to be repeated (the Task-3 pre-host gate refuses it).
+- **The selected seam:** the fixture-only `NODE_OPTIONS --require` preload (§25.3) — extended by Task 2 with a
+  startup identity record (nonce, entry realpath, argv, first-write instant, PID/start identity when the OS read
+  supplies it) while the stdout-capture contract and its schema stay intact. Feasibility claims above are
+  FIXTURE-TESTED (harmless controls + the recorded live capture-file facts), not a new installed observation; the
+  first armed V case remains the place where the FULL §25.4 contract (identity + exit) is measured live.
+
+### 25.9 Exit, gates and the handoff to Tasks 2–4
+
+**Exit (plan Task 1):** the actual-target map (§25.2), the selected seam with its propagation/selection controls
+(§25.3), the falsifiable observation contract (§25.4), the duty table (§25.5), the lifecycle-authority freeze (§25.6),
+the schedule (§25.7) and the schema/labels/applicability freeze (§25.8) are preregistered; no supported local seam is
+blocked, so this plan is NOT observer-blocked at Task 1. Every feasibility claim is fixture-tested; nothing below
+Task 1 is claimed observed. Tasks 2–4 implement, wire and execute EXACTLY this registration; any deviation is a
+registered amendment, never a silent re-decision.
+
+**Hygiene gates (executed 2026-10-29 on the exact docs bytes):** `node scripts/check-line-endings.mjs` exit 0;
+`git diff --check` clean; `node --test tests/test-selection.test.mjs` 6/6 pass, 0 failed, 0 skipped, exit 0; the
+diff touches ONLY this report and the (previously untracked) plan file.
+
+### 25.10 2026-10-29 local-settlement Task 2: the exact local-process observer implemented offline with the non-interference proof (zero model turns, zero live launches)
+
+Task 2 of [the local-settlement plan](../superpowers/plans/2026-10-28-rescue-shell-wait-local-settlement.md), executed
+2026-10-29 in the same worktree on the Task-1 bytes (`57015b116898c1c7c3bc40e03403f01de4c763ea`). Offline throughout:
+zero model turns, zero host/companion/provider launches. The only real processes are HARMLESS LOCAL Node children under
+the OS temp directory (stand-in probe entries written by the test file, plus the production launcher fast-fail control),
+every synthetic process identity goes through an INJECTED fake inspection seam, and no synthetic PID is ever signalled
+into the real OS. This section is ADDITIVE; §25.1–§25.9 stand byte-unchanged.
+
+**Files (the Task-2 delta only):** NEW `tools/shell-wait-probe/local-process-observation.mjs` (the focused read-side
+observer: startup-identity admission, OS live observation, exit/absence adjudication, two-hop ancestry join, bounded
+local-duty verdict, provenance/drift — NO stop authority anywhere); `tools/shell-wait-probe/closure-observation.mjs`
+extended (the generated preload additionally writes a startup identity record at install, plus an OPTIONAL
+broker-daemon identity-record gate on a declared broker entry; the stdout-capture contract and its meta schema stay
+version 1 BYTE-INTACT); `tools/shell-wait-probe/fixture.mjs` arming now also DECLARES the installed
+`zcode-broker.mjs` realpath (arming fails loudly when the installed broker file is missing — never a silently
+undeclared hop) and records the bounded `brokerGate`/`identityRecord` declaration; NEW
+`tests/shell-wait-local-process.test.mjs`; registration in `tools/run-test-suite.mjs` +
+`tests/test-selection.test.mjs` + the probe suite's nested self-test total.
+
+**The §25.4 contract, implemented and fixture-tested:** item 3 — the nonce-keyed startup identity record
+(`<nonce>.identity.json`, wx 0600, closed per-role bounded JSON: version/role/nonce/entryRealpath/invocation-argv or
+broker-config-digest/pid/ppid/firstWriteEpochMs) is created at PRELOAD INSTALL, before the entry body (real-child
+ordering proof: the record's first-write instant precedes the entry body's own timestamp); a missing record is the
+named `identity-record-missing` fact, never "never launched", never launch readiness. Item 4 — identity = record
+admission + the OS race-safe double read (`inspectVerifiedProcessIdentity` reused under the CAPTURE nonce variable,
+live-established on a real gated child); the two-hop ancestry join is adjudicated ONLY from positively captured
+endpoints with the ppid equalities checked at capture time (`daemon-ppid-mismatch-at-capture` carries
+`detail: capture-time-only` — reparenting is named, never death); a marker never attests another process merely
+because they inherited the nonce (`scope-nonce-mismatch` / `marker-ppid-mismatch-at-capture`); the
+Companion↔transport attribution never crosses an unestablished hop. Item 5 — every verdict carries a caller-clock
+`readEpochMs` (fake clocks accepted; the OS `lstart` string rides verbatim). Item 6 — disappearance = verified
+presence of the established generation EARLIER + verified absence of the SAME pid and start identity LATER; a reused
+start identity is named `pid-start-identity-reused`/`start-identity-generation-changed` and never death; later
+same-generation evidence wins as `live`; only-failed reads stay `absence-unestablished`; the delayed-capture shape
+(record present, no OS presence ever established) stays `presence-unestablished`. Item 8 — per-evidence-class
+integrity: the identity record carries its OWN closed admission vocabulary (`identity-record-missing`,
+`-not-regular`, `-oversize`, `-unreadable`, `-torn`, `-shape-invalid`, `-nonce-mismatch`, `-role-mismatch`,
+`entry-realpath-mismatch`); `admitStdoutCapture` is untouched; a missing exit meta never blocks process-evidence
+admission (the SIGKILL control), and a complete meta never proves death without an established disappearance. §25.5 —
+the bounded local-duty verdict covers the invocation process, the broker daemon (its own role-selected
+`<nonce>.identity-broker.json`, raw config path never persisted — digest only), the transport descendant
+(marker-captured OS observation alone), and ONLY positively identified descendants; a positively identified
+SURVIVING descendant is an outstanding duty (the verdict stays unsettled without its positive disappearance); the
+verdict never claims `not-applicable` and never signals.
+
+**Test matrix registered (91 named tests, `tests/shell-wait-local-process.test.mjs`):** install-time startup record;
+stdout schema-v1 compatibility on a real gated run (exact closed v1 meta field set asserted); inertness on wrong
+argv/wrong entry/absent env; admission battery (established, missing, torn, shape-invalid, foreign nonce, oversize,
+symlink, permission failure, entry mismatch, read-only fingerprint); live OS observation + post-exit absence on a
+real child; failed/mid-read-change seams; reused generation seam; natural exit (disappearance corroborated by the
+meta); abrupt SIGKILL of the TEST-OWNED child (`capture-meta-missing` named, record stands, disappearance without
+meta); meta-alone-never-death; reused-PID-never-death; raced-exit later-evidence-wins; unestablished-only evidence;
+delayed capture; broker gate real stand-in child (record only, no stdout interception, no undeclared-broker
+inertness); two-hop join battery; duty-verdict battery; non-interference (the REAL launcher fast-fail envelope
+byte-exact 207 with `exitAttribution: verified`, business error exit 3 + exact stderr, export-surface freeze with NO
+terminate/kill/signal authority and no child_process/timers/handlers in the observer bytes, observer write failure =
+named missing fact with the business stdout/exit byte-exact, 0600/0700 privacy modes, concurrent invocation
+nonce-scoping with no cross-attestation); provenance and drift battery; plus the fail-closed arming control (a fixture whose installed root LACKS `scripts/zcode-broker.mjs` rejects with the named arming error — never a silently undeclared hop) and the captured-ppid control (a reparented live process stays `established` with `ppidChangedFromCapture: true` — reparenting recorded, never death).
+
+**Codex review round (five P2 behavioral fixes, each RED-proven on the pre-fix bytes then fixed):** (1) every
+observation verdict now carries its QUERIED identity (`queried: {pid, nonce}`), and `adjudicateLocalExit` validates
+each read's queried identity against the bound presence before admitting absence, reuse or failure — a foreign
+absence read for another PID never establishes this generation's disappearance (malformed reads without a queried
+identity throw); (2) a descendant's credited exit must be the descendant's OWN: `adjudicateLocalDuties` requires the
+exit's `boundIdentity` (pid, start identity, nonce) to equal the descendant's OS observation before `settled` —
+another process's disappearance never completes a live descendant's duty; (3) observation timestamps are honest:
+`readEpochMs` is sampled only AFTER the whole asynchronous inspection (the completion instant, next to the new
+`readStartedEpochMs` interval start), so a disappearance timestamp can never predate the read that produced it —
+the Task-3 fences consume the completion side — the SAME honesty rule now covers the startup-record admission (whose verdict carries `readStartedEpochMs` with `readEpochMs` sampled after the admission's reads — third review round: the completion is resampled per path AFTER the bounded record read and its integrity checks, via an injected read seam on every read path) AND the absence-confirmation await (the absence verdict's completion covers the whole OS confirmation, not just the inspection); (4) `joinAncestryHops` treats valid negative verdicts (`absent`,
+`unestablished`) as unavailable endpoints — each hop is independently adjudicated (the daemon→transport hop stays
+established with an unestablished companion endpoint) and only malformed inputs throw; (5) the provenance
+construction is bumped to **v2** (`zcode-shell-wait-local-observer-v2`) and now binds the fixture helper's
+module-init bytes (fixture.mjs implements the actual OS inspection; new `EXECUTING_FIXTURE_SOURCE` self-snapshot)
+and the identity-record integrity helper's bytes (scripts/lib/fs.mjs, snapshotted at observer init without modifying
+the production module, with the record-time working-tree re-read covering it).
+
+**Codex review rounds 4-7 (consolidated honest record of the continued fix rounds — each finding RED-proven on the
+pre-fix bytes, minimal fix, class-swept):**
+- **Round 4:** (a) ROLE binding — each startup-backed duty requires its OWN admitted role (`startup-role-mismatch`):
+  the invocation duty joins only an `invocation`-role record, the broker duty only a `broker-daemon` role; one
+  process never attests another duty; (b) SCOPE binding — the duty aggregate takes the EXPECTED invocation nonce and
+  binds every duty identity and every credited descendant exit to it (`scope-nonce-mismatch`): facts from concurrent
+  fixture invocations are a named refusal, never settled; (c) exit-meta corroboration strictness groundwork: macOS
+  absence confirmation requires an ERROR-FREE OS no-match (on this host measured as `ps` exit 1 with empty stdout
+  AND empty stderr — any stderr diagnostic stays `absence-unconfirmed`), with injectable platform/filesystem seams
+  (the Linux branch is exercised through injected seams on any host); (d) the startup admission's completion is
+  resampled per path AFTER the bounded record read and its integrity checks (injected `readRecordFile` seam); (e)
+  absence at-or-before the presence baseline is never credited; (f) the entry lint error (unused `transportFact`)
+  was fixed by using it in its intended all-in-scope control.
+- **Round 5:** (a) GENERATION GRANULARITY — darwin `lstart` is whole-second, so a record written inside the parsed
+  start second could not exclude a same-nonce same-second successor; superseded by the round-7 precise rule below;
+  (b) the confirmation's platform and filesystem seams made injectable (CI hazard closed: no absence test reads the
+  host OS for a synthetic PID).
+- **Round 6:** (a) the daemon→transport hop verifies the marker against the transport's OWN DECLARED nonce
+  (`expectedTransportNonce` — the driver's `FAKE_ZCODE_PROCESS_NONCE`, generated independently of the capture scope;
+  `transport-nonce-mismatch`); the capture-scope rule stays for the startup-backed duties; (b) the exit-meta
+  corroboration is bound to the admitted INVOCATION identity (pid + start identity + nonce): the invocation and
+  broker processes deliberately share the capture nonce, so scope alone never credits a broker/transport exit;
+  (c) the capture-environment composition explicitly removes an INHERITED broker variable when no broker entry is
+  supplied (the broker gate is disabled by default — a stale declaration can never write an undeclared broker
+  identity record under the fresh nonce).
+- **Round 7:** (a) PRECISE GENERATION IDENTITY — the identity record (schema VERSION 2) embeds the process's OWN
+  sub-millisecond start instant (`performance.timeOrigin`) and its precise write instant, and the binding requires
+  the OS lstart second to CONTAIN the record's precise start with the precise write postdating it
+  (`generation-start-second-mismatch` / `generation-start-after-record` / `generation-binding-unavailable` are the
+  named failure branches). This resolves the whole-second ambiguity that would have left fast same-second startups
+  unestablished indefinitely, verified by a REAL-CHILD end-to-end test (admission → OS observation → duty join on a
+  genuine fast gated child, then exit and disappearance). The documented residual bound: a successor starting inside
+  the writer's own start second AFTER the write is excluded only down to the OS second — recorded, never guessed;
+  (b) HELPER-CACHE HONESTY — `verifyLocalObserverHelperCacheConsistency` compares every cached helper namespace
+  binding against a fresh evaluation, and the record-time provenance goes NAMED-UNAVAILABLE
+  (`helper-cache-inconsistent`, null digest) instead of attributing evidence to code that never ran; (c) the LINT
+  RECONCILIATION: the round-6 gate invocation piped `npm run lint` through `tail` inside an `&&` chain, masking the
+  failing exit status — the round-6 bytes DID ship with an unused-variable lint error (tests:1487), now fixed by
+  using the binding in its intended all-in-scope assertion, and the gate invocations no longer pipe the lint exit
+  status.
+
+**Codex review rounds 8 (three P2 fixes, each RED-proven on the pre-fix bytes then fixed, class-swept):**
+- (a) FORK-BEFORE-BOUNDARY + REAL LINUX BINDING: the darwin containment accepts the OS creation second OR the
+  immediately preceding second of the record's precise start (a fork just before a boundary whose Node initializes
+  just after is ordinary startup, not PID reuse — the ~2-second accepted span is the DOCUMENTED residual window);
+  Linux is REALLY bound: the observation resolves `/proc/<pid>/stat` starttime ticks against `/proc/stat` btime and
+  `getconf CLK_TCK` (~10ms creation precision), and the Linux binding requires the record's precise timeOrigin to lie
+  within a DOCUMENTED 1000-ms window of that creation instant (`generation-start-window-exceeded` otherwise) — Linux
+  is no longer permanently `generation-binding-unavailable`.
+- (b) EXECUTING-COPY MATERIALIZATION: the exported-string helper-cache comparison could NOT see private-code edits
+  (demonstrated: a POST_EXIT_DRAIN_MS-only edit kept the old verifier `consistent: true`). The three production
+  helpers the evidence path executes (scripts/lib/fs.mjs, process.mjs, errors.mjs) are now copied BYTE-IDENTICAL at
+  observer init into a private cache layout inside the repo's node_modules scope (preserving their relative imports
+  and createRequire resolution), the observer loads THE COPIES (readBoundedJsonFile, runProcess — the identity
+  machinery moved INTO the observer's own bytes; fixture.mjs no longer executes in the evidence path and its public
+  identity surface is re-exported unchanged), the copied bytes are the hashed provenance inputs (executing == hashed
+  by construction), and the record-time provenance drift-checks the copies against current disk bytes
+  (`verifyLocalObserverHelperMaterialization`; drift or unavailable materialization → NAMED-UNAVAILABLE provenance,
+  null digest).
+- (c) the LINT RECONCILIATION (see the round-7 entry above).
+- Round-8 gating incident recorded honestly: an intermediate working-tree state had duplicated materialization
+  scaffolding that broke module loading; it was repaired and the FULL battery re-run on the final bytes — every
+  gate and suite count below is from the final bytes only.
+
+**Codex review round 9 (one P1 + three P2, each RED-proven on the pre-fix bytes then fixed, class-swept):**
+- (P1) MATERIALIZATION ROOT: the cache root resolved `../../..` from tools/shell-wait-probe/ — the repository's
+  PARENT — so in a standalone checkout the copies fell outside dependency-resolution scope and the copied fs.mjs
+  could not resolve its native dependency while materialization "succeeded" (the fallback never engaged). The root
+  is now the REPOSITORY ROOT (`../..`), and two tests pin the layout inside the repo node_modules scope and the
+  copied fs.mjs/process.mjs actually loading. A worktree-local coincidence (an ancestor providing node_modules) had
+  masked this on the development host — exactly the finding's caveat.
+- (P2a) LINUX RESOLUTION HONESTY: the Linux start-instant resolution (boot-clock read, getconf) is awaited BEFORE
+  the verdict completion sample — the completion covers ALL asynchronous evidence collection, so a verdict
+  completing after a cutoff can never carry a pre-cutoff timestamp (the same honesty class as rounds 3/7, now on
+  the Linux branch).
+- (P2b) BOOT-CLOCK REJECTION: a masked/inaccessible /proc/stat rejects the boot-clock read AFTER a successful
+  inspection; the rejection is now CAUGHT into a named null start instant (the observation never rejects on this
+  path; the duty join names `generation-binding-unavailable`).
+- (P2c) EXECUTING PROVENANCE NAMED-UNAVAILABLE: on a read-only checkout failing cache initialization, the
+  executing provenance previously emitted a non-null digest with literal `undefined` helper-copy interpolation
+  (binding nothing). It now mirrors the record-time reader: revision `helper-materialization-unavailable`, null
+  digest (injected materialization seam).
+
+**Provenance (actual source hashes on the FINAL bytes — after the round-8 executing-copy refactor):** tag
+`zcode-shell-wait-local-observer-v4`, executing observer digest
+`48200aa378151f9c1a84a7824590909dbd08a4a20549759e6af2871039046edf` (v4 construction: tag ‖
+local-process-observation.mjs (the identity machinery lives in THESE bytes) ‖ closure-preload.mjs (the generated
+preload seam, extracted from closure-observation.mjs) ‖ the three MATERIALIZED EXECUTING COPY DIGESTS ‖
+`closurePreloadSource()` bytes, NUL-separated; the record-time working-tree re-read uses the same construction,
+verified AGREEMENT at rest). The copy digests ARE the executing bytes by construction: the copies are loaded as the
+modules, and the record-time provenance drift-checks them against the CURRENT disk bytes
+(`verifyLocalObserverHelperMaterialization` — a private-constant edit that exported-string comparisons cannot see is
+caught, demonstrated by the RED test). Earlier constructions (v1 `c7bfc5e1…` three inputs; v2/v3 with disk-snapshot
+helper inputs, e.g. the v3 intermediate `487693e3…`) described earlier fix-round bytes and are SUPERSEDED — recorded
+so the intermediate identifiers stay interpretable. `generatedPreloadSha256` =
+`49cc2539fbcb23bcfc0003dd8afb8015d4f3976312f67c366de5c0295998ee75` (the round-7 precise-instant preload; the
+pre-round-7 bytes were `d0edebc0…`; the §25.1/§24.1 `cb168b74…` remains the historical F-record identifier, and per
+the §25.1 rule the executing-observer provenance is RE-FROZEN at V's own pre-launch duty). Module digests on the
+final bytes: `local-process-observation.mjs` =
+`fcc7a27973c73ae86fcf44badd6a53f6863b71bdbd068cd11668e845a7bcd947` (`93f22a60…` pre-review; intermediates
+`c69d4703…`, `0d63d733…`, `6c2a68a9…`, `c9bf0960…`, `824eeef8…`, `0aa2cdbd…`, `6fc9aed2…` described the earlier fix
+rounds; `ef77f617…` was the pre-round-10 state, `52768312…` the round-10 state, `f21caff4…` the round-11 state and
+`9d7032b8…` the round-12 state — rounds 10-12's per-round digest updates were NOT landed in this block at the time,
+recorded here from the git history; and the SAME bookkeeping failure recurred for rounds 13-23 — recomputed from
+the amend-boundary git states, `2a94438b…` was the pre-round-14 state (unchanged through the round-13 docs-only
+fix), `f5e26375…` the round-14 state, `48b4e1c5…` the round-19 state, `69604f0c…` the round-20 state,
+`2be77f32…` the pre-round-24 state, `5b8475eb…` the round-24 state, `59f453e9…` the round-25 state and
+`00857819…` the round-25-final state (the task's first amended commit bytes); the round-26 fix round was begun by an
+execution interrupted mid-work — its uncommitted module state hashed `a31eb3fd…` (both fixes in first form, the
+state the resumed round received; NEVER landed as a commit) — and `cc45b78e…`, `834d8455…`, `c817b693…`,
+`83b65a70…`, `8846e82d…`, `64cd4166…`, `56a48e39…`, `39d806e0…`, `a02dd2f3…` and `f0bf8f1c…` were the
+round-26 through round-35 final bytes (the second through eleventh amended commits); `fcc7a279…` is the
+final bytes after the round-36 refinement — the per-round digest updates were not
+landed at the time; this correction records them from the git history), NEW `closure-preload.mjs` =
+`44fdd25d907236666f5ab19fe4eafe49bb93a971ec5f2b4aa820b2fb8df330ba` (extracted generated-preload seam),
+`closure-observation.mjs` =
+`3a45f9db7bef21c60bc0a9f6093433eb9da90843def3019a424165c578c68451` (was `46b7f5e2…` at §25.1 — the admission/
+composition code with the preload seam extracted), `fixture.mjs` =
+`a1284c42f2c1a776e91cacd9ea96524e7594753f3de08499b5be9a54870c8a31` (was `4730908d…` at §25.1 — the identity
+machinery moved out; the public identity surface is re-exported unchanged), and the bound production helpers —
+EXECUTING as materialized copies, on-disk digests recorded: `scripts/lib/fs.mjs` =
+`ea222a08c0eed1051e2143cfafc21c773c49a901637a7dfdc5e8c8c406512792`, `scripts/lib/process.mjs` =
+`e3c95506d58b2d9f196b0f6469ac458206ee97320a6f6fb96bab701b9dc1aacb`, `scripts/lib/errors.mjs` =
+`8fed9126621c61ba5d35091435ac734232116490acc94b68dfc84593c424752b` (never modified). **Schema compatibility:** the
+stdout-capture meta keeps its EXACT closed v1 field set (asserted on a real gated run) and
+`CLOSURE_OBSERVATION_VERSION` stays 1; the identity/broker records are separate nonce-keyed files the stdout
+admission never reads, and their OWN closed schema is VERSION 2 as of the round-7 precise instants
+(`IDENTITY_RECORD_VERSION` 1 → 2, compatibility asserted by the updated closed-shape tests).
+
+**Codex review round 10 (two P2, each RED-proven on the pre-fix bytes then fixed, class-swept):**
+- (a) DAEMON→TRANSPORT SCOPE INDEPENDENCE: the daemon→transport hop now verifies the DAEMON endpoint's own scope
+  independently of hop 1 (`scope-nonce-mismatch`) — a foreign-nonce daemon can never host in-scope transport
+  evidence, whatever the Companion endpoint's state; class sweep: hop 1 already verified BOTH endpoints, the
+  descendant-exit credit already verified scope+identity, so this was the last cross-endpoint credit without an
+  independent scope check; (b) DRIVER DIGEST CLOSURE: the round-8 extraction moved the generated preload source and
+  its shared constants into closure-preload.mjs, but the DRIVER's executing provenance (bumped to
+  `zcode-shell-wait-observer-v6`) still hashed only closure-observation.mjs — both driver constructions (the
+  executing module-init digest and the record-time working-tree reread that drives `sourcesChangedDuringRun`) now
+  bind closure-preload.mjs bytes, so changes confined to the extracted module flip the digest and mid-run edits are
+  detected; the local-process observer's OWN construction
+  (`zcode-shell-wait-local-observer-v4`, deliberately separate) attributes the local-process campaign's evidence
+  closure and also binds closure-preload.mjs — both constructions now cover the extracted module, no silent
+  divergence; the split is documented (driver pipeline attribution vs local-process campaign evidence closure).
+
+**Codex review round 11 (two P2, each RED-proven on the pre-fix bytes then fixed, class-swept):**
+- (a) ASYMMETRIC LINUX GENERATION RULE: the symmetric |creation − timeOrigin| ≤ 1000 tolerance accepted a same-nonce
+  successor CREATED demonstrably after the record write (start T, written T+100, successor created T+500 bound). The
+  rule is now write-anchored and asymmetric: creation later than the write by more than the DOCUMENTED /proc
+  resolution bound (10ms — `LINUX_PROC_RESOLUTION_MS`) is `generation-start-after-write` (demonstrably a successor);
+  creation only resolution-close to the write stays `generation-start-ambiguous`; creation up to the documented
+  fork-to-init window (1000ms) BEFORE the record start binds; creation farther before it is
+  `generation-start-window-exceeded`. Sweep: the early-side, late-side and ambiguity branches are all in the single
+  Linux arm of the duty join — no other site compares creation to record instants.
+- (b) CONFIRMATION-REJECTION HONESTY: a REJECTING `absenceConfirmation` seam produced a rejection of the whole
+  observation; it is now caught into the named `absence-confirmation-failed` verdict with the completed read
+  interval — consistent with the inspection-failure and boot-clock-failure handling. Class sweep: every supplied
+  seam call site catches its own failures (inspect → liveness-read-failed/identity-changed, confirmAbsence →
+  absence-confirmation-failed, boot-clock resolution → caught null, record read → torn/unreadable).
+
+
+**Codex review round 12 (one P2, RED-proven on the pre-fix bytes then fixed, class-swept):** BTIME UNCERTAINTY
+HONESTY — /proc/stat btime is WHOLE-SECONDS, so `btime + starttime ticks / CLK_TCK` does NOT yield ~10ms
+wall-clock precision: the boot's fractional-second offset is lost and the TRUE creation instant of a proc-ticks
+identity lies in [computed, computed + 1000 ms). With an 800 ms fractional boot offset, a same-nonce successor
+created 440 ms AFTER the record write had a computed instant 440 ms BEFORE the write — the round-11 rule bound it
+as the writer. The Linux binding now propagates the uncertainty: reject (`generation-start-after-write`) only when
+the computed LOWER bound is demonstrably after the write (beyond the 10ms tick-resolution bound); name
+`generation-start-ambiguous` whenever the record write falls inside the candidate's uncertainty window (a
+same-nonce successor created in that window cannot be excluded — never established-by-default); bind only when the
+ENTIRE uncertainty window precedes the write (the candidate demonstrably existed at write time and no successor
+can predate the write); the old early-side window constant is subsumed by the uncertainty itself. Consequence
+recorded honestly: Linux same-second record writes stay `generation-start-ambiguous` (genuinely unexcludable under
+whole-second btime) — Linux duties bind only with a ≥1s write gap over the computed creation; darwin binds through
+the round-7/8 precise-instant rule. Sweep: the creation-vs-record comparison lives only in the Linux arm of the
+duty join.
+
+**Codex review round 13 (one P2, test-only — the generation check is NOT weakened):** the round-7 REAL-CHILD
+fast-startup test asserted duty establishment UNCONDITIONALLY, but on Linux an ordinary fast startup legitimately
+yields `generation-start-ambiguous` (the round-12 whole-second btime uncertainty keeps a same-second write
+unexcludable), so the test and the shell-research runs including it would fail on Linux hosts. The assertion is now
+PLATFORM-GATED (the round-5 pattern): DARWIN asserts the exact established outcome with no reservation reasons
+(never weakened); LINUX asserts the exact named conservative label `generation-start-ambiguous`; and the Linux
+branch is additionally asserted DETERMINISTICALLY on every host through injected seams — the synthetic btime/ticks
+are DERIVED FROM THE RECORD'S WRITE INSTANT (computed = round(write − 500)), so the write provably lands inside the
+1000-ms uncertainty window BY CONSTRUCTION on any wall-clock (round-14: a boundary-crossing startup made the old
+floor(origin)-derived control wall-clock dependent; the real Linux leg now derives its expected outcome from the
+child's own MEASURED interval and the darwin leg carries an explicit boundary-safety assertion). Sweep of
+the other real-child assertions (admission established with precise instants, sub-second write, OS-verified live
+observation, pid join, post-exit absence, disappeared adjudication): all platform-independent — the only
+host-dependent assertion was the duty establishment. Test count unchanged (78 named tests; the test was split
+internally, no new test registered).
+
+**Codex review round 15 (two P2, each RED-proven on the pre-fix bytes then fixed, class-swept):**
+- (a) OBSERVATION NONCE BINDING: a supplied inspect seam returning the REQUESTED pid with a DIFFERENT nonce was
+  accepted and its nonce RELABELED to the requested scope — foreign-scope evidence became an established
+  observation passing every downstream scope check. `observeLocalProcess` now compares the returned nonce with the
+  requested one and names the divergence (`observation-nonce-mismatch`, unestablished, no facts exposed). Class
+  sweep: this was the only site consuming a supplied identity object without verifying what came back.
+- (b) COMPLETE GENERATION EVIDENCE FOR EVERY DUTY: transport and identified-descendant duties checked only the
+  scope nonce, so an established-tagged observation carrying {pid, ppid, nonce} WITHOUT an OS start identity
+  established the duty (a bare marker substituting for verified generation evidence, capable of settled:true). The
+  duty join now requires a positive pid AND a nonempty OS start identity before establishing ANY duty
+  (`os-observation-incomplete`); the positive controls were updated to supply complete shapes — never by weakening
+  the validation.
+
+**Codex review round 16 (one P2, RED-proven on the pre-fix bytes then fixed):** the round-15 completeness gate
+covered only the transport/descendant branch — the STARTUP-BACKED branch (invocation/broker) still let an
+established-tagged {pid, ppid, nonce} observation through (pid/nonce checks pass, the missing start identity falls
+through the generation comparison), producing settled:true with identities missing their OS generation. The SAME
+`os-observation-incomplete` gate now applies to startup-backed duties — one completeness gate for every
+duty-establishing branch; the duty fixtures were updated to supply complete shapes, never by weakening the gate.
+Sweep inventory: joinLocalDuty has exactly two establishment branches (startup-backed and observation-only); both
+now require positive pid + nonempty startIdentity + scope nonce; adjudicateLocalDuties establishes only through
+joinLocalDuty.
+
+**Codex review round 17 (one P2, RED-proven on the pre-fix bytes then fixed, class-swept):** GENERATION-COMPATIBLE
+LIFETIMES FOR ANCESTRY HOPS — PPID + nonce equality is not ancestry under PID reuse: a daemon observed at epoch
+1000 with PPID 5100 joined a Companion whose PID was 5100 but whose OS start instant was 2000
+(`companionToTransportAttributed: true` although that Companion did not exist at the daemon's capture time). BOTH
+hops now verify generation-compatible lifetimes before credit: each endpoint's OS start instant must precede the
+other endpoint's capture/read instant (child start ≤ parent's read; parent start ≤ child's read and ≤ child's
+start); missing or out-of-order lifetime evidence keeps the hop NAMED-unestablished
+(`generation-lifetime-unverifiable`) — never bridged, never credited by PPID equality alone. The transport hop
+additionally verifies the marker's OWN time (`markerEpochMs`, the fixture-known marker-write instant): the daemon's
+creation must precede it and it must precede the daemon's capture read; hops without marker time evidence stay
+named-unestablished. Positive controls now supply complete marker-time evidence — never by weakening the rule.
+Sweep inventory: cross-process attributions are the two hops (both now lifetime-gated), the descendant credits
+(already bound to the descendant's own measured identity + scope + strict post-observation absence) and the
+exit-meta corroboration (already bound to the admitted invocation identity + scope) — no unverified cross-process
+credit remains.
+
+**Codex review round 18 (one P2, RED-proven on the pre-fix bytes then fixed):** the round-17 hop lifetime checks
+treated `startInstantEpochMs` as an EXACT creation instant, but on Linux it is a LOWER BOUND with whole-second btime
+uncertainty (true creation in [computed, computed + 1000)) — a daemon whose computed start was T with the transport
+marker written at T+500 established the hop even though the TRUE daemon creation (>= T+800) postdated the marker
+(false `companionToTransportAttributed` under PID reuse). The uncertainty is now propagated into ALL hop lifetime
+orderings, mirroring the duty-join rule structure: a marker ordering that holds merely via the uncertainty window
+is named-unestablished (`generation-lifetime-unverifiable`); only orderings that hold even at the UNCERTAINTY BOUND
+(daemon computed start + 1000 ≤ marker time; Linux companion start + 1000 ≤ daemon read/creation) are
+demonstrable and credit; orderings demonstrably violated at the computed values are refused. Darwin lstart
+instants are not lower bounds in this sense (their second-containment is the duty join's rule). Sweep: the two
+hops were the only sites ordering cross-process creation instants against read/marker times.
+
+**Codex review round 19 (one P2, RED-proven on the pre-fix bytes then fixed):** the round-18 propagation covered
+only Linux proc-ticks instants — `startBoundMs` gave darwin `ps lstart` ZERO uncertainty although lstart is
+whole-second too: a daemon actually created at T+800ms reported start T and could join a transport marker written
+at T+500ms under broker PID reuse. The rounding uncertainty is now UNIFORM — every OS start instant carries the
+1000-ms lower-bound uncertainty in the hop lifetime checks (the marker-inside-start-second control names
+`generation-lifetime-unverifiable`; the marker at/after the +1000ms bound is demonstrable and credits). The duty
+join's darwin second-CONTAINMENT rule is UNCHANGED (this round only stops the ancestry hop checks from treating a
+rounded start as an exact instant); the join-scenario synthetic facts were moved to ≥1s generation gaps so the
+positive controls demonstrate bound-safe credit.
+
+**Codex review round 20 (one P2, RED-proven on the pre-fix bytes then fixed):** the exit adjudication's ordered walk
+OVERWROTE a detected generation change when a later read reported absence — presence A (1000), replacement B
+established (2000), absent (3000) returned `disappeared` bound to A with the successor's absence instant, losing
+the named reuse refusal and letting the successor's disappearance complete A's duties. A reuse detection is now a
+TERMINAL LATCH: once the read sequence contains an established read with a different start identity (or a named
+`start-identity-generation-changed` read), the verdict stays `pid-start-identity-reused` (the evidence epoch
+recorded); later reads of the replacement generation never convert it into A's disappearance. A DIRECT absence of
+the original generation (same start identity as A, no intervening reuse) still adjudicates normally.
+
+**Codex review round 21 (two P2, each RED-proven on the pre-fix bytes then fixed, class-swept):**
+- (a) TIE-ORDERED GENERATION-CHANGE EVIDENCE: a replacement established at the SAME millisecond as a same-
+  generation presence read was skipped by the recency filter (read epoch <= lastPresenceEpochMs) before the reuse
+  detection, so evidence ORDER decided between the named reuse refusal and A's disappearance (live-then-replacement
+  at one instant -> disappeared for A; replacement-then-live -> refused). A generation-change read is now latched
+  BEFORE the recency filtering whenever its epoch is >= the last verified presence — rearranging the same evidence
+  yields the same verdict, and the later absence of the replacement never becomes A's disappearance.
+- (b) BASELINE VALIDATION: the established-tagged presence baseline was accepted WITHOUT validating its timestamp
+  or generation — a missing readEpochMs made the recency comparison run against undefined (an absence never
+  rejected -> `disappeared` without a verified presence instant) and a pid+nonce baseline without a startIdentity
+  bound `disappeared` without a bound generation. The baseline is now validated BEFORE boundIdentity is
+  constructed: missing instant -> `presence-instant-unverified`; missing start identity or nonce ->
+  `presence-generation-unverified`; both named-unestablished. Class sweep: adjudicateLocalExit is the only
+  consumer of the presence baseline (the duty join validates its own observations since round 16).
+
+**Codex review round 22 (two P2, each RED-proven on the pre-fix bytes then fixed):** two refinements of the reuse
+latch: (a) TIED NAMED GENERATION CHANGES — with `expectedStartIdentity` supplied, a replacement produces an
+UNESTABLISHED verdict (`start-identity-generation-changed`) rather than an established one; a named verdict TIED
+with a same-generation live read sorted after it and was discarded by the recency filter, so a later absence
+returned `disappeared` despite positively detected PID reuse. The tie latch now covers BOTH replacement shapes
+(established-with-different-identity AND named `start-identity-generation-changed`) at epoch >= the last verified
+presence; (b) OLD EVIDENCE NEVER LATCHES — a replacement observation stamped BEFORE the presence baseline predates
+the current occupant and is irrelevant; the latch now requires replacement evidence at or after the last verified
+presence (the conservative equal-timestamp behavior from round 21 preserved), so omitting an old-generation
+observation and including it yield the same normal disappearance.
+
+**Codex review round 23 (two P2, each RED-proven on the pre-fix bytes then fixed, class-swept):**
+- (a) INSPECTOR-DETECTED PID REUSE IS ITS OWN CLASS: a PID reused BETWEEN the inspector's double-read start-identity
+  reads throws the generic identity-changed error, which folded into `identity-changed-during-read` — a class the
+  reuse latch does NOT consume, so presence A -> detected change -> absence of successor B returned `disappeared`
+  for A (crediting B's disappearance to A). The inspector-detected change now keeps its OWN class
+  `start-identity-generation-changed` (consumed by the round-20/22 latch); reparenting alone (ppid-only divergence)
+  stays in the generic torn class — the round-1 rule is unchanged. The round-1 test expectation was updated to the
+  new class name (same injected seam, same named-unestablished status).
+- (b) ANCESTRY ENDPOINT COMPLETENESS: `joinEndpointFacts` passed an established-tagged endpoint missing its OS
+  start identity unchanged — compatible pid/ppid/nonce/instants made BOTH hops established with NEITHER endpoint
+  generation-verified (also bypassing joinLocalDuty's round-15/16 completeness checks). The endpoint helper now
+  requires a positive pid AND a nonempty start identity; incomplete endpoints are named-unavailable (the hops name
+  `hop-endpoint-unestablished`), never joined. Class sweep: the duty join was gated in rounds 15/16, the exit
+  baseline in round 21, and the ancestry endpoints here — every established-tagged consumer now applies the same
+  completeness bar.
+
+**Codex review round 24 (one P2, RED-proven on the pre-fix bytes then fixed):** the round-23 regex
+misclassifies a PPID-ONLY mid-read change as the reuse class — the real inspector threw ONE generic 'identity
+changed' message for BOTH a changed start identity and a reparenting, so a reparented process (the daemon whose
+Companion dies) followed by a confirmed absence latched `pid-start-identity-reused` and permanently blocked the
+disappearance adjudication; the round-23 test missed it by injecting a fabricated message string the real
+inspector never emits. The inspector (in the observer's own bytes since round 8) now throws SELF-DESCRIBING
+errors: a changed START IDENTITY between the double reads keeps the `identity changed` message (the reuse latch
+consumes it), while a PPID-ONLY change throws `ppid changed between reads` (the generic torn class — the round-1
+reparenting rule restored). `observeLocalProcess`/`inspectVerifiedProcessIdentity` gained injectable OS SEAMS
+(platform/ps/environ) with the ps seam applying the SAME startIdentity derivation as the real darwin reader
+(startIdentity = the lstart text), so tests drive the REAL inspector's actual error paths on every host. The
+round-23 test was rewritten honestly: the reparenting case drives the real double-read through the injected seams
+(torn class, absence adjudicates normally) and the start-identity case keeps its named class and still latches —
+no over-correction. The round-23 reparenting control's fabricated message was removed.
+
+**Codex review round 25 (one P2, RED-proven on the pre-fix bytes then fixed):** the environment-NONCE verification
+failure ALSO carried an `identity changed` message WITHOUT completing the second start-identity read — the regex
+labeled a nonce-verification failure as PROVEN PID reuse and adjudicateLocalExit permanently latched it (presence
+A -> nonce mismatch -> verified same-generation presence -> confirmed absence stayed
+`pid-start-identity-reused`). A nonce mismatch now has its OWN error message ('the exact fake-ZCode process nonce
+identity verification failed' — carrying 'identity' for the inherited message contract but NOT the 'identity
+changed' phrase the latch consumes) mapping to the named non-reuse torn class — only an OBSERVED OS start-identity change
+between the double reads is generation-change evidence. Throw-site inventory (each maps to exactly one
+classification; the latch consumes ONLY the observed start-identity change): start-identity change ->
+`start-identity-generation-changed` (reuse latch); nonce mismatch -> `liveness-read-failed` (non-reuse torn);
+ppid-only change -> `liveness-read-failed` (round-24 reparenting rule); unparseable/failed ps read ->
+`liveness-read-failed`; marker gone / absent process -> the positive `absent` fact, not a failure.
+
+**Codex review round 26 (two P2, each RED-proven on the pre-fix bytes then fixed, class-swept; the fixes were
+begun by an execution interrupted mid-work and completed by a resumed one — see the interruption note below):**
+- (a) A NONCE-MISMATCH FAILURE DISCARDED THE OBSERVED START IDENTITY OF A NONCE-LESS REPLACEMENT: when a
+  captured PID is reused by a process WITHOUT the capture nonce, the inspector's first OS read observes the
+  replacement's start identity, but the round-25 mismatch throw carried nothing — `observeLocalProcess` folded
+  it into `liveness-read-failed` without checking `expectedStartIdentity`, and a subsequent absence adjudicated
+  the ORIGINAL generation as `disappeared` (the demonstrable reuse never latched). The mismatch error now rides
+  its observed start identity, and `observeLocalProcess` compares it with the expected generation:
+  demonstrably different -> `start-identity-generation-changed` (the round-20/22 latch consumes it — terminal
+  `pid-start-identity-reused`, the later absence never converts it); same-generation or unverifiable (no
+  expected start identity supplied) stays the named round-25 nonce-failure fact (`liveness-read-failed`,
+  never latched, the absence still adjudicates normally). RED: reverting both hunks fails the regression with
+  actual `liveness-read-failed` / `disappeared` against expected `start-identity-generation-changed` /
+  `pid-start-identity-reused`. Class sweep of every mismatch-throw consumer: `observeLocalProcess` (the only
+  adjudication-producing consumer — fixed); `terminateVerifiedProcess` (a throw fails termination loudly —
+  fail-closed, never an exit verdict); `captureVerifiedProcessIdentity` (capture time: no expected generation
+  exists yet — a named capture failure); the driver's `readProcessIdentity` signal gate (a throw blocks
+  signalling — fail-closed); the fixture re-export (no consumption).
+- (b) A CACHED OS OBSERVATION OF AN EARLIER GENERATION COULD ESTABLISH A LATER STARTUP RECORD: the duty join
+  accepted any creation sufficiently earlier than the record write WITHOUT checking whether the OS observation
+  predates the record writer's startup — an observation completed five seconds before generation B's
+  `startOriginMs` still established B's invocation duty carrying A's start identity (B reused A's pid AND
+  capture nonce, so pid+nonce joins could not exclude it). A final GENERATION-CONTINUITY gate now requires the
+  OS observation's completion instant to POSTDATE the record writer's own precise start (`startOriginMs`;
+  observer-sampled wall clock on both sides — no OS-resolution uncertainty enters this comparison, while the
+  creation-instant rules above it keep their documented `LINUX_BTIME_UNCERTAINTY_MS` / darwin
+  second-containment bounds); an observation completed BEFORE the writer's start is a cached observation of an
+  earlier generation and is named `os-observation-stale`, never bridged. The gate is FINAL (fires only when
+  the more specific creation-instant labels did not — it can never mask them) and applies only to
+  startup-backed duties (the transport/identified-descendant duties join no record writer). FAIL-CLOSED on the
+  completion instant itself: an established-tagged observation with NO verifiable `readEpochMs` cannot
+  demonstrate freshness and is named the same way — the interrupted partial form guarded the gate with
+  `Number.isSafeInteger(...)` AND, which silently SKIPPED it for an unstamped observation (established-by-default);
+  the resumed round inverted that to fail-closed and regression-tested the unstamped arm (RED: the
+  generation-consistent unstamped observation established under the partial form). RED for the main arm:
+  reverting the gate fails the regression with actual `established` against expected `unestablished` /
+  `['os-observation-stale']`. Class sweep of every startup-record <-> OS-observation join: `joinLocalDuty` is
+  the ONLY one (`startOriginMs` has no other adjudication consumer); `joinAncestryHops`/`joinEndpointFacts`
+  adjudicate capture-time ppid equalities and OS-fact lifetime orderings with no record writer involved;
+  `adjudicateLocalExit` orders presence/absence without records.
+- INTERRUPTION NOTE (honesty): the round-26 fixes were begun by an agent run killed by a usage quota mid-work;
+  its uncommitted partial state (module `a31eb3fd…`, both fixes in first form, the two regression tests, the
+  duty-join fixture epochs moved past their record starts, and a partial digest re-land) was recovered and
+  verified by the resumed round, which then (1) re-proved both findings RED by hunk-level reversion, (2) added
+  the fail-closed unstamped arm above, (3) updated the probe file's spawned-suite self-test total 188 -> 190 —
+  the partial round had left the probe file's eight spawned-suite CLI tests failing on the stale total — and
+  (4) re-landed the provenance block below on the FINAL bytes.
+
+**Codex review round 27 (two P2, each RED-proven on the round-26 bytes then fixed, class-swept):**
+- (a) THE ROUND-26 STALENESS GATE ANCHORED ON THE WRONG INSTANT: on Linux the identity double-read finishes
+  BEFORE the asynchronous boot-clock resolution, so a pid+nonce reuser starting DURING that await makes the
+  whole-observation completion POSTDATE the reuser's startup while every identity read observed the EARLIER
+  generation — the gate then accepted the earlier generation's start identity for the reuser's record (an
+  injected delayed-clock reproduction established the incorrect join). Chosen rule (of the three offered):
+  PRESERVE THE IDENTITY-READ TIMESTAMP — an established verdict now carries `identityReadEpochMs`, sampled as
+  soon as the inspection (the double-read and its nonce verification) resolves and BEFORE the awaited
+  start-instant resolution, and the continuity gate anchors on it (falling back to the whole-observation
+  completion for facts without the field — every pre-round-27 hand-assembled fixture is unchanged).
+  JUSTIFICATION: the identity evidence's validity horizon is exactly the instant its reads completed — everything
+  the observation awaits afterwards (boot-clock reads) contributes NO identity evidence, so a writer starting
+  inside that await can never be vouched for by the completion timestamp; the interval-overlap form adds no
+  power once the read instant is carried (the read START is an earlier, weaker bound and the writer's start
+  uncertainty is already governed by the creation-instant rules above the gate), and post-resolution
+  reverification would double the real OS reads only to move the same boundary. With the anchor, every reuser
+  start instant is decided: before/during the double-read -> the observed start-identity change class; after
+  the identity reads -> the record's startOrigin postdates `identityReadEpochMs` -> `os-observation-stale`;
+  before the first read -> the reads observed the reuser itself and join on its own identity. The reproduction
+  drives a REAL delayed clock (an injected boot-clock promise taking real wall time between the identity reads
+  and the completion) — RED: the mid-window record joined `established` pre-fix; GREEN: `unestablished` /
+  `['os-observation-stale']` with the identity-read anchor. Class sweep: `joinLocalDuty` is the only
+  record-join (unchanged); `adjudicateLocalExit` orders reads of the BOUND generation (no record writer);
+  `joinAncestryHops` orders lifetimes BETWEEN two OS endpoints under the round-18/19 uncertainty disciplines
+  (no record writer to bridge — the corrupting shape has no analogue); the descendant-settled check orders an
+  exit against the descendant's own observation (no record join).
+- (b) THE ROUND-26 CARRIED IDENTITY WAS STILL DISCARDED WHEN THE OPTIONAL `expectedStartIdentity` WAS OMITTED:
+  a nonce-less replacement's observed start identity folded back into a plain `liveness-read-failed` (nothing
+  to compare against at the observation layer), so presence S1 -> nonce-mismatched S2 -> absence returned
+  `disappeared` for S1 (reproduced through the REAL inspector with injected OS seams). The observed start
+  identity now RIDES the nonce-failure verdict (`observedStartIdentity`), and `adjudicateLocalExit` — which
+  knows the BOUND generation — classifies a demonstrably different carried identity as positive replacement
+  evidence and latches (`pid-start-identity-reused`, terminal) at BOTH latch sites (the round-22 tie-inclusive
+  check and the strictly-after main-loop handler — evidence ordering can never bypass it); a carried identity
+  EQUAL to the bound generation stays the same-generation nonce failure and never latches (the round-25 rule,
+  now with the comparison the observation layer could not make). RED: the replacement verdict carried nothing
+  and the exit returned `disappeared`; GREEN: `pid-start-identity-reused` with `firstVerifiedAbsenceEpochMs`
+  null. The round-25 fixture honestly updated: its mismatch read had observed a DIFFERENT start identity
+  ('Thu Jan 1…' vs the bound 'S1' — unobserved pre-round-27 because nothing compared it) and is now
+  same-generation ('S1'), preserving that test's actual intent; the different-carried-identity latch is the
+  round-27 test's own assertion. Class sweep: the nonce-mismatch error is the only carrier and
+  `observeLocalProcess` its only verdict producer; `adjudicateLocalExit` is the only adjudicator of
+  unestablished reads (both latch sites covered); the duty join treats unestablished reads as
+  non-establishing regardless of carried fields; the ancestry join consumes established endpoints only.
+
+**Codex review round 28 (three P2, ONE class — the round-27 identity-read/whole-observation-completion
+distinction applied consistently; each RED-proven on the round-27 bytes then fixed, class-swept):**
+- (a) THE INSPECTOR'S EARLY RETURNS DISCARDED A VERIFIED OCCUPANT: if a pid-reusing successor exits between the
+  FIRST start-identity read and the marker/second read, the marker-gone and absent-second-read paths returned a
+  bare `undefined` — discarding the identity the first read positively observed — so the successor's absence
+  read as the BOUND generation's lawful disappearance instead of the reuse latch (reproduced through the REAL
+  inspector with injected OS seams, `expectedStartIdentity` supplied). The first read's generation evidence now
+  RIDES these early returns exactly like the nonce-mismatch failure: a self-describing `observedThenGone`
+  error carries `observedStartIdentity` (its message carries neither the 'identity changed' reuse phrase nor
+  the 'ppid changed' reparenting phrase). `observeLocalProcess` classifies: demonstrably different occupant ->
+  `start-identity-generation-changed` (the reuse latch consumes it — the successor's mid-read absence is never
+  the bound generation's disappearance); the verified generation's OWN mid-read disappearance (or an
+  uncomparable occupant) keeps the LAWFUL absence flow — now extracted into one shared `absenceOutcome` used
+  by the no-process and observed-then-gone paths — with the observed identity attached to the absent verdict
+  for the adjudicator. Consumer conversions preserve each consumer's exact pre-round-28 semantics:
+  `captureVerifiedProcessIdentity` maps the class to its `ZCODE_SHELL_WAIT_PROCESS_EXITED` named failure
+  (capture time: no bound generation exists yet), and the termination verifier's default reader and the
+  driver's `readProcessIdentity` gate treat it as `undefined` (the pid is gone; both only gate signalling —
+  no adjudication to latch for). RED: the marker-gone/absent-second-read verdicts were `absent` and the exit
+  returned `disappeared`; GREEN: both named `start-identity-generation-changed`, exit
+  `pid-start-identity-reused` with `firstVerifiedAbsenceEpochMs` null, and the own-generation control stays
+  the positive absence fact adjudicating `disappeared`.
+- (b) EXIT EVIDENCE ORDERED PRESENCE/REUSE BY THE WHOLE-OBSERVATION COMPLETION: the baseline's completion can
+  be pushed later than its identity reads by asynchronous work that contributes no identity evidence (the
+  delayed Linux boot-clock resolution) — identity reads establish A at t=100, a replacement observed at t=102
+  sorted BEFORE the baseline's completion at t=105 and was discarded by the recency filter, so an absence at
+  t=106 returned `disappeared` for A. `adjudicateLocalExit` now orders IDENTITY evidence (the baseline's
+  last-verified-presence initialization, the round-22 tie-inclusive replacement check, and established
+  same-generation presence updates) by each read's `identityReadEpochMs` (falling back to the completion for
+  pre-round-28 facts), while ABSENCE evidence keeps the whole-observation completion — an absence is proven at
+  its confirmation, the collection-cutoff instant. RED: the replacement was discarded and the exit returned
+  `disappeared` with `lastVerifiedPresenceEpochMs` 105; GREEN: `pid-start-identity-reused`, horizon 100, list
+  order never decides, and a same-generation live read moves the horizon to its own identity instant (104).
+- (c) ANCESTRY LIFETIMES USED THE WHOLE-OBSERVATION COMPLETION AS THE ENDPOINT HORIZON: the Companion's
+  completion can land long after its identity reads, so a pid-reusing replacement creating the "daemon" inside
+  that window passed the lifetime checks against the ORIGINAL Companion. Both endpoint read instants in
+  `joinAncestryHops` now anchor on `identityReadEpochMs` (same fallback): the captured generation's verified
+  lifetime ends where its identity evidence ends, and unrelated asynchronous work can never extend it. RED:
+  the companion-to-daemon hop established against the original Companion; GREEN:
+  `generation-lifetime-unverifiable` (with the fallback semantics asserted unchanged for facts without the
+  carried instant).
+- Class sweep of the identity-read/whole-observation distinction: every consumer of a read instant now uses
+  the identity horizon for identity evidence and the completion for collection-cutoff evidence —
+  `observeLocalProcess` samples the horizon (round 27); `joinLocalDuty` anchors the continuity gate on it
+  (round 27); `adjudicateLocalExit` orders identity evidence by it and absences by the completion (this
+  round); `joinAncestryHops` anchors endpoint lifetimes on it (this round). The inspector's early-return ride
+  completes the throw-site inventory: start-identity change -> `start-identity-generation-changed`; nonce
+  mismatch -> carried identity, non-reuse unless demonstrably different; observed-then-gone -> carried
+  identity, replacement class or lawful absence; ppid-only change / unparseable ps -> `liveness-read-failed`;
+  no process before any read -> the confirmed-absence flow.
+
+**Codex review round 29 (two P2 — edge cases of the round-28 fixes; each RED-proven on the round-28 bytes then
+fixed, class-swept):**
+- (a) THE ABSENCE-ADMISSION BRANCH IGNORED THE ROUND-28 CARRIED IDENTITY: with the OPTIONAL
+  `expectedStartIdentity` omitted, the observed-then-gone ride returns an ABSENT verdict carrying the
+  replacement's observed identity — and `adjudicateLocalExit` admitted the absence without checking it,
+  reporting `disappeared` for the baseline instead of the reuse latch (the round-28 fix covered the
+  unestablished-classified replacement paths; the absent verdict path was missed). The absence branch now
+  checks the carried identity against the BOUND generation BEFORE admitting absence: a demonstrably different
+  carried identity latches (`pid-start-identity-reused`, terminal — the successor's mid-read absence is never
+  the baseline's death); carried-equal or absent-without-carried-identity adjudicates normally. RED: the
+  omitted-expectation arm returned `disappeared`; GREEN: `pid-start-identity-reused` with
+  `firstVerifiedAbsenceEpochMs` null and the carried-equal arm still adjudicating `disappeared`. Tied/old
+  carried-different absent reads stay un-latched by the round-21/22 ordering rules (a tie resolves
+  conservatively to live; old evidence never latches) — only strictly-later evidence admits or latches.
+- (b) READS SORTED BY THE WHOLE-OBSERVATION COMPLETION PLACED STALE PRESENCE AFTER NEWER ABSENCE: a live read
+  whose identity evidence closed at t=2000 but whose Linux clock resolution finished at t=4000 sorted AFTER a
+  confirmed absence at t=3000 and flipped the verdict to `live`. Reads now order by their DECISION instant —
+  identity-bearing reads by `identityReadEpochMs`, absences by their confirmation completion — the same
+  instants the round-28 recency checks consume, so the sort and the recency filter can never disagree.
+  Reproduced through the REAL observation API with an injected delayed clock (identity reads complete
+  immediately, completion ~120ms later, the absence hand-stamped in between). RED: verdict `live`; GREEN:
+  `disappeared` with `lastVerifiedPresenceEpochMs` at the identity-READ instant and the absence instant
+  preserved. Class sweep: the sort was the only remaining completion-ordered site in the exit adjudication;
+  `adjudicateLocalDuties`' descendant-settled check still anchors the descendant's presence on its completion
+  — a REFUSAL direction (it can refuse a lawful composition, never credit a wrong one), left as the
+  conservative residual it is.
+
+**Codex review round 30 (two P2 — edge cases of the round-28/29 fixes; each RED-proven on the round-29 bytes
+then fixed, class-swept):**
+- (a) THE CARRIED-IDENTITY LATCH WAS STILL REASON-KEYED: the round-28 observed-then-gone ride can produce
+  `absence-unconfirmed` / `absence-confirmation-failed` verdicts STILL carrying the replacement's observed
+  identity (the OS confirmation refused or failed), and the latch condition keyed on `liveness-read-failed`
+  alone ignored that evidence — presence A -> unconfirmed read carrying generation B -> later absence
+  incorrectly yielded `disappeared` for A. Both latch sites (the round-22 tie-inclusive check and the
+  strictly-after main-loop handler) now classify ANY read carrying an observed start identity demonstrably
+  different from the BOUND generation, INDEPENDENTLY of its named failure class; carried-equal reads stay
+  non-deciding same-generation failures. RED: the unconfirmed arm returned `disappeared`; GREEN:
+  `pid-start-identity-reused` for both the unconfirmed and the confirmation-failed classes, with the
+  carried-equal controls still adjudicating `disappeared`. The carried-identity inventory is closed: the
+  field is produced only by the nonce-mismatch ride and the observed-then-gone ride; the named
+  generation-changed class latches by class, `absent` verdicts by the round-29 branch, and every other
+  unestablished class by this round's reason-independent rule.
+- (b) THE DESCENDANT-SETTLED COMPARISON STILL ANCHORED ON THE WHOLE-OBSERVATION COMPLETION: delayed Linux
+  boot-clock resolution can finish an observation long after its identity reads; a concurrent absence
+  confirmed AFTER the identity reads but BEFORE the completion is a lawful `disappeared` in
+  `adjudicateLocalExit` (the round-28 ordering), yet the descendant-settled check rejected it against the
+  completion, leaving the aggregate unsettled. The descendant's presence horizon anchors on its
+  `identityReadEpochMs` (legacy fallback to the completion kept) — consistently with the exit adjudicator.
+  RED: `settled` false for the lawful sequence; GREEN: `settled` true, with the ordering refusal unchanged
+  (an absence at or before the identity-READ instant never completes) and the fallback semantics asserted
+  unchanged. Class sweep: this was the last completion-anchored presence comparison on the duty path; the
+  refusal-direction residual noted in round 29 is now closed — the horizon and the exit adjudicator use the
+  same instants everywhere.
+
+**Codex review round 31 (one P2 + one P3 — edge cases of the round-28/29 carried-identity and the darwin
+lstart handling; each RED-proven on the round-30 bytes then fixed, class-swept):**
+- (a) [P2] THE CARRIED IDENTITY INHERITED THE CONFIRMATION'S COMPLETION INSTANT: with the expectation omitted
+  and the absence confirmation DELAYED, old generation B read at t=1000, generation A positively observed at
+  t=2000 and the confirmation finishing at t=3000 made the carried identity look like a replacement observed
+  AFTER A — the round-29 absent-branch latch fired and A's lawful disappearance was permanently refused. The
+  INSPECTION instant (when the identity evidence was actually read, sampled before the confirmation await)
+  now rides the carried identity (`observedIdentityReadEpochMs` on every observed-then-gone verdict), and all
+  three latch sites (the round-29 absent branch and the round-30 tie-inclusive/strictly-after conditions)
+  evaluate the carried identity at THAT instant: B predates A's presence and never latches it — the
+  (later-confirmed) absence admits as A's lawful disappearance; a replacement genuinely read after A's
+  presence still latches (the round-29/30 regressions cover that side). RED: the delayed-confirmation
+  sequence latched `pid-start-identity-reused` (and the inspection instant was not carried at all); GREEN:
+  `disappeared` with the absence instant preserved and the carried instant asserted to precede the
+  confirmation await. The nonce-mismatch rides keep their semantics through the fallback (their verdict
+  completion IS their inspection instant — no confirmation await on that path).
+- (b) [P3] DARWIN LSTART WAS RENDERED AND PARSED IN LOCAL TIME: `ps` renders lstart in LOCAL time without an
+  offset, and during a DST fall-back hour that rendering is ambiguous — host-local `Date.parse` picks the
+  earlier occurrence of the repeated hour (America/New_York: a process started at 06:30Z renders
+  'Sun Nov  2 01:30:00' and parses as 06:30Z-EST against the 01:30Z the fields read), so a genuine process
+  failed the startup-generation join with `generation-start-second-mismatch`, one hour off. The real darwin
+  reader now requests `TZ=UTC ps` and the parse is FIELD-EXPLICIT UTC (`parseLstartAsUtc`: the lstart shape
+  'Www Mmm dd hh:mm:ss yyyy' parsed into `Date.UTC`, any other shape a named-null start instant — never a
+  guessed value; the whitespace collapse is GLOBAL, single-digit days render with a double space). Tested
+  deterministically through the injected ps seam (the rendered fall-back-hour text is fixed; no real DST is
+  awaited): pre-fix the resolved instant was the host-local interpretation (8h off on this host; the exact
+  fall-back skew under New_York) and the duty join refused; post-fix the resolved instant is exactly the UTC
+  interpretation of the rendered fields and the same-second startup record binds. The real darwin reader is
+  re-verified on this host by the real-child end-to-end tests (real `TZ=UTC ps` against a real record). Class
+  sweep: `resolveObservationStartInstantMs` was the only lstart parse site (the linux branch resolves
+  proc-ticks against the boot clock — absolute and offset-free); no other consumer parses the rendered text.
+
+**Codex review round 32 (three P2 — consequences of the round-31 changes; each RED-proven on the round-31
+bytes then fixed, class-swept):**
+- (a) TZ=UTC DOES NOT PIN ps's DATE FORMATTING: under a non-C locale (LC_ALL=fr_FR.UTF-8) lstart renders
+  localized month/day names and ordering, which the strict UTC field parse rejects (null start instant) —
+  invocation/broker duties could never establish on that host. EVERY `ps` identity query in the module now
+  spawns with a PINNED env (`psIdentitySpawnEnv()`: `{ ...process.env, TZ: 'UTC', LC_ALL: 'C' }`) — the
+  darwin lstart read, the darwin `ps eww` marker scan, and the absence-confirmation ps (audited: the linux
+  paths read /proc — no locale surface; the marker scan is byte-token content, pinned anyway so no identity
+  query is left to the ambient locale). Audited through a NEW injected seam (`osSeams.runProcess`, threaded
+  to both darwin ps readers): the test captures the REAL reader's spawn and asserts `TZ=UTC` + `LC_ALL=C` on
+  every query, with the C-locale-shaped stdout parsed through the real reader into a UTC start instant. RED:
+  the seam was ignored (the real ps ran on a synthetic pid -> absent) and no env was pinned; GREEN: every
+  captured spawn carries the pinned env and the observation establishes.
+- (b) THE ROUND-31 DARWIN-UTC REGRESSION BROKE ON LINUX: `resolveObservationStartInstantMs` checked the REAL
+  `process.platform` while the regression injects a darwin ps seam — on a Linux runner the darwin-shaped
+  identity resolved to a null start instant and the registered shell-research suite failed. The resolution
+  now honors the INJECTED seam platform (`deps.osSeams?.platform ?? process.platform`) — consistent with the
+  inspector's seam discipline (the observation's platform identity is the seam's), and the regression's
+  seams ride the INPUT `osSeams` so they reach the resolution path. Verified BOTH directions on this host:
+  with the host forced to the pre-fix linux path (`if (true) return null`) the regression REDs (null start
+  instant — exactly what a Linux runner saw); with the FIXED line and the host pinned to linux, the darwin
+  seam overrides and the regression GREENs.
+- (c) THE NATURAL-EXIT TEST COMPARED THE ADJUDICATION AGAINST `live.readEpochMs`: the round-28 adjudication
+  reports the IDENTITY-READ instant, and on Linux a cold boot-clock cache makes the completion later — the
+  equality could flake on ms-boundary crossings. Verified by simulating the Linux skew (a delayed start-
+  instant resolution on the real-child read: completion 60ms after the identity-read instant) — the old
+  assertion REDs (`lastVerifiedPresenceEpochMs` actual = the identity instant, expected = the later
+  completion); the assertion now compares `live.identityReadEpochMs` (the honest identity-evidence instant)
+  and GREENs. Class sweep: the other natural-exit assertions already compare ordering (`>=`), never
+  completion equality.
+
+**Codex review round 33 (three P2 — consequences of the round-29/31/32 changes; each RED-proven on the
+round-32 bytes then fixed, class-swept):**
+- (a) COMPLETION-ORDER PROCESSING ERASED AN EARLIER-READ CARRIED REPLACEMENT: with a delayed absence
+  confirmation, replacement B carried its identity-read instant 2000 but COMPLETED at 4000; with another A
+  observation at 3000, the completion-ordered decision sequence advanced the presence horizon to 3000 BEFORE
+  B was evaluated at its carried instant — B was discarded as old evidence and the later same-generation
+  read washed out the reuse latch (`disappeared`), whereas without the extra live observation B correctly
+  latched. Evidence ORDER must not decide: the decision sequence now orders every read by its DECISION
+  instant — a read CARRYING an observed identity orders at `observedIdentityReadEpochMs` (it is identity-
+  bearing), plain absences at their confirmation completion, other identity-bearing reads at their
+  identity-read instant — the same instants the round-29/31 evaluations consume. B is classified against the
+  horizon as of ITS read instant and the terminal latch holds. RED: the sandwiched sequence returned
+  `disappeared`; GREEN: `pid-start-identity-reused`, list order never decides.
+- (b) THE ROUND-32 LOCALE REGRESSION BROKE ON LINUX: the test injected the darwin platform only into the
+  inspector closure while the OUTER observation resolved the returned lstart against the REAL host platform —
+  a null start instant on a Linux runner and the registered suite failed. The regression's seams now ride the
+  INPUT `osSeams` (the module-level seam discipline), so the injected platform reaches the start-instant
+  resolution too. Verified BOTH directions on this host: with the resolution forced to the pre-fix linux
+  path the regression REDs (null start instant — exactly what a Linux runner saw); with the FIXED resolution
+  and the host pinned to linux the injected platform overrides and the regression GREENs.
+- (c) LATE-REGISTERED EXIT LISTENER RACE: the REAL-CHILD fast-startup test registered its child's exit
+  listener only AFTER several awaited legs (record wait, admission, live observation, duty join) — on a slow
+  runner the 1200-ms child can emit exit while those legs await and the late listener misses the event
+  permanently (the promise never resolves; the registered test hangs). The exit promise is now created
+  IMMEDIATELY after spawn, before any awaited leg (the `scopeWithLiveChild` pattern). Verified by simulating
+  the slow runner (an artificial wait longer than the child's hold before the late registration): the test
+  hung and was cancelled at the runner timeout (RED); with the hoisted promise it resolves from the buffered
+  exit event (GREEN). SWEEP: the file's only other late-registered close/stdout listener (the read-only
+  capture-directory test) was hoisted the same way — its spawn's install wait and chmod could outrun the
+  child identically; no other real-child spawn registers listeners late.
+
+**Codex review round 34 (one P2 — a consequence of the round-33 identity-time ordering; RED-proven on the
+round-33 bytes then fixed, class-swept):**
+- OVERLAPPING SAME-GENERATION DISAPPEARANCES REPORTED THE FIRST-PROCESSED COMPLETION: two overlapping
+  same-generation observed-then-gone reads — carried identity instants 200/300, absence confirmations
+  completing 500/400 — sort by the carried instants (round 33), so the read whose confirmation completed at
+  500 was ADMITTED first and `finalAbsenceRunStart` stayed 500: a pre-cutoff verified absence (400) was
+  reported post-cutoff. Identity-time ordering is kept for replacement detection (round 33), but the
+  reported first verified absence instant of a run is now the EARLIEST confirmed completion among the run's
+  admitted absences (min-tracked on continuation) — decision order never inflates the absence instant. RED:
+  `firstVerifiedAbsenceEpochMs` 500; GREEN: 400, list order never decides. Class sweep: `finalAbsenceRunStart`
+  is the only reported-absence-instant site (the verdict consumes it; the descendant-settled check consumes
+  composed exit verdicts); the recency filter still refuses any absence at or before the horizon — the min
+  only corrects the REPORTED instant among already-admitted run members.
+
+**Codex review round 35 (one P2 — the inverse interleaving of the round-34 fix; RED-proven on the round-34
+bytes then fixed, class-swept):**
+- IDENTITY-TIME ORDERING LET A LATER-READ PRESENCE OVERWRITE A LATER-CONFIRMED ABSENCE: an observed-then-gone
+  read carries identity instant ~t0+2 but confirms absence at ~t0+80, while ANOTHER read verifies the same
+  generation alive at ~t0+30 (e.g. after a transient ps failure) — sorting the absent verdict at its carried
+  instant admitted the absence first and the later live evidence overwrote it: the verdict was `live` despite
+  the later confirmed absence. The two orderings are now SEPARATE: identity-time ordering governs REPLACEMENT
+  DETECTION (the latch — rounds 29-33 unchanged, including the round-33 shape where a replacement erased by a
+  later-read same-generation presence stays latched), while the FINAL live/absent decision is CONFIRMATION-
+  time: a post-pass re-derives the decision from the admitted evidence — if any same-scope absence confirmation
+  completes after the last same-generation presence evidence (its identity-read instant), the verdict is
+  `disappeared` with the EARLIEST such completion reported (the round-34 rule, re-derived over all admitted
+  absences); a presence whose identity read postdates every confirmed absence leaves the block untouched and
+  adjudicates `live`. Reproduced through the real inspector with a real delayed confirmation and an injected
+  overlapping live read. RED: `live`; GREEN: `disappeared` at the confirmed completion with the presence
+  horizon at the overlapping read, and the inverse arm (`live` for a postdating presence) asserted. Class
+  sweep: the post-pass is the only final-decision site; the latch sites and the recency filter are untouched,
+  and every prior interleaving shape (rounds 29-34) is pinned by its own regression.
+
+**Codex review round 36 (one P2 — completion comparisons alone still allowed a pre-presence snapshot to
+credit a disappearance; RED-proven on the round-35 bytes then fixed, class-swept):**
+- AN ABSENCE WHOSE COLLECTION OVERLAPS THE PRESENCE EVIDENCE WAS STILL CREDITED: completion timestamps bound
+  collection latency, not snapshot ordering — an absence query can capture its OS no-match BEFORE the presence
+  observation and DELIVER the result after it (reproduced by starting the absence read first, holding its
+  confirmation, observing presence, then releasing), and the round-35 confirmation-time post-pass credited it
+  (`disappeared`) for a process that was verifiably alive. Absence crediting now requires a DEMONSTRABLY
+  post-presence COLLECTION in BOTH absence-admission passes: the absence read's START instant
+  (`readStartedEpochMs`, sampled per read since round 3) must be at or after the presence evidence's
+  identity-read instant (non-overlapping read intervals) — gated in the in-loop absent-branch admission AND
+  in the round-35 post-pass; an overlapping collection interval is named-unconfirmed for the decision (it
+  proves nothing about the state after the presence), never credited as disappearance; reads without a
+  sampled start (pre-round-3 hand-built facts) keep the legacy completion-only semantics. The round-35
+  regression was restructured honestly to the refined semantics: the credited shape is the NON-overlapping
+  one (the absence read starts demonstrably after the overlapping live evidence and confirms later), and the
+  OVERLAPPING shape now adjudicates named-unestablished (`absence-unestablished`); the round-31
+  old-generation regression likewise — its overlapping absence proves nothing about the state after A's
+  verification, and the ROUND-31 CORE (B never latches A's disappearance as reuse) is asserted unchanged
+  (the reason is never `pid-start-identity-reused`). RED: the held-confirmation repro returned
+  `disappeared` for the verifiably alive process (stable across three runs); GREEN: named-unestablished,
+  with a demonstrably post-presence absence still crediting the lawful disappearance.
+
+**Registration:** `tools/run-test-suite.mjs` shell-research now selects THREE entries
+(`tests/shell-wait-local-process.test.mjs`, `tests/shell-wait-native-interruption.test.mjs`,
+`tests/shell-wait-probe.test.mjs`); `tests/test-selection.test.mjs` updated and STRENGTHENED (the routine
+complement must equal EXACTLY the eight registered research entries, so an unregistered new entry can never silently
+land in the routine suite; per-entry fail-closed checks); the probe suite's nested spawned-suite self-test total is
+97 → **206** (1 guarded marker + 96 native-interruption + 109 local-process; 188 at the round-25 state, 190 at
+round 26, 192 at round 27, 195 at round 28, 197 at round 29, 199 at round 30, 201 at round 31, 202 at round
+32, 203 at round 33, 204 at round 34 and 205 at round 35 — each round's local-process regressions raise it,
+and the probe file's `shellSuiteSpawnedTestTotal` constant was re-pinned in step 188 → 190 → 192 → 195 →
+197 → 199 → 201 → 202 → 203 → 204 → 205 → 206), and the probe
+file's guarded marker and
+selection tests now name the THREE-entry registration — no research entry is silently skipped.
+
+**Gates (round-25 record: executed 2026-10-29 on the round-25-final bytes at 91 local-process / 188 nested /
+949 full probe, plus the closure/fixture seam section 56/56 by name pattern; round-26 re-execution on its
+bytes at 93 local-process / 190 nested / 950 full probe; round-27 re-execution on its bytes at 95
+local-process / 192 nested / 950 full probe; round-28 re-execution on its bytes at 98 local-process / 195
+nested / 950 full probe; round-29 re-execution on its bytes at 100 local-process / 197 nested / 950 full
+probe; round-30 re-execution on its bytes at 102 local-process / 199 nested / 950 full probe; round-31
+re-execution on its bytes at 104 local-process / 201 nested / 950 full probe; round-32 re-execution on its
+bytes at 105 local-process / 202 nested / 950 full probe; round-33 re-execution on its bytes at 106
+local-process / 203 nested / 950 full probe; round-34 re-execution on its bytes at 107 local-process / 204
+nested / 950 full probe; round-35 re-execution on its bytes at 108 local-process / 205 nested / 950 full
+probe; RE-EXECUTED 2026-10-30 on the round-36 FINAL bytes —
+actuals, the full probe file supersets the seam section):** `node --test
+tests/shell-wait-local-process.test.mjs` = 109/109 pass, 0 failed, 0 skipped, exit 0; `node --test
+tests/test-selection.test.mjs` = 6/6 pass, exit 0; `npm run lint` clean (exit 0); `npm run typecheck` clean
+(exit 0); `git diff --check` clean (exit 0); the nested guarded shell-research run
+(`ZCODE_SHELL_WAIT_PROBE_SELF_TEST=1 node tools/run-test-suite.mjs shell-research`) re-executed on THESE final
+bytes: 206/206 pass, 0 failed, 0 skipped, exit 0 (the guarded three-file selection 1+96+109, including the
+three-entry guarded marker), and the FULL probe file `node --test tests/shell-wait-probe.test.mjs` =
+950/950 pass, 0 failed, 0 skipped, exit 0 (its eight spawned-suite CLI tests each re-run the guarded
+three-file shell-research selection — 206 tests — inside themselves; the round-25 record's 949/949 does not
+match the amended commit's own probe-file registration as measured on these bytes (950): the count was not
+re-measured at the amend boundary — the same bookkeeping-lag class this block documents above — and the
+re-pinned `shellSuiteSpawnedTestTotal` (now 206) is what makes the eight spawned assertions pass). No live
+launch, no native qualification claimed: arming, runtime wiring,
+pre-host/runtime gates and acceptance composition remain Task 3.
+
+**2026-10-30 local-settlement Task 3: the registered local-settlement gates wired into the live executor (offline; zero model turns, zero live launches; this registration executed on the Task-2 bytes `5b40c75bbc02c7f10b77a8858fe03e5404284a6a` as its own NEW commit — the §25.10 headline above stands as Task 2's registration). Task 2's interfaces
+(`observeLocalProcess`/`adjudicateLocalExit`/`joinAncestryHops`/`adjudicateLocalDuties`/
+`localProcessObserverProvenance`, the `captureEnvironment` broker entry, the fixture arming with the
+fail-closed `zcode-broker.mjs` declaration) were consumed EXACTLY as delivered; §25.1–§25.9 and the
+Task-2 registration stand byte-unchanged.**
+
+**What was wired where (the executed-path cites; the driver is the live executor):**
+
+- **The concurrent local-observation runtime in the held turn** (`driver.mjs`): the persisted block
+  (version 1, armed, `clock: 'wall-epoch-ms'`, digest-only) rides `cleanup.localObservation` on EVERY
+  exit path (driver.mjs:1717–1745 armed block; driver.mjs:1864–2066 the detached runtime: phase 1 arm
+  retry loop, phase 2 presence, phase 3 broker/transport establishment under the declared nonces,
+  phase 4 absence reads, the finalize composing the duty verdict BEFORE the record leaves the turn —
+  awaited in the exit finally, driver.mjs:3570–3577); the exit `recordTerminationInitiation` now
+  stamps on the turn's wall-clock seam (driver.mjs:1588–1593). Without the declaration the runtime is
+  inert and the record schema stays byte-identical (the schema-stability test).
+- **The pre-host capability gate** (the §25.3/§25.8 applicability freeze): the closed producer map
+  `LOCAL_OBSERVATION_REQUIRED_CASES = {rescue-interrupt}` (driver.mjs:5423) +
+  `localObservationDeclarationFor` (driver.mjs:5437 — an unarmed fixture composes NO declaration),
+  enforced (6) inside `evaluateLiveLaunchPreflight` for the interrupt case — unarmed
+  (driver.mjs:5566+), record-binding (offline provenance), launcher-entry / broker-hop / preload
+  digest drift all refuse pre-launch — and at PIPELINE level for the LIVE path only
+  (driver.mjs:662–667 — the default executor refuses before its first host/provider invocation).
+- **The executor choreography** (`executeDefaultLiveCaseBody`): the composed declaration arms
+  `runHeldHostTurn`'s local runtime (driver.mjs:6905–6912) — the runtime admission binds the
+  fixture's own capture nonce + declared launcher/broker entries, never a fake-peer identity and
+  never a stale cached generation (the §25.4 item-1/2 selector verbatim).
+- **Persistence + the offline all-duty join**: `mapShellWaitLiveFacts` carries `localProcess`
+  (schema-additive, both branches, driver.mjs:8302–8312/:8462–8468), `buildCaseRecord` persists it
+  (driver.mjs:1252–1257); `nativeInterruptionGateDInput` maps the record's block through the NEW
+  offline composition `joinRecordLocalProcessDuties` (driver.mjs:4512–4594) into
+  `localProcessDuties` on the Gate-D input (driver.mjs:5264–5267) — the §25.7 credit fences
+  re-verified OFFLINE against the record's OWN stamps: wall-epoch clock compatibility, an operative
+  fence from min(record cutoff, record termination boundary), every credit-bearing fact proving a
+  completion STRICTLY before the fence (equality and missing instants refused), the block's echoed
+  stamps agreeing with the record's (torn/foreign origin refused), every established duty bound to a
+  pre-fence-credited own observation, and the invocation exit positively `disappeared` with its
+  first verified absence pre-fence.
+- **The frozen oracle** (`release-qualification.mjs`): `evaluateNativeInterruptionSettlement`
+  composes the §25.5 applicable local duties into the FINAL acceptance (release-qualification.mjs:1011–1020
+  the conjunct; :1035 the `layers.localProcess` fact): `settled !== true` refuses by its own reason;
+  a missing/null block is the named unadjudicated refusal — legacy inputs have no local verdict under
+  this contract, NEVER a permissive legacy fallback; an unknown contract version is an input-contract
+  error.
+- **The two credit fences** at the runtime level (end to end): a pre-read fence (never starting a read
+  at/after the operative fence), the COMPLETION-side fence (driver.mjs:1993–2001 — a read whose
+  collection interval straddles the boundary/cutoff rides the named `postFence` observation, credits
+  nothing, and stops the loop), fence kinds named (`measurement-cutoff` /
+  `termination-boundary`), and normal observation teardown never manufactures a boundary.
+
+**Plan-checkbox coverage (the runtime calls are asserted, never just exports):** complete-path — the
+REAL fixture (`createShellWaitFixture` arming with the broker declaration) → real preflight → the
+composed declaration → `runHeldHostTurn` → `mapShellWaitLiveFacts` → `runShellWaitCase` serializer →
+reload → block persisted with its capture-nonce DIGEST (the local-process test file's complete-path
+test); success (early-completion absence adjudication), early failure (the failure record carries the
+independently recovered PARTIAL facts — settled stays honestly false), abort (the budget-aborted
+record carries the collected facts with the composed duties), cleanup and inertness pinned. Runtime
+gates stay runtime facts: actual identity/pending state/model obedience/captured exit are asserted
+`qualified: false`-through-the-join for every missing runtime proof (the join/oracle negative family
+in the local-process test file), and the pre-host gate refuses a known-missing mechanism at zero
+launch calls (the B battery + the launched-fixtures' own preflight keepers).
+
+**Gates on the FINAL bytes (2026-10-30, all commands executed with explicit exits; RE-EXECUTED on the
+review-fix bytes — see the addendum below):**
+`node --test tests/shell-wait-local-process.test.mjs` = **156/156** pass, 0 failed, 0 skipped, exit 0
+(47 Task-3 tests on top of Task 2's 109; TEN+ consecutive full-file executions green after the
+round-2 hardening — the earlier single-run flakes were the two load-race shapes the round-2 fixes
+closed, documented below); `node --test tests/test-selection.test.mjs` = **6/6** pass, exit 0;
+`node --test tests/shell-wait-native-interruption.test.mjs` = **96/96** pass, exit 0; `npm run
+test:shell-research` = **1202/1202** tests, 0 failed, 0 skipped, exit 0 (the SPAWNED guarded
+three-file selection = **1 + 96 + 156 = 253** as the CLI's own aggregate — the
+`shellSuiteSpawnedTestTotal` re-pinned 206 → 239 → 242 → 252 → **253** in step with the Task-3 test
+registrations and the guarded marker's own count; the FULL probe file **950/950**); `npm run lint`
+clean (exit 0); `npm run typecheck` clean (exit 0 — the runtime block, the join helper, the oracle
+input and EVERY Task-3 test file are typed); `git diff --check` clean (exit 0);
+`scripts/check-line-endings.mjs` = 549 tracked files, exit 0. The local-process focus file was
+additionally re-verified many consecutive times after the resumed round reproduced the reported
+hung-process pattern — the hung 100%-CPU processes belonged to a CANCELLED earlier dispatch's
+TRANSIENT intermediate state (an unbounded read-anchored interval), not to these bytes: every
+launch/result anchor in the final tests is hard-bounded (≤10 s, `unref`-ed) and the focused runtime
+test terminates in ~50 ms.
+
+**2026-10-30 review-fix addendum (six review findings — one P2 + five P3 — fixed on these bytes,
+`six` = the number of findings on commit e1c2999; the per-finding gates re-verified on the final
+bytes above):** the review round returned ONE P2 (the §25.7 fence could never fire on the EXECUTED
+observation path) and five P3s (a garbled comment, a double-await, two hand-crafted digests, a stale
+test name, and the missing runtime→serialize→reload→join→oracle JUNCTION test), each fixed on these
+bytes:
+- **[P2, RED→GREEN] the runtime statements are stamped PER PATH** —
+  `local-process-observation.mjs` gained the `completionClock` normalization
+  (`nowEpochMs?: number | (() => number)` on BOTH observer exports; a THUNK stamps every per-path
+  sample: readStartedEpochMs at dispatch, readEpochMs/identityReadEpochMs at the sampled completion —
+  the old fixed-number contract stays accepted, undefined → Date.now(), every sample validated);
+  `driver.mjs`'s runtime dispatch now passes the THUNK (`nowEpochMs: () => wallClockNow()`) at
+  admitStartupIdentityRecord/observeLocalProcess, so the dispatch instant no longer collapses every
+  verdict timestamp; the §25.7 completion-side fence (the straddling read excluded, the exit never
+  adjudicated from a post-boundary collection) now HOLDS on the executed path. The regression battery
+  drives the REAL observer through the runtime's own composition via the new instrument-seam
+  passthrough (`localObservationObserverOptions` — the real `observeLocalProcess` receives injected
+  `osSeams` + absenceConfirmation; no synthetic PID ever reaches the real OS): an observation whose
+  collection straddles a mid-read termination-initiation boundary is posted postFence with an honest
+  readStarted < boundary ≤ readEpochMs interval and credits NOTHING; the paired keeper credits a
+  pre-fence completed absence; and the offline join re-verification consumes the honest stamps
+  (echoed-boundary agreement asserted). Additionally the runtime's fence ECHO could read a stale null
+  when its task settled before the scheduled section stamped the record's
+  cutoff/cleanup-boundary — the echoes are now refreshed after the runtime settles in the exit
+  finally (they agree with the record's OWN final stamps, the P2 regression's join arm covers it).
+- **[P3] several cleanups**: the executor's §24.11 comment restored to its original wording;
+  `await await runHeldHostTurn` → single await; the native-interruption re-analysis fixture derives
+  its arming digests from the ACTUAL synthetic paths (never hand-crafted); the stale test name
+  'join v4 (§24.8) / oracle v4' honestly renamed to the asserted 'join v6 (§25.10)/oracle v5'; and
+  ONE continuous junction test: real `createShellWaitFixture` arming → the real preflight → the
+  composed declaration → the ARMED held turn (the REAL observer riding the fixture's own files and
+  its own ps/osSeams; the deterministic phase-3 release gate keeps all applicable duties pre-fence)
+  → the REAL serializer → reload → `nativeInterruptionGateDInput` (settled, fence kind
+  measurement-cutoff, three applicable duties composed) → `evaluateNativeInterruptionSettlement`
+  — the local-process layer CREDITED (`layers.localProcess: true`, zero local-process reasons)
+  beside the honestly-unknown remote layers.
+
+**2026-10-30 codex review round 2 (FOUR P2 findings on the Task-3 bytes, each RED-proven then fixed,
+class-swept; offline; zero model turns, zero live launches):**
+- **(P2-1) the ancestry join is composed in the RUNTIME path and GATES the settlement**: the
+  reviewer reproduced both PPID hops mismatching while the runtime/offline verdicts still settled —
+  `adjudicateLocalDuties` never verified parentage and the runtime never called `joinAncestryHops`.
+  Fixed: the runtime's finalize now composes the frozen `joinAncestryHops` from the SAME captured
+  facts (the companion/daemon OS observations + the eager transport marker with its OWN
+  `markerEpochMs` — the composed default capture attaches the fixture-owned marker file's mtime,
+  ms-rounded inside the uniform uncertainty bound) and persists the verdict with the block as the
+  schema-additive **`ancestry` field** (block schema version 1 keeps its number; the field is
+  additive: both hops' statuses/reasons + `companionToTransportAttributed`, the raw scope nonce
+  digest-only); `adjudicateLocalDuties` gains the `ancestryEstablished` input — `false` refuses the
+  AGGREGATE by name (`ancestryRefusal: 'ancestry-hops-unattributed'`, settled false) with the
+  legacy behavior byte-identical when absent; the tolerant `composeAncestryJoinForRuntime` export
+  composes the verdict (or the NAMED uncomposable verdict with both hops unestablished — the free
+  text of any validation failure is never carried); and the OFFLINE join re-verification requires
+  the persisted ancestry: unattributed → `ancestry-hops-unattributed`, absent →
+  `ancestry-unpersisted` (fail-closed for every pre-round-2 block). RED: the wrong-parentage runtime
+  arm (the broker row's ppid foreign AND the marker's ppid foreign — both hops named, the duties
+  never settle) and the offline battery; GREEN with the coherent-parentage keeper (both hops
+  established, the aggregate settles, no refusal field). Sweep: the runtime composition is the only
+  caller; the module's own batteries are unchanged (the additive input is absent there).
+- **(P2-2) the offline join re-verifies the persisted duty set** (never trusts the serialized
+  aggregate): the required §25.5 applicable trio must ALL be listed established with bound
+  identities (a missing slot → `inline-duty-<slot>-unpersisted`; an aggregate claiming settled
+  beside an explicit-unestablished or malformed entry → `inline-duty-aggregate-inconsistent`); every
+  listed-established duty must ride its OWN persisted observation — present, established,
+  pre-fence-completed, and DIGEST-bound (pid + start identity + the scope digest equal between the
+  duty's identity and the echo's observed identity — `inline-duty-observation-missing` /
+  `inline-duty-identity-foreign` / `inline-duty-unbindable` for the never-composable shapes). RED:
+  the reviewer's exact `{duties: {settled: true, duties: []}}` shape and the observations-stripped
+  shape; GREEN on the honest positive control (zero refusals, the oracle qualifies the complete
+  shape).
+- **(P2-3) the persisted exit verdict is re-adjudicated from the persisted presence + credited
+  absence reads** (the summary alone never credits): the bound identity must DESCRIBE the invocation
+  generation (equal pid/start-identity/scope-digest with the presence's observed identity —
+  `exit-bound-identity-foreign`); the credited instant must be REALIZED in the record (≥1
+  same-generation confirmed absence read whose completion EQUALS `firstVerifiedAbsenceEpochMs` —
+  `exit-absence-uncorrelated`); every matched absence's collection must START at/after the presence's
+  identity horizon (`exit-absence-overlaps-presence`, the round-36 re-verification); and no persisted
+  same-generation established read may complete at/after the verified absence
+  (`exit-absence-superseded`, the live-wins rule). RED: the foreign-bound + reads-stripped shape and
+  the invented absence instant; GREEN on the honest blocks.
+- **(P2-4) the preflight verifies the EFFECTIVE launch environment**: the digests may agree while
+  the executor is about to launch with NO capture capability. The (7) arm now requires every
+  declared capture variable to be present in the fixture's OWN env and AGREE with the armed handle
+  (the capture directory, the nonce, the entry, the broker entry, the max bytes), and `NODE_OPTIONS`
+  to actually LOAD the declared preload artifact (the exact `--require "<escaped path>"`
+  composition; a NODE_OPTIONS present without this fragment never counts) — known pre-launch
+  capability, never a runtime measurement. RED: the dry-env and the idle-NODE_OPTIONS shapes; GREEN
+  with the composed environment; the committed preflight positives were updated to the same arming
+  (the re-analysis fixtures carry the armed shape; the offline join still maps their records as
+  legacy unless the block rides).
+- **The honest flake record**: the first post-fix batteries exposed TWO load-race shapes in the NEW
+  test harnesses (an early-release race in the junction's phase-3, and the Task-2 write-failure
+  test's own read-only flip racing the preload's SECOND install write — the identity record is
+  written FIRST, the P2 capture file SECOND): the junction now gates its hold clock on the phase-3
+  signal, anchors its launch result on the phase-4 confirmed-absence seam, keeps the REAL wall clock
+  (the registered cutoff = the release + 10 real seconds — never a call-counting fake that climbs
+  past its own fence), delays the phase-4 absence read 30 real ms (the strict-recency tie rule: the
+  whole runtime otherwise completes inside ONE real millisecond and a tie can never manufacture a
+  disappearance), and the Task-2 test waits for the capture file BEFORE the read-only flip. TEN+
+  consecutive full-file runs green after the hardening.
+
+**2026-10-30 codex review round 3 (ONE P1 + FOUR P2 findings on the round-2 bytes `313c6512072e80ba1f024f2ff4ac638e5a6eb21d`, each RED-proven then fixed, class-swept; offline; zero model turns, zero live launches; every runtime/preflight test rides injected seams only — synthetic PIDs never reach the real OS):**
+- **(P1, RED→GREEN) the transport observation verifies its OWN declared nonce variable**: the transport inspector composed `observeLocalProcess` with the transport's independently generated nonce, but the DEFAULT inspector validated the environment variable the CAPTURE scope owns (`ZCODE_SHELL_WAIT_CAPTURE_NONCE`) — a healthy transport (its own nonce living under `FAKE_ZCODE_PROCESS_NONCE`, the §25.4 item-2 declared-transport variable) could never establish (`liveness-read-failed`); the round-1/2 batteries' `environ: 'present'` seams concealed the mismatch. Fixed: `observeLocalProcess` gains the optional `nonceVariable` input (validated `/^[A-Z][A-Z0-9_]{0,63}$/`; the default inspect passes the capture variable; an existing refused read stays byte-identical under the missing input), `FAKE_ZCODE_NONCE_VARIABLE` is exported from the observer module, and the driver's transport composition passes `nonceVariable: FAKE_ZCODE_NONCE_VARIABLE` with the transport's OWN nonce as input.processNonce. RED: a faithful-env runtime harness — the ps `eww` command column carries BOTH nonce variables with their OWN values (the capture scope nonce AND the transport's own declared transport nonce) — through which the wrong-variable inspector's transport observation refused `liveness-read-failed`; GREEN: the same faithful env with the corrected composition establishes the transport observation and duty through the REAL observer.
+- **(P2, RED→GREEN) the ancestry endpoint observations REFRESH after the downstream startup**: the endpoints were sampled once at the phase-2/3 window, but the daemon may spawn seconds later and the transport marker may postdate the first broker read — the early sample cannot cover the late-spawning generations and the hop lifetime windows break on the honest choreography. Fixed: after the phase-3 break and still pre-release/pre-fence, the runtime RE-READS the SAME observed generations and persists the results with the block as the schema-additive **`ancestryEndpoints` field** (`{companion, daemon, transportMarker: {pid, ppid, nonceSha256 (digest)}}`); a NEGATIVE refresh keeps the endpoint's own earlier positive baseline (the latest positive generation evidence; the early presence baseline stays the record's pre-launch witness), and the finalize's ancestry composition consumes the refreshed endpoints. RED: a runtime harness with the honest spawn choreography (the daemon's record write and observable read AFTER its claimed creation second; the transport marker past the daemon's creation bound) through which the pre-fix runtime could only compose from the UNCOVERING early window; GREEN: the refreshed endpoints establish, cover the daemon's claimed creation, the hops attribute and the duties settle.
+- **(P2, RED→GREEN) the offline join re-verifies the persisted ADMISSIONS** (join v7): the replay verified only the OS observations — deleting both startup admissions from a positive record, or moving an admission's completion past the cutoff, still yielded settled:true. Fixed: the §25.4 pairing is required — the invocation admission must ride beside the presence observation and the broker admission beside the broker observation, each bound to its observation by role/name, pid and scope digest (`inline-admission-invocation-unpersisted` / `inline-admission-broker-unpersisted` / `inline-admission-observation-unbound`), and both must complete strictly pre-fence (`admission-at-or-after-fence` / `admission-instant-unprovable`). RED: the admissions-stripped and post-cutoff-admission shapes; GREEN on the honest positive (zero refusals).
+- **(P2, RED→GREEN) the offline join re-verifies the NAMED ancestry chain, never the serialized boolean**: `companionToTransportAttributed:true` passed with a missing named hop; an endpoint or marker describing a foreign generation passed; a persisted observation contradicting the claimed parentage passed. Fixed: BOTH named hops (`companion-to-daemon`, `daemon-to-transport`) must be listed established (`ancestry-hops-unattributed`); the refreshed endpoint markers must persist and be well-formed (`ancestry-endpoints-unpersisted`); every endpoint must be DIGEST-BOUND to the same generation the duty slot rides (`ancestry-endpoint-generation-foreign`); and the hops' claimed parentage is re-verified against the persisted observations — the daemon's observed ppid is the Companion's pid, the marker's ppid is the daemon's pid, the marker describes the SAME transport generation (pid + scope digest) — `ancestry-ppid-chain-foreign` for every contradiction. RED: the dropped named hop, the endpoints-stripped, the foreign-broker-ppid and the foreign-generation-endpoint shapes; GREEN on the honest positives.
+- **(P2, RED→GREEN) the offline join re-adjudicates the persisted read sequence with the SAME generation-change rules the runtime's own reuse latch applies**: a same-PID same-scope read whose identity proves a DIFFERENT generation (an established different-start read, the named `start-identity-generation-changed` verdict, or any read carrying a foreign `observedStartIdentity`) at/after the presence horizon latched `reused` on the runtime but was INVISIBLE to the replay — the exit kept its `disappeared` credit. Fixed: the replay scans the WHOLE persisted read sequence and refuses `exit-reuse-latched` (the original generation's disappearance stops being creditable; later reads of the replacement generation never convert it into the original's confirmed absence; the established-successor shape stays distinct from `exit-absence-superseded`, the live-wins rule). RED: the three replacement shapes (established/named/carried) beside a still-claiming disappeared verdict; GREEN on the honest blocks.
+- **Class-sweep inventory**: the sweep found and fixed THREE consumers beyond the coded findings — (1) the junction's per-pid phase arms (each observer read issues TWO phase calls, so the refreshed reads consume two more calls per pid; the junction's absence arm moved to calls ≥5 with the strictly pre-refresh early choreography unchanged), (2) the straddle-fence runtime harness (the refresh is now the FIRST observation read after the phase-3 break — the boundary stamping moved to the phase-4 absence read so the straddling collection interval is the named post-fence shape again, exact same assertions), and (3) the persisted-positive builders gained the `ancestryEndpoints` markers so their positives keep refusing ZERO (the aggregate gate-D record's observation helper now takes each node's own ppid — itself a re-verification that the persisted observations carry the parentage the chain checks consume). No consumer of the join contract was left unchecked: the offline join battery, the oracle battery, the executed-path junction and the re-analysis fixtures were re-run.
+- **The honest choreography disclosure (the runtime harness rules)**: uniform whole-second lstart bounds (round 19) make same-second generation ordering unverifiable, so the synthesized rows carry their OWN generation gaps (the Companion ~100 ms before its phase-2 read; the daemon ≥ Companion + 2 s with its record's precise start/write instants inside its claimed second; the transport past the daemon's bound with the marker epoch inside `(daemonStart+1000, daemonRead]`), and the record files' `startOriginMs`/`firstWritePreciseMs` ride those exact seconds. Every asserted relationship is one the shipped checker independently re-verifies (lifetime `generation-lifetime-unverifiable`, record-vs-OS second-containment, hop windows) — no test stamps a fact the checker never looks at.
+- **Gates on the final bytes (2026-10-30, all commands executed with explicit exit codes; the round-3 TDD cycle ran its RED then GREEN per finding as recorded above):** `node --test tests/shell-wait-local-process.test.mjs` = **165/165** pass, 0 failed, exit 0 (the Task-2 base 109 + Task 3's 47 + NINE round-3 registrations: the faithful-env F1, the refreshed-endpoints F2, the seven offline replay F3/F4/F5 shapes; re-verified green FOUR+ consecutive times) and = EXACTLY GREEN as its own run; `node --test tests/test-selection.test.mjs` = **6/6**, exit 0; `node --test tests/shell-wait-native-interruption.test.mjs` = **96/96**, exit 0; `npm run test:shell-research` = **1211/1211** tests, 0 failed, exit 0 (the SPAWNED guarded nested selection = 1 + 96 + 165 = **262** — `shellSuiteSpawnedTestTotal` re-pinned 253 → **262**); the FULL probe file = **950/950**, 0 failed, exit 0, TWO consecutive executions (the natural invocation and an added `--test-timeout=180000` run — each spawning test's nested CLI child ~95 s and green). One MEASURED run ran the probe file CONCURRENTLY with the focused gate suites (this registration's own cross-execution mistake): the probe file's 8 nested suite-spawning tests failed simultaneously at their ~95 s spawn — the load-ranked spawn-storm shape this addendum names below — and the FILE STANDING ALONE re-verified green immediately after (twice); `npm run lint` clean, exit 0; `npm run typecheck` clean, exit 0; `git diff --check` clean, exit 0; `scripts/check-line-endings.mjs` = 549 tracked files, exit 0. The runtime fixture anchors remain hard-bounded real-time waits (≤3.5 s) with `unref`-ed fallbacks; every focused runtime test terminates in seconds and no orphaned 100%-CPU process pattern exists on these bytes.
+
+**2026-10-30 codex review round 4 (FOUR P2 findings on the round-3 bytes `c7eeaac0b993776f7c1e6bae4cb107645f044ad8`, each RED-proven then fixed, class-swept; offline; zero model turns, zero live launches; injected seams only — synthetic PIDs never reach the real OS):**
+- **(P2, RED→GREEN) the replay re-adjudicates the ADMISSION GENERATIONS (join v8)**: the round-3 admission replay checked only role/pid/digest equality + pre-fence completion — a record whose admission claimed a startup instant CONTRADICTING its own persisted OS observation (the reviewer's exact shape: `startOriginMs` 19000/`firstWritePreciseMs` 19001 against an OS creation second 1000) still settled, though the frozen `adjudicateLocalDuties` refuses the identical pairing `generation-start-second-mismatch`. Fixed: `admissionReplay` now mirrors the frozen containment family on the digest-only persisted shapes — the record's precise start must live inside (or one whole second before) the observed creation second (darwin) or satisfy the asymmetric creation-vs-write window (linux, the exported frozen `LINUX_PROC_RESOLUTION_MS`/`LINUX_BTIME_UNCERTAINTY_MS` bounds), `recordStart ≤ recordWrite`, and the observation's identity instant must POSTDATE the record writer (`admission-generation-unavailable` / `admission-start-after-record` / `admission-start-mismatch` / `admission-observation-stale`, the frozen cascading order preserved). RED: the contradicting-generation and the observation-predates-writer shapes (both settled:true pre-fix); GREEN: named refusals on the same bytes.
+- **(P2, RED→GREEN) the replay re-verifies the ancestry ENDPOINT lifetimes, their own pre-fence completions, and the marker's persisted write instant**: the round-3 endpoint checks were identity-equality only — endpoint completions moved past the cutoff, or a daemon endpoint creation moved to 30000, still settled; and the runtime persistence DROPPED `markerEpochMs`, the one instant the frozen `joinAncestryHops` daemon→transport hop requires, so the hop lifetime was unverifiable offline in principle. Fixed: (a) the runtime's persisted transport marker now carries its OWN write instant (`markerEpochMs` — schema-additive on the block's `ancestryEndpoints.transportMarker`); (b) the replay requires it (a marker without it is `ancestry-endpoints-unpersisted` — pre-round-4 blocks fail closed, named); (c) both endpoints must complete strictly pre-fence by the SAME §25.7 credit predicate as every observation echo (`observation-at-or-after-fence` / `observation-instant-unprovable`); and (d) the frozen hop lifetime/creation rules are re-applied at the round-19 uniform bound — daemon creation + bound ≤ the Companion endpoint's identity-read instant, Companion creation + bound ≤ the daemon endpoint's read and ≤ the daemon creation, and the marker's write instant ∈ [daemon creation + bound, the daemon endpoint's read] — violations named `ancestry-endpoint-lifetime-unverifiable`. RED: the post-cutoff endpoint, the 30000-creation endpoint, and the marker-epoch-stripped shapes (all settled:true pre-fix); GREEN: named refusals.
+- **(P2, RED→GREEN) in-flight local operations are bounded by the SHARED abort**: a local admission/OS read still in flight when the turn ends was awaited UNCONDITIONALLY in the exit finally (after the budget timer was cleared) — the reviewer reproduced a 100-ms budget + a 500-ms observation returning ~503 ms; our RED reproduced the identical shape (a 1.2 s admission against a 100 ms budget → the turn returned at 1203 ms). Fixed: EVERY local operation (both admission seams, every observation seam — the phase-1/2/3/4 loops, the ancestry refresh and the finalize fallbacks all flow through the two `local*Once` helpers) races the shared `budgetController` abort via `localBoundedOperation`; a losing operation settles IMMEDIATELY as the NAMED unfinished-observation fact — the verdict reason `observation-window-closed` and the block's `stoppedAt: 'unfinished-observation'` — so the turn returns bounded by its own budget (~102 ms in the same RED harness) and the runtime's remaining phases observe the abort and stop. The §25.7 measurement semantics are untouched: a COMPLETED operation keeps its own completion instants (only the WAIT is bounded, never the stamps) — the keeper (the same 150 ms observation with the budget NOT expired) completes in full, settles the duties and persists no unfinished fact.
+- **(P2, RED→GREEN) the runtime persists the SELECTED ancestry endpoints — runtime verdict and offline replay see identical evidence**: a transiently FAILED refresh fell back to the endpoint's earlier positive baseline in the finalize's composition but persisted the FAILED refresh — the runtime said settled while the offline join refused the same block `ancestry-endpoint-generation-foreign`. Fixed: the runtime persists the SELECTED endpoints (the observations `composeAncestryJoinForRuntime` actually consumes — a negative refresh keeps the earlier positive baseline AT SELECTION time), and the failed refreshes ride SEPARATELY as the named facts (the schema-additive `ancestryEndpointRefreshes` field, the projected failed verdicts per slot). RED: a runtime harness with a covering early Companion read, a transiently failed companion refresh and an established daemon refresh — pre-fix the persisted companion endpoint was the `liveness-read-failed` verdict while the duties settled; post-fix the persisted endpoints are the selected fallback pair, the offline join of the SAME block settles with zero refusals, and the failed refresh rides as the named fact.
+- **Class-sweep inventory**: the sweep found and fixed FOUR consumers beyond the coded findings — (1) the observer module's frozen public-surface pin gained the two exported frozen bounds (`LINUX_BTIME_UNCERTAINTY_MS`, `LINUX_PROC_RESOLUTION_MS` — the replay consumes the FROZEN constants, never re-declared ones, so the rules cannot drift); (2) the offline positive builders (the round-2 `arm()`, the round-3 `armReplay`, the round-1 `armedBlock`, the aggregate gate-D `settledLocalProcessBlock`) gained lifetime-consistent endpoint creation seconds and the marker's persisted write instant — the round-2 broker record/observation pair was itself caught by the NEW generation-freshness gate (an observation predating its own record writer) and corrected, a direct demonstration that the gate bites; (3) the F4 runtime harness's confirmed absence completes in a later real millisecond than the presence's identity instant (the strict-recency tie rule); (4) the version pins moved to v8 everywhere (the local-process battery, the native-interruption battery ×2, the probe battery ×2) and the spawned guarded selection re-pinned 262 → **271** (1 + 96 + 174).
+- **Gates on the final bytes (2026-10-30, all commands executed with explicit exit codes; RED before GREEN per finding as recorded above):** `node --test tests/shell-wait-local-process.test.mjs` = **174/174** pass, 0 failed, exit 0 (Task-2's 109 + Task 3's 47 + round-3's 9 + round-4's NINE: the F1×2/F2×3 offline REDs, the F3 RED + keeper, the F4 RED, and the join-version registration); `node --test tests/test-selection.test.mjs` = **6/6**, exit 0; `node --test tests/shell-wait-native-interruption.test.mjs` = **96/96**, exit 0; `npm run test:shell-research` = **1220/1220** tests, 0 failed, exit 0 (the spawned guarded nested selection = 1 + 96 + 174 = **271**; the FULL probe file **950/950**, 0 failed, exit 0); `npm run lint` clean, exit 0; `npm run typecheck` clean, exit 0; `git diff --check` clean, exit 0; `scripts/check-line-endings.mjs` = 549 tracked files, exit 0.
+
+**2026-10-30 codex review round 5 (FIVE P2 findings on the round-4 bytes `6ab1af257bd6289c2072f9328a546fb9cad54902`, each RED-proven then fixed, class-swept; offline; zero model turns, zero live launches; injected seams only — synthetic PIDs never reach the real OS):**
+- **(P2, RED→GREEN) the replay binds the block's DECLARED scope (join v9)**: the round-3/4 admission replay compared each admission with its OWN observation but neither against `block.nonceSha256` — a COHERENT foreign-scope broker subtree (the admission identity, its observation, the ancestry endpoint and the duty identity ALL re-keyed to another capture's digest) still settled, though the runtime's own scope checks reject exactly that pairing (§25.4 item 2: one shared invocation scope binds every duty). Fixed: the startup-backed duties' admissions AND their observations must carry the block's declared scope digest (`admission-scope-foreign`), and the ancestry companion/daemon endpoints must carry it (`ancestry-endpoint-scope-foreign`); a block whose own scope digest is missing binds nothing (`local-scope-unpersisted`, fail-closed). The transport slot and the transport marker keep their OWN declared-transport digest by design (the §25.4 item-2 declared-transport scope). RED: the reviewer's coherent re-keyed subtree (settled:true pre-fix); GREEN: both named refusals.
+- **(P2, RED→GREEN) identity-bearing ABSENCE reads latch the reuse**: the round-3 replay latch checked replacement identities only on established/unestablished reads — an `absent` verdict CARRYING `observedStartIdentity`/`observedIdentityReadEpochMs` (the occupant disappeared DURING the inspection — the round-28 observed-then-gone ride) bypassed the latch, while the frozen `adjudicateLocalExit` latches the same evidence `pid-start-identity-reused` (the round-29/31 rule at the carried identity's own inspection instant). Fixed: the replay's latch applies the identity check to identity-bearing absence reads (the shared carried-instant ordering gate). RED: an absence carrying a foreign observed identity beside a still-claiming disappearance (settled:true pre-fix); GREEN: `exit-reuse-latched`.
+- **(P2, RED→GREEN) absence collection is bounded by the LATEST same-generation presence**: the replay's round-36 overlap check used the INITIAL baseline horizon only — a sequence with a LATER verified same-generation presence (identity-read 5020) and an absence collected 4900-5100 (started BEFORE the later presence) settled, while the frozen exit keeps that sequence live (its running `lastPresenceEpochMs` advances with every same-generation established read). Fixed: the replay derives the final presence horizon from the WHOLE persisted sequence (the maximum identity-evidence instant over the baseline and every same-generation established read) and applies the overlap rule at the walked horizon (`exit-absence-overlaps-presence`). The reuse latch keeps the baseline horizon deliberately (a scan cannot replay decision order; the baseline latches MORE — fail-closed). RED: the later-presence + early-collected-absence shape (settled:true pre-fix); GREEN: the named overlap refusal.
+- **(P2, RED→GREEN) the preflight hashes the preload artifact ON DISK against the DECLARED digest**: the round-2 effective-environment arm compared CACHED hashes only (`handle.preloadSha256` vs the arming declaration) — replacing or truncating the generated preload AFTER fixture creation (with an existing non-observer module) kept every cached hash equal and passed the preflight, so the host would launch with NO capture mechanism. Fixed: the preflight hashes the artifact at `preloadPath` ON DISK and compares with the fixture's frozen declaration digest — a replaced, truncated or deleted artifact refuses pre-launch (named: the capture artifact drifted or is missing). RED: the replace-then-preflight and truncate-then-preflight shapes (ok:true pre-fix); GREEN: both refuse with the disk-drift reason; the premise (the coherent armed fixture passes) and the class sweep (the committed preflight fixtures now DERIVE their declared digests from the actual artifact bytes) verified.
+- **(P2, RED→GREEN) a reparenting refresh never invalidates the capture-time ancestry**: if the Companion exits between the broker establishment and the endpoint refresh, the detached broker stays alive (the SAME start identity, a NEW ppid) — the round-3/4 runtime selected the refresh unconditionally, so the ancestry composition saw `daemon-ppid-mismatch-at-capture` and the duties went unsettled DESPITE sufficient earlier ancestry evidence and a confirmed Companion exit. Fixed (the Task-2 reparenting rule: a changed parent NEVER proves death or a generation change): a refreshed daemon read whose capture-time ppid no longer names the Companion — while the earlier capture-time observation still carries the valid parent link — is REPARENTING evidence: the runtime selects the CAPTURE-TIME endpoint for the ancestry composition and the reparenting refresh rides separately as the named observation (the schema-additive `ancestryEndpointRefreshes.daemon`, now carrying either a failed OR a not-selected reparenting refresh). RED: the exact runtime shape (the refresh read with ppid 1; pre-fix both hops refused and the duties unsettled); GREEN: attributed ancestry, settled duties, the persisted daemon endpoint carrying the capture-time ppid, and the reparenting observation retained beside it.
+- **Class-sweep inventory**: the sweep found and fixed FOUR consumers beyond the coded findings — (1) the committed preflight fixtures (the round-1 `armedFixture` and the round-2 preflight battery) now DERIVE their declared preload digests from the actual artifact bytes (the cached-vs-declared equality they relied on is no longer sufficient by design); (2) the round-3 foreign-generation endpoint test was re-keyed to mutate ONLY the start identity (its old mutation also re-keyed the scope, which the NEW scope gate now names first — both gates are real, the test now exercises exactly the generation shape); (3) the version pins moved to **v9** in all five registered spots (the local-process battery ×2, the native-interruption battery ×2, the probe battery ×2) and the spawned guarded selection re-pinned 271 → **277** (1 + 96 + 180); (4) the native-interruption legacy-shape comment updated to the join v9 reference.
+- **Gates on the final bytes (2026-10-30, all commands executed with explicit exit codes; RED before GREEN per finding as recorded above):** `node --test tests/shell-wait-local-process.test.mjs` = **180/180** pass, 0 failed, exit 0 (Task-2's 109 + Task 3's 47 + round-3's 9 + round-4's 9 + round-5's SIX: the F1/F2/F3 offline REDs, the F4 preflight RED with its positive premise and truncated arm, the F5 runtime RED, and the join-version registration); `node --test tests/test-selection.test.mjs` = **6/6**, exit 0; `node --test tests/shell-wait-native-interruption.test.mjs` = **96/96**, exit 0; `npm run test:shell-research` = **1226/1226** tests, 0 failed, exit 0 (the spawned guarded nested selection = 1 + 96 + 180 = **277**; the FULL probe file **950/950**, 0 failed, exit 0); `npm run lint` clean, exit 0; `npm run typecheck` clean, exit 0; `git diff --check` clean, exit 0; `scripts/check-line-endings.mjs` = 549 tracked files, exit 0.
+
+**2026-10-30 codex review round 6 (FOUR P2 findings on the round-5 bytes `a1237aaec4ec77764027cf6cdcf50ec61937c990`, each RED-proven then fixed, class-swept; offline; zero model turns, zero live launches; injected seams only — synthetic PIDs never reach the real OS):**
+- **(P2, RED→GREEN) the replay binds the admission's ENTRY DIGEST and ARGV SELECTOR to the record's capture declarations (join v10)**: the round-3..5 admission replay verified role/pid/scope/pre-fence/generation but ignored the persisted entry digest and argv selector — a record whose invocation admission carried `argv: ['status','list']` and an unrelated program's entry digest still settled→qualified. Fixed: the case record's PERSISTED capture declaration (`stdoutCaptureDeclaration` — the §25.3 arming the serializer already records beside the capture provenance) binds BOTH startup admissions: the invocation admission's `entryRealpathSha256` must equal the declaration gate's declared launcher digest AND its argv the EXACT declared selector (`admission-entry-unbound` / `admission-selector-foreign`, each riding its own name); the broker admission's entry digest the declared broker entry digest; a record without the declaration binds nothing (`admission-entry-unbound`, fail-closed — never the serialized admission status alone). RED: the contradicting argv+entry shape (settled:true pre-fix); GREEN: both named refusals; the keeper (declaration-bound admissions) settles with zero refusals. Design note: extending the EXISTING persisted `stdoutCaptureDeclaration` (rather than a new block field) reuses the §25.3 offline-provenance binding already recorded on every armed run — no new schema.
+- **(P2, RED→GREEN) unsupported listed duties are refused, never silently skipped**: the replay's per-duty loop skipped every non-established entry, so an aggregate claiming settlement while ALSO listing an unestablished `identified-descendant` (`exitStatus: 'still-live'`) passed — bypassing `adjudicateLocalDuties`' requirement that positively identified descendants have established exits. Fixed: every LISTED duty must be a member of the closed applicable trio (the driver's own composition lists no other slots — identified descendants compose empty in this contract); any foreign slot (the descendant-live shape included) refuses `inline-duty-unsupported-slot`. RED: the descendant-live shape (settled:true pre-fix); GREEN: the named refusal.
+- **(P2, RED→GREEN) observation work cannot START after the window closes (cancellation propagates)**: the round-4 `localBoundedOperation` race stops AWAITING but does not cancel the work — through the REAL observer with a delayed `osSeams.ps`, the turn returned bounded while the inspector started ANOTHER read after the window closed and kept Node alive (our RED measured ps starts at +1, +152, +403, +552 ms against a 100 ms budget). Fixed: `observeLocalProcess` accepts an `AbortSignal`-shaped `abortSignal` input (validated), honors it at the natural between-reads points (entry, post-inspection, pre-absence-confirmation, pre-boot-clock — the read is torn as the NAMED `observation-window-closed` unestablished verdict), threads the signal to the default inspector through the osSeams, and `inspectVerifiedProcessIdentity` honors it between ITS reads (before the marker read and before the second start-identity read — a started read keeps its own semantics, only the NEXT one is prevented); the driver's `localObserveOnce` passes the shared `budgetController.signal`. The §25.7 measurement semantics stay intact (a completed read keeps its own completion instants). RED: the delayed-ps harness (4 ps starts, three after the window); GREEN: exactly ONE ps start (the in-flight read), the turn bounded (~34 ms class), the named unfinished-observation fact persisting.
+- **(P2, RED→GREEN) the live provenance binds the MATERIALIZED executing helper copies**: the live runtime executes MATERIALIZED copies of `scripts/lib/fs.mjs`, `process.mjs`, `errors.mjs`, but the driver's `EXECUTING_OBSERVER_PROVENANCE` construction bound only the seven module sources — a helper change altered admission/OS-observation behavior without changing the recorded observer digest or setting `sourcesChangedDuringRun`. Fixed (option (a) — extend the driver construction; justification: the helpers execute inside the runtime the driver owns, and extending the ONE digest already bound into every case record reuses the existing module-init/record-time re-read machinery — a separate local-provenance block would need its own verification pipeline): the module-init construction binds the three MATERIALIZED copy digests (`EXECUTING_HELPER_MATERIALIZATION.bytes` — the bytes actually loaded, by construction) and the record-time `observerProvenance()` reads the three PRODUCTION helper files into the same positions — a pre-run helper change changes the digest; a mid-run helper change sets `sourcesChangedDuringRun`; the digest is load-bearing (the RED test replicates the construction INCLUDING the copy digests and asserts equality — omitting them cannot produce the recorded digest). `OBSERVER_DIGEST_TAG` v7 → **v8**; the digest input names the three helper bindings.
+- **Class-sweep inventory**: the sweep found and fixed SIX consumers beyond the coded findings — (1) the six offline record factories (the round-1 `armedBlock`, the round-2 `arm()`, the round-3 `armReplay`, the round-4 `armRound4`, the round-5 `armRound5`, the round-6 `armRound6`) and (2) the aggregate gate-D `settledLocalProcessBlock`/`gateDRecord` gained the persisted capture declaration and admission entry digests matching them (the new binding is a REQUIRED part of the positive shape); (3) the round-4 F4 junction test's manual join input gained the declaration (the runtime-produced block's admission carries the REAL entry digest the declaration binds); (4) the join version pins moved to **v10** in all five registered spots; (5) the spawned guarded selection re-pinned 277 → **283** (1 + 96 + 186); (6) the round-6 runtime harness's delayed-ps seam doubles as the F3 regression instrument (its ps-start ledger is the no-read-after-the-window assertion).
+- **Gates on the final bytes (2026-10-30, all commands executed with explicit exit codes; RED before GREEN per finding as recorded above):** `node --test tests/shell-wait-local-process.test.mjs` = **186/186** pass, 0 failed, exit 0 (Task-2's 109 + Task 3's 47 + rounds 3/4/5's 9+9+6 + round-6's SIX: the F1 RED + keeper, the F2 RED, the F3 delayed-ps RED, the F4 load-bearing-digest RED, and the join-version registration); `node --test tests/test-selection.test.mjs` = **6/6**, exit 0; `node --test tests/shell-wait-native-interruption.test.mjs` = **96/96**, exit 0; `npm run test:shell-research` = **1232/1232** tests, 0 failed, exit 0 (the spawned guarded nested selection = 1 + 96 + 186 = **283**; the FULL probe file **950/950**, 0 failed, exit 0); `npm run lint` clean, exit 0; `npm run typecheck` clean, exit 0; `git diff --check` clean, exit 0; `scripts/check-line-endings.mjs` = 549 tracked files, exit 0.
+
+**2026-10-30 codex review round 7 (TWO P2 findings on the round-6 bytes `4752fa6fc2244bcd0b903459e5bd93361b172bb8`, each RED-proven then fixed, class-swept; offline; zero model turns, zero live launches; injected seams only — synthetic PIDs never reach the real OS):**
+- **(P2, RED→GREEN) a generation-changing ancestry REFRESH read participates in the exit adjudication AND the offline reuse latch (join v11)**: the Companion PID reused during the ancestry REFRESH produced the named generation-change verdict that rode ONLY `ancestryEndpointRefreshes` — the exit adjudication received only the phase-4 reads, so the REPLACEMENT's subsequent confirmed absence adjudicated `disappeared` (our RED: the exit disappeared with the refresh's `start-identity-generation-changed` verdict persisted) and the offline join settled without refusals. Fixed BOTH sides: the runtime pushes a generation-changing companion refresh verdict into the exit adjudication's read sequence (the three frozen replacement shapes — an established different-start read, the named `start-identity-generation-changed` verdict, a carried foreign `observedStartIdentity` — the frozen latch rules, `pid-start-identity-reused`); the offline reuse latch consumes the PERSISTED `ancestryEndpointRefreshes.companion` beside the phase reads (`exit-reuse-latched`) — a torn record claiming a disappearance beside a persisted generation-changing refresh refuses. RED: the runtime shape (disappeared + zero-refusal join pre-fix) and the offline torn-record shape; GREEN: the runtime exit `unestablished/pid-start-identity-reused` and the join refusing `local-exit-unestablished`; the offline torn shape refusing `exit-reuse-latched`.
+- **(P2, RED→GREEN) the reparented daemon refresh provides the LIFETIME bound while the capture-time parent link satisfies the ppid hop (the two-fact rule)**: the round-5 reparenting fallback discarded the refreshed daemon read's LATER lifetime evidence — when the INITIAL daemon observation preceded the transport marker, the ancestry join reported `generation-lifetime-unverifiable` on hop 2 despite having the original parent link AND a subsequent same-generation read beyond the marker (our RED reproduced the reviewer's exact hop on the moved-read harness). Fixed: `joinAncestryHops` gains the optional `daemonCaptureParentPid` input (validated) — hop 1 verifies the ppid chain against the CAPTURE-TIME parent link when supplied; the runtime selects the REFRESHED (reparented) daemon endpoint for the composition (the lifetime coverage), carries the capture-time parent link SEPARATELY into it (hoisted task-scope fact), and persists BOTH facts in the block (the refreshed endpoint in `ancestryEndpoints.daemon`, the capture-time parentage in the broker observation) — the v10 offline join already applies the same two-fact rule (its ppid-chain check reads the persisted broker observation; its lifetime checks read the persisted refreshed endpoint), so BOTH facts replay offline with NO join-version growth. RED: the reviewer's moved-read harness (hop 2 unestablished, duties unsettled pre-fix); GREEN: attributed ancestry, settled duties, the refreshed endpoint persisted (the reparented ppid), the capture-time parent link persisted, and the offline join of the same block settling with zero refusals. The round-5 reparenting test updated honestly to the two-fact contract (the refresh is the lifetime bound; the capture-time parent link satisfies the ppid hop).
+- **Class-sweep inventory**: the sweep found and updated (1) the join version pins → **v11** in all five registered spots (the local-process battery ×4 version registrations, the native-interruption battery ×2, the probe battery ×2); (2) the spawned guarded selection re-pinned 283 → **287** (1 + 96 + 190); (3) the round-5 reparenting runtime test re-asserted under the two-fact contract (its previous either/or selection assertions were the superseded round-5 shape).
+- **Gates on the final bytes (2026-10-30, all commands executed with explicit exit codes; RED before GREEN per finding as recorded above):** `node --test tests/shell-wait-local-process.test.mjs` = **190/190** pass, 0 failed, exit 0 (Task-2's 109 + Task 3's 47 + rounds 3/4/5/6's 9+9+6+6 + round-7's FOUR: the F1 runtime RED, the F1 offline torn-record RED, the F2 moved-read RED, and the join-version registration); `node --test tests/test-selection.test.mjs` = **6/6**, exit 0; `node --test tests/shell-wait-native-interruption.test.mjs` = **96/96**, exit 0; `npm run test:shell-research` = **1236/1236** tests, 0 failed, exit 0 (the spawned guarded nested selection = 1 + 96 + 190 = **287**; the FULL probe file **950/950**, 0 failed, exit 0); `npm run lint` clean, exit 0; `npm run typecheck` clean, exit 0; `git diff --check` clean, exit 0; `scripts/check-line-endings.mjs` = 549 tracked files, exit 0.
+
+**2026-10-30 codex review round 8 (THREE P2 findings on the round-7 bytes `1db44086757b19beeac48ed8063345eec77b1af0`, each RED-proven then fixed, class-swept; offline; zero model turns, zero live launches; injected seams only — synthetic PIDs never reach the real OS):**
+- **(P2, RED→GREEN) the transport owes generation-bound PRE-FENCE exit evidence (join v12)**: the transport descendant contributed its live observation only — the offline join checked disappearance for the INVOCATION alone — so a transport exiting during the cutoff+teardown grace kept the local layer fully settled (the reviewer's shape: the Companion gone pre-cutoff, the transport exiting during the grace). Fixed BOTH sides: the runtime composes the transport's OWN generation-bound exit read after the invocation exit loop (the transport pid under its OWN declared nonce, the expected start identity bound, the SAME §25.7 fence discipline — a read started or completed at/after the operative fence rides the NAMED `postFence` fact) and persists it as the schema-additive `transportExit` block field; the offline join adds the conjunct — when the transport observation is established, the block must carry a generation-bound CONFIRMED absence of the transport (queried pid + scope digest), completing strictly pre-fence (`transport-exit-unestablished` / `transport-exit-at-or-after-fence` / `transport-exit-instant-unprovable`). RED: the no-exit-fact positive (settled:true pre-fix), the post-fence exit shape, and the runtime still-live shape (the runtime composes the honest established exit fact; the join refuses); GREEN: the named refusals and the keeper settling with zero refusals.
+- **(P2, RED→GREEN) the SELECTED refreshed presence walks the replay horizon and the supersession check**: the replay's presence horizon considered only the initial presence + `block.reads` — a refreshed same-generation presence re-read at 5500-5600 ms beside a claimed 5100 ms absence still settled. Fixed: the horizon walk AND the supersession check include the SELECTED refreshed companion endpoint (a same-generation established presence) — the horizon walks to its identity-read instant (the absence collected before it overlaps: `exit-absence-overlaps-presence`) and its completion at/after the claimed absence re-wins the verdict (`exit-absence-superseded`). RED: the moved-refresh shape (settled:true pre-fix); GREEN: the named overlap refusal.
+- **(P2, RED→GREEN) the ADMITTED startup record is capture-time parentage when the FIRST broker OS read is already reparented**: the round-7 capture-time parent fact required an EARLIER OS observation that ALSO saw the original parent — when the Companion exited between its presence observation and the broker's FIRST read, the OS ppid was already 1 and the ancestry refused `daemon-ppid-mismatch-at-capture` despite the broker's ADMITTED, generation-bound startup record capturing the Companion as parent. Fixed BOTH sides: the runtime's reparenting fact derives the capture-time parent from the ADMITTED broker record's ppid (the record's binding is verified by the replay's admission checks) and carries it into the composition; the offline ppid-chain check accepts the OS-observed ppid OR the admitted record's ppid as the capture-time parent (equivalent evidence — the admission's own binding is verified by the replay above). RED: the first-read-reparented harness (both hops refused, duties unsettled pre-fix); GREEN: attributed ancestry, settled duties and the offline join settling with zero refusals.
+- **Class-sweep inventory**: the sweep found and updated (1) the seven offline record factories (`armedBlock`, `arm()`, `armReplay()`, `armRound4/5/7()`) and the aggregate gate-D `settledLocalProcessBlock` gained the generation-bound pre-fence `transportExit` fact (a REQUIRED part of the positive shape); (2) the four join-feeding runtime harnesses (the junction's ps seam, the round-6 F4, the round-7 F1/F2) gained the transport's confirmed-absence arms (the runtime composes the honest exit fact); (3) the armed-runtime early-arming test exempts the transport's EXIT observation (by design it reads the exit window after the invocation's confirmed absence); (4) the round-3 foreign-parentage test re-keyed to the two-evidence rule (the chain is foreign only when NEITHER the OS ppid NOR the admitted record proves the capture-time parent); (5) the join version pins → **v12** in all five registered spots; (6) the spawned guarded selection re-pinned 287 → **294** (1 + 96 + 197).
+- **Gates on the final bytes (2026-10-30, all commands executed with explicit exit codes; RED before GREEN per finding as recorded above):** `node --test tests/shell-wait-local-process.test.mjs` = **197/197** pass, 0 failed, exit 0 (Task-2's 109 + Task 3's 47 + rounds 3-7's 9+9+6+6+4 + round-8's SEVEN: the F1 offline missing/post-fence REDs + keeper, the F2 moved-refresh RED, the F1 runtime still-live RED, the F3 first-read-reparented RED, and the join-version registration); `node --test tests/test-selection.test.mjs` = **6/6**, exit 0; `node --test tests/shell-wait-native-interruption.test.mjs` = **96/96**, exit 0; `npm run test:shell-research` = **1243/1243** tests, 0 failed, exit 0 (the spawned guarded nested selection = 1 + 96 + 197 = **294**; the FULL probe file **950/950**, 0 failed, exit 0); `npm run lint` clean, exit 0; `npm run typecheck` clean, exit 0; `git diff --check` clean, exit 0; `scripts/check-line-endings.mjs` = 549 tracked files, exit 0.
+
+**2026-10-30 codex review round 9 (THREE P2 + ONE P3 findings on the round-8 bytes `1bcead29e74398e5de0b94c16b5530b40f1f7878`, each P2 RED-proven then fixed, class-swept; offline; zero model turns, zero live launches; injected seams only — synthetic PIDs never reach the real OS):**
+- **(P2, RED→GREEN) the transport exit is re-adjudicated like the invocation (join v13)**: the round-8 transport-exit conjunct verified only PID/nonce equality + pre-fence completion — a transport absence whose collection started BEFORE its verified presence (completing at epoch 2) still settled, and an absence CARRYING a foreign `observedStartIdentity` (a successor read during the inspection) also passed. Fixed: the SAME presence/absence ordering and generation rules the invocation exit replays now apply to the transport exit — the collection must start at/after the transport's verified presence (`transport-exit-overlaps-presence`) and an absence carrying a foreign observed identity is replacement evidence, never this generation's death (`transport-exit-generation-foreign`). RED: the predating-collection and the foreign-carried-identity shapes (both settled:true pre-fix); GREEN: the named refusals.
+- **(P2, RED→GREEN) the transport exit RETRIES until confirmed absence, cancellation, or the operative fence**: the round-8 ONE-SHOT read permanently recorded a still-live transport — a transport outliving the Companion but exiting before the measurement cutoff got no credit for its later lawful exit. Fixed: the runtime retries generation-bound transport observations (a bounded retry count — the documented residual bound: a transport never exiting inside the bound leaves its last live read persisted and the join refuses the credit, honestly) until a confirmed absence, cancellation, or the operative fence; every retry is a fresh §25.7-fenced read (the pre-read fence never starts one at/after the fence; a straddling completion rides the named post-fence fact and stops the retries). RED: the still-live-first-read harness (the persisted exit was the live read and the join refused pre-fix); GREEN: the retried confirmed absence persists and the join settles with zero refusals.
+- **(P2, RED→GREEN) a null boundIdentity is the named unsettled verdict, never a TypeError**: a persisted `disappeared` verdict with a missing/null `boundIdentity` recorded `exit-bound-identity-foreign` but the replay CONTINUED into the identity-dependent horizon walk and dereferenced null (`Cannot read properties of null (reading 'startIdentity')`). Fixed: every identity-dependent check (the horizon walk, the supersession sources) is gated on the proven bound identity — a torn boundIdentity yields the named unsettled verdict, never a crash. RED: the null-boundIdentity record threw pre-fix; GREEN: `doesNotThrow` + `exit-bound-identity-foreign` + settled:false.
+- **(P3) the abort listeners are released when their operations settle**: `localBoundedOperation` installed an abort listener per operation (`{once:true}` removes it only on CANCELLATION) — thousands of completed operations accumulated thousands of retained listeners. Fixed: the listener is removed in a settle-handler registered on the operation (both fulfilment and rejection), so only genuinely in-flight operations retain theirs.
+- **Class-sweep inventory**: the sweep found and updated (1) the join version pins → **v13** in all five registered spots (the local-process battery's version registrations, the native-interruption battery ×2, the probe battery ×2); (2) the spawned guarded selection re-pinned 294 → **299** (1 + 96 + 202); (3) the transport-exit retry bound (a bounded retry count) is the documented residual: a transport never exiting inside the bound leaves its last live read persisted and the join refuses the credit — never a guessed pass.
+- **Gates on the final bytes (2026-10-30, all commands executed with explicit exit codes; RED before GREEN per finding as recorded above):** `node --test tests/shell-wait-local-process.test.mjs` = **202/202** pass, 0 failed, exit 0 (Task-2's 109 + Task 3's 47 + rounds 3-8's 9+9+6+6+4+7 + round-9's FIVE: the F1 recency RED, the F1 carried-identity RED, the F2 retry RED, the F3 null-boundIdentity RED, and the join-version registration); `node --test tests/test-selection.test.mjs` = **6/6**, exit 0; `node --test tests/shell-wait-native-interruption.test.mjs` = **96/96**, exit 0; `npm run test:shell-research` = **1248/1248** tests, 0 failed, exit 0 (the spawned guarded nested selection = 1 + 96 + 202 = **299**; the FULL probe file **950/950**, 0 failed, exit 0); `npm run lint` clean, exit 0; `npm run typecheck` clean, exit 0; `git diff --check` clean, exit 0; `scripts/check-line-endings.mjs` = 549 tracked files, exit 0.
+
+**2026-10-30 codex review round 10 (TWO P2 findings on the round-9 bytes `76a537cbcb7bfa2febfdd3ef5e0eb99390711cb5`, each RED-proven then fixed, class-swept; offline; zero model turns, zero live launches; injected seams only — synthetic PIDs never reach the real OS):**
+- **(P2, RED→GREEN) a transport PID-reuse in the exit retry loop latches TERMINALLY (join v14)**: a transport PID reused during the exit retry loop produced the named generation-change verdict that a LATER retry (the replacement's confirmed absence) OVERWROTE — the persisted transport exit became the replacement's absence and the offline join settled, crediting the replacement's disappearance to the ORIGINAL transport (our RED: the persisted exit was `no-such-process` beside the persisted generation-change retry). Fixed: the retry loop implements the frozen latch discipline TERMINALLY — once a retry observes a generation change (the named `start-identity-generation-changed` verdict, an established different-start read, or a carried foreign identity — the three frozen shapes, generation-bound to the transport's expected start identity), the latch fires, the generation-changing read persists as the transport's exit fact with the schema-additive `transportExitGenerationLatched` marker, and the retries STOP; the offline join refuses `transport-exit-generation-foreign` when the persisted latch OR the exit fact carries the generation-change shape. RED: the overwrite shape (the persisted exit was the replacement's absence, the join settled pre-fix); GREEN: the latched verdict persists and the join refuses by name.
+- **(P2, RED→GREEN) the strict transport-absence tie rule**: when the transport's presence instant and the confirmed absence completion SHARE the same epoch millisecond, the round-8 conjunct accepted the absence (the collection-start check allowed equality; the completion checks enforced only the upper fence) — while the frozen `adjudicateLocalExit` refuses the identical facts under its conservative tie rule (an absence at/before the last verified presence never manufactures death). Fixed: the transport absence's COMPLETION must be STRICTLY later than the transport's presence horizon — a tie refuses `transport-exit-overlaps-presence` (the recency branch now enforces both bounds). RED: the tie shape (settled:true pre-fix); GREEN: the named refusal.
+- **Class-sweep inventory**: the sweep found and updated (1) the join version pins → **v14** in all five registered spots (the local-process battery's version registrations, the native-interruption battery ×2, the probe battery ×2); (2) the spawned guarded selection re-pinned 299 → **302** (1 + 96 + 205).
+- **Gates on the final bytes (2026-10-30, all commands executed with explicit exit codes; RED before GREEN per finding as recorded above):** `node --test tests/shell-wait-local-process.test.mjs` = **205/205** pass, 0 failed, exit 0 (Task-2's 109 + Task 3's 47 + rounds 3-9's 9+9+6+6+4+7+5 + round-10's THREE: the F2 tie RED, the F1 runtime latch RED, and the join-version registration); `node --test tests/test-selection.test.mjs` = **6/6**, exit 0; `node --test tests/shell-wait-native-interruption.test.mjs` = **96/96**, exit 0; `npm run test:shell-research` = **1251/1251** tests, 0 failed, exit 0 (the spawned guarded nested selection = 1 + 96 + 205 = **302**; the FULL probe file **950/950**, 0 failed, exit 0); `npm run lint` clean, exit 0; `npm run typecheck` clean, exit 0; `git diff --check` clean, exit 0; `scripts/check-line-endings.mjs` = 549 tracked files, exit 0.
+
+**2026-10-30 codex review round 11 (THREE P2 findings on the round-10 bytes `ff67d355e6deeff9cb128d82e2c022ca8e9301aa`, each RED-proven then fixed, class-swept; offline; zero model turns, zero live launches; injected seams only — synthetic PIDs never reach the real OS):**
+- **(P2, RED→GREEN) the invocation absence's COMPLETION must exceed the walked presence horizon (join v15)**: the replay's overlap check enforced the collection-START bound only — an absence whose START and COMPLETION both sat at the SAME millisecond as the walked presence horizon (5100) settled:true, while the frozen `adjudicateLocalExit` refuses the identical facts under its conservative tie rule. Fixed: the overlap rule enforces BOTH bounds — the absence's COMPLETION must be STRICTLY later than `finalPresenceHorizonMs` (a tie never credits death). RED: the tie shape (the later presence's identity instant walking the horizon to 5100 while its whole-observation completion stays below the claimed absence — isolating the TIE from the supersession rule); GREEN: `exit-absence-overlaps-presence`.
+- **(P2, RED→GREEN) EXACTLY ONE entry per applicable duty slot**: a persisted list containing the valid trio FOLLOWED by a contradictory duplicate invocation entry (`status: 'unestablished'`) still settled — `find` validates only the FIRST entry and the per-entry loop skips non-established ones. Fixed: the replay requires exactly ONE entry per applicable slot — any duplicate slot refuses `inline-duty-duplicate-slot` (a contradictory aggregate, never silently skipped). RED: the duplicate-entry shape (settled:true pre-fix); GREEN: the named refusal.
+- **(P2, RED→GREEN) the SELECTED-endpoint parentage rule covers a FAILED refresh**: when the broker's FIRST OS sample already showed the reparenting (ppid 1) and its ancestry refresh transiently FAILED, the round-7/8 capture-parent fact was derived from whether the REFRESH succeeded — the fallback selected the first sample (ppid 1) but the flag stayed false, so the composition omitted the admitted startup record's capture-time parent and the ancestry refused `daemon-ppid-mismatch-at-capture`. Fixed: the parent-link requirement derives from the SELECTED daemon endpoint (does the selected sample still show the ORIGINAL parent?) — covering the reparented refresh AND the first-sample-reparented cases alike; the fact itself remains the ADMITTED, generation-bound startup record's ppid (the round-8 rule). The record-based acceptance is SCOPED to the documented reparenting shape — the OS-observed parent is init (ppid 1): a FOREIGN non-init OS parent contradicts the record (a torn or foreign pairing) and stays refused (the self-review caught the round-2 wrong-parentage scenario regressing under an unscoped rule and tightened it before the gates). RED: the reviewer's exact harness (first sample ppid 1, the refresh returning null; both hops refused pre-fix); GREEN: attributed ancestry, settled duties and the offline join settling with zero refusals; the round-2 wrong-parentage scenario keeps refusing (both hops named).
+- **Class-sweep inventory**: the sweep found and updated (1) the join version pins → **v15** in all five registered spots (the local-process battery's seven version registrations, the native-interruption battery ×2, the probe battery ×2); (2) the spawned guarded selection re-pinned 302 → **306** (1 + 96 + 209).
+- **Gates on the final bytes (2026-10-30, all commands executed with explicit exit codes; RED before GREEN per finding as recorded above):** `node --test tests/shell-wait-local-process.test.mjs` = **209/209** pass, 0 failed, exit 0 (Task-2's 109 + Task 3's 47 + rounds 3-10's 9+9+6+6+4+7+5+3 + round-11's FOUR: the F1 tie RED, the F3 duplicate-slot RED, the F2 runtime RED, and the join-version registration); `node --test tests/test-selection.test.mjs` = **6/6**, exit 0; `node --test tests/shell-wait-native-interruption.test.mjs` = **96/96**, exit 0; `npm run test:shell-research` = **1255/1255** tests, 0 failed, exit 0 (the spawned guarded nested selection = 1 + 96 + 209 = **306**; the FULL probe file **950/950**, 0 failed, exit 0); `npm run lint` clean, exit 0; `npm run typecheck` clean, exit 0; `git diff --check` clean, exit 0; `scripts/check-line-endings.mjs` = 549 tracked files, exit 0.
+
+**2026-10-30 codex review round 12 (TWO P2 findings on the round-11 bytes `a1ccd13c11b33ab2741c584897c36b09715c2173`, each RED-proven then fixed, class-swept; offline; zero model turns, zero live launches; injected seams only — synthetic PIDs never reach the real OS):**
+- **(P2, RED→GREEN) every fence-crediting read validates its collection interval (join v16)**: the fence-crediting checks verified instants against the fence but never the read's own collection interval — a torn read claiming to have STARTED after it COMPLETED (the reviewer's shape: `transportExit.readStartedEpochMs` moved past the termination boundary while the completion still claimed a pre-boundary instant) passed and settled. Fixed: the replay validates each fence-crediting read's collection interval (both instants present and `readStartedEpochMs <= readEpochMs`) — the transport exit (`transport-exit-interval-inverted`), the admissions (`admission-interval-inverted`), the duty observation echoes AND the ancestry endpoints (`observation-interval-inverted`), and the invocation exit's absence reads (`exit-absence-interval-inverted`). A MISSING instant is NOT an inversion (the unprovable-instant refusals own that shape — the round-9 F1 class stays distinct). RED: the inverted transport-exit, admission, observation-echo and ancestry-endpoint shapes (all settled:true pre-fix); GREEN: the named refusals.
+- **(P2, RED→GREEN) the executing-helper provenance agrees at rest whatever the materialization state**: with a READ-ONLY node_modules the helper materialization fails (an empty bytes map) and the observer falls back to the production modules — but the init construction hashed EMPTY-string placeholders while `observerProvenance()` hashed the production helpers: unchanged sources produced DIFFERENT init vs record-time digests, fabricating `sourcesChangedDuringRun: true` for unarmed cases. Fixed: the init construction binds the bytes that actually execute in EITHER state — the MATERIALIZED copy digests when materialization succeeded, else the PRODUCTION files' digest strings (the observer's own fallback loads those very modules); the record-time reader binds the production digest strings either way — equal at rest in both states, divergent only on real edits. RED: a child process importing the driver under a read-only node_modules printed init ≠ record-time digests (the fabricated sourcesChangedDuringRun); GREEN: the child's digests agree; the construction-replication and drift batteries re-verified under the available state.
+- **Class-sweep inventory**: the sweep found and updated (1) the join version pins → **v16** in all five registered spots (the local-process battery's version registrations, the native-interruption battery ×2, the probe battery ×2); (2) the spawned guarded selection re-pinned 306 → **311** (1 + 96 + 214); (3) the interval check deliberately treats a MISSING instant as the unprovable-instant shapes' territory (the round-9 class stays distinct — the inversion refusal names TRUE inversions only).
+- **Gates on the final bytes (2026-10-30, all commands executed with explicit exit codes; RED before GREEN per finding as recorded above):** `node --test tests/shell-wait-local-process.test.mjs` = **214/214** pass, 0 failed, exit 0 (Task-2's 109 + Task 3's 47 + rounds 3-11's 9+9+6+6+4+7+5+3+4 + round-12's FIVE: the F1 inverted transport-exit/admission/observation-echo REDs, the F2 read-only-node_modules RED, and the join-version registration); `node --test tests/test-selection.test.mjs` = **6/6**, exit 0; `node --test tests/shell-wait-native-interruption.test.mjs` = **96/96**, exit 0; `npm run test:shell-research` = **1260/1260** tests, 0 failed, exit 0 (the spawned guarded nested selection = 1 + 96 + 214 = **311**; the FULL probe file **950/950**, 0 failed, exit 0); `npm run lint` clean, exit 0; `npm run typecheck` clean, exit 0; `git diff --check` clean, exit 0; `scripts/check-line-endings.mjs` = 549 tracked files, exit 0.
+
+**2026-10-30 codex review round 13 (ONE P1 + THREE P2 findings on the round-12 bytes `b43c3e9214ce9f34a15e3ee41f45e18f208f6b88`, each RED-proven then fixed, class-swept; offline; zero model turns, zero live launches; injected seams only — synthetic PIDs never reach the real OS):**
+- **(P1, RED→GREEN) the fence producer floors fractional monotonic arithmetic to whole wall milliseconds**: `holdDeadlineWallMs = wallClockNow() + (holdDeadline − now())` combined the wall clock with the MONOTONIC clock's difference, and production's `performance.now()` is FRACTIONAL — the persisted `measurementCutoffAtMs` carried fractional ms (our RED reproduced `1793451533080.998` end to end) and the replay's integer fence checks rejected it (`local-fence-unestablished`), so scheduled runs without an earlier termination boundary could never qualify. Fixed at the PRODUCER (chosen over widening the replay: one site, the established integer fence domain stays intact, and flooring only ever closes the fence EARLIER by < 1 ms — conservative-strict for credit): `measurementCutoffAtMs = Math.max(1, Math.floor(...))`. The replay's integer checks stay (a torn fractional record — unreachable from the fixed runtime — still refuses). RED: the end-to-end harness with the REAL fractional monotonic clock (the persisted cutoff was fractional); GREEN: `Number.isSafeInteger(cutoff)` and the echoed fence agreeing.
+- **(P2, RED→GREEN) ancestry endpoint identity reads must sit INSIDE their validated collection intervals**: the endpoint validation checked the interval and pre-fence on the completion stamp only — a daemon endpoint whose COMPLETION was pre-fence but whose IDENTITY read was post-cutoff (25000 against a 20000 cutoff, the marker at 21000) credited the ancestry hop lifetimes from POST-FENCE identity evidence. Fixed: the endpoint validation requires the identity-read instant to fall WITHIN the validated collection interval (`readStarted <= identityRead <= readEpoch` — `observation-identity-read-outside-interval`), and the replay horizon walk consumes a read's carried identity instant only when it sits inside that read's validated interval (an out-of-interval instant is torn evidence that never walks the horizon — conservative: a smaller horizon only ever adds overlap-refusals). RED: the reviewer's exact shape (attributed ancestry pre-fix); GREEN: `observation-identity-read-outside-interval` and unsettled.
+- **(P2, RED→GREEN) the FROZEN argv selector is enforced over mere persisted agreement**: the round-6 admission replay verified that the admission and the declaration AGREE on a selector — a persisted declaration and admission agreeing on `['status','list']` still settled, bypassing the runtime's `validateIdentityRecord` (which accepts only `['invoke-prepared','rescue']` for this role). Fixed: the replay enforces the FROZEN selector directly (the `TERMINAL_ARGV_SELECTOR` constant imported from closure-preload — never a re-declared literal): the DECLARATION's gate argv must equal the frozen selector AND the admission's argv must equal it; either mismatch refuses `admission-selector-foreign`. RED: the agreeing-wrong-selector shape (settled:true pre-fix); GREEN: the named refusal.
+- **(P2, RED→GREEN) the persisted block VERSION gate**: the replay checked only that the block was an object and then interpreted it as the current schema — `localProcess.version = 999` composed with `contractVersion: 1` and settled, bypassing the oracle's unknown-contract guard. Fixed: the replay requires the persisted block's `version` to be the CURRENT schema version (1) BEFORE composing — a missing or unsupported version refuses `local-process-block-version-unsupported` and the join never substitutes its own known version for an unsupported source. RED: the version-999 and version-missing shapes (both settled:true pre-fix); GREEN: the named refusal on both.
+- **Class-sweep inventory**: the sweep found and updated (1) the join version pins → **v17** in all five registered spots (the local-process battery's version registrations, the native-interruption battery ×2, the probe battery ×2); (2) the spawned guarded selection re-pinned 311 → **316** (1 + 96 + 219); (3) the F1 choice (producer flooring over replay widening) documented here and in the versioning paragraph — the fence domain stays integral end to end.
+- **Gates on the final bytes (2026-10-30, all commands executed with explicit exit codes; RED before GREEN per finding as recorded above):** `node --test tests/shell-wait-local-process.test.mjs` = **219/219** pass, 0 failed, exit 0 (Task-2's 109 + Task 3's 47 + rounds 3-12's 9+9+6+6+4+7+5+3+4+5 + round-13's FIVE: the F1 integer-fence RED, the F2 identity-read-containment RED, the F3 frozen-selector RED, the F4 block-version RED, and the join-version registration); `node --test tests/test-selection.test.mjs` = **6/6**, exit 0; `node --test tests/shell-wait-native-interruption.test.mjs` = **96/96**, exit 0; `npm run test:shell-research` = **1265/1265** tests, 0 failed, exit 0 (the spawned guarded nested selection = 1 + 96 + 219 = **316**; the FULL probe file **950/950**, 0 failed, exit 0); `npm run lint` clean, exit 0; `npm run typecheck` clean, exit 0; `git diff --check` clean, exit 0; `scripts/check-line-endings.mjs` = 549 tracked files, exit 0. (The nested-selection count-pin was corrected 311 → 316 before this final run: the round-13 registration's first research invocation raced the pin edit and its eight count-assertion spawns reported the stale 311 — re-verified green on the corrected bytes.)
+
+**2026-10-30 codex review round 14 (THREE P2 findings on the round-13 bytes `779bfe71d0116fa69610ecc86381c3c65ab5c5a6`, each RED-proven then fixed, class-swept; offline; zero model turns, zero live launches; injected seams only — synthetic PIDs never reach the real OS):**
+- **(P2, RED→GREEN) a TIED confirmed absence never ends collection — a later strictly-later absence is collectable within the fence**: on fast paths the FIRST confirmed absence completed in the SAME wall ms as the verified presence instant; the phase-4 loop's unconditional break ended collection, and the exit adjudicated `no-absence-read-after-presence` despite the tie never manufacturing death and time remaining in the window. Fixed: the loop's break requires the confirmed absence to be STRICTLY AFTER the verified presence instant — a tied absence keeps sampling (the frozen conservative tie rule: it can never manufacture death, and the later strictly-later absence is the admissible one). RED: the tied-absence harness (the exit stayed `no-absence-read-after-presence` pre-fix); GREEN: the exit `disappeared` with `firstVerifiedAbsenceEpochMs` at the strictly-later read.
+- **(P2, RED→GREEN, regression locks) the transport exit re-adjudicates recency and carried identity**: the round-9 transport-exit conjunct already enforced the recency and carried-identity rules — the round-14 review's two transport-exit shapes (a collection starting before the transport's verified presence; an absence carrying a foreign observed identity) were re-verified refused by the existing checks; the two regression tests lock them beside the invocation-exit battery.
+- **(P2, RED→GREEN) incomplete intervals refuse credit by name**: `provesPreFenceCompletion` validated only the completion — a persisted admission, duty observation, ancestry endpoint or transport exit with a MISSING collection start carried pre-fence credit. Fixed: the credit predicate requires a present, safe-integer start (not after the completion) AND the completion strictly pre-fence; the callers name the gap (`admission-start-unprovable` / `observation-start-unprovable` / `transport-exit-start-unprovable` beside the existing instant/at-or-after names). The exit ADJUDICATION composes its absence-verification window as both interval bounds (it is not a read), so the interval and start checks compose without misfiring.
+- **Class-sweep inventory**: the sweep found and updated (1) the join version pins → **v18** in all five registered spots; (2) the spawned guarded selection re-pinned 316 → **322** (1 + 96 + 225); (3) the exit-adjudication composition carries both absence-verification bounds so the new start check composes with the exit verdict's shape.
+- **Gates on the final bytes (2026-10-30, all commands executed with explicit exit codes; RED before GREEN per finding as recorded above):** `node --test tests/shell-wait-local-process.test.mjs` = **225/225** pass, 0 failed, exit 0 (Task-2's 109 + Task 3's 47 + rounds 3-13's 9+9+6+6+4+7+5+3+4+5+4 + round-14's SIX: the F1 tied-absence runtime RED, the F2 recency and carried-identity regression locks, the F3 admission/observation start-unprovable REDs, and the class-sweep endpoint lock); `node --test tests/test-selection.test.mjs` = **6/6**, exit 0; `node --test tests/shell-wait-native-interruption.test.mjs` = **96/96**, exit 0; `npm run test:shell-research` = **1270/1270** tests, 0 failed, exit 0 (the spawned guarded nested selection = 1 + 96 + 225 = **322**; the FULL probe file **950/950**, 0 failed, exit 0); `npm run lint` clean, exit 0; `npm run typecheck` clean, exit 0; `git diff --check` clean, exit 0; `scripts/check-line-endings.mjs` = 549 tracked files, exit 0.
+
+**2026-10-30 codex review round 15 (THREE P2 findings on the round-14 bytes `a5a6f3fc0a4a6b0fe4a5dc1f9fe98a07f11fa65e`, each RED-proven then fixed, class-swept; offline; zero model turns, zero live launches; injected seams only — synthetic PIDs never reach the real OS):**
+- **(P2, RED→GREEN) DUTY observations carry the identity-read containment check**: the collection-interval check validated the duty echoes' start/completion but NOT the identity instant the admission replay consumes — a broker observation with a pre-fence interval (3300-3500) and a POST-fence identity read (25000 against a 20000 cutoff) still settled (our RED reproduced it). Fixed: the duty-echo validation requires the identity-read instant to fall WITHIN the validated collection interval (`observation-identity-read-outside-interval`) — the same containment rule the ancestry endpoints already carry (the round-13 class extended to the duty slots). RED: the post-fence identity shape (settled:true pre-fix); GREEN: the named refusal.
+- **(P2, RED→GREEN) a confirmed invocation absence carrying a NON-NULL live observation is contradictory evidence**: the matching-absence filter accepted a "confirmed absence" whose verdict ALSO carried a live observation — contradictory evidence (a live verdict inside a confirmed death) substantiating disappearance. Fixed: the replay refuses any same-scope confirmed absence carrying a non-null object observation (`exit-absence-contradictory`). RED: the contradictory shape (settled:true pre-fix); GREEN: the named refusal.
+- **(P2, RED→GREEN) the runtime's phase-4 loop compares against the LATEST same-generation presence before ending collection**: the round-14 tie-continuation compared against the INITIAL presence instant only — when the ancestry refresh verified the Companion alive at a LATER instant and the first confirmed absence completed AT that later instant, the loop stopped immediately (the tie against the refreshed presence), while the offline join correctly walked its horizon to the refreshed read and refused the overlap — the runtime never collected the later strictly-later absence that could establish disappearance. Fixed: the loop's break condition compares against the LATEST same-generation verified presence computed from the presence AND every same-generation established read collected so far (the same discipline as the offline horizon walk) — the tied absence keeps sampling and the later strictly-later absence establishes the disappearance within the fence. RED: the reviewer's shape (the tied absence stopped the loop; the join refused the overlap pre-fix); GREEN: the loop collected past the tie and the join settled with zero refusals.
+- **Class-sweep inventory**: the sweep found and updated (1) the join version pins → **v19** in all five registered spots (the local-process battery's version registrations, the native-interruption battery ×2, the probe battery ×2); (2) the spawned guarded selection re-pinned 322 → **325** (1 + 96 + 228).
+- **Gates on the final bytes (2026-10-30, all commands executed with explicit exit codes; RED before GREEN per finding as recorded above):** `node --test tests/shell-wait-local-process.test.mjs` = **228/228** pass, 0 failed, exit 0 (Task-2's 109 + Task 3's 47 + rounds 3-14's 9+9+6+6+4+7+5+3+4+5+4+3 + round-15's FOUR: the F1 duty-containment RED, the F2 contradictory-absence RED, the F3 runtime tie-continuation RED and the join-version registration); `node --test tests/test-selection.test.mjs` = **6/6**, exit 0; `node --test tests/shell-wait-native-interruption.test.mjs` = **96/96**, exit 0; `npm run test:shell-research` = **1274/1274** tests, 0 failed, exit 0 (the spawned guarded nested selection = 1 + 96 + 228 = **325**; the FULL probe file **950/950**, 0 failed, exit 0); `npm run lint` clean, exit 0; `npm run typecheck` clean, exit 0; `git diff --check` clean, exit 0; `scripts/check-line-endings.mjs` = 549 tracked files, exit 0.
+
+**2026-10-30 codex review round 16 (TWO P2 findings on the round-15 bytes, each RED-proven then fixed, class-swept; offline; zero model turns, zero live launches; injected seams only — synthetic PIDs never reach the real OS; an earlier draft of this addendum mis-copied the round-15 bullets and mis-reported the counts as 227/1273/324 — corrected here to the amended-base truth):**
+- **(P2, RED→GREEN) the SELECTED same-generation refresh joins the runtime exit horizon**: the round-15 latest-same-generation-presence computation drew on the presence and the phase-4 absence reads only — the ancestry's REFRESHED endpoint (a later same-generation established read the runtime itself collected) was not among the sources, so a tie against the refresh's later instant still ended collection while the offline horizon (which walks the refreshed endpoint) refused the overlap. Fixed: the runtime's latest-same-generation presence includes every same-generation established read collected so far — the refreshed endpoint among them (the exact discipline of the offline horizon walk). RED: the reviewer's shape (the loop stopped on the tie against the refresh; the join refused the overlap pre-fix); GREEN: the loop collected the strictly-later absence and the join settled with zero refusals.
+- **(P2, RED→GREEN) the replay correlates EXACTLY the adjudicator-admitted absences**: the offline correlation matched `firstVerifiedAbsenceEpochMs` against EVERY confirmed same-scope read — retained TIED/overlapping absences (which `adjudicateLocalExit` never admits) could satisfy the minimum and mask a verdict whose credited absence was uncorrelated. Fixed: the replay walks the absences through the adjudicator's own recency/admissibility rules (a collection starting at/after the walked horizon, a completion STRICTLY after it, sorted by completion) and correlates against the ADMITTED minimum only; the retained ties/overlaps name `exit-absence-overlaps-presence` when nothing is admitted. RED: the correlated-tie shape (settled:true pre-fix); GREEN: the named refusal / exact-admitted correlation.
+- **Class-sweep inventory**: the sweep found and updated (1) the join version pins → **v20** in all five registered spots (the local-process battery's version registrations, the native-interruption battery ×2, the probe battery ×2); (2) the spawned guarded selection stayed pinned at **325** (1 + 96 + 228 — the round-16 tests reworked the round-15 describe shapes without a net count change).
+- **Gates on the final bytes (2026-10-30, all commands executed with explicit exit codes; RED before GREEN per finding as recorded above):** `node --test tests/shell-wait-local-process.test.mjs` = **228/228** pass, 0 failed, exit 0; `node --test tests/test-selection.test.mjs` = **6/6**, exit 0; `node --test tests/shell-wait-native-interruption.test.mjs` = **96/96**, exit 0; `npm run test:shell-research` = **1274/1274** tests, 0 failed, exit 0 (the spawned guarded nested selection = 1 + 96 + 228 = **325**; the FULL probe file **950/950**, 0 failed, exit 0); `npm run lint` clean, exit 0; `npm run typecheck` clean, exit 0; `git diff --check` clean, exit 0; `scripts/check-line-endings.mjs` = 549 tracked files, exit 0.
+
+**2026-10-30 codex review rounds 17-18 (THREE P2 findings on the round-16 bytes `46b86357740debf8bbdeaa6bcbc468bf2056a9a4`, each RED-proven on the pre-fix bytes then fixed, class-swept; offline; zero model turns, zero live launches; injected seams only — synthetic PIDs never reach the real OS):**
+- **(P2, RED→GREEN) the SELECTED daemon endpoint re-verifies its parentage**: the offline ppid-chain conjunct verified the phase-3 broker observation's observed parent (directly or via the admitted record's capture-time link) but never the SELECTED persisted ancestry ENDPOINT the hops are attributed from — an endpoint whose observed ppid was FOREIGN (88888 against the Companion's 60100) while agreeing on pid/startIdentity/nonce digested its way through the digest-bound loop (which checks everything EXCEPT ppid) and credited the chain. Fixed: the conjunct extends to the selected endpoint — its observed parent must be the Companion's pid (directly, or agreeing with the phase-3 read), or the documented init-reparenting shape (the endpoint observed init while the ADMITTED record carries the Companion — the round-7 two-fact rule preserved: a reparented refresh still provides the lifetime bound while the capture-time link satisfies the hop). RED: `tests/shell-wait-local-process.test.mjs:9113` (the foreign-ppid endpoint settled pre-fix — `true !== false`); GREEN: `ancestry-ppid-chain-foreign`, unsettled, driver.mjs:5326-5337; the round-7 two-fact positive re-verified green on the refined rule.
+- **(P2, RED→GREEN) the CREDITED invocation absence validates its collection interval**: the exit correlation's admissibility walk required both instants PRESENT but not ORDERED — a confirmed absence whose collection START moved after its claimed completion (21000 against a 5100 completion, past the 20000 cutoff) was admitted by the recency walk and correlated the exit (`firstVerifiedAbsenceEpochMs` = its completion), fencing the local layer on torn evidence. Fixed: the walk admits only interval-VALID reads (the shared `collectionIntervalValid` predicate) and names the tear — `exit-absence-interval-inverted` — beside the existing overlap/uncorrelated names. RED: `tests/shell-wait-local-process.test.mjs:9186` (the inverted absence correlated pre-fix); GREEN: the named refusal, unsettled, driver.mjs:5588-5596.
+- **(P2, RED→GREEN) a TIED transport absence keeps the exit retries sampling**: the transport-exit retry loop broke on the FIRST confirmed absence — when it completed in the SAME wall ms as the transport's verified presence instant (the frozen conservative tie: it can never manufacture death), the tie was persisted as the exit fact, ending collection while the window stayed open, and the offline conjunct refused `transport-exit-overlaps-presence` on the very evidence the runtime should have replaced. Fixed: the loop's break requires the confirmed absence to be STRICTLY AFTER the transport's presence instant (its identity read); a tied absence is retained but the loop keeps sampling (driver.mjs:2350-2361), so the later strictly-later confirmed absence becomes the persisted — and admissible — exit fact. RED: re-proven on the pre-fix bytes by reverting the fix (the tie at 3900 ended the loop: the persisted exit read 3900 vs horizon 3900); GREEN: `tests/shell-wait-local-process.test.mjs:9198` — the persisted exit is the strictly-later retry and the join settles with zero refusals.
+- **(P2, regression lock) the credited transport absence's interval and recency**: the round-14-family validation already refused an inverted transport-exit interval (`transport-exit-interval-inverted`, present at the round-16 bytes) and the round-9/13 recency conjunct already refused a collection starting before the transport's verified presence; `tests/shell-wait-local-process.test.mjs:9104` locks both shapes beside the invocation-exit battery (green on arrival — no production change owed).
+- **Class-sweep inventory**: the sweep found and updated (1) the join version pins → **v21** in all five registered spots (the local-process battery's version registrations, the native-interruption battery ×2, the probe battery ×2); (2) the spawned guarded selection re-pinned 325 → **330** (1 + 96 + 233); (3) the F1 class is CLOSED across every credited fact — the admissions (`admission-interval-inverted`), the duty echoes and ancestry endpoints (`observation-interval-inverted`), the transport exit (`transport-exit-interval-inverted`) and now the correlated invocation absences (`exit-absence-interval-inverted`) all validate their intervals, and the horizon walks consume a carried instant only INSIDE its read's interval (an inverted interval can never contain it); (4) the F2 class is CLOSED across every chain fact — the phase-3 observation, the SELECTED endpoint and the marker each re-verify their parentage, and the ancestry refreshes remain refusal-only latch evidence (no credit path); (5) the F3 class is CLOSED across both collection loops — the phase-4 invocation loop (the round-14/16 tie continuations) and the transport-exit retry loop compare against their LATEST verified presence before breaking.
+- **Gates on the final bytes (2026-10-30, all commands executed with explicit exit codes; RED before GREEN per finding as recorded above):** `node --test tests/shell-wait-local-process.test.mjs` = **233/233** pass, 0 failed, exit 0 (Task-2's 109 + Task 3's 47 + rounds 3-16's registrations + rounds 17-18's FIVE: the round-17 F1 transport-exit interval/recency lock, the round-17 F2 selected-endpoint parentage RED, the round-18 F1 correlated-absence interval RED, the round-18 F3 tied-absence runtime RED and the join-version registration); `node --test tests/test-selection.test.mjs` = **6/6**, exit 0; `node --test tests/shell-wait-native-interruption.test.mjs` = **96/96**, exit 0; `npm run test:shell-research` = **1279/1279** tests, 0 failed, exit 0 (the spawned guarded nested selection = 1 + 96 + 233 = **330**; the FULL probe file **950/950**, 0 failed, exit 0); `npm run lint` clean, exit 0; `npm run typecheck` clean, exit 0; `git diff --check` clean, exit 0; `scripts/check-line-endings.mjs` = 549 tracked files, exit 0.
+
+**2026-10-30 codex review round 19 (TWO P2 findings on the rounds-17/18 bytes `d6cd28ea7e43fa068b950b1aac7fe409d16d5bda`, each RED-proven on the pre-fix bytes then fixed, class-swept; offline; zero model turns, zero live launches; injected seams only — synthetic PIDs never reach the real OS):**
+- **(P2, RED→GREEN) a LIVE same-generation transport retry advances the presence horizon — and the full presence sequence persists for replay**: the transport-exit retry loop compared every confirmed absence against the INITIAL `transportObservation` instant only — a retry that re-verified the SAME generation ALIVE at a LATER instant (3900 → 4900) never advanced the horizon, so a confirmed absence tying with the RETRY presence (4900) ended collection and the offline join fenced on it (the conservative live-wins rule violated on both sides). Fixed (runtime): every established retry read is projected into the additive `transportPresenceReads` sequence (`block.transportPresenceReads` — persisted, never overwritten by the next read) and the strictly-later tie check compares against the LATEST verified presence across the initial observation AND the sequence (the invocation phase-4 loop's round-15/16 discipline). Fixed (replay): the transport conjunct walks the persisted sequence into the presence horizon — each contributor binds to the transport generation (queried pid/nonce, the observed start identity) and its carried instant is evidence only INSIDE its validated collection interval — so an absence tying with any verified presence refuses `transport-exit-overlaps-presence`, and the strictly-later absence fences. RED: `tests/shell-wait-local-process.test.mjs:9376` (the tie fenced pre-fix) and `:9402` (the live retry was not persisted — `actual null` — and the tie ended the loop); GREEN: the named refusal / the persisted sequence + the strictly-later exit with the join settling at zero refusals; driver.mjs:2306-2313/:2363-2372 (runtime) and driver.mjs:5448-5476 (replay).
+- **(P2, RED→GREEN) the exit SUPERSESSION compares the identity-read instant**: the supersession check compared an established same-generation read's raw COMPLETION against `firstVerifiedAbsenceEpochMs` — a read whose identity read verified the generation alive BEFORE the absence (4650 < 5100) but whose ASYNC collection completed after it (5200) re-won the verdict and refused `exit-absence-superseded`, contradicting `adjudicateLocalExit`'s correct `disappeared`. Fixed: the comparison uses the carried instant — the identity-read instant, falling back to the completion only when absent — consistently with the preceding horizon walk's carried-instant calculation. RED: `tests/shell-wait-local-process.test.mjs:9389` (the async completion superseded pre-fix); GREEN: settled with zero refusals; driver.mjs:5734-5748.
+- **Class-sweep inventory**: the sweep found and updated (1) the join version pins → **v22** in all five registered spots plus the hard-coded legacy-verdict join pin (the local-process battery's version registrations, the native-interruption battery ×2, the probe battery's canonical and legacy pins); (2) the spawned guarded selection re-pinned 330 → **334** (1 + 96 + 237); (3) the F1 class is CLOSED across both collection loops — the invocation phase-4 loop already walked its latest same-generation presence from the PERSISTED `reads` sequence plus the refreshed endpoint (rounds 15/16), and the transport loop now does the same with its own persisted sequence; (4) the F2 class is CLOSED — every comparison of a presence fact against the verified absence now uses the carried instant (the reuse latch already did; the fence checks remain completion-based by definition: a read completing at/after the fence IS post-fence evidence).
+- **Gates on the final bytes (2026-10-30, all commands executed with explicit exit codes; RED before GREEN per finding as recorded above):** `node --test tests/shell-wait-local-process.test.mjs` = **237/237** pass, 0 failed, exit 0 (Task-2's 109 + Task 3's 47 + rounds 3-18's registrations + round-19's FOUR: the F1 offline tie RED, the F2 supersession RED, the F1 runtime persist-and-walk RED and the join-version registration); `node --test tests/test-selection.test.mjs` = **6/6**, exit 0; `node --test tests/shell-wait-native-interruption.test.mjs` = **96/96**, exit 0; `npm run test:shell-research` = **1283/1283** tests, 0 failed, exit 0 (the spawned guarded nested selection = 1 + 96 + 237 = **334**; the FULL probe file **950/950**, 0 failed, exit 0); `npm run lint` clean, exit 0; `npm run typecheck` clean, exit 0; `git diff --check` clean, exit 0; `scripts/check-line-endings.mjs` = 549 tracked files, exit 0.
+
+**2026-10-30 codex review round 20 (TWO P2 findings on the round-19 bytes `d720bbe4e3339b114f9254e5b49d4009acf8dd2f`, each RED-proven on the pre-fix bytes then fixed, class-swept; offline; zero model turns, zero live launches; injected seams only — synthetic PIDs never reach the real OS):**
+- **(P2, RED→GREEN) the PERSISTED transport retry sequence latches replacement evidence**: the round-19 replay walk consumed `transportPresenceReads` only for the horizon — a generation-bound sequence read (the transport's pid+nonce) observing a DIFFERENT start identity hit the same-generation `continue` and its positive replacement evidence was discarded, so the original generation's subsequent confirmed absence fenced the layer although the runtime would terminally latch that generation change (`transport-exit-generation-foreign`). Fixed: the sequence is derived BEFORE the exit conjunct's latch chain and scanned for the runtime latch's exact three disjuncts (an established different-start read; the named `start-identity-generation-changed` verdict; a foreign `observedStartIdentity` — the last status-agnostic, the occupant may change DURING an otherwise same-generation read); any hit composes into the terminal `transport-exit-generation-foreign` refusal beside the saved latch marker and the exit-fact shape. RED: `tests/shell-wait-local-process.test.mjs:9578` (the foreign-start sequence read settled pre-fix) and `:9590` (the named-verdict and foreign-carried shapes — the first cut of the scan missed the established+foreign-carried disjunct and was restructured to mirror the runtime); GREEN: the named refusal, unsettled; driver.mjs:5436-5465.
+- **(P2, RED→GREEN) absence timestamps must BE safe integers before crediting**: the correlation's interval guard treated a PRESENT-but-nonnumeric instant as "not an inversion" (its missing-instant semantics) and the recency comparisons COERCED numeric strings — an absence whose start moved to the STRING `"25000"` (past the 20000 cutoff) while the completion claimed 5100 was admitted and correlated, fencing on torn evidence. Fixed: the admissibility names the tear (`exit-absence-interval-unprovable` for a present-but-non-safe-integer start or completion) and the admission requires BOTH instants to be safe integers with the start not after the completion (missing instants stay in the overlaps-presence territory the walk owns); the correlation and sort then operate on numbers only. RED: `tests/shell-wait-local-process.test.mjs:9608` (the string-start absence correlated pre-fix); GREEN: the named refusal, unsettled; driver.mjs:5666-5682.
+- **Class-sweep inventory**: the sweep found and updated (1) the join version pins → **v23** in all five registered spots plus the hard-coded legacy-verdict join pin; (2) the spawned guarded selection re-pinned 334 → **338** (1 + 96 + 241); (3) the F1 class is CLOSED across both persisted sequences — the invocation reuse latch already walked the whole persisted read sequence plus the refresh evidence with the same three disjuncts (rounds 5/7), and the transport sequence now mirrors the runtime latch exactly; (4) the F2 class is CLOSED across every crediting comparison — the horizon walks, the supersession, the reuse latch, the transport recency and the admission/duty/endpoint checks all gate on `Number.isSafeInteger` before comparing (verified by audit); the remaining raw comparisons are the exit's own fence checks, where a read completing at/after the fence is post-fence by definition.
+- **Gates on the final bytes (2026-10-30, all commands executed with explicit exit codes; RED before GREEN per finding as recorded above):** `node --test tests/shell-wait-local-process.test.mjs` = **241/241** pass, 0 failed, exit 0 (Task-2's 109 + Task 3's 47 + rounds 3-19's registrations + round-20's FOUR: the F1 sequence-latch RED, the F1 latch-shape sweep, the F2 safe-integer-timestamp RED and the join-version registration); `node --test tests/test-selection.test.mjs` = **6/6**, exit 0; `node --test tests/shell-wait-native-interruption.test.mjs` = **96/96**, exit 0; `npm run test:shell-research` = **1287/1287** tests, 0 failed, exit 0 (the spawned guarded nested selection = 1 + 96 + 241 = **338**; the FULL probe file **950/950**, 0 failed, exit 0); `npm run lint` clean, exit 0; `npm run typecheck` clean, exit 0; `git diff --check` clean, exit 0; `scripts/check-line-endings.mjs` = 549 tracked files, exit 0.
+
+**2026-10-30 codex review round 21 (ONE P2 finding on the round-20 bytes `9ff179362f85e775693f4805c1284d2a5389a279`, RED-proven then fixed; a TEST-HARNESS-ONLY fix — the driver's round-12 fallback is already correct and the replay contract is unchanged, so the join version stays **v23**; offline; zero model turns, zero live launches; injected seams only):**
+- **(P2, RED→GREEN) the expected-digest constructions mirror the production-file fallback**: the driver's `executingHelperDigest` hashes the MATERIALIZED copy digests when materialization succeeded, else the PRODUCTION files' digest strings — but the test harness's expected-digest constructions still hashed EMPTY-string placeholders (`bytes[...] ?? ''`) in the helper slots, so in the explicitly supported fallback environment (a read-only node_modules: `EXECUTING_HELPER_MATERIALIZATION.dir === null`) the assertions compared the driver's production-digest expectation against `''`-placeholder constructions and failed. RED (the divergence reproduced with the seam): under `{ dir: null, bytes: {} }` the shipped formula produced `4895bc10e51af045…` while the driver's fallback (and the at-rest digest, by the byte-identical-copy invariant) is `1b64e0723010361c…`. Fixed: ALL THREE duplicated constructions mirror `executingHelperDigest` — the `runShellWaitCase` provenance construction (tests/shell-wait-probe.test.mjs:888-919, async production-file fallback), the `digestV8` construction (now a seam-parameterized `digestV8With` builder with the live `digestV8` wrapper preserving every call site, :6070-6104), and the inline closure-preload construction (:6194-6199). A new seam test pins the property end to end: the construction under `{ dir: null, bytes: {} }` MUST reproduce the executing digest (equal at rest in BOTH states) — `tests/shell-wait-probe.test.mjs:6125-6144`. GREEN: the seam test and every pre-existing digest assertion pass on the same bytes.
+- **Counts**: the probe battery 950 → **951** (the seam test); the research aggregate 1287 → **1288** (951 + 96 + 241). The spawned guarded selection stays **338** (1 + 96 + 241 — the probe file's own tests are not part of the spawned selection). No schema, oracle, observer-digest or join-version change: the DRIVER bytes are untouched (the fix is test-harness-only), so `OBSERVER_DIGEST_TAG` stays v8 and `NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION` stays **v23**.
+- **Gates on the final bytes (2026-10-30, all commands executed with explicit exit codes; RED reproduced as recorded above):** `node --test tests/shell-wait-probe.test.mjs` = **951/951** pass, 0 failed, exit 0; `node --test tests/shell-wait-local-process.test.mjs` = **241/241** pass, 0 failed, exit 0; `node --test tests/test-selection.test.mjs` = **6/6**, exit 0; `node --test tests/shell-wait-native-interruption.test.mjs` = **96/96**, exit 0; `npm run test:shell-research` = **1288/1288** tests, 0 failed, exit 0 (the spawned guarded nested selection = 1 + 96 + 241 = **338**; the FULL probe file **951/951**, 0 failed, exit 0); `npm run lint` clean, exit 0; `npm run typecheck` clean, exit 0; `git diff --check` clean, exit 0; `scripts/check-line-endings.mjs` = 549 tracked files, exit 0.
+
+**2026-10-30 codex review round 22 (TWO P2 findings on the round-21 bytes `dcbfd8a2d104d26c1ec634dfcb9fbeb67d5fe75d`, each RED-proven on the pre-fix bytes then fixed, class-swept; offline; zero model turns, zero live launches; injected seams only — synthetic PIDs never reach the real OS):**
+- **(P2, RED→GREEN) every credited observation binds its QUERIED pid/scope to the observed identity**: the duty-echo digest binding compared the duty's identity against the echo's OBSERVED identity but never the echo's `queried` block — moving ONLY `presence.queried.pid` to a foreign pid (99999) rode straight through and settled (the reviewer's exact shape), and the ancestry endpoints' digest-bound loop had the same gap. Fixed: the duty-echo binding additionally requires `queried.pid === observed.pid` and `queried.nonceSha256 === observed.nonceSha256` (`inline-duty-identity-foreign`), and the ancestry endpoint loop requires the same binding of its query (`ancestry-endpoint-generation-foreign`). RED: `tests/shell-wait-local-process.test.mjs:9640` and the sweep at `:9650` (the nonce digest, the broker/transport slots, the daemon endpoint — all settled pre-fix); GREEN: the named refusals, unsettled; driver.mjs:5105-5117 (duty echo) and driver.mjs:5291-5296 (endpoint).
+- **(P2, RED→GREEN) a PRESENT-but-malformed identity-read instant refuses by name — the completion never substitutes**: the identity-read containment guards treated a non-safe-integer instant as MISSING (`Number.isSafeInteger(...)` as the containment precondition), so the STRING `"25000"` (past the 20000 cutoff) bypassed containment and the earlier completion substituted — the numeric 25000 refused, the string settled. Fixed: both containment sites (the duty echoes and the ancestry endpoints — the reviewer's named class-sweep pair) reject a present-but-non-safe-integer instant BEFORE the missing-field fallback (`observation-identity-read-unprovable`). RED: `tests/shell-wait-local-process.test.mjs:9667` and the sweep at `:9677` (the broker slot and the companion endpoint — all settled pre-fix); GREEN: the named refusal, unsettled; driver.mjs:5090-5096 (duty echo) and driver.mjs:5375-5381 (endpoint).
+- **Class-sweep inventory**: the sweep found and updated (1) the join version pins → **v24** in all five registered spots plus the hard-coded legacy-verdict join pin; (2) the spawned guarded selection re-pinned 338 → **343** (1 + 96 + 246); (3) the F1 class is CLOSED across every consumer of an established observation — the exit-absence correlation, both horizon walks, the reuse latch, the supersession, the transport-exit conjunct and the round-19 transport presence sequence already bind `queried` to the claimed identity, and the startup-admission replay carries no `queried` block by shape (a startup record is not an OS query); (4) the F2 class is CLOSED across every identity-read consumer — the horizon walks, the reuse latch and the supersession either consume the same duty-echo/endpoint reads (named by these guards, so the join unsettles regardless) or are conservative under the completion fallback (a higher horizon, a wider supersession, an armed latch).
+- **Gates on the final bytes (2026-10-30, all commands executed with explicit exit codes; RED before GREEN per finding as recorded above):** `node --test tests/shell-wait-local-process.test.mjs` = **246/246** pass, 0 failed, exit 0 (Task-2's 109 + Task 3's 47 + rounds 3-21's registrations + round-22's FIVE: the F1 queried-binding RED, the F1 binding sweep, the F2 malformed-instant RED, the F2 malformed-instant sweep and the join-version registration); `node --test tests/test-selection.test.mjs` = **6/6**, exit 0; `node --test tests/shell-wait-native-interruption.test.mjs` = **96/96**, exit 0; `npm run test:shell-research` = **1293/1293** tests, 0 failed, exit 0 (the spawned guarded nested selection = 1 + 96 + 246 = **343**; the FULL probe file **951/951**, 0 failed, exit 0); `npm run lint` clean, exit 0; `npm run typecheck` clean, exit 0; `git diff --check` clean, exit 0; `scripts/check-line-endings.mjs` = 549 tracked files, exit 0.
+
+**2026-10-30 codex review round 23 (ONE P2 finding on the round-22 bytes `acb385e670a0e5004037e4e8707f30fcd894663d`, RED-proven on the pre-fix bytes then fixed, class-swept; offline; zero model turns, zero live launches; injected seams only — synthetic PIDs never reach the real OS):**
+- **(P2, RED→GREEN) a SUPPLIED carried identity instant is validated against its read interval BEFORE the reuse latch's recency filtering**: the offline reuse latch's recency gate (`carried >= presenceHorizon`) treated an out-of-interval carried instant as OLD evidence and skipped the read — a persisted confirmed absence collected over [4900, 5100] carrying a replacement `observedStartIdentity` with `observedIdentityReadEpochMs` 1000 bypassed the latch entirely and the record settled (an IN-interval instant correctly refused). Fixed: before the recency gate, every SUPPLIED carried instant (`observedIdentityReadEpochMs`, `identityReadEpochMs`) must be a safe integer INSIDE its read's validated collection interval — an out-of-interval or malformed supplied instant is torn/malformed replacement evidence refusing `exit-reuse-carried-instant-outside-interval` (never old evidence, never credited as either latch or benign); absent instants keep the completion fallback (the pre-round-28 hand-built shapes). RED: `tests/shell-wait-local-process.test.mjs:9825` (the out-of-interval instant settled pre-fix) and the sweep at `:9840` (the IN-interval instant still latches `exit-reuse-latched` — the honest replacement path is untouched — and a malformed `"25000"` instant refuses by the same name); GREEN: the named refusal, unsettled; driver.mjs:5757-5777.
+- **Class-sweep inventory (the runtime side VERIFIED consistent, no change owed)**: the runtime latch's carried-identity path (local-process-observation.mjs:1261/:1469-1491) attaches `observedIdentityReadEpochMs` = the read's OWN outer inspection sample — an instant the same read's `readStartedEpochMs`/`readEpochMs` bracket by construction, so an out-of-interval carried instant cannot occur from the runtime (the guard protects only the persisted/torn-record surface, which is this fix). The other offline consumers of supplied identity instants are already guarded (the duty echoes, the ancestry endpoints and the absence admission — rounds 13/20/22) or conservative under their fallbacks (the horizon walks rise, the supersession widens, the latch stays armed). The join version pins → **v25** in all five registered spots plus the hard-coded legacy-verdict join pin; the spawned guarded selection re-pinned 343 → **346** (1 + 96 + 249).
+- **Gates on the final bytes (2026-10-30, all commands executed with explicit exit codes; RED before GREEN per finding as recorded above):** `node --test tests/shell-wait-local-process.test.mjs` = **249/249** pass, 0 failed, exit 0 (Task-2's 109 + Task 3's 47 + rounds 3-22's registrations + round-23's THREE: the carried-instant RED, the latch/malformed sweep and the join-version registration); `node --test tests/test-selection.test.mjs` = **6/6**, exit 0; `node --test tests/shell-wait-native-interruption.test.mjs` = **96/96**, exit 0; `npm run test:shell-research` = **1296/1296** tests, 0 failed, exit 0 (the spawned guarded nested selection = 1 + 96 + 249 = **346**; the FULL probe file **951/951**, 0 failed, exit 0); `npm run lint` clean, exit 0; `npm run typecheck` clean, exit 0; `git diff --check` clean, exit 0; `scripts/check-line-endings.mjs` = 549 tracked files, exit 0.
+
+**2026-10-30 codex review round 24 (TWO P2 findings on the round-23 bytes `2e6e89fd840f7b5b140cd70957c18dc9702ae8d7`, each RED-proven on the pre-fix bytes then fixed, class-swept; offline; zero model turns, zero live launches; injected seams only — synthetic PIDs never reach the real OS):**
+- **(P2, RED→GREEN) the RETAINED transport retry reads validate their identity instants**: the round-19 horizon walk substituted a retained read's malformed identity instant with its completion (or silently skipped it) — moving the positive fixture's retry instant to the STRING `"25000"` (past the 20000 cutoff) left the record settled with NO refusals. Fixed: the duty-observation/ancestry-endpoint pattern applies to the retained reads — a present-but-malformed instant refuses `observation-identity-read-unprovable`, and a supplied instant must sit INSIDE its read's validated collection interval (`observation-identity-read-outside-interval`); a torn retained read never silently substitutes or skips. RED: `tests/shell-wait-local-process.test.mjs:9927` (the malformed instant settled pre-fix) and the sweep at `:9939` (the numeric out-of-interval 4700 against [4800, 5000] refused; the honest in-interval retry keeps crediting with zero refusals); GREEN: the named refusals, unsettled; driver.mjs:5543-5559.
+- **(P2, RED→GREEN) the CAPTURED transport start identity persists and binds the replayed transport observation**: the marker projection carried only pid/ppid/nonce-digest/markerEpochMs, so the replay bound the transport subtree to the pid+nonce digest alone — a coherent SUCCESSOR generation under the same pid+nonce (a replacement of the transport observation, the duty identity and the retry evidence) settled, although the runtime observer rejects that successor against the captured start identity on every retry read. Fixed (schema-additive, the round-4 `markerEpochMs` precedent): the marker persists the captured `startIdentity` (driver.mjs:2206-2212) and the ppid-chain conjunct requires the replayed transport observation's start identity to MATCH it when present (driver.mjs:5392-5394 → `ancestry-ppid-chain-foreign`); markers persisted before this field keep their documented tolerance (the additive-field precedent — the runtime always persists it going forward). RED: `tests/shell-wait-local-process.test.mjs:9952` (the coherent successor settled pre-fix) and the sweep at `:9969` (the captured identity binds the observation alone; the legacy marker shape keeps its tolerance); GREEN: the named refusal, unsettled.
+- **Class-sweep inventory**: the sweep found and updated (1) the join version pins → **v26** in all five registered spots plus the hard-coded legacy-verdict join pin; (2) the spawned guarded selection re-pinned 346 → **351** (1 + 96 + 254); (3) the F1 class is CLOSED across every supplied-instant consumer — the duty echoes, the ancestry endpoints, the absence admission (rounds 13/20/22), the reuse latch (round 23) and now the retained transport reads; (4) the F2 class is CLOSED across the transport subtree — the duty-echo conjunct independently binds the duty identity to the echo, the transport-exit conjunct binds the exit to the echo's generation, the runtime observer binds every retry read to the captured start identity (`expectedStartIdentity`), and the marker now anchors the replay to the captured generation itself.
+- **Gates on the final bytes (2026-10-30, all commands executed with explicit exit codes; RED before GREEN per finding as recorded above):** `node --test tests/shell-wait-local-process.test.mjs` = **254/254** pass, 0 failed, exit 0 (Task-2's 109 + Task 3's 47 + rounds 3-23's registrations + round-24's FIVE: the F1 malformed-instant RED, the F1 out-of-interval/honest sweep, the F2 successor-generation RED, the F2 binding/legacy sweep and the join-version registration); `node --test tests/test-selection.test.mjs` = **6/6**, exit 0; `node --test tests/shell-wait-native-interruption.test.mjs` = **96/96**, exit 0; `npm run test:shell-research` = **1301/1301** tests, 0 failed, exit 0 (the spawned guarded nested selection = 1 + 96 + 254 = **351**; the FULL probe file **951/951**, 0 failed, exit 0); `npm run lint` clean, exit 0; `npm run typecheck` clean, exit 0; `git diff --check` clean, exit 0; `scripts/check-line-endings.mjs` = 549 tracked files, exit 0.
+
+**2026-10-30 codex review round 25 (ONE P2 finding on the round-24 bytes `4775f9f13da838b41d75665aea032359d68b96aa`, RED-proven on the pre-fix bytes then fixed, class-swept; offline; zero model turns, zero live launches; injected seams only — synthetic PIDs never reach the real OS):**
+- **(P2, RED→GREEN) a RETAINED transport retry read with an INVALID collection interval refuses explicitly**: the round-24 guard validated the retained reads' identity instants but SKIPPED reads whose collection interval was itself invalid — an inverted interval (5600, 5500, 5400) or a missing start fell through the guard, the horizon walk silently discarded the read, and the transport exit at 5300 fenced although the corresponding VALID late presence (4900) correctly prevents settlement. Fixed: the retained-read validation classifies the interval explicitly per the established class structure — a true inversion refuses `observation-interval-inverted`, a missing start (when credit depends on it) refuses `observation-start-unprovable` (the round-14 naming territory) — so torn evidence cannot turn an otherwise contradictory replay into a credited local-process layer. RED: `tests/shell-wait-local-process.test.mjs:10052` (the inverted retained interval settled pre-fix) and the sweep at `:10068` (the missing-start shape refuses by the established name; the honest retained read keeps crediting with zero refusals); GREEN: the named refusals, unsettled; driver.mjs:5543-5570.
+- **Class-sweep inventory**: the sweep found and updated (1) the join version pins → **v27** in all five registered spots plus the hard-coded legacy-verdict join pin; (2) the spawned guarded selection re-pinned 351 → **354** (1 + 96 + 257); (3) the class is CLOSED across every retained-read consumer — the guard now names ALL torn shapes (inversion, missing start, malformed identity instant, out-of-interval identity instant) before the horizon walk, whose remaining `continue` paths are legitimate filters (non-established, scope-foreign, generation-foreign — each independently named by the sequence latch or generation checks), and the transport-exit conjunct's own interval/start checks (rounds 12/14) already name the exit fact's shapes.
+- **Gates on the final bytes (2026-10-30, all commands executed with explicit exit codes; RED before GREEN per finding as recorded above):** `node --test tests/shell-wait-local-process.test.mjs` = **257/257** pass, 0 failed, exit 0 (Task-2's 109 + Task 3's 47 + rounds 3-24's registrations + round-25's THREE: the inverted-interval RED, the missing-start/honest sweep and the join-version registration); `node --test tests/test-selection.test.mjs` = **6/6**, exit 0; `node --test tests/shell-wait-native-interruption.test.mjs` = **96/96**, exit 0; `npm run test:shell-research` = **1304/1304** tests, 0 failed, exit 0 (the spawned guarded nested selection = 1 + 96 + 257 = **354**; the FULL probe file **951/951**, 0 failed, exit 0); `npm run lint` clean, exit 0; `npm run typecheck` clean, exit 0; `git diff --check` clean, exit 0; `scripts/check-line-endings.mjs` = 549 tracked files, exit 0.
+
+**2026-10-30 codex review round 26 (TWO P2 findings on the round-25 bytes `1ea84e56aa58a4d926f4a4baf7258c91c4094d23`, each RED-proven on the pre-fix bytes then fixed, class-swept; offline; zero model turns, zero live launches; injected seams only — synthetic PIDs never reach the real OS):**
+- **(P2, RED→GREEN) the RETAINED transport reads validate their completion stamps**: the rounds-24/25 guards classified the start and the identity instant but not the completion — a retained presence read over [5500, MISSING] (or [5500, `"bad"`]) with identity read 5700 was accepted by the guards and then SILENTLY EXCLUDED from the horizon by the containment check, so the claimed exit at 5300 fenced although the corresponding VALID late presence correctly prevents settlement. Fixed: the completion stamp validates BEFORE the horizon walk — a missing or nonnumeric completion refuses `observation-instant-unprovable` (the established no-demonstrable-completion name), so torn evidence cannot erase a contradictory live observation. RED: `tests/shell-wait-local-process.test.mjs:10150` (the missing completion settled pre-fix) and the sweep at `:10165` (the nonnumeric completion refuses by the same name; the VALID late presence [5500, 5700, 5900] still refuses `transport-exit-overlaps-presence`); GREEN: the named refusals, unsettled; driver.mjs:5560-5567.
+- **(P2, RED→GREEN) the transport exit validates its SUPPLIED carried identity instants**: the transport-exit chain checked the collection interval and the observedStartIdentity generation but never verified that supplied identity instants lie within the interval — a same-generation `observedStartIdentity` with `observedIdentityReadEpochMs` 25000 (the claimed completion 5300, the cutoff 20000) rode in unchecked and the record settled. Fixed: the invocation-absence pattern (round 23) applies — a supplied `observedIdentityReadEpochMs` or `identityReadEpochMs` on the exit fact must be a safe integer INSIDE the validated collection interval, else `transport-exit-carried-instant-outside-interval`. RED: `tests/shell-wait-local-process.test.mjs:10185` (the out-of-interval instant settled pre-fix) and the sweep at `:10199` (the honest observed-then-gone shape — its instant 5250 inside [5200, 5300] — keeps crediting with zero refusals; a malformed `"25000"` refuses by the same name); GREEN: the named refusal, unsettled; driver.mjs:5606-5620.
+- **Class-sweep inventory**: the sweep found and updated (1) the join version pins → **v28** in all five registered spots plus the hard-coded legacy-verdict join pin; (2) the spawned guarded selection re-pinned 354 → **359** (1 + 96 + 262); (3) the F1 class is CLOSED — the retained-read guard now names every torn shape (inversion, missing start, missing/nonnumeric completion, malformed identity instant, out-of-interval identity instant) before the horizon walk, and the runtime always persists self-attested complete reads so only torn records hit these guards; (4) the F2 class is CLOSED across both exit facts — the invocation absence carries the round-23 latch guard, the transport exit carries this guard, and the runtime's carried instants are the read's own inspection sample (bracketed by construction, verified in round 23).
+- **Gates on the final bytes (2026-10-30, all commands executed with explicit exit codes; RED before GREEN per finding as recorded above):** `node --test tests/shell-wait-local-process.test.mjs` = **262/262** pass, 0 failed, exit 0 (Task-2's 109 + Task 3's 47 + rounds 3-25's registrations + round-26's FIVE: the F1 missing-completion RED, the F1 nonnumeric/valid sweep, the F2 out-of-interval RED, the F2 in-interval/malformed sweep and the join-version registration); `node --test tests/test-selection.test.mjs` = **6/6**, exit 0; `node --test tests/shell-wait-native-interruption.test.mjs` = **96/96**, exit 0; `npm run test:shell-research` = **1309/1309** tests, 0 failed, exit 0 (the spawned guarded nested selection = 1 + 96 + 262 = **359**; the FULL probe file **951/951**, 0 failed, exit 0); `npm run lint` clean, exit 0; `npm run typecheck` clean, exit 0; `git diff --check` clean, exit 0; `scripts/check-line-endings.mjs` = 549 tracked files, exit 0.
+
+**2026-10-30 codex review round 27 (TWO P2 findings on the round-26 bytes `3f55e9f9a19343eb80f6708902e703310eda48d1`, each RED-proven on the pre-fix bytes then fixed, class-swept; offline; zero model turns, zero live launches; injected seams only — synthetic PIDs never reach the real OS):**
+- **(P2, RED→GREEN) a replacement-claiming retained invocation read owes a valid completion timestamp**: the offline reuse latch's recency filter discarded a retained invocation read whose carried instant was absent (the completion fallback) — a same-PID, same-scope read reporting `start-identity-generation-changed` with NO `readEpochMs` and NO identity timestamps rode the walk silently (`continue`) and the record settled, although `adjudicateLocalExit` itself rejects reads without a valid completion. Fixed: the replacement-claiming shape is computed FIRST and a claim without a safe-integer completion refuses `exit-reuse-read-instant-unprovable` BEFORE the recency filter (reads WITH supplied identity instants were already named by the round-23 validation). RED: `tests/shell-wait-local-process.test.mjs:10225` (the torn claim settled pre-fix) and the sweep at `:10239` (a malformed `"bad"` completion refuses by the same name; the honest replacement read keeps latching `exit-reuse-latched`); GREEN: the named refusal, unsettled; driver.mjs:5856-5888.
+- **(P2, RED→GREEN) the NODE_OPTIONS preflight parses OPTION TOKENS**: the preflight's substring check accepted the `--require "<path>"` fragment hiding inside ANOTHER option's value — `NODE_OPTIONS='--title="--require "<preload>""'` passes preflight while Node tokenizes the fragment as the process TITLE and starts WITHOUT requiring the preload (even if that file does not exist), permitting a host launch with the mandatory observer known absent. Fixed: the preflight parses the NODE_OPTIONS string into its shell-ish option tokens (whitespace-separated, `'`/`"` quoting with backslash escapes inside double quotes — mirroring how Node itself splits the variable) and requires a real `--require` OPTION TOKEN whose argument equals the declared preload path (both the composed two-token form and the `--require=<path>` form count); a fragment inside another option's value never counts. RED: `tests/shell-wait-local-process.test.mjs:10257` (the title-fragment shape passed preflight pre-fix); GREEN: refused by name; the composed form and the `=` form keep passing; a single-quoted fragment refuses too; driver.mjs:6960-6997.
+- **Class-sweep inventory**: the sweep found and updated (1) the join version pins → **v29** in all five registered spots plus the hard-coded legacy-verdict join pin; (2) the spawned guarded selection re-pinned 359 → **363** (1 + 96 + 266); (3) the F1 class is CLOSED across the latch surface — the round-23 validation names reads with SUPPLIED instants, this guard names replacement-claiming reads whose completion is missing/malformed, and benign reads (no replacement claim) keep the documented recency semantics; (4) the F2 class is CLOSED across the preflight's NODE_OPTIONS surface — this is the only site verifying the preload load from the environment (the runtime composes the two-token form, and the composition test at tests/shell-wait-probe.test.mjs pins the composed string).
+- **Gates on the final bytes (2026-10-30, all commands executed with explicit exit codes; RED before GREEN per finding as recorded above):** `node --test tests/shell-wait-local-process.test.mjs` = **266/266** pass, 0 failed, exit 0 (Task-2's 109 + Task 3's 47 + rounds 3-26's registrations + round-27's FOUR: the F1 torn-claim RED, the F1 malformed/honest sweep, the F2 NODE_OPTIONS token RED (with the composed/`=`/single-quoted sweep inline) and the join-version registration); `node --test tests/test-selection.test.mjs` = **6/6**, exit 0; `node --test tests/shell-wait-native-interruption.test.mjs` = **96/96**, exit 0; `npm run test:shell-research` = **1313/1313** tests, 0 failed, exit 0 (the spawned guarded nested selection = 1 + 96 + 266 = **363**; the FULL probe file **951/951**, 0 failed, exit 0); `npm run lint` clean, exit 0; `npm run typecheck` clean, exit 0; `git diff --check` clean, exit 0; `scripts/check-line-endings.mjs` = 549 tracked files, exit 0.
+
+**2026-10-30 codex review round 28 (TWO P2 findings on the round-27 bytes `348c0889df9e418f7d405fed8d0fe100ad1cbac0`, each RED-proven on the pre-fix bytes then fixed, class-swept; offline; zero model turns, zero live launches; injected seams only — synthetic PIDs never reach the real OS):**
+- **(P2, RED→GREEN) the fence echoes compare SYMMETRICALLY**: the echo-consistency check fired only when the record echo was PRESENT and the block stamp a number — a block persisting the EARLIER termination boundary (5000) with the record's `interrupt.cleanupBoundaryAtMs` missing rode through with zero refusals, and the absences (5100, 5300) fenced against the 20000 cutoff although the persisted boundary marks them cleanup-time evidence. Fixed: both echoes normalize (finite-number-or-null) and compare for INEQUALITY in both directions — block-present/echo-missing and echo-present/block-missing both refuse `cleanup-boundary-echo-mismatch`, and the cutoff echo (`cutoff-echo-mismatch`) carries the same symmetric rule (the class sweep found the identical hole). RED: `tests/shell-wait-local-process.test.mjs:10532` (the missing-echo shape settled pre-fix) and the sweep at `:10546` (the reverse direction, the unequal pair per the existing rule, the echo-consistent boundary keeping its stricter fence via `local-exit-at-or-after-fence`, and the missing cutoff echo refusing); GREEN: the named refusals, unsettled; driver.mjs:4979-4986. Sweep consequence: eleven RUNTIME test harnesses joined real runtime blocks with SIMPLIFIED records that dropped the boundary echo the real composer writes (driver.mjs:1167 — the interrupt carries `cleanupBoundaryAtMs` exactly when the runtime stamped one); the harnesses now mirror the real composition (tests/shell-wait-local-process.test.mjs — 11 join sites), and the real composer remains echo-consistent by construction (both the block stamp and the record echo derive from the same `cleanup.cleanupBoundaryAtMs`).
+- **(P2, RED→GREEN) the NODE_OPTIONS tokenizer matches Node's ACTUAL parsing rules**: the round-27 tokenizer treated apostrophes as quoting delimiters — an inherited `NODE_OPTIONS=--title=it's` plus the fixture's appended `--require "<path>"` fragment made the tokenizer consume the fragment into the unmatched single-quoted segment and WRONGLY REFUSE the armed run (Node verified empirically: the preload LOADS in that shape), while conversely ACCEPTING `--require '<path>'` whose apostrophes Node treats as filename characters (verified: `Cannot find module ''<path>''` — the load fails). Fixed: the tokenizer now matches Node exactly — double quotes toggle in-string state and are consumed, a backslash escapes the next character ONLY inside double quotes (empirically verified: `"\/tmp\/x"` loads `/tmp/x` while the unquoted `\/` stays literal), and apostrophes are ORDINARY characters. RED: `tests/shell-wait-local-process.test.mjs:10572` (both directions on the pre-fix bytes); GREEN: the it's run passes, the apostrophe-quoted path refuses, the composed two-token and `=` forms keep passing and the double-quoted title fragment keeps refusing; driver.mjs:6993-7015.
+- **Class-sweep inventory**: the sweep found and updated (1) the join version pins → **v30** in all five registered spots plus the hard-coded legacy-verdict join pin; (2) the spawned guarded selection re-pinned 363 → **367** (1 + 96 + 270 — the first-cut 368 was an arithmetic slip the research run's count assertions caught); (3) the F1 class is CLOSED across both fence echoes (the boundary and the cutoff), both directions, and the unequal-values rule; (4) the F2 class is CLOSED — the tokenizer now mirrors the running binary's behavior (probed, not assumed), and every pre-existing NODE_OPTIONS test shape re-verified.
+- **Gates on the final bytes (2026-10-30, all commands executed with explicit exit codes; RED before GREEN per finding as recorded above):** `node --test tests/shell-wait-local-process.test.mjs` = **270/270** pass, 0 failed, exit 0 (Task-2's 109 + Task 3's 47 + rounds 3-27's registrations + round-28's FOUR: the F1 missing-echo RED, the F1 symmetric-directions sweep, the F2 tokenizer RED (with the composed/`=`/title-fragment sweep inline) and the join-version registration); `node --test tests/test-selection.test.mjs` = **6/6**, exit 0; `node --test tests/shell-wait-native-interruption.test.mjs` = **96/96**, exit 0; `npm run test:shell-research` = **1317/1317** tests, 0 failed, exit 0 (the spawned guarded nested selection = 1 + 96 + 270 = **367**; the FULL probe file **951/951**, 0 failed, exit 0); `npm run lint` clean, exit 0; `npm run typecheck` clean, exit 0; `git diff --check` clean, exit 0; `scripts/check-line-endings.mjs` = 549 tracked files, exit 0.
+
+**2026-10-30 codex review round 29 (TWO P2 findings on the round-28 bytes `640ae3796791db7bf902c6514255a261813a4816`, each RED-proven on the pre-fix bytes then fixed, class-swept; offline; zero model turns, zero live launches; injected seams only — synthetic PIDs never reach the real OS):**
+- **(P2, RED→GREEN) the observed Companion generation must demonstrably predate the interrupt request**: the local-duty join checked only the cleanup/cutoff fences — a launcher started AFTER the native interrupt request (the reviewer's fixture: `interrupt.callAtMs` + both request bounds = 500, the Companion's record starting at 1000.1) still fenced its subsequent presence and disappearance (`settled: true`), qualifying without the required pre-interruption Companion baseline. Fixed: when the record carries the ADMITTED request evidence (the call timestamp or either request bound), the invocation admission's record start (`startOriginMs` — the first identity-record write, which follows the process start) must be STRICTLY earlier than the EARLIEST documented request instant; ordering that cannot be established — a post-request start, a start inside a straddling request window, or an unprovable baseline — refuses `companion-baseline-unestablished`. Records carrying NO request evidence keep the neutral legacy shape (the oracle's interrupt layer independently owns the delivery and timing proof). RED: `tests/shell-wait-local-process.test.mjs:10702` (the post-request start settled pre-fix) and the sweep at `:10717` (the straddling window cannot establish the ordering; `callAtMs` alone binds; the coherent pre-request generation qualifies with zero refusals; the no-evidence shape stays neutral); GREEN: the named refusal, unsettled; driver.mjs:5280-5299.
+- **(P2, RED→GREEN) the NODE_OPTIONS tokenizer rejects UNFINISHED quoting states**: `--require="<path>` (no closing quote) produced a matching require token and a passing preflight — but Node itself exits code 9 (`invalid value for NODE_OPTIONS` — unterminated string) BEFORE loading anything, so the pre-host gate accepted a configuration already known to lack the observer. Fixed: the tokenizer reports the terminal state and an unterminated double-quote or a dangling escape (inside quotes) at end-of-string refuses by name before any token acceptance. RED: `tests/shell-wait-local-process.test.mjs:10747` (the unterminated shape passed pre-fix); GREEN: refused by name; the dangling-escape shape refuses too, and the well-formed composed/`=` forms keep passing; driver.mjs:7030-7057.
+- **Class-sweep inventory**: the sweep found and updated (1) the join version pins → **v31** in all five registered spots plus the hard-coded legacy-verdict join pin; (2) the spawned guarded selection re-pinned 367 → **371** (1 + 96 + 274); (3) the F1 class is CLOSED across the qualification timeline — the admission replay already binds the record start to the observed creation (the frozen per-platform bounds), and the new baseline conjunct binds that same start to the ADMITTED request instant, so the Companion's duties can only settle on a generation demonstrably alive before the request; (4) the F2 class is CLOSED — the tokenizer is the single NODE_OPTIONS consumer in the preflight, and the invalid-state refusal composes ahead of the load check (an invalid environment can never be credited as loading anything).
+- **Gates on the final bytes (2026-10-30, all commands executed with explicit exit codes; RED before GREEN per finding as recorded above):** `node --test tests/shell-wait-local-process.test.mjs` = **274/274** pass, 0 failed, exit 0 (Task-2's 109 + Task 3's 47 + rounds 3-28's registrations + round-29's FOUR: the F1 post-request RED, the F1 straddling/honest/neutral sweep, the F2 unterminated-quoting RED (with the dangling-escape and well-formed sweep inline) and the join-version registration); `node --test tests/test-selection.test.mjs` = **6/6**, exit 0; `node --test tests/shell-wait-native-interruption.test.mjs` = **96/96**, exit 0; `npm run test:shell-research` = **1321/1321** tests, 0 failed, exit 0 (the spawned guarded nested selection = 1 + 96 + 274 = **371**; the FULL probe file **951/951**, 0 failed, exit 0); `npm run lint` clean, exit 0; `npm run typecheck` clean, exit 0; `git diff --check` clean, exit 0; `scripts/check-line-endings.mjs` = 549 tracked files, exit 0.
+
+**2026-10-30 codex review round 30 (TWO P2 findings on the round-29 bytes `ab2c8c61fbc415d030839e83c194f78fffec0e69`, each RED-proven on the pre-fix bytes then fixed, class-swept; BOTH preflight-only — the offline replay contract is unchanged, so the join version stays **v31**; offline; zero model turns, zero live launches; injected seams only — synthetic PIDs never reach the real OS):**
+- **(P2, RED→GREEN) the preflight validates the DECLARED invocation selector**: the pre-flight gate verified the arming declaration's entry digests and the effective environment but never the declaration's `gate.argv` — a declaration recording a foreign selector (`['status','list']`) with matching digests and env values passed the preflight, the hosted launch was spent, and only the offline join then refused `admission-selector-foreign` (after the cost). Fixed: the preflight requires the declaration's argv to equal the frozen `TERMINAL_ARGV_SELECTOR` element-wise (missing argv refuses fail-closed; the frozen selector is mirrored, never replaced) — a known-unqualifiable instrument refuses BEFORE spending a hosted launch. RED: `tests/shell-wait-local-process.test.mjs:10855` (`true !== false` on the foreign-selector shape pre-fix); GREEN: refused by name; the frozen-selector instrument still passes end to end; driver.mjs:6973-6983.
+- **(P2, RED→GREEN) NODE_OPTIONS tokenizes on SPACES only — a tab/newline separator is the known-invalid environment**: the round-27 tokenizer split on tab and newline as separators, so `--require\t"<path>"` produced a valid require token and a passing preflight — but Node (verified empirically again on the running binary) treats tab and newline as ORDINARY token characters and rejects the combined option with `is not allowed in NODE_OPTIONS` (exit 9) BEFORE loading anything; even a trailing tab in an option value is rejected (`illegal value for flag`). Fixed: the tokenizer splits ONLY on literal spaces outside quotes (tab/newline accumulate into the token) and reports any unquoted tab/newline; such an environment refuses by name before launch. Inside quotes they remain ordinary value characters. RED: `tests/shell-wait-local-process.test.mjs:10875` (the tab shape passed pre-fix); GREEN: the tab and newline shapes refuse by the invalid-environment name; the space shape keeps passing end to end; driver.mjs:7019-7062.
+- **Class-sweep inventory**: the sweep found and updated (1) the spawned guarded selection re-pinned 371 → **373** (1 + 96 + 276); (2) the F1 class is CLOSED across the declaration surface — the preflight now verifies every field the offline join's admission replay enforces (the entry digests since round 2, the preload digest since round 5, the selector from this round), so no known-unqualifiable declaration reaches a hosted launch; (3) the F2 class is CLOSED — the tokenizer now matches Node's ACTUAL separator set (probed, not assumed), composing with the round-28 apostrophe rules and the round-29 unfinished-quoting refusal; no join version bump: both fixes live in the pre-host gate, the replay contract and its recorded verdicts are byte-unchanged.
+- **Gates on the final bytes (2026-10-30, all commands executed with explicit exit codes; RED before GREEN per finding as recorded above):** `node --test tests/shell-wait-local-process.test.mjs` = **276/276** pass, 0 failed, exit 0 (Task-2's 109 + Task 3's 47 + rounds 3-29's registrations + round-30's TWO: the foreign-selector RED (with the frozen/missing sweep inline) and the tab/newline RED (with the space-shape sweep inline)); `node --test tests/test-selection.test.mjs` = **6/6**, exit 0; `node --test tests/shell-wait-native-interruption.test.mjs` = **96/96**, exit 0; `npm run test:shell-research` = **1323/1323** tests, 0 failed, exit 0 (the spawned guarded nested selection = 1 + 96 + 276 = **373**; the FULL probe file **951/951**, 0 failed, exit 0); `npm run lint` clean, exit 0; `npm run typecheck` clean, exit 0; `git diff --check` clean, exit 0; `scripts/check-line-endings.mjs` = 549 tracked files, exit 0.
+
+**2026-10-30 codex review round 31 (ONE P2 finding on the round-30 bytes `1ca71a2479b8aac299a97532663db6c9ae050b54`, RED-proven on the pre-fix bytes then fixed, class-swept; a preflight-only fix — the offline replay contract is unchanged, so the join version stays **v31**; offline; zero model turns, zero live launches; injected seams only — synthetic PIDs never reach the real OS):**
+- **(P2, RED→GREEN) the preflight requires the FROZEN preload contract on the capture handle**: the capture-environment check verified handle↔env AGREEMENT only — a handle and environment agreeing on a foreign limit (2048) with the genuine preload artifact and matching digests passed the preflight, while the generated preload's own environment gate (closure-preload ENV_OK) requires `MAX_BYTES === STDOUT_CAPTURE_MAX_BYTES` (65536): with the foreign limit BOTH identity-record writers stay INERT (the reviewer reproduced preflight ok:true with no identity record written). Fixed: the preflight validates the handle values against the SAME frozen contract before the launch (the environment is forced to agree with the handle, so it inherits the verdict) — the frozen limit, an absolute capture directory, absolute entry paths, and a 64-hex nonce (the class sweep found the identical ENV_OK constraints on the nonce/directory/entry); each violation refuses `the capture handle violates the frozen preload contract (...) — the observer would stay inert ...; known-unobservable configuration`. RED: `tests/shell-wait-local-process.test.mjs:10946` (the agreeing-2048 shape passed pre-fix); GREEN: refused by name; the frozen-limit instrument passes end to end; the malformed-nonce and relative-directory shapes refuse by the same name; driver.mjs:7017-7038.
+- **Class-sweep inventory**: the sweep found and updated (1) **48 torn fixture limit values** (`maxBytes: 2048` + one `'2048'` env string) → the real composer's frozen 65536 across the local-process battery (43 + 1), the native battery (4 + 1) and the probe battery (5 — including the survival-control preflight shape); (2) **11 preflight fixture nonces** `n`.repeat(64) → hex (the real composer generates `randomBytes(32).toString('hex')` — the non-hex nonce was the same torn-fixture class and was refused by the new check: the local battery ×7 + the round-31 helper, the native battery ×2 including the survival-control preflight shape, and the probe battery's `syntheticArming` whose preflight-path tests failed on the first research run); (3) the spawned guarded selection re-pinned 373 → **375** (1 + 96 + 278); (4) the armed-fixture runtime-declaration assertion updated to the hex nonce; (5) the arming-declaration `maxBytes` rides the same sweep for composer coherence (the join consumes no limit — no check invented beyond the preload's own ENV_OK contract); no join version bump: the fix lives in the pre-host gate, the replay contract and its recorded verdicts are byte-unchanged.
+- **Gates on the final bytes (2026-10-30, all commands executed with explicit exit codes; RED before GREEN per finding as recorded above):** `node --test tests/shell-wait-local-process.test.mjs` = **278/278** pass, 0 failed, exit 0 (Task-2's 109 + Task 3's 47 + rounds 3-30's registrations + round-31's TWO: the agreeing-foreign-limit RED and the frozen-constraint sweep); `node --test tests/test-selection.test.mjs` = **6/6**, exit 0; `node --test tests/shell-wait-native-interruption.test.mjs` = **96/96**, exit 0; `npm run test:shell-research` = **1325/1325** tests, 0 failed, exit 0 (the spawned guarded nested selection = 1 + 96 + 278 = **375**; the FULL probe file **951/951**, 0 failed, exit 0); `npm run lint` clean, exit 0; `npm run typecheck` clean, exit 0; `git diff --check` clean, exit 0; `scripts/check-line-endings.mjs` = 549 tracked files, exit 0.
+
+**2026-10-30 codex review round 32 (TWO P2 findings on the round-31 bytes `1247bf5e96db1eaaa8e3ec170d9e923e458e66a8`, each RED-proven on the pre-fix bytes then fixed, class-swept; BOTH preflight/replay-guard fixes — the offline replay contract's crediting surface grows by the invocation retained-read validation, and the join version bumps to **v32**; offline; zero model turns, zero live launches; injected seams only — synthetic PIDs never reach the real OS):**
+- **(P2, RED→GREEN) the RETAINED invocation presence reads validate like the transport replay**: the horizon and supersession walks silently discarded a same-generation established read with UNPROVABLE timestamps (the containment check treated the missing completion as non-containing) — appending a same-generation live read starting at 6000 with NO completion to the positive fixture still settled against its absence at 5100, crediting cleanup despite the contradictory later presence evidence. Fixed: the round-24/25 retained-read pattern mirrored — a same-generation established read binding the bound identity validates its collection interval BEFORE the horizon walk (a true inversion refuses `observation-interval-inverted`, a missing start `observation-start-unprovable`, a missing/nonnumeric completion `observation-instant-unprovable`, a malformed identity instant `observation-identity-read-unprovable`, an out-of-interval identity instant `observation-identity-read-outside-interval`); replacement-claiming reads stay on the round-27 surface. RED: `tests/shell-wait-local-process.test.mjs:11065` (the no-completion shape settled pre-fix) and the sweep at `:11083` (the inverted and start-less shapes refuse by their established names; the HONEST late presence still prevents settlement — the horizon walk sees it and the absence walk refuses `exit-absence-overlaps-presence`); GREEN: the named refusals, unsettled; driver.mjs:5772-5802.
+- **(P2, RED→GREEN) the preflight requires a USABLE capture directory**: the frozen-contract check validated the directory's SHAPE (absolute) but never its existence — a MISSING directory (or a REGULAR FILE at the path) returned ok:true (reproduced with a nonexistent directory), while the preload never creates the directory and swallows identity-write failures: the hosted case would launch with the observer already known unavailable. Fixed: the preflight composes a FINAL usability gate before ok:true — the declared capture directory must `lstat` as an existing directory (the injected filesystem seam; the gate composes LAST so every earlier named ground keeps its refusal and only fully armed shapes reach it). RED: `tests/shell-wait-local-process.test.mjs:11119` (the nonexistent-directory shape passed pre-fix); GREEN: the missing and regular-file shapes refuse `/capture directory/iu`; the usable directory passes end to end; driver.mjs:7172-7186.
+- **Class-sweep inventory**: the sweep found and updated (1) the join version pins → **v32** in all five registered spots plus the hard-coded legacy-verdict join pin; (2) the spawned guarded selection re-pinned 373 → **378** (1 + 96 + 281 — the first-cut 375 was an arithmetic slip the research run's count assertions caught); (3) **9 preflight-positive fixture helpers** now create the capture directory their real composer creates (the local battery's armedFixture, the round-3/27/28/29/30/31 helpers and the probe battery's `armSyntheticFixture` via `mkdirSync`, plus the survival-control preflight shape) — the shapes expected to REFUSE keep their named grounds (the usability gate composes last); (4) the F1 class is CLOSED across both retained-read sequences — the transport replay's retained reads (rounds 24/25) and now the invocation replay's retained presence reads validate identically before their respective horizon walks; (5) the F2 class is CLOSED — the capture directory joins the frozen-contract surface (shape since round 31, existence/usability from this round).
+- **Gates on the final bytes (2026-10-30, all commands executed with explicit exit codes; RED before GREEN per finding as recorded above):** `node --test tests/shell-wait-local-process.test.mjs` = **281/281** pass, 0 failed, exit 0 (Task-2's 109 + Task 3's 47 + rounds 3-31's registrations + round-32's THREE: the unprovable-timestamps RED, the inverted/start-less/honest sweep and the capture-directory RED (with the regular-file and usable-directory sweep inline)); `node --test tests/test-selection.test.mjs` = **6/6**, exit 0; `node --test tests/shell-wait-native-interruption.test.mjs` = **96/96**, exit 0; `npm run test:shell-research` = **1328/1328** tests, 0 failed, exit 0 (the spawned guarded nested selection = 1 + 96 + 281 = **378**; the FULL probe file **951/951**, 0 failed, exit 0); `npm run lint` clean, exit 0; `npm run typecheck` clean, exit 0; `git diff --check` clean, exit 0; `scripts/check-line-endings.mjs` = 549 tracked files, exit 0.
+
+**2026-10-30 codex review round 33 (TWO P2 findings on the round-32 bytes `cebc868912826629b7e95a5d69a850eadec0e193`, each RED-proven on the pre-fix bytes then fixed, class-swept; the replay contract grows by the endpoint instant agreement, so the join version bumps to **v33**; offline; zero model turns, zero live launches; injected seams only — synthetic PIDs never reach the real OS):**
+- **(P2, RED→GREEN) the refreshed ancestry endpoint's creation instant must AGREE with its admission-backed observation**: the digest-bound endpoint loop checked pid/start identity/nonce and the queried binding but never the OBSERVED CREATION INSTANT — a persisted endpoint with the same identity fields and a DIFFERENT `startInstantEpochMs` was accepted and its conflicting instant trusted by the lifetime checks (the reviewer's shape: both generations starting at 1000, the refreshed broker's instant moved to 3000, `settled: true`). Fixed: the endpoint's creation instant must be a safe integer EQUAL to its base slot's observed instant (the admission-backed observation the §25.5 generation rules bind) — a conflict refuses `ancestry-endpoint-instant-foreign`. RED: `tests/shell-wait-local-process.test.mjs:11259` (the conflicting daemon-instant shape settled pre-fix) and the sweep at `:11271` (the companion endpoint binds the same rule; the coherent fixture stays green); GREEN: the named refusal, unsettled; driver.mjs:5368-5380.
+- **(P2, RED→GREEN) the capture directory must be PRIVATE (exactly 0700 on POSIX)**: the round-32 usability gate verified existence and directory-ness but not the MODE — an existing 0755/0555 directory passed the preflight, while `readBoundedJsonFile(requirePrivatePermissions)` requires EXACTLY 0700: the host would launch with an observer already known to reject every startup record. Fixed: the usability gate extends with the private-permissions check — `(mode & 0o777) === 0o700` on POSIX (the win32 skip mirrors the consumer's own contract; the real composer mkdirs mode 0700). RED: `tests/shell-wait-local-process.test.mjs:11283` (the 0755/0555 shapes passed pre-fix); GREEN: refused by name; the private 0700 directory passes end to end; driver.mjs:7190-7204.
+- **Class-sweep inventory**: the sweep found and updated (1) the join version pins → **v33** in all five registered spots plus the hard-coded legacy-verdict join pin; (2) the spawned guarded selection re-pinned 378 → **381** (1 + 96 + 284); (3) **8 preflight-positive fixture mkdirs** now create the capture directory with the real composer's `mode: 0o700` (the local battery's helpers, the probe battery's `armSyntheticFixture` and survival-control shape) — the default-umask 0755 directories were the same torn-fixture class and would have been refused by the new gate; (4) the ROUND-2 `armedBlock` fixture was genuinely contradictory under the new rule (the daemon endpoint claimed creation second 3000 while its base observation and admission record proved second 1000) — made coherent (the Companion generation created in epoch second 0, the daemon in second 1000; the admission record starts inside those seconds and every lifetime rule holds with the agreeing instants), and the round-29 honest-baseline and round-32 helper shapes swept to the same coherence; (5) the F1 class is CLOSED across the ancestry endpoint surface — the scope (round 5), the query binding (round 22), the generation identity (rounds 3/22), the parentage (round 17) and now the creation instant each re-verify against the admission-backed base; the F2 class is CLOSED — the capture directory joins the frozen-contract surface (shape round 31, existence round 32, private permissions now).
+- **Gates on the final bytes (2026-10-30, all commands executed with explicit exit codes; RED before GREEN per finding as recorded above):** `node --test tests/shell-wait-local-process.test.mjs` = **284/284** pass, 0 failed, exit 0 (Task-2's 109 + Task 3's 47 + rounds 3-32's registrations + round-33's THREE: the conflicting-instant RED, the companion-bind/coherent sweep and the private-permissions RED (with the 0555/0700 sweep inline)); `node --test tests/test-selection.test.mjs` = **6/6**, exit 0; `node --test tests/shell-wait-native-interruption.test.mjs` = **96/96**, exit 0; `npm run test:shell-research` = **1331/1331** tests, 0 failed, exit 0 (the spawned guarded nested selection = 1 + 96 + 284 = **381**; the FULL probe file **951/951**, 0 failed, exit 0); `npm run lint` clean, exit 0; `npm run typecheck` clean, exit 0; `git diff --check` clean, exit 0; `scripts/check-line-endings.mjs` = 549 tracked files, exit 0.
+
+**2026-10-30 codex review round 34 (ONE P2 finding on the round-33 bytes `bcf81c418db956bef1f64482216535454d56a9e8`, RED-proven on the pre-fix bytes then fixed, class-swept; the replay contract grows by the liveness witness conjunct, so the join version bumps to **v34**; offline; zero model turns, zero live launches; injected seams only — synthetic PIDs never reach the real OS):**
+- **(P2, RED→GREEN) the pre-interruption baseline owes a VERIFIED presence witness collected BEFORE the request**: the round-29 baseline compared only the process's STARTUP timestamp — a generation whose record started before the request (1000.1 against callAtMs 2000) but whose first VERIFIED presence was collected AFTER it (identityRead 2100; reachable because the runtime does not synchronize interruption with baseline collection) still settled, though no pre-interruption liveness was ever witnessed. Fixed: the baseline conjunct extends — at least one VERIFIED presence observation (the phase-2 presence slot, the refreshed companion endpoint, or the retained established reads — each bound to the admitted generation's start identity and queried scope) must carry an interval-valid carried instant STRICTLY earlier than the earliest admitted request instant; the same conservative-strict ordering applies (a torn/unprovable candidate is no witness; a witness set with nothing before the request refuses `companion-baseline-unestablished`). RED: `tests/shell-wait-local-process.test.mjs:11412` (the reviewer's exact shape settled pre-fix — the start conjunct alone passed) and the sweep at `:11425` (the coherent pre-request generation qualifies with zero refusals; a post-request witness set cannot rescue an earlier start; a torn presence is no witness); GREEN: the named refusal / the witness established; driver.mjs:5303-5339.
+- **Class-sweep inventory**: the sweep found and updated (1) the join version pins → **v34** in all five registered spots plus the hard-coded legacy-verdict join pin; (2) the spawned guarded selection re-pinned 381 → **384** (1 + 96 + 287); (3) the round-29 honest-baseline sweep shape was swept to the same coherence (its presence witness moved before its request — the shape predating this rule could not have witnessed its own request); (4) the F1 class is CLOSED across the baseline surface — the record start (round 29) and the verified presence witness (this round) BOTH bind to the admitted request, so the pre-interruption duties settle only on a generation demonstrably alive AND verifiably observed before the request.
+- **Gates on the final bytes (2026-10-30, all commands executed with explicit exit codes; RED before GREEN per finding as recorded above):** `node --test tests/shell-wait-local-process.test.mjs` = **287/287** pass, 0 failed, exit 0 (Task-2's 109 + Task 3's 47 + rounds 3-33's registrations + round-34's THREE: the post-request-witness RED, the honest/post-request/torn sweep and the join-version registration); `node --test tests/test-selection.test.mjs` = **6/6**, exit 0; `node --test tests/shell-wait-native-interruption.test.mjs` = **96/96**, exit 0; `npm run test:shell-research` = **1334/1334** tests, 0 failed, exit 0 (the spawned guarded nested selection = 1 + 96 + 287 = **384**; the FULL probe file **951/951**, 0 failed, exit 0); `npm run lint` clean, exit 0; `npm run typecheck` clean, exit 0; `git diff --check` clean, exit 0; `scripts/check-line-endings.mjs` = 549 tracked files, exit 0.
+
+**2026-10-30 codex review round 35 (ONE P2 finding on the round-34 bytes `25b6bff217dc446fe6aac3081b2719b12442b7d3`, RED-proven on the pre-fix bytes then fixed, class-swept; the replay contract grows by the observed-identity witness binding, so the join version bumps to **v35**; offline; zero model turns, zero live launches; injected seams only — synthetic PIDs never reach the real OS):**
+- **(P2, RED→GREEN) a pre-request baseline witness must carry the invocation own OS-observed identity**: the round-34 witness loop checked the queried pid/scope binding and the start-identity string but never the OBSERVED identity — a retained `reads` entry querying the invocation pid/scope while reporting a FOREIGN `observation.pid`/`observation.nonceSha256` (with a matching start-identity string and pre-request timestamps) was credited as the pre-interruption liveness witness: adding it to the round-34 negative fixture flipped `settled` false→true with no refusals. Fixed: the round-20 queried-binding rule mirrored on the OBSERVED side — the witness's observed pid and nonce digest must match the admitted invocation before witness credit. RED: `tests/shell-wait-local-process.test.mjs:11536` (the foreign-observation shape flipped the negative fixture pre-fix) and the sweep at `:11548` (the foreign nonce digest alone refuses; the invocation's own pre-request presence still witnesses); GREEN: the named refusal, unsettled; driver.mjs:5324-5333.
+- **Class-sweep inventory**: the sweep found and updated (1) the join version pins → **v35** in all five registered spots plus the hard-coded legacy-verdict join pin; (2) the spawned guarded selection re-pinned 384 → **387** (1 + 96 + 290); (3) the F1 class is CLOSED across the witness surface — the generation start identity, the queried pid/scope binding, and now the observed pid/nonce digest each bind a witness candidate to the admitted invocation (a query addressed to the invocation, or an observation of a foreign process, can never witness it).
+- **Gates on the final bytes (2026-10-30, all commands executed with explicit exit codes; RED before GREEN per finding as recorded above):** `node --test tests/shell-wait-local-process.test.mjs` = **290/290** pass, 0 failed, exit 0 (Task-2's 109 + Task 3's 47 + rounds 3-34's registrations + round-35's THREE: the foreign-observation RED, the nonce-alone/own-presence sweep and the join-version registration); `node --test tests/test-selection.test.mjs` = **6/6**, exit 0; `node --test tests/shell-wait-native-interruption.test.mjs` = **96/96**, exit 0; `npm run test:shell-research` = **1337/1337** tests, 0 failed, exit 0 (the spawned guarded nested selection = 1 + 96 + 290 = **387**; the FULL probe file **951/951**, 0 failed, exit 0); `npm run lint` clean, exit 0; `npm run typecheck` clean, exit 0; `git diff --check` clean, exit 0; `scripts/check-line-endings.mjs` = 549 tracked files, exit 0.
+
+**2026-10-30 codex review round 36 (ONE P2 finding on the round-35 bytes `2dbe543fadea8e2d0b093d4d353a3ae0e8ca7ef4`, RED-proven on the pre-fix bytes then fixed, class-swept; the replay contract grows by the witness freshness bound, so the join version bumps to **v36**; offline; zero model turns, zero live launches; injected seams only — synthetic PIDs never reach the real OS):**
+- **(P2, RED→GREEN) a pre-request witness must POSTDATE the admitted generation's record start**: the round-34 witness check accepted a carried instant BEFORE the request without verifying it occurred after the admitted process started — a retained presence over [100, 300] with its identity instant at 200 (the invocation starting at 1000.1, the request at 2000) flipped the negative fixture to settled:true: temporally impossible cached evidence (a read of the process before it existed) satisfied the pre-interruption baseline. Fixed: the generation-freshness lower bound applies to EACH witness — the carried instant must be at/after the admitted generation's record start (the same lower bound the admission-observation-stale check enforces; the strictest correct one, since the round-19 rules already validate the record start against the observed creation within the documented platform uncertainty bounds, so this bound subsumes them) — an instant before the process existed is no witness. RED: `tests/shell-wait-local-process.test.mjs:11649` (the pre-start instant flipped the negative fixture pre-fix); GREEN: refused `companion-baseline-unestablished`; the sweep at `:11668` locks the fresh witness (at/after the start, before the request) passing end to end; driver.mjs:5339-5349.
+- **Class-sweep inventory**: the sweep found and updated (1) the join version pins → **v36** in all five registered spots plus the hard-coded legacy-verdict join pin; (2) the spawned guarded selection re-pinned 387 → **389** (1 + 96 + 292); (3) the F1 class is CLOSED across the witness surface — the generation start identity, the queried binding, the observed identity (round 35), the pre-request ordering (round 34) and now the generation-freshness lower bound each bind a witness candidate, and the bound composes with the retained-read interval validation (round 32) that precedes it; the freshness bound applies uniformly to every witness source (the presence slot, the refreshed endpoint, the retained reads) by loop construction.
+- **Gates on the final bytes (2026-10-30, all commands executed with explicit exit codes; RED before GREEN per finding as recorded above):** `node --test tests/shell-wait-local-process.test.mjs` = **292/292** pass, 0 failed, exit 0 (Task-2's 109 + Task 3's 47 + rounds 3-35's registrations + round-36's TWO: the pre-start-instant RED and the fresh-witness sweep); `node --test tests/test-selection.test.mjs` = **6/6**, exit 0; `node --test tests/shell-wait-native-interruption.test.mjs` = **96/96**, exit 0; `npm run test:shell-research` = **1339/1339** tests, 0 failed, exit 0 (the spawned guarded nested selection = 1 + 96 + 292 = **389**; the FULL probe file **951/951**, 0 failed, exit 0); `npm run lint` clean, exit 0; `npm run typecheck` clean, exit 0; `git diff --check` clean, exit 0; `scripts/check-line-endings.mjs` = 549 tracked files, exit 0.
+
+**2026-10-30 codex review round 37 (ONE P2 finding on the round-36 bytes `615719aeefebb568753e9fc1f2c61040171b80ac`, RED-proven on the pre-fix bytes then fixed, class-swept; the replay contract grows by the witness fence discipline, so the join version bumps to **v37**; offline; zero model turns, zero live launches; injected seams only — synthetic PIDs never reach the real OS):**
+- **(P2, RED→GREEN) a pre-request witness owes the §25.7 completion fence**: the witness check accepted a retained presence on its identity-read instant alone — a same-generation read with a fresh, pre-request identity instant (1600 against the request 2000) whose collection completes at 25000 (AFTER the 20000 cutoff) and which the runtime itself named post-fence flipped the negative fixture to settled:true: explicitly post-fence evidence supplied the missing baseline. Fixed: the §25.7 fence discipline composed onto the witness rule — the witness's own collection must pass `provesPreFenceCompletion` (a present safe-integer completion strictly before the operative fence; an unprovable completion is no witness) and the runtime's `postFence` naming is honored (a postFence read is never a witness). RED: `tests/shell-wait-local-process.test.mjs:11750` (the post-fence shape flipped the negative fixture pre-fix — the round-32 interval guard passes it, only the fence is violated); GREEN: refused `companion-baseline-unestablished`; the sweep at `:11762` locks the §25.7-clean witness (completion 1600 < 20000) passing end to end and the unprovable-completion shape refusing; driver.mjs:5347-5356.
+- **Class-sweep inventory**: the sweep found and updated (1) the join version pins → **v37** in all five registered spots plus the hard-coded legacy-verdict join pin; (2) the spawned guarded selection re-pinned 389 → **391** (1 + 96 + 294); (3) the F1 class is CLOSED across the witness surface — the generation start identity, the queried binding, the observed identity, the pre-request ordering, the generation-freshness lower bound, and now the §25.7 completion fence each bind a witness candidate (the bound composes with the round-32 retained-read interval validation that precedes it; the fence applies uniformly to every witness source by loop construction).
+- **Gates on the final bytes (2026-10-30, all commands executed with explicit exit codes; RED before GREEN per finding as recorded above):** `node --test tests/shell-wait-local-process.test.mjs` = **294/294** pass, 0 failed, exit 0 (Task-2's 109 + Task 3's 47 + rounds 3-36's registrations + round-37's TWO: the post-fence-witness RED and the clean-witness/unprovable sweep); `node --test tests/test-selection.test.mjs` = **6/6**, exit 0; `node --test tests/shell-wait-native-interruption.test.mjs` = **96/96**, exit 0; `npm run test:shell-research` = **1341/1341** tests, 0 failed, exit 0 (the spawned guarded nested selection = 1 + 96 + 294 = **391**; the FULL probe file **951/951**, 0 failed, exit 0); `npm run lint` clean, exit 0; `npm run typecheck` clean, exit 0; `git diff --check` clean, exit 0; `scripts/check-line-endings.mjs` = 549 tracked files, exit 0.
+
+**Versioning decisions for the qualification contract (old adjudications preserved):**
+`OBSERVER_DIGEST_TAG` v6 → **v7** (driver.mjs:81) — the held turn's runtime EXECUTES
+`local-process-observation.mjs`, so its bytes join both the module-init and the record-time
+digest-input lists (driver.mjs:92/:107/:1665–1672/:2072–2104 — the record-time reader binds the same
+seven-file construction; scope unchanged: the driver pipeline attribution stays separate from the
+local-process campaign's own `zcode-shell-wait-local-observer-v4` evidence-closure digest).
+`adjudicateLocalDuties` gains the optional `expectedTransportNonce` input
+(local-process-observation.mjs:1722/:1744–1745/:2084 — the round-6 transport-scope rule carried to
+the duty aggregate; the schema stays version 1, additive optional input documented above).
+`NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION` 5 → **6** → **7** → **8** → **9** → **10** → **11** → **12** → **13** → **14** → **15** → **16** → **17** → **18** → **19** → **20** → **21** → **22** → **23** → **24** → **25** → **26** → **27** → **28** → **29** → **30** → **31** → **32** → **33** → **34** → **35** → **36** → **37** (driver.mjs:4886; v7 = the round-3 replay growth: the persisted-admissions re-verification, the named ancestry hops + the refreshed endpoint markers + the ppid-chain re-verification and the generation-change read scan; v8 = the round-4 growth: the admission GENERATION re-adjudication, the ancestry endpoint pre-fence/lifetime re-verification and the REQUIRED persisted `markerEpochMs`; v9 = the round-5 growth: the DECLARED-scope binding for the startup-backed duties and the ancestry endpoints, the identity-bearing absence reuse latch and the walked presence horizon; v10 = the round-6 growth: the admission ENTRY-digest/argv-SELECTOR binding against the persisted capture declarations and the unsupported-duty-slot refusal; v11 = the round-7 growth: the persisted ancestry-refresh evidence joining the offline reuse latch; v12 = the round-8 growth: the generation-bound PRE-FENCE transport-exit conjunct (the REQUIRED persisted `transportExit` fact), the refreshed-presence horizon/supersession and the admitted-record capture-time parentage; v13 = the round-9 growth: the transport-exit recency/carried-identity re-adjudication; v14 = the round-10 growth: the transport PID-reuse terminal latch and the strict transport-absence tie rule; v15 = the round-11 growth: the invocation-absence strict tie, the contradictory-duplicate-duty-slot refusal and the selected-endpoint parentage rule covering a failed refresh; v16 = the round-12 growth: the collection-interval validity for every fence-crediting read and the consistent materialization-unavailable provenance fallback; v17 = the round-13 growth: the identity-read containment check, the FROZEN argv selector enforced over mere persisted agreement and the persisted block-version gate; v18 = the round-14 growth: the tied-absence collection continuation, the transport-exit recency/carried-identity re-adjudication and the incomplete-interval start refusals; v19 = the round-15 growth: the duty-observation identity-read containment, the contradictory invocation-absence shape refusal and the runtime latest-same-generation-presence tie continuation; v20 = the round-16 growth: the selected same-generation refresh joining the runtime exit horizon and the replay correlating exactly the adjudicator-admitted absences; v21 = the rounds-17/18 growth: the correlated invocation absence validating its collection interval (`exit-absence-interval-inverted`), the SELECTED daemon endpoint re-verifying its parentage and the tied transport absence keeping the exit retries sampling; v22 = the round-19 growth: a live same-generation transport retry advancing the presence horizon with the full persisted presence sequence (`transportPresenceReads`, schema-additive) joining the replay and the exit supersession comparing the identity-read instant; v23 = the round-20 growth: the persisted transport retry sequence latching replacement evidence (any generation-bound read carrying a different start identity — the runtime latch's three disjuncts) and absence timestamps required to be safe integers before crediting (`exit-absence-interval-unprovable`); v24 = the round-22 growth: the queried pid/scope digest bound to the observed identity on every credited observation (the duty echoes and the ancestry endpoints) and present-but-malformed identity-read instants refusing by name (`observation-identity-read-unprovable`); v25 = the round-23 growth: supplied carried identity instants validated against their read collection intervals before the reuse latch recency filtering (`exit-reuse-carried-instant-outside-interval`); v26 = the round-24 growth: the retained transport retry reads validating their identity instants (the duty-observation/ancestry-endpoint pattern) and the captured transport start identity persisted with the marker (schema-additive) binding the replayed transport observation; v27 = the round-25 growth: a retained transport retry read with an INVALID collection interval refusing explicitly (`observation-interval-inverted` for a true inversion, `observation-start-unprovable` for a missing start); v28 = the round-26 growth: the retained transport reads validating their completion stamps (`observation-instant-unprovable`) and the transport exit validating its supplied carried identity instants (`transport-exit-carried-instant-outside-interval`); v29 = the round-27 growth: a replacement-claiming retained invocation read owing a valid completion timestamp (`exit-reuse-read-instant-unprovable`) and the NODE_OPTIONS preflight parsing the string into shell-ish option tokens; v30 = the round-28 growth: the fence echoes comparing symmetrically in both directions and the NODE_OPTIONS tokenizer matching Node exactly (apostrophes ordinary, escapes only inside double quotes); v31 = the round-29 growth: the Companion baseline binding to the admitted request timestamp/bounds (`companion-baseline-unestablished`) and the NODE_OPTIONS tokenizer rejecting unfinished quoting states; v32 = the round-32 growth: the retained invocation presence reads validating like the transport replay (the round-24/25 pattern) before the horizon and supersession walks; v33 = the round-33 growth: the refreshed ancestry endpoint creation instant agreeing with its admission-backed observation (`ancestry-endpoint-instant-foreign`); v34 = the round-34 growth: the pre-interruption baseline owing a verified presence witness collected before the admitted request; v35 = the round-35 growth: a pre-request baseline witness carrying the invocation own OS-observed identity (the observed pid/nonce digest matching the admitted invocation); v36 = the round-36 growth: a pre-request baseline witness postdating the admitted generation record start; v37 = the round-37 growth: a pre-request baseline witness owing the §25.7 completion fence))))))))) — the local-duty input
+contract + the offline fence re-verification. `NATIVE_INTERRUPTION_ORACLE_VERSION` 4 → **5**
+(release-qualification.mjs:847) — the local-duty conjunct composes the §25.5 duties into the final
+acceptance; a legacy input without the block fails closed by its own named reason (its recorded
+verdicts stand as history under the version stamps — every retained I/F/N record stays
+`qualified: false`, and the §24.4 falsification replay duty is unchanged). `localProcess` block
+schema version 1 (new, digest-only). No §25.10 stdout-capture schema change: `CLOSURE_OBSERVATION_VERSION`
+stays 1 and the v1 meta field set is byte-intact.
+
+**2026-11-02 review round 38 — the CAMPAIGN'S TWO MANDATED FINAL REVIEWS (ZERO blocking findings; NO fix round, NO
+byte change — the join version stays **v37** and every rounds-1–37 gate above stands on its own bytes; run at the
+ROOT level on the actual FINAL revision, the Task-5 close-out commit `7986c9b71b2579873545e8ebc06f1997a4dd8a28`, not
+the Task-2/3 bytes reviewed above; this entry CLOSES §25.10's review history):** the plan Task-5 checkbox-4 pair
+returned (1) **SPEC CLEAR** — the independent Spec/authority review (every completed checkbox honest against the §25
+records; supersession discipline clean; the `do-not-adopt-yet` decision grounded in measured facts; ledger V 1 of 1 /
+V-fix 0 of 1 with hosted work stopped; the plan byte-unmodified since Task 1; the prohibited-path diff re-verified
+EMPTY; two non-blocking P3 observations, recorded in §25.11); and (2) **EVIDENCE/PRIVACY CLEAR** — the independent
+implementation/evidence/privacy review (the private V record re-hashes to its registered SHA-256; the provenance
+digest and all 12 freeze module digests match HEAD bytes; the `localProcess` block digest-only; the oracle's
+`qualified: false` with its nine named reasons reproduces offline from the record's own fields; fail-closed
+discipline and non-interference verified in code; one non-blocking note, recorded in §25.11). Full dated records:
+§25.11. There was NO P1/P2 finding to RED-prove or fix, so no gate re-run and no version bump accompany this entry.
+
+**2026-11-02 local-settlement Task 4 — the V PRE-LAUNCH FREEZE (offline; zero model turns, zero live launches in this
+subsection; the §24.12 native-acceptance freeze practice carried verbatim).** Task 4 of [the local-settlement
+plan](../superpowers/plans/2026-10-28-rescue-shell-wait-local-settlement.md) executes the finite live ledger of plan
+§4 — exactly ONE hosted case **V** (plus at most one conditional V-fix) after the independent pre-live review verdict
+CLEAR FOR LIVE LAUNCH on exactly these bytes. This subsection freezes V's registration BEFORE the launch; the
+execution and adjudication records follow in the dated Task-4 execution block below. This subsection is ADDITIVE;
+§25.1–§25.9 and the Task-2/Task-3 registrations stand byte-unchanged.
+
+**The exact frozen command** (the plan §4 invocation template with the four task-specific variables resolved to
+absolute values; every byte below is the registered launch command, validated against the merged
+`parseShellWaitArguments` OFFLINE before this freeze was written):
+
+```bash
+ZCODE_SHELL_WAIT_E2E=1 node tools/shell-wait-probe/driver.mjs \
+  --case rescue-interrupt \
+  --codex /Users/zhangzikai/.codex/packages/standalone/releases/0.163.0-aarch64-apple-darwin/bin/codex \
+  --source-sha e9cce50b68a3f89c99184cc1b0090918d10a7144 \
+  --output /tmp/shell-wait-local-settlement-v.0ae348d2/case-output \
+  --model gpt-6.1-sol \
+  --worker-duration-ms 420000 --poll-ms 3600000 --budget-ms 1200000 \
+  --cap-ms 3600000 --wait-policy config-default --exec-default-ms 3600000 \
+  --unclassified-structural-diagnostic 1 --unclassified-shape-diagnostic 1 \
+  --survival-control-selector progress-terminal
+```
+
+**The four resolved variables:**
+
+- `LOCAL_SETTLEMENT_CODEX_BINARY` =
+  `/Users/zhangzikai/.codex/packages/standalone/releases/0.163.0-aarch64-apple-darwin/bin/codex` — the §25.1 pin,
+  RE-VERIFIED at this freeze (2026-11-02): the file is PRESENT at its exact recorded absolute realpath (it resolves
+  to itself), a regular executable file (249952688 bytes, mode 0755), `--version` = `codex-cli 0.163.0`, SHA-256 =
+  `8813367285524ac798dd96d1b071aea30d58708c7226fd236cd275cf1cfdee31` — byte-identical to the
+  §16.1/§19.1/§21.1/§23.1/§23.12.1/§24.1/§25.1 pins. NO drift detected; no substitute executable is involved and no
+  evidence-applicability statement is owed; the ambient CLI stays recorded separately at its own realpath and is
+  never launched or blended (the §24.1/§25.1 discipline, carried).
+- `LOCAL_SETTLEMENT_PLUGIN_SHA` = `e9cce50b68a3f89c99184cc1b0090918d10a7144` — the committed installed-fixture
+  source SHA: this worktree's HEAD at the freeze (`git status --porcelain` EMPTY of tracked changes at the freeze),
+  verified resolvable by the fixture's own mechanism (`assertGitSource`, fixture.mjs:327 — a 40-character lowercase
+  hexadecimal commit SHA resolvable as `^{commit}`; the fixture installs a clean detached source worktree at EXACTLY
+  that SHA, fixture.mjs:534, so the fixture builds from the committed reviewed Task-3 bytes — the report's own
+  registration edit never enters the installed fixture). The driver's own gate (`assertSourceSha`, driver.mjs:422)
+  accepts the same value.
+- `LOCAL_SETTLEMENT_PRIVATE_OUTPUT` = `/tmp/shell-wait-local-settlement-v.0ae348d2/case-output` — a NEW private
+  fixture-owned directory OUTSIDE the repository (random hex suffix `0ae348d2`, created before the freeze, directory
+  mode 0700 — no group/other access, the fixture's privacy requirement, fixture.mjs:351), following the §21/§24
+  private-record convention (`/tmp/shell-wait-native-acceptance-n.d14e7297/case-output` et al.); the sibling
+  `…/task4/` directory holds this subsection's offline freeze artifacts (the provenance/parse script and its
+  captured output; the V launch's stdout/stderr capture joins the case-output root). NOTHING inside the worktree is
+  used as case output; no private record content ever enters the repository.
+- `LOCAL_SETTLEMENT_MODEL` = `gpt-6.1-sol` — the requested model, carried through §25.1 unchanged. **Supported-model
+  discovery deliberately NOT re-run** at this freeze: authenticated network discovery is out of scope per the
+  §24.1/§23.1 precedent (the §24.12 pre-launch re-pin is the most recent EXECUTED discovery record: 11 catalog
+  entries, `gpt-6.1-sol` `visibility: "list"` at `priority: 0`); observed effective model metadata stays the
+  `model: null` observer-provenance contract (driver.mjs:84) — requested and effective stay separate facts, never
+  blended.
+
+**The §25.1 re-pin duties RE-EXECUTED at this freeze on the FINAL bytes (the executing-observer provenance
+re-frozen per the §25.1 rule at V's own pre-launch duty; nothing copied forward):**
+
+- **Executing-observer provenance AT REST** (the module-INIT composite under tag `zcode-shell-wait-observer-v8` —
+  evidence.mjs ‖ shape-diagnostic.mjs ‖ release-qualification.mjs ‖ closure-observation.mjs ‖ closure-preload.mjs ‖
+  local-process-observation.mjs (the concurrent local-observation runtime the held turn executes) ‖ driver.mjs ‖
+  the three executing helper bindings scripts/lib/{fs,process,errors}.mjs, NUL-separated; read through the executing
+  module's exported `EXECUTING_OBSERVER_PROVENANCE`, `model: null`, `reachableToolFamily: null` — never inferred):
+  **`18d8e34dd4f970720e4efb8cc04b78e4cd04f66aa392298c88823dff87a1dae1`**. The record-time construction
+  (`observerProvenance()`) read AT REST on the same bytes returns the IDENTICAL digest (init == record-time, no
+  drift); the live record must carry this same digest at case start and record time with
+  `sourcesChangedDuringRun: false` — any other value at adjudication is a named provenance break.
+- **The local-process campaign's OWN evidence-closure digest** (tag `zcode-shell-wait-local-observer-v4`, the
+  separate construction per the v7 split documentation): **`e0094533062ec7d467ed8a9282c6ed0f9b165fedf5561a10ab7dc287b4101112`**
+  (`localProcessObserverProvenance()` at rest, materialization available — `revision: 'working-tree-uncommitted'`,
+  `model: null`).
+- **The generated capture preload digest** (the artifact the fixture will generate and install at arming, regenerated
+  and digested at this freeze per the §20.7 duty — never copied forward):
+  **`49cc2539fbcb23bcfc0003dd8afb8015d4f3976312f67c366de5c0295998ee75`** (`generatedPreloadSha256` from
+  `localProcessObserverProvenance()` — the sha256 of `closurePreloadSource()`; it differs from the §24.1/§25.1
+  historical `cb168b74…` F-record artifact digest because Task 2 extended the generated source with the startup
+  identity-record writer, exactly as registered in §25.10's Task-2 block — the historical value stays historical).
+- **Per-module SHA-256 on the frozen bytes** (the executing probe modules and bound helpers): `driver.mjs` =
+  `1f7a374373b6ec3fc5818514ed48d0f1a0bfad54ab946337773c5f974e955a78`, `evidence.mjs` =
+  `2cddad6744d3ef0c7b34e131d4a7cd002ed1f61e68f61b8e832c6109f54a6df1` (unchanged from §25.1),
+  `release-qualification.mjs` = `c8863ef6947e1e082d5727434894b50f53f0d3210ee35185956a0d3e603c8d84`,
+  `closure-observation.mjs` = `3a45f9db7bef21c60bc0a9f6093433eb9da90843def3019a424165c578c68451` (unchanged from
+  Task 2), `closure-preload.mjs` = `44fdd25d907236666f5ab19fe4eafe49bb93a971ec5f2b4aa820b2fb8df330ba` (unchanged),
+  `local-process-observation.mjs` = `980311ab48a2f6bdf8084a7e80604fd569f620980a0ee8333e6a8b163eea9873`,
+  `shape-diagnostic.mjs` = `b034c2b80ff9b59f45ce362fbe5ae889e9c34ebe7a1bfb0226d79bb285e6b35c` (unchanged),
+  `fixture.mjs` = `a1284c42f2c1a776e91cacd9ea96524e7594753f3de08499b5be9a54870c8a31` (unchanged),
+  `wait-comparison.mjs` = `eba75edbac4d69be42b312b7ff09582314e034d93aaa56cf73ba93024c622146` (unchanged),
+  `scripts/lib/fs.mjs` = `ea222a08c0eed1051e2143cfafc21c773c49a901637a7dfdc5e8c8c406512792`,
+  `scripts/lib/process.mjs` = `e3c95506d58b2d9f196b0f6469ac458206ee97320a6f6fb96bab701b9dc1aacb`,
+  `scripts/lib/errors.mjs` = `8fed9126621c61ba5d35091435ac734232116490acc94b68dfc84593c424752b` (all three helpers
+  unchanged). The changes against the §25.1 records are exactly Task 3's declared executing set (driver,
+  release-qualification, local-process-observation).
+- **Instruction/config/artifact pins (the §20.7 practice, the installed-artifact check against the committed
+  bytes):** the fixture installs a clean detached worktree at `--source-sha`, so the installed committed source IS
+  the HEAD tree; the committed blobs it will install were verified present and digested at this freeze —
+  `skills/rescue/launcher.mjs` = `c779ccb69ca16fd658c1fb25f407aa9ed13e39200486492cffccae019bde40bb`,
+  `scripts/zcode-broker.mjs` = `737b7e51fdb9a514e8e10c5bbe3c0479e45cc01b6d3440d1791e2372ebf62304`,
+  `scripts/zcode-companion.mjs` = `aa901ca989ccb3e6c3f60b4129fff80a10dcc1036d3c38c8c6b90daa286c4141`,
+  `tests/fixtures/fake-zcode-cli.mjs` = `43cfe4b7633831791fae29b758a16b9e18534b818f9fd9284d56e488d6a671ee`,
+  `scripts/lib/rescue-launcher-command.mjs` = `01a842fef76e7adf25ee6d2ff058ff334923a6b118575831f0cb3365d6ed5156`;
+  the worktree matches HEAD byte-identically across `skills/`/`scripts/`/`tests/fixtures/` (empty diff). The
+  per-run Gate-B instruction hashes (the fixture-normalized delivered-instruction digests) and the arming-declared
+  control/preload digests are computed by the fixture AT setup from these committed bytes and are verified AT
+  ADJUDICATION against the record's own provenance stamps (the §24.13 in-record practice; presenting them as
+  pre-launch values would fabricate per-run facts). Configuration layers REQUESTED (unchanged fixture policy, the
+  §25.1 values carried into the command verbatim): cap `background_terminal_max_timeout = 3600000`,
+  `--exec-default-ms 3600000`, `--poll-ms 3600000`, `--cap-ms 3600000`, wait-policy `config-default`, worker hold
+  420000 ms, total case budget ≤ 1200000 ms.
+
+**Offline parse validation (no live launch):** the exact 14-option flag list above was fed to the exported
+`parseShellWaitArguments` on the frozen bytes (the driver's own parser, imported and called WITHOUT executing the
+CLI — the CLI is entry-guarded, driver.mjs:10242); the parse SUCCEEDED and returned exactly: `case:
+"rescue-interrupt"`, `workerDurationMs: 420000`, `capMs: 3600000`, `pollMs: 3600000`, `budgetMs: 1200000`,
+`unclassifiedStructuralDiagnostic: true`, `unclassifiedShapeDiagnostic: true`, `model: "gpt-6.1-sol"`,
+`waitPolicy: "config-default"`, `execDefaultMs: 3600000`, `interruptBaselineSelector: null`,
+`survivalControlSelector: "progress-terminal"` (with the pinned `codexBinary`/`sourceSha`/`output` echoed verbatim).
+Every flag is a known option; NO unimplemented flag exists in the command; the per-case §16.6 policy combination
+gate accepted the combination.
+
+**The Task-1 schedule freeze confirmed ON THESE BYTES (the §25.7 values, read from the executing module's exported
+constants):** `MEASUREMENT_CUTOFF_AFTER_HOLD_MS` = 10000 (measurement cutoff = hold deadline + 10000 ms,
+persisted before planned teardown), `OBSERVATION_TEARDOWN_AFTER_CUTOFF_MS` = 5000 (observation teardown = cutoff +
+5000 ms — never a manufactured boundary), `OBSERVATION_REFRESH_LEAD_MS` = 1000, durable passive reads ≥ 1000-ms
+cadence / ≤ 600 attempts / ≤ 32 retained summaries (`DURABLE_SAMPLING_MIN_INTERVAL_MS`/`_MAX_ATTEMPTS`/`_MAX_SUMMARIES`),
+`MEASUREMENT_CUTOFF_ENABLED_CASES`/`DURABLE_SAMPLING_ENABLED_CASES`/`LOCAL_OBSERVATION_REQUIRED_CASES` = the
+interrupt case only, `NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION` = 37, `LOCAL_PROCESS_DUTY_CONTRACT_VERSION` = 1,
+the survival-control selector literal `progress-terminal`. The local-observer arming/persistence insertion stays
+the only new schedule element (§25.7); the 60000-ms native-responsiveness comparison applies ONLY on a causally
+admitted trial (not a production timeout). Worker hold 420000 ms, total case budget ≤ 1200000 ms, cap/poll
+3600000 ms — all inside the §25.7 frozen bounds; NO new duration/control value exists in this command.
+
+**The ledger statement (frozen BEFORE the launch):** V is about to be spent. Once the real hosted attempt starts,
+V is SPENT even if the model never calls Rescue, misses readiness, produces an unsupported shape, or deviates from
+model obedience; initialization/auth/provider failures after launch still consume V and are recorded with their
+exact failure shape. Pure offline pre-launch rejection (a pre-host gate refusal before any host/provider contact)
+consumes NO hosted case and is recorded verbatim. No hidden warm-up/debug launches exist or are authorized; no
+model shopping; no auto-update reset. Provider-write authority is unchanged: only harmless fake-ZCode fixture
+work, never real user-project/provider writes. V-fix stays conditional per plan §4 and is decided EXPLICITLY after
+V's adjudication; if V's responsiveness and all applicable duties are proven, V-fix is left unspent as
+`not-needed`. Hosted work STOPS after V (or V-fix if justified).
+
+**2026-11-02 local-settlement Task 4 — V EXECUTED once on the frozen command: the offline-refusal accounting, the persisted record, the three separate adjudication answers, and the V-fix disposition (ONE hosted case; hosted work stopped).**
+
+**Pre-launch accounting (named, ZERO hosted cases consumed):** the FIRST launch attempt (issued
+2026-11-01T18:56:08Z) was REFUSED by the driver's offline fixture-input validation before any fixture creation or
+host launch — `Invalid shell wait fixture input: output must be empty.` The refusal cause was the execution
+process's own capture arrangement: the V stdout/stderr capture files had been redirected INSIDE the `--output`
+directory, which the fixture requires to be EMPTY before arming. The output directory remained EMPTY (zero fixture
+entries — only the two caller-created capture logs, removed immediately after), stdout was 0 bytes, no codex
+process was launched, and the driver exited 1 within ~1 s — a PURE OFFLINE rejection, which per the plan §4 (and
+the §24.13 precedent) consumes NO hosted case. The refusal text is preserved verbatim outside the repository at
+`/tmp/shell-wait-local-settlement-v.0ae348d2/task4/refused-attempt-stderr.log`; the capture logs were moved to the
+sibling `task4/` directory (still inside the private output root, never inside the `--output` value), the
+`--output` directory was left empty, and the SAME frozen command was launched once more. That launch is V.
+
+**The execution record (V SPENT — 1 of 1):** launch command issued 2026-11-01T18:58:36Z (UTC;
+`task4/launch-instant2.txt`); the driver exited 0 at 2026-11-01T19:07:03.949Z (`executedAt`; ≈ 8 min 28 s wall;
+stderr EMPTY — 0 bytes; the stdout JSON record and the persisted record file are byte-IDENTICAL, `cmp` clean).
+Record: `/tmp/shell-wait-local-settlement-v.0ae348d2/case-output/rescue-interrupt.record.json` (mode 0600 inside
+the 0700 directory), SHA-256 `710c071e3da6939030a0a4493dd1bc7b778f80a7120aca703fe344dcea9d3ce0`, 1644122 bytes,
+`status: "executed"`, whole-case `inconclusive.reason` = `unsupported-call-shape: A collected tool call does not
+match a supported shape (direct call, simple wrapper, or linked outer continuation); the case needs manual
+adjudication.` **No other live launch of any kind occurred** (the refused attempt above is the complete launch
+history; the ambient codex processes visible on the host are pre-existing user processes, never enumerated or
+touched by the design).
+
+**Provenance on the record matches the freeze EXACTLY:** observer digest `18d8e34d…dae1` with
+`sourcesChangedDuringRun: false`; `sourceSha e9cce50b…a7144`; `codexVersion "0.163.0"` with
+`codexBinarySha256 881336…dee31` (the launched binary re-hashed in-record by `hashNativeExecutable`); requested
+model `gpt-6.1-sol`; wait-policy `config-default` with `execDefaultMs 3600000`; the normalized instruction hashes
+`2ea76cf0…`/`5800e3ab…` byte-identical to the §24.1 pins; cap/poll 3600000, worker 420000, budget 1200000;
+`capVerified: true`; isolated setup `roleStatus: "ready"` (2 setup attempts); `stdoutCaptureDeclaration.preloadSha256
+49cc2539…` = the freeze's `generatedPreloadSha256`; the survival-control declaration `scriptSha256 c510d81f…` = the
+§24.1 pin (60 lines @2000 ms, designed exit 0).
+
+**The execution timeline (each stamp in its OWN clock; the held→epoch wall mappings are consistency observations,
+never a clock join for credit):**
+
+| Instant | Value | Clock/source |
+| --- | --- | --- |
+| Command launch (wall) | 2026-11-01T18:58:36Z | `task4/launch-instant2.txt` |
+| Held-turn launch | held-clock 1 ms (fixture preparation ≈ 72 s) | `held.timeline.launchedAtElapsedMs` |
+| Companion (invocation) startup identity record written | epoch 1793559588497.99 = 18:59:48.498Z (record start +498 ms into the shared second 18:59:48Z) | `localProcess.admission.identity.firstWritePreciseMs` |
+| Companion OS identity read | epoch 1793559588524 (+524 ms) | `localProcess.presence.identityReadEpochMs` |
+| Broker-daemon record written / OS read | +722 ms / +740 ms into the same second | `localProcess.brokerAdmission.identity.firstWritePreciseMs` / `.brokerObservation.identityReadEpochMs` |
+| Transport (fake-ZCode) marker written / OS read | +816 ms / +850 ms into the same second | `localProcess.ancestryEndpoints.transportMarker.markerEpochMs` / `.transportObservation.readEpochMs` |
+| Durable baseline established | epoch 1793559583102 (pre-launch fixture window; identity established at sampling attempt 29) | `child.durableSamples.baseline` |
+| Child original-handle poll start | held 67520 (pending window open) | `held.timeline.pollStartedAtElapsedMs` |
+| **Interrupt request attributable position** | epoch 1793559679520 = 19:01:19.520Z — 56932 ms after the pending-window open, strictly inside the pending window | `interrupt.callAtMs` |
+| **Host submission-result item stamp AND native-cancellation marker** | epoch 1793559679523 = call + 3 ms; `acknowledgementAtResolution: "at"` (the recorded submission-result shape, F/I/N's shape reproduced on a FOURTH trial) | `interrupt.hostDelivery.completedAtMs` = `interrupt.cancelledAtMs` |
+| **Companion verified disappearance** | last verified presence 1793559712453 → first verified absence 1793559712508 = 19:01:52.508Z (call + 32.988 s) — LONG before the cutoff | `localProcess.exit` |
+| Genuine later session-end stop intent | 2026-11-01T19:01:52.544Z (call + 33.024 s; 36 ms AFTER the Companion's verified absence) | the job projection's `stopIntent` |
+| Held Root-side acknowledgement | held 160268 (call + ≈33.0 s; the held phase did not end on it — the gate-first ordering) | `held.timeline.rootAcknowledgementAtElapsedMs` |
+| Gate release (hold deadline) | held 453852 = observation detection 33852 + 420000 exactly (`holdDeadlineOverrunMs` 1.169) | `held.timeline.holdDeadlineElapsedMs` |
+| Authoritative pre-cutoff snapshot completed | epoch 1793560009739 = 19:06:49.739Z — strictly pre-cutoff | `child.preCutoffDurableSnapshot.completedAtMs` |
+| **Measurement cutoff** | epoch 1793560018923 = 19:06:58.923Z | `interrupt.measurementCutoffAtMs` |
+| Last durable read (strictly pre-cutoff, started 19:06:58.725) | the sampler then stopped by name: `durable-sampling-stopped-at-measurement-cutoff` | `child.durableSamples.stoppedReason` |
+| Window-end refresh snapshot completed | epoch 1793560022930 = 19:07:02.930Z — POST-cutoff, rides fenced (zero settlement credit) | `child.durableSnapshot.completedAtMs` |
+| Planned observation teardown | held 468854 = hold deadline + 15002 (the +15000 schedule + the 1.169-ms overrun) | `held.timeline.endedAtElapsedMs` |
+| Record written | 2026-11-01T19:07:03.949Z | `executedAt` |
+
+**Measurement/cleanup fences actually exercised (every one fired as registered):** the cutoff armed at hold
+deadline + 10000 (equality-anchored, overrun projected); the durable sampler stopped AT the cutoff with the named
+reason and its last read completed strictly pre-cutoff (465 ledger attempts, last start 19:06:58.725); the
+authoritative pre-cutoff snapshot persisted BEFORE teardown; the post-cutoff window-end refresh rides as a fenced
+observation; the pending window `pendingIntervalMs: 56932` with `pendingWindowObserved: true`; NO kill —
+`codexTerminated: false`, `verifiedTerminated: false`, `cleanup.label: "observation"` (no cleanup boundary
+manufactured), `cleanupBoundaryAtMs: null` in the local block, `fixtureDisposed: true`, `cleanupComplete: true`,
+`cleanupErrors.count: 0`; the budget (1200000 ms) never expired (≈ 508 s of held-turn wall).
+
+**The local-process layer (this campaign's NEW layer — the §25.4 contract measured live for the first time):**
+
+- **Startup identity records (item 3):** the invocation admission `established` (role `invocation`, argv the exact
+  declared selector, PID 56254, PPID 55807, first-write precise instant +498 ms into the shared second, nonce-keyed
+  scope digest `15c6902f…`, entry digest `75c0043d…` = the declared installed-launcher digest) and the broker
+  admission `established` (role `broker-daemon`, PID 56302, PPID 56254, config digest-only `ccbd936e…`, entry
+  digest `dd61f2e5…` = the declared installed-broker digest) — both records created at preload install, before the
+  entry bodies. The invocation and broker admissions pair with their OWN OS live observations
+  (`os-live-observation` `established`, start identity `Sun Nov  1 18:59:48 2026`, the §25.4 item-4 binding).
+- **OS live observation (item 4/5):** 1945 generation-bound reads, 1944 `established` + the final `absent`
+  (`process-absent`) — ALL strictly pre-fence (window 18:59:48.859Z → 19:01:52.508Z; cutoff 19:06:58.923Z), ZERO
+  `postFence` facts, `stoppedAt: null` (no unfinished observation), every read carrying its queried pid/scope and
+  collection interval. The transport observation `established` (PID 56330, PPID 56302, its OWN declared-transport
+  scope digest `f4b1d6f5…`).
+- **Exit/absence (item 6):** the invocation exit is POSITIVELY `disappeared` — the established generation's last
+  verified presence 19:01:52.453Z, first verified absence of the SAME pid and start identity 19:01:52.508Z (a 55-ms
+  double-read), bound identity equal to the admitted generation; `exitCorroboratedByMeta: false` (the stdout meta
+  stayed missing — the interruption shape; the OS observation is the termination authority, exactly as
+  preregistered). The transport's generation-bound exit read: `absent`/`absenceConfirmed: true` at 19:01:52.628Z —
+  the fake-ZCode transport did not survive its Companion.
+- **The bounded local-duty verdict (item 5/§25.5):** all THREE applicable duties individually `established` with
+  bound identities (invocation-process 56254, broker-daemon 56302, transport-descendant 56330) — BUT the aggregate
+  `settled: false` with `ancestryRefusal: "ancestry-hops-unattributed"`: BOTH frozen ancestry hops refused
+  `generation-lifetime-unverifiable`. The recorded ppids are EXACT (daemon observation ppid 56254 = the Companion's
+  pid; transport marker ppid 56302 = the daemon's pid; the marker's write instant +816 ms precedes the refreshed
+  daemon endpoint read +859 ms) — the ppid chain is perfect; what CANNOT be demonstrated is the frozen
+  round-17/18/19 generation-compatible LIFETIME window: Companion, daemon and transport were ALL created inside the
+  SAME wall-clock second (18:59:48Z, within ~500 ms of each other — the honest launcher→broker→transport startup
+  choreography), and darwin `ps lstart` start identities are WHOLE-SECOND, so the uniform +1000-ms uncertainty
+  bound requires `creation + 1000 ≤ read/creation` orderings that are arithmetically impossible inside one second
+  (hop 1: Companion creation + 1000 ≤ daemon read +740 needs Companion creation ≤ −260 ms; hop 2: marker +816 ≥
+  daemon creation + 1000 needs daemon creation ≤ −184 ms). The refusal is the measurement's DESIGNED conservative
+  behavior (the round-19 uniform bound; the §25.10 honest-choreography disclosure registered exactly this
+  same-second unresolvability), honestly named — never a guessed attribution. The offline join
+  (`joinRecordLocalProcessDuties`, join v37) re-verified the block and returned the SAME refusals
+  (`local-duties-unestablished`, `ancestry-hops-unattributed`) with the operative fence `measurement-cutoff` at
+  19:06:58.923Z.
+
+**Adjudication answer 1 of 3 — native responsiveness: NOT CREDITED; the causal admission REFUSED.** The §24.4
+three-leg rule: leg (a) f1 request-inside-pending-window — SUPPORTED on the record (`callCount: 1`,
+`orderingBound: true`, `pendingBeforeCallAtMs 1793559622588` ≤ `callAtMs 1793559679520` with the resolution ordered
+after, one epoch-ms rollout-event clock, `timingBasis: "rollout-event-timestamps"`, `pendingWindowObserved: true`,
+`pendingIntervalMs: 56932`, `previousStatus: "running"`); leg (b) f2 host-side submission — SUPPORTED
+(`delivered: true`, `itemPresent: true`, `interruptedItemCount: 1`, `joinedItemCount: 1`, `foreignItemCount: 0`,
+`idJoin: true` basis `outer-call-id`, `agentThreadIdMatch: true`, `rootRolloutOwned: true`, `insidePendingWindow:
+true`, `timed: true`); leg (c) f4 corresponding native resolution — the cancellation marker IS on the record
+(`cancelledAtMs 1793559679523`, 3 ms after the call) but its ATTRIBUTION TO THIS DELIVERY is REFUSED by the
+load-bearing complete-scan conjunct: one collected tool call did not match a supported shape, so the scan cannot
+prove exactly-one delivery or rule out a second interruption/explicit stop inside the unclassified cell. The exact
+refusal strings on the record: whole-case `inconclusive.reason` = `unsupported-call-shape` (verbatim above);
+`interrupt.hostDelivery.admitted: false` with `reasons: ["host-activity-call-scan-incomplete"]`;
+`interrupt.settled: null` with `settledBasis: "ambiguous-cell-scan-incomplete-not-attributed"`. Because the trial
+is not causally admitted, the 60000-ms comparison NEVER APPLIES (§24.4/§25.7) and `deliveryToSettlementMs: null`.
+What the record DOES prove, per the §24.4 declarations: the request's attributable position sits strictly inside
+the observed pending window on one clock (partial ordering form — a dispatch instant is NOT established,
+declaration (i)), and the host-side submission-result item was stamped AT the resolution instant
+(`acknowledgementAtResolution: "at"` — by itself neither a delivery failure nor request-timing proof).
+
+**Adjudication answer 2 of 3 — ALL applicable local/remote/durable/guard/no-collateral duties: adjudicated per the
+§24.7/§25.5 row sets; the aggregate is NOT full acceptance** (three coexisting independent refusals: the native
+admission refused, the survival control unadjudicated, the local-duty aggregate unsettled on the ancestry
+attribution):
+
+| Duty | V's record (evidence) | Verdict for the row |
+| --- | --- | --- |
+| Identity/generation | `spawnIdentity` `exact: true` (childThreadId `01a1987b-…`, parentThreadId `01a1987a-…`); the job projection's `ownerSessionId` EQUALS the spawn parent; `executorLinkage: "verified"`; `workerLeaseId 3ca692dd…` on the exact job `18d92d11…`; the job record's `childPid 56254` EQUALS the locally observed Companion PID (the durable record and the local observation bind the SAME process) | SUPPORTED (exact-identity join, now with the durable↔local PID agreement N could not observe) |
+| Native turn/cell | f1/f2 facts positive; the §19.4/§24.4 admission REFUSED (`host-activity-call-scan-incomplete`) | OBSERVED, NOT ADMITTED — no native turn/cell credit |
+| Remote result/winner | pre-cutoff authoritative snapshot (19:06:49.739Z): job `status: "cancelled"`, winner terminal/cancelled — with `stopCause: "session-end"` and `stopIntent { cause: "session-end", requestedAt 19:01:52.544Z }` | OBSERVED — but the winner's cause is the REAL session-end stop intent (its own stop cause), NEVER the interrupt's settlement; `settlementLayers.remoteTerminal: null` |
+| Local process cleanup (the §25.5 applicable trio) | all three duties `established` individually; the invocation exit POSITIVELY `disappeared` pre-fence; the transport exit confirmed absent; 1945/0 pre-fence reads; BUT the ancestry attribution refused (`generation-lifetime-unverifiable` on both hops — see the local-process layer above) | ESTABLISHED DUTIES, UNSETTLED AGGREGATE — the Companion↔transport attribution is unresolved, so the local layer is NOT full acceptance (`layers.localProcess: false` through join v37); per the plan, an unattributed applicable-descendant chain is not silently ignored and is not not-applicable |
+| Marked runner obligations | `runnerCleanupDuty: { applicable: false, reason: "not-applicable: the record carries no marked runner claim" }`; `endedObligation.settled: true` | genuine not-applicable shape |
+| Writable exclusion | `writableGuard: { applicable: false, retained: false, reason: "not-applicable" }` | genuine not-applicable shape |
+| Binding currency | `bindingCurrency: { state: "current", anchorsJob: "18d92d11…", reason: null }` | POSITIVELY current |
+| Unrelated survival control | DECLARATION verified (`scriptSha256 c510d81f…` = the §24.1 pin); OBSERVED facts: `survivalControl: null` — the control's launch/read statements could not be grounded in the collected rollouts (the §16.4 verdict is absent — fail-closed, never fabricated; the launch/read statements sit in the unclassified-cell family — PARSER UNCERTAINTY, never negative evidence) | UNADJUDICATED (`survival-control-unadjudicated`) — no-collateral NOT proven |
+| Stop-intent authority | the ONLY stop intent on the record is the genuine `session-end` receipt at 19:01:52.544Z with its own cause/timestamp — 33.024 s AFTER the interrupt item stamp and 36 ms AFTER the Companion's own verified disappearance; NO durable stop intent from the interrupt (the §16.2-frozen design, re-observed) | HELD (a genuine later SessionEnd is its own stop cause, never the earlier interrupt's settlement) |
+| Lifecycle epoch | `lifecycleEpoch: { applicable: false, reason: "not-applicable: no epoch was declared for this observation" }` | genuine not-applicable shape |
+
+`settlementLayers.durableObligations: "settled"` — grounded by the strictly-pre-cutoff consistent samples (463
+sampling attempts, zero omissions, zero interval shortfalls, 32 retained summaries with 403 named roll-offs,
+sampler stopped AT the cutoff by name) and the pre-cutoff authoritative snapshot (`snapshotEqual: true`, lock state
+present, enumeration within bounds, owner binding present) — BUT the settled state is the SESSION-END settlement
+described above; with the native admission refused, the survival control unadjudicated and the local aggregate
+unsettled, the owned/no-collateral settlement is NOT proven. The trial's own housekeeping observations — zero
+kills, zero cleanup errors, fixture disposal completed, safe resolution via the genuine session-end — stand
+SEPARATELY and are never evidence that no duty remains.
+
+**Adjudication answer 3 of 3 — production applicability: pins compose; no native-responsiveness or
+owned-settlement result exists to carry into production; the measured local-process facts apply to THIS cohort
+only.** The trial's pin set is byte-identical to the §24.1/§25.1 cohort pins (binary `0.163.0` @ `881336…dee31`
+re-hashed in-record; instruction hashes `2ea76cf0…`/`5800e3ab…`; sourceSha the committed Task-3 tree `e9cce50…`;
+cap/poll/wait-policy/exec-default values), so the composition precondition holds and this record's OBSERVED facts
+(the item-at-resolution shape on a FOURTH independent trial; the pending-window establishment; the session-end
+settlement discipline; the cutoff/cadence/teardown fences; and the NEW local-process facts — the §25.4 contract's
+startup identity records, 1945 strictly-pre-fence generation-bound OS reads, the POSITIVE pre-fence Companion
+disappearance, the confirmed transport exit and the durable↔local PID agreement) may be cited alongside the
+long/cadence/stdout cohort for those cohorts' own measured claims. NO claim of native responsiveness, owned
+settlement or local no-collateral cleanup transfers to production from V: the admission was refused, the control
+layer stayed unadjudicated, and the local ancestry attribution is unresolved on the measured darwin whole-second
+`lstart` configuration with this same-second startup choreography. Review/BG/shared-default compatibility remains
+NOT established by a Rescue result alone (the §1 deployment row, unchanged).
+
+**The offline oracle on the persisted record (join v37 / oracle v5):** `qualified: false` — layers `companion:
+true`, `durableObligations: true`, `delivery: false`, `turnSettlement: false`, `noCollateral: false`,
+`localProcess: false`; terminal winner `cancelled`; the nine named reasons VERBATIM: `alias-unresolved`,
+`terminal-state-unestablished`, `previous-status-snapshot-only`, `delivery-target-unmatched`,
+`host-activity-unadmitted`, `turn-settlement-unobserved`, `settlement-latency-unestablished`,
+`survival-control-unadjudicated`, `local-process-duty-unsettled`.
+
+**The unclassified-cell diagnostic outcome (both flags armed — the FOURTH independent instance of the same
+structural family, with fresh bytes):** the record carries ONE complete diagnostic excerpt (truncated: false;
+rolloutCount 2): classification `unclassified-script-cell`, tool `exec_command`, bodyType string, 2 input lines,
+228 bytes, no directive, line-1 prefix class `other`, endsWithSemicolon true, and the FULL shape block — a SINGLE
+statement (`statementCount: 1`), head `bound-await`, argument `literal-object`, lexical `complete`, tail
+`text-binding`, `bindingEquality: "equal"`, `parserStage: "wrapper"`, `wholeInputConsumed: true`,
+`retention: "full"`, `coverage: "complete"` — with the withheld body's identity anchor SHA-256
+`f90959ab3e7910950e207d5d16e888bd3bddfb7c45204199fcc92974423ce49a` (N's was `35d62ac0…`; F's `36c90344…`/`be3b9a1c…`
+— the same closed shape signature, NEW bytes). The registered collection surface worked exactly as designed; the
+raw body stays withheld by the privacy discipline.
+
+**Evidence omissions (named, never zero):** the whole-case inconclusive (`unsupported-call-shape`); the admission
+reasons list (`host-activity-call-scan-incomplete`); the refused settlement basis
+(`ambiguous-cell-scan-incomplete-not-attributed`); `deliveryToSettlementMs: null`; `exactTargetMatch: null` with
+the target suppressed by privacy (23 chars, `kind: "unknown"`); `survivalControl: null` (the observed facts
+unestablishable — fail-closed); `result.stdoutCapture { status: "incomplete", reason: "capture-meta-missing" }`
+(the interruption shape — the OS observation is the termination authority); `route.actual: null`;
+`childToolCallCount: null`; the `linkage` block's checked fields null; the `observations`/`waitPolicyObservation`
+decisive facts `null`/`unknown` with `remainingLifetimeBasis: "unavailable"`; `exitCorroboratedByMeta: false`;
+403 named summary roll-offs; both ancestry hops `generation-lifetime-unverifiable`. No omission was silently
+zeroed; no unknown was converted into zero or not-applicable.
+
+**The V-fix decision (explicit): V-fix is UNSPENT — 0 of 1 — reason: NOT ELIGIBLE (no bounded correction exists
+that changes the qualification outcome).** Grounds, each named: (1) the DOMINANT refusal is the §24.6-registered
+instrument-side scan-completeness blocker, NOT a newly demonstrated gap — F, I and N retained the same
+unclassified-wrapper family, §24.11 preregistered exactly this refusal, and V's cell is the FOURTH instance of the
+SAME closed shape signature with new bytes; the real cell's binding/sink lexemes remain withheld by the privacy
+discipline, so a grammar written from synthetic reconstructions could not prove, in an offline RED→GREEN, that it
+recognizes the REAL cell (the §24.13 C-decision grounds carry verbatim; the plan forbids exactly such ungrounded
+grammar growth). (2) The ancestry same-second refusal is the measurement's DESIGNED conservative behavior — the
+round-19 uniform whole-second uncertainty bound and the §25.10 honest-choreography disclosure registered exactly
+this same-second unresolvability; it is not a bytes defect. Refining the frozen rule to consume the precise
+record-write instants (the Companion's own record written +498 ms, the daemon's +722 ms — both nonce-keyed
+same-scope records whose daemon record names the Companion as parent) would be a NEW acceptance-rule decision — a
+relaxation of the 37-version anti-reuse family requiring its own preregistration, complete negative family and
+independent review before any launch — and could NOT flip V's verdict regardless, because ground (1)'s
+delivery-admission refusal and the unadjudicated survival control coexist independently. (3) NO product defect was
+observed: the host-side mechanics delivered (all f2 conjuncts positive; the +3 ms cancellation marker), the durable
+lifecycle behaved exactly as the §16.2-frozen design (the genuine session-end receipt settled the job 33.024 s
+after the item stamp; zero kills; zero cleanup errors), and the local-process observation itself worked exactly as
+built (every applicable duty individually established; the positive pre-fence Companion disappearance; the
+confirmed transport exit). `not-needed` is deliberately NOT claimed — that reason is reserved for a proven
+native-responsive-and-settled V, which this trial did not establish.
+
+**The V-fix disposition RE-ASSESSED (dated 2026-11-02, the user-review correction — the original decision paragraph
+above stands byte-unchanged as the Task-4 adjudication record; this block supersedes its BAR, not its facts):** the
+original decision keyed NOT ELIGIBLE to "no bounded correction exists that changes the qualification outcome" and to
+a fix's inability to "flip V's verdict regardless" — that is NOT the plan's bar. Plan §4's actual bar (verbatim):
+V-fix is eligible given "a concrete causal diagnosis and offline RED→GREEN correction or tested supported choreography
+change", registering "the one named change, expected discriminating result, complete negative family and versioning",
+where "a demonstrated bounded parser, identity, collection or fence defect can qualify without recovering historical
+raw text" and "a new unclassified shape alone or retrying model obedience is not enough" — one fix NEVER has to
+eliminate all coexisting blockers or flip the overall qualified verdict. Re-assessed per candidate:
+
+1. **The wrapper-cell scan refusal — the authorized paths were EVALUATED, and the leading defect candidate is
+   REFUTED.** The PR #73 synthetic-grounded frozen wrapper grammar (`BOUND_RESULT_WRAPPER_PATTERN`, the §24.10
+   amendment, registered in native-acceptance Task 2 commit `562d158f` with its complete 18-shape negative family
+   through the real pipeline) IS installed in the exact bytes V ran on (the observer digest `18d8e34d…` covers it;
+   `evidence.mjs` byte-unchanged since §25.1), so the hypothetical "the scan's grammar table lacks the family entry"
+   was checked IN-MEMORY, OFFLINE, against V's retained content-free facts (plan: "analyze unsupported calls in
+   memory and retain allowed content-free facts"): every skeleton class V retained (single statement, `bound-await`
+   head, `exec_command`, single-line decodable literal-object argument, `text-binding` tail, `bindingEquality:
+   "equal"`, directive absent, one content line + the trailing-newline artifact, 228 bytes) sits INSIDE the family's
+   descriptor set, BUT the recorded `parserStage: "wrapper"` under complete coverage proves the strict head-side
+   spelling does NOT match the frozen family's pinned prefix — an ADMITTED family member always diagnoses
+   `parse-accepted` (reproduced offline on the shipped bytes: the pinned `r` form and a bounded non-`r` member both
+   admit with `parse-accepted`, while the `let`/`var` keyword, head-junction space-run, `$`-led name and
+   over-64-char-name deviations each reproduce V's retained signature field-for-field with `parserStage: "wrapper"`,
+   and the mismatched-sink negative-family member does NOT — it diagnoses `output`/`not-equal`). Outcome: **NO-MATCH**
+   — V's cell is provably OUTSIDE the frozen admitted family in exactly a REGISTERED refusal dimension (declaration
+   keyword, head-junction whitespace, or identifier charset/bound: the frozen zero-tolerance head junctions and the
+   negative family's own members), and which dimension is precisely the withheld lexeme. There is therefore NO parser
+   defect to fix — the scan refused correctly, by registered design — any widening toward a candidate dimension is
+   ungrounded grammar growth for unknown live content (plan Task 3: "Do not expand grammar in response to an unknown
+   live cell without its own bounded offline demonstration and negative family"; "a new unclassified shape alone… is
+   not enough"), and its offline RED would need the real bytes — unavailable, the §24.13 C-grounds stand, now with
+   their narrow synthetic-reconstruction claim RE-CONFIRMED by this evaluation. NOT ELIGIBLE: no demonstrated bounded
+   defect and no offline RED→GREEN — NOT because the fix would have to flip the verdict.
+   **(2026-11-03 review-round-2 correction: the round-1 derivation above — "any widening… is ungrounded grammar
+   growth for unknown live content" and "its offline RED would need the real bytes" — is RE-SCOPED, superseding the
+   round-1 phrasing here. The plan forbids grammar growth only WITHOUT its own bounded offline demonstration and
+   negative family, and a synthetic-grounded demonstration is the registered precedent — the frozen grammar itself,
+   commit `562d158f` — so the synthetic-fixture and in-memory/content-free structural-diagnostics routes stay OPEN
+   beside the real-body route; the NO-MATCH establishes only that no PROVEN bounded fix exists TODAY under the
+   currently frozen grammar, not a permanent sole-route bar. The NOT-ELIGIBLE verdict and its grounds (no
+   demonstrated bounded defect, no offline-grounded RED→GREEN registered) stand UNCHANGED.)**
+2. **The survival control unadjudicated — same grounding gap, no collection defect.** The control's launch/read
+   statements sit in the SAME unclassified family (the §16.4 verdict absent — fail-closed, never fabricated), so the
+   NO-MATCH above applies to them identically; the collection surface itself worked exactly as designed (both
+   rollouts captured, evidence complete), so no demonstrated collection or choreography defect exists. NOT ELIGIBLE
+   for the same grounds as (1).
+3. **The same-second ancestry refusal — needs a NEW acceptance rule, not a fix.** A concrete causal diagnosis EXISTS
+   (same-second startup choreography vs. the whole-second darwin `lstart` granularity under the frozen round-19
+   bound), but it is the measurement's DESIGNED conservatism, not a parser/identity/collection/fence defect; its
+   refinement is a NEW acceptance-rule decision (preregistration + complete negative family + independent review
+   before any launch) — needs-new-acceptance-rule, NOT V-fix material, and do-not-weaken-acceptance stands. (The
+   original addendum "could NOT flip V's verdict regardless" is RETIRED as a ground — flip-ability is irrelevant
+   under the plan's bar; the actual grounds are: no defect, no offline RED→GREEN, acceptance-rule authority.)
+4. **No further candidates** exist in the Task-4 record: the `stdoutCapture { capture-meta-missing }` is the
+   preregistered interruption shape, and the `route`/`linkage`/decisive-poll nulls ride the same scan refusal.
+
+**Re-assessed disposition: V-fix REMAINS NOT ELIGIBLE — now stated strictly against the plan's own bar: no candidate
+carries (i) a demonstrated bounded parser/identity/collection/fence defect together with (ii) an offline RED→GREEN
+correction or tested supported choreography change yielding a discriminating result.** The slot stays 0 of 1 UNSPENT,
+no fix is registered, and NO executable byte changes (this re-assessment is docs-only; any future spending decision
+awaits the root's independent review and new user authority — §25.11).
+
+**Hosted work STOPS (the explicit statement):** the finite live ledger of plan §4 is CLOSED — V: 1 of 1
+(spent-and-adjudicated); V-fix: 0 of 1 (unspent, not-eligible per the grounds above). Every real hosted/provider
+launch of this campaign is accounted above (one offline refusal consuming no slot; one hosted case). Any further
+hosted case requires NEW user authority. The campaign-level disposition statement (acceptance-proven /
+observer-blocked / production-defect-observed), the fuller supersession sweep and the final full battery are Task
+5's deliverables and are NOT claimed here.
+
+### 25.11 2026-11-02 local-settlement Task 5: the final battery on the final bytes, the closing requirement map and the campaign disposition — local-process observability PROVEN end to end on the real managed Companion; full acceptance NOT proven (`do-not-adopt-yet` stands, production unchanged); the ledger CLOSED with V-fix NOT ELIGIBLE (offline; zero model turns, zero live launches)
+
+Task 5 of [the local-settlement plan](../superpowers/plans/2026-10-28-rescue-shell-wait-local-settlement.md), executed
+2026-11-02 in the same worktree (branch `docs/rescue-shell-wait-local-settlement`) on top of Task 4's closed commit
+`3d19ffb11dec5959356a34afc7fdd54ab14210f1`, with `git status --porcelain` EMPTY at battery start. Fully offline: zero
+model turns, zero `ZCODE_SHELL_WAIT_E2E=1` runs, zero host launches, no live case consumed — the finite ledger was
+already closed by Task 4 and this task spends nothing. This section is ADDITIVE — §25.1–§25.10 stand byte-unchanged
+**except the single dated re-assessment block appended to §25.10's Task-4 V-fix disposition by the 2026-11-02
+user-review correction (this section's own decision records reference that correction; no other §25.1–§25.10 byte
+was touched)** —
+and it is the campaign's FINAL closing record: per the plan's equality rule the docs-only summary proves
+implementation-byte equality ONCE (below) and NO further closing records are added after it; any future executable or
+test byte change requires fresh applicable checks on the changed bytes, never another closing section. Research
+completion (this finite ledger fully executed and accounted) is NOT acceptance: nothing here grants production
+adoption, release, or any configuration change.
+
+**Labels and the one-time equality proof (everything a summary re-asserts below is covered by this digest equality,
+not re-proven per claim):** the battery ran on the clean HEAD `3d19ffb1…` tree, whose executable bytes are
+BYTE-IDENTICAL to the tree V executed on (`--source-sha e9cce50b68a3f89c99184cc1b0090918d10a7144`): Task 4's commit
+delta is the report alone (`git diff e9cce50b… 3d19ffb1 --stat` = the report file only; `git diff e9cce50b… 3d19ffb1
+-- tools/ tests/ scripts/ skills/` EMPTY), and the final closing commit's delta against the tested tree is DOCS-ONLY
+(this section plus the four dated supersession pointers restored into §24 — an earlier interrupted Task-5 drafting
+attempt had left them uncommitted; they were verified against the V record, set aside for the clean-tree battery, and
+restored; all four are covered by this equality proof and re-gated at commit time). Per-module SHA-256 recomputed on
+the tested bytes match the §25.10 Task-4 freeze exactly: `driver.mjs` `1f7a3743…e55a78`,
+`local-process-observation.mjs` `980311ab…ea9873`, `closure-observation.mjs` `3a45f9db…c68451` (unchanged from
+Task 2), `closure-preload.mjs` `44fdd25d…f330ba` (unchanged), `release-qualification.mjs`
+`c8863ef6…3c8d84`, `evidence.mjs` `2cddad67…a6df1` (unchanged from §25.1), `shape-diagnostic.mjs`
+`b034c2b8…e6b35c` (unchanged), `fixture.mjs` `a1284c42…0c8a31` (unchanged), `wait-comparison.mjs`
+`eba75edb…622146` (unchanged), and the three bound helpers `scripts/lib/{fs,process,errors}.mjs`
+`ea222a08…512792`/`e3c95506…1aacb`/`8fed9126…424752b` (never modified). The executing-observer provenance re-read
+from the live modules at rest on the same bytes: `18d8e34dd4f970720e4efb8cc04b78e4cd04f66aa392298c88823dff87a1dae1`
+(`zcode-shell-wait-observer-v8`, `model: null`) — byte-identical to the digest the V record carries — and the
+local-process campaign's own evidence-closure digest
+`e0094533062ec7d467ed8a9282c6ed0f9b165fedf5561a10ab7dc287b4101112` (`zcode-shell-wait-local-observer-v4`,
+`working-tree-uncommitted`), `generatedPreloadSha256 49cc2539…8ee75` — all identical to the V freeze. Installed
+binary pin re-verified today at its exact recorded absolute realpath: `codex-cli 0.163.0`, 249952688 bytes, mode 0755,
+SHA-256 `8813367285524ac798dd96d1b071aea30d58708c7226fd236cd275cf1cfdee31` — NO drift; the ambient CLI has drifted
+AGAIN (`command -v codex` now `~/.local/bin/codex`, `codex-cli 0.166.0`, SHA-256 `39acf979…7db7c1` — beyond the
+§24.1-recorded ambient 0.164.0 and the §25.1-recorded ambient 0.165.0, both still present at their recorded paths)
+and stays recorded SEPARATELY at its own realpath, never launched, never blended; host drift is NOT an
+experiment-budget reset and every conclusion below stays scoped to the pinned 0.163.0 cohort. The retained V record
+re-hashed today is BYTE-IDENTICAL:
+`/tmp/shell-wait-local-settlement-v.0ae348d2/case-output/rescue-interrupt.record.json`, SHA-256
+`710c071e3da6939030a0a4493dd1bc7b778f80a7120aca703fe344dcea9d3ce0`, 1644122 bytes, `status: "executed"`.
+
+**The ledger (final):** V = spent-and-adjudicated, **1 of 1** (launched once 2026-11-01T18:58:36Z on the §25.10
+frozen command, driver exit 0 at 19:07:03.949Z, record above; the 2026-11-01T18:56:08Z offline fixture-input refusal
+(`output must be empty`, pre-arming, zero host contact) consumed NO hosted case and is preserved verbatim outside the
+repository); V-fix = **UNSPENT, 0 of 1**, exact reason: **NOT ELIGIBLE** (re-assessed 2026-11-02 against the plan's
+actual §4 bar — §25.10's dated correction: no candidate carries a demonstrated bounded parser/identity/collection/
+fence defect together with an offline RED→GREEN correction or tested supported choreography change; the dominant
+refusal's cell is PROVABLY OUTSIDE the installed frozen wrapper family on the retained facts, so no entry is missing
+and no fix exists; the raw-body grounding route remains the user's decision; NOT because one fix must flip the
+overall verdict). The three original Task-4 grounds stand byte-unchanged in §25.10 with the re-assessment appended.
+`not-needed` is deliberately not claimed — reserved for a proven native-responsive-and-settled V. **Hosted work is
+STOPPED: any further hosted case requires new user authority; a smaller label, a new shell wrapper, or a new
+long-wait trial is not another quota. The local-settlement ledger is CLOSED.**
+
+**What V measured (the per-layer evidence and its causal origins — adjudicated in §25.10's Task-4 block; summarized
+here under the three separate adjudication answers):**
+
+- **Adjudication 1 of 3 — native responsiveness: NOT CREDITED; the causal admission REFUSED.** The §24.4 three-leg
+  rule: legs (a) f1 (request strictly inside the observed pending window: `callAtMs 1793559679520` with
+  `pendingBeforeCallAtMs 1793559622588` ≤ call, `pendingWindowObserved: true`, `pendingIntervalMs: 56932`,
+  `callCount: 1`) and (b) f2 (the complete host-side submission shape: `delivered`/`itemPresent`,
+  `interruptedItemCount: 1`, `idJoin: true` basis `outer-call-id`, `foreignItemCount: 0`) are SUPPORTED on the
+  record; leg (c) f4 is REFUSED by the load-bearing complete-scan conjunct — one collected tool call matched no
+  supported shape, so the scan cannot prove exactly-one delivery or rule out a second interruption inside the
+  unclassified cell: `interrupt.hostDelivery.admitted: false` with reasons `["host-activity-call-scan-incomplete"]`,
+  `interrupt.settled: null` with `settledBasis: "ambiguous-cell-scan-incomplete-not-attributed"`. The cancellation
+  marker IS on the record (`cancelledAtMs 1793559679523` = call + 3 ms, `acknowledgementAtResolution: "at"` — the
+  F/I/N shape reproduced on a FOURTH trial) and is never attributed to the delivery. Because the trial is not
+  causally admitted, the registered 60000-ms comparison NEVER APPLIED and `deliveryToSettlementMs: null` (not a
+  production timeout; never was).
+- **Adjudication 2 of 3 — ALL applicable duties: individually ESTABLISHED (the entire new local-process layer),
+  aggregate NOT settled.** The §25.4 contract measured LIVE for the first time: the invocation admission `established`
+  (role `invocation`, exact declared argv, PID 56254/PPID 55807, first-write +498 ms into the shared second
+  18:59:48Z, nonce-keyed scope, entry digest = the declared installed launcher), the broker admission `established`
+  (role `broker-daemon`, PID 56302/PPID 56254, config digest-only), the transport observation `established` (PID
+  56330/PPID 56302, its own declared-transport scope); 1945 generation-bound OS reads (1944 `established` + the final
+  `absent`), ALL strictly pre-fence (window 18:59:48.859Z → 19:01:52.508Z against cutoff 19:06:58.923Z), zero
+  `postFence` facts; the invocation exit POSITIVELY `disappeared` (last verified presence 19:01:52.453Z → first
+  verified absence of the SAME pid and start identity 19:01:52.508Z, a 55-ms double-read, bound identity equal to the
+  admitted generation; `exitCorroboratedByMeta: false` — the interruption shape, with the OS observation the
+  termination authority exactly as preregistered); the transport exit confirmed absent at 19:01:52.628Z (the
+  fake-ZCode transport did not survive its Companion); the durable↔local PID agreement N could not observe (the job
+  record's `childPid 56254` EQUALS the locally observed Companion PID — the durable record and the local observation
+  bind the SAME process, with `spawnIdentity.exact: true`, `executorLinkage: "verified"`, `workerLeaseId 3ca692dd…`
+  on the exact job `18d92d11…`, and binding currency POSITIVELY current); durable obligations `settled` grounded by
+  the strictly-pre-cutoff samples and authoritative snapshot (`snapshotEqual: true`; 463 sampling attempts, zero
+  omissions, 32 retained summaries with 403 named roll-offs, sampler stopped AT the cutoff by name); zero kills, zero
+  cleanup errors, `cleanup.label: "observation"`, `cleanupBoundaryAtMs: null`. BUT the aggregate `settled: false`:
+  BOTH frozen ancestry hops refused `generation-lifetime-unverifiable` — Companion, daemon and transport were all
+  created inside the SAME wall-clock second (18:59:48Z, within ~500 ms of each other — the honest
+  launcher→broker→transport startup choreography), and darwin `ps lstart` start identities are WHOLE-SECOND, so the
+  frozen round-19 uniform +1000-ms uncertainty bound requires orderings arithmetically impossible inside one second
+  (the recorded ppids themselves are EXACT: daemon ppid = Companion pid, transport marker ppid = daemon pid, the
+  marker's write instant precedes the refreshed daemon read) — the measurement's DESIGNED conservative behavior,
+  honestly named, never a guessed attribution (`offline join v37` re-verified the same refusals;
+  `layers.localProcess: false`); AND the unrelated survival control is UNADJUDICATED (`survivalControl: null` — its
+  launch/read statements could not be grounded in the collected rollouts, the §16.4 verdict absent: fail-closed,
+  never fabricated, the same parser-uncertainty shape as F/I/N); AND the native admission refused per answer 1. The
+  observed terminal winner is the GENUINE later session-end (`stopIntent` 19:01:52.544Z, 36 ms AFTER the Companion's
+  verified disappearance) — HELD as its own stop cause, never the interrupt's settlement.
+- **Adjudication 3 of 3 — production applicability: pins compose for the 0.163.0 cohort ONLY.** V's pin set is
+  byte-identical to the §24.1/§25.1 cohort pins (binary re-hashed in-record; instruction hashes `2ea76cf0…`/
+  `5800e3ab…`; sourceSha the committed Task-3 tree; cap/poll/wait-policy/exec-default values), so this record's
+  OBSERVED facts (the item-at-resolution shape on a fourth independent trial; the pending-window establishment; the
+  session-end settlement discipline; the cutoff/cadence/teardown fences; and the NEW local-process facts above) may
+  be cited alongside the long/cadence/stdout cohort for THOSE cohorts' own measured claims. NO native-responsiveness,
+  owned-settlement or local no-collateral result transfers to production; Review/Adversarial-Review/Status/
+  background/shared-default compatibility remains NOT established by a Rescue result alone.
+
+**The offline oracle on the persisted record (join v37 / oracle v5): `qualified: false`** — layers `companion: true`,
+`durableObligations: true`, `delivery: false`, `turnSettlement: false`, `noCollateral: false`, `localProcess: false`;
+terminal winner `cancelled`; the nine named reasons verbatim: `alias-unresolved`, `terminal-state-unestablished`,
+`previous-status-snapshot-only`, `delivery-target-unmatched`, `host-activity-unadmitted`,
+`turn-settlement-unobserved`, `settlement-latency-unestablished`, `survival-control-unadjudicated`,
+`local-process-duty-unsettled`. Every retained F/I/N record stays `qualified: false` under its own version stamps —
+old verdicts are PRESERVED, never rewritten by this section or by any version bump.
+
+**Evidence omissions (named, never zero — the §25.10 Task-4 list carried compact):** the whole-case inconclusive
+(`unsupported-call-shape`); the admission reasons list (`host-activity-call-scan-incomplete`); the refused settlement
+basis (`ambiguous-cell-scan-incomplete-not-attributed`); `deliveryToSettlementMs: null`; `exactTargetMatch: null` with
+the target suppressed by privacy; `survivalControl: null` (fail-closed); `result.stdoutCapture { status:
+"incomplete", reason: "capture-meta-missing" }`; `route.actual: null`; `childToolCallCount: null`; the `linkage`
+block's checked fields null; the `observations`/`waitPolicyObservation` decisive facts `null`/`unknown` with
+`remainingLifetimeBasis: "unavailable"`; `exitCorroboratedByMeta: false`; 403 named summary roll-offs; both ancestry
+hops `generation-lifetime-unverifiable`. No omission was silently zeroed; no unknown was converted into zero or
+not-applicable.
+
+**THE DECISION — `do-not-adopt-yet`; production unchanged; the campaign's observability goal is PROVEN, and full
+acceptance is blocked by two named, separately-owned facts.** The local-settlement campaign's stated goal — make the
+real managed Companion's local identity and exit observable and enforce the missing-observer gates — is PROVEN: the
+fixture-only preload seam observes the real Companion's startup identity, live generation and exit WITHOUT any host
+binary change, end to end on an actual managed Rescue Companion (the §25.4 contract measured live: identity records
+for the Companion and the broker daemon, the transport capture, 1945 strictly-pre-fence generation-bound OS reads,
+the positive pre-fence Companion disappearance, the confirmed transport exit, the durable↔local PID agreement, zero
+kills) — and the Task-3 pre-host/runtime gates enforced the missing-observer refusal exactly as registered. This
+retires §24.13's registered named-unobservable FOR THE INSTRUMENTED FIXTURE PATH (the dated supersession pointers
+are placed at the four §24 locations; history is not rewritten). But Gate-D-style FULL ACCEPTANCE is NOT proven, by
+exactly two blocking facts, each with its own owner:
+
+1. **The inherited unsupported-call-shape refusal (the FOURTH independent instance of the same
+   structural family).** V's unclassified cell carries the same closed shape signature as F/I/N with NEW bytes
+   (anchor SHA-256 `f90959ab3e7910950e207d5d16e888bd3bddfb7c45204199fcc92974423ce49a`, beside the retained F/I/N
+   family anchors `36c90344…`, `be3b9a1c…`, `35d62ac0…`; the diagnostic: single statement, head `bound-await`,
+   argument `literal-object`,
+   lexical `complete`, tail `text-binding`, `bindingEquality: "equal"`, `parserStage: "wrapper"`,
+   `wholeInputConsumed: true` — the raw body withheld by the privacy discipline). The refusal is the §24.6-registered
+   designed fail-closed behavior, NOT a newly demonstrated gap; the §24.13 C-decision grounds carry, AND the plan's
+   already-authorized routes were EVALUATED offline on the retained facts (2026-11-02, the user-review correction —
+   privacy release is NOT the only conceivable route): the PR #73 synthetic-grounded frozen wrapper grammar
+   (`BOUND_RESULT_WRAPPER_PATTERN` + its 18-shape negative family, registered in commit `562d158f`) is installed in
+   V's own observer bytes, and the in-memory content-free comparison returned **NO-MATCH** — every skeleton class V
+   retained sits inside the family's descriptor set, but the recorded `parserStage: "wrapper"` (complete coverage)
+   proves the strict head-side spelling deviates from the frozen family's pinned prefix in exactly a REGISTERED
+   refusal dimension (declaration keyword, head-junction whitespace, or identifier charset/bound — admitted members
+   always diagnose `parse-accepted`; the deviation reproductions and the per-field evidence are recorded in §25.10's
+   dated re-assessment), and WHICH dimension is precisely the withheld lexeme. Consequently, AS OF TODAY: no
+   grammar entry is missing, no parser defect has been demonstrated to fix, and no proven bounded fix exists — no
+   offline-grounded correction is registered (a current state under the currently frozen grammar, not a permanent
+   property). Whether a FUTURE widening can be grounded is an OPEN question pursued under the plan's own
+   registration discipline: grammar growth for unknown live content WITHOUT its own bounded offline demonstration,
+   complete negative family and independent review stays forbidden — but such a demonstration need not consume real
+   bytes, and the synthetic-grounded frozen wrapper grammar itself (commit `562d158f`) is the registered precedent.
+   The grounding routes therefore remain OPEN beside one another: (a) synthetic-fixture grounding —
+   candidate-deviation fixtures for the retained skeleton classes, per the `562d158f` precedent; (b) further
+   in-memory analysis and content-free structural diagnostics on the retained facts — the NO-MATCH itself is that
+   already-partially-executed yield, and whether it can reach a grounded widening is an open, investigable question,
+   not a closed one; (c) the human/user privacy decision on the RAW-BODY grounding material (real cells, or a
+   human-approved equivalent grounding, into a private out-of-repo workspace) — one route beside (a)/(b), never a
+   precondition; the forward-recognition design keeps every future authorized capture measurable regardless.
+   **(2026-11-03 review-round-2 correction: these operative sentences supersede the round-1 phrasing here, which
+   derived "widening = ungrounded growth; its offline RED would need the real bytes" and made the human decision a
+   route ONLY for the raw-body grounding material.)**
+2. **The designed same-second ancestry bound.** Both frozen ancestry hops refused `generation-lifetime-unverifiable`
+   because the real startup choreography is same-second and the darwin measurement granularity is whole-second
+   (§25.10 registered exactly this honest-choreography disclosure). Refining the frozen rule (e.g. consuming the
+   precise nonce-keyed record-write instants the records already carry) would be a NEW ACCEPTANCE-RULE DECISION — a
+   relaxation of the 37-version anti-reuse family requiring its own registered offline grounding (preregistration,
+   complete negative family and independent review) BEFORE any launch — and could NOT have flipped V's verdict
+   regardless, because block 1's delivery-admission refusal and the unadjudicated survival control coexist
+   independently.
+
+**No product defect was observed:** the host-side mechanics delivered every f2 conjunct positively (the +3 ms
+cancellation marker), the durable lifecycle behaved exactly as the §16.2-frozen design (the genuine session-end
+receipt settled the job 33.024 s after the item stamp; zero kills; zero cleanup errors), and the local-process
+observation worked exactly as built. No product repair is proposed and no oracle is rewritten. V-fix is therefore
+NOT ELIGIBLE per the plan's actual bar (no demonstrated bounded defect with an offline-grounded RED→GREEN
+correction — the re-assessed per-candidate grounds in §25.10's dated correction), and the
+ledger closes V 1/1, V-fix 0/1.
+
+**The smallest separately-authorized production integration work IF acceptance were later proven** (recorded per the
+plan; none of it is authorized or performed by this campaign): NO Skills/config/cache enablement and NO separately
+released `rescue-long` island — the campaign changed NO production byte (the prohibited-path diff below is EMPTY),
+so the only integration surface is the EXISTING installed rescue path, whose qualification would ride the already
+proven cohort composition (the long/cadence/stdout cohort + the observed local-process facts for their measured
+claims) under the existing rescue lifecycle, commands, placement and 100-hour ceiling unchanged; any future
+acceptance-proven adoption would be a separate user-authorized decision with its own requirement map, never a
+rollout by this research.
+
+**The bounded next actions (neither is another generic long-wait feasibility campaign; neither is authorized by this
+report):**
+
+1. **A user privacy decision on the withheld wrapper-cell RAW BODIES (or a human-approved equivalent grounding)** —
+   ONE open grounding route beside the synthetic-fixture and in-memory/structural-diagnostics routes, never a
+   precondition: the exact §24.13 C-grounds, now scoped by the 2026-11-02 in-memory evaluation — whether the real
+   bodies may be released into a private out-of-repo workspace so an offline RED→GREEN can ground a registered
+   recognition-surface widening on the REAL cells. The evaluation (§25.10's dated re-assessment) already extracted
+   the authorized in-memory yield — under the CURRENTLY frozen grammar, V's cell is provably non-admitted in
+   exactly a registered refusal dimension (declaration keyword, head-junction whitespace, or identifier
+   charset/bound), and which dimension is the withheld lexeme. Today NO PROVEN bounded fix exists: no widening may
+   be registered without its own bounded offline demonstration, complete negative family and independent review —
+   but that demonstration need not consume real or human-approved-equivalent cells: candidate-deviation synthetic
+   fixtures for the retained skeleton classes (the `562d158f` precedent — the frozen grammar itself was
+   synthetic-grounded) and further in-memory/content-free structural diagnostics are equally investigable routes;
+   only grammar growth for unknown live content WITHOUT such a demonstration stays forbidden. Until a grounding
+   exists through any of these routes, the fourth instance stands refused under the current frozen grammar — and
+   hosted work is already stopped by the closed ledger (any hosted case needs new user authority) INDEPENDENT of
+   the refusal; a registered widening through an authorized route could change the refusal, with no guarantee of
+   refusal and no promise of recognition for the historical bodies. **(2026-11-03 review-round-2 correction: these
+   operative sentences supersede the round-1 phrasing here, which barred any widening lacking a demonstration on
+   real or human-approved-equivalent cells and asserted every hosted successor would refuse identically.)**
+2. **Optionally, a registered acceptance-rule decision on the same-second ancestry bound** — a new preregistered,
+   negative-family-complete, independently reviewed rule consuming the precise record-write instants; it may only be
+   created through its own offline grounding and never by editing V's recorded verdicts. This is optional: it cannot
+   change any recorded outcome and matters only for FUTURE authorized cases.
+
+**The requirement map (explicit; inherited test coverage is NOT newly installed-observed behavior):**
+
+| Requirement | Status at Task 5 close |
+| --- | --- |
+| S1 (binding/preparation/authority) and S6 (named/generic alignment) — binding/preparation/named/generic/same-Child authority | UNCHANGED on repo bytes — the contract suites (rescue-preparation/binding/route-planner, job-control/mcp-result) are green on the final bytes; exact binding, one-shot private preparation, named/generic authority, same-Child authority and choice assignment untouched. NEWLY OBSERVED on V: the exact-identity join held end to end — `spawnIdentity.exact: true`, `executorLinkage: "verified"`, binding currency POSITIVELY current, and the durable↔local PID agreement (job `childPid` = the observed Companion PID). The exact-identity-only discipline (either identity missing ⇒ named NO-supplier; disagreement ⇒ `owning-root-identity-conflict` hard refuse) is carried by the offline contract tests, never relaxed. |
+| S2 (original-handle empty observation, no duplicate poll) | OFFLINE (contract coverage) through the real extractor→mapper→serializer→join→oracle pipeline (join v37): an observed resolution is never a duplicate poll and recognized facts ride as observations. LIVE ON V: only the pending window is established (`pendingWindowObserved: true`, 56932 ms) — the record's `originalHandleChecked`, `pollWallTimesMs` and `childToolCallCount` are all null under the whole-case `unsupported-call-shape` inconclusive, so the COMPLETE single-poll/no-duplicate discipline stays UNESTABLISHED as installed behavior on V (the same observer-blocked scan gap as N); it is carried by the offline contract suite, never by V. |
+| S3 (exact output/terminal/choice/error) | UNCHANGED — the exact-output, terminal, needs-choice and error suites stay green; the long/stdout cohort's PROVEN facts remain evidence for their measured cohort only. V's `stdoutCapture { status: "incomplete", reason: "capture-meta-missing" }` is the preregistered interruption shape (the OS observation is the termination authority; the meta merely corroborates lawful exits), not an output-contract failure. |
+| S4 (placement/background, Status observation-only) | UNCHANGED — the lifecycle/reconciliation/progress-relay suites stay green; no Status substitution, no placement change anywhere in this campaign (V observed zero kills, `cleanup.label: "observation"`, no manufactured termination boundary). |
+| S5 (interruption/owned/no-collateral/timeout/100-hour semantics) | This campaign's NEW evidence is the V local-process layer: all THREE applicable duties individually established (identity records, 1945 pre-fence reads, positive pre-fence disappearance, confirmed transport exit) with the aggregate unsettled (both ancestry hops `generation-lifetime-unverifiable`, the designed same-second bound); native delivery/response still behind the refused admission (answer 1); no-collateral still unproven (control unadjudicated, fail-closed). The timeout and 100-hour contract tests stay green UNCHANGED; no observation bound became a production timeout, detector or ceiling change (the 60000-ms comparison never applied — registered-only). |
+| S7 (prohibited paths, fixture isolation) | VERIFIED — the prohibited-path diff against `a8f54d0…` is EMPTY (battery below); the observer's non-interference is offline-proven (no stop/kill/signal authority anywhere in the observer bytes; no unbounded timer; observer write failure = named missing fact with the business stdout/exit byte-exact); fixture-owned records are private 0600/0700 files OUTSIDE the repository; zero ambient-process enumeration or interaction; no user config/cache/data touched. |
+| Q1–Q3, Q6 | CARRIED — the §24.1/§25.1 re-pins stand (installed path, configuration layers, delivered instructions, cap behavior, supported deployment seams); the 0.163.0 binary re-verified byte-identical today; the ambient 0.166.0 drift recorded separately, never blended; the host catalog's 11-entry drift recorded, never blended. ALL cohort limits carry: every composition claim above is scoped to the measured 0.163.0 cohort. |
+| Q4 (UPDATED from the actual V result) | Native explicit interruption during a pending long observation: the request-side partial ordering is established on a THIRD independent trial and the host-side submission mechanics are fully verified (the item-at-resolution shape on a FOURTH trial), but native delivery/response remains UNQUALIFIED behind the same scan-completeness blocker (the FOURTH instance of the unclassified wrapper family, anchor `f90959ab…`). NEW in this ledger: the real Companion's local process layer is OBSERVABLE and MEASURED — all applicable duties individually established with the positive pre-fence disappearance and the confirmed transport exit — while the local AGGREGATE stays unsettled on the designed same-second ancestry attribution, and no-collateral stays unproven (control unadjudicated). Zero extra intervention and zero collateral cancellation observed (zero kills). Ledger: V 1/1 spent, V-fix 0/1 unspent (NOT ELIGIBLE, grounds above). |
+| Q5 (Review/Adversarial/Status `--wait`) | RETAINED SEPARATE AND UNQUALIFIED — a Rescue result alone never qualifies the root-owned command surfaces; no command-specific claim exists. |
+
+**The battery on the final bytes** (every command verbatim from the plan's Task-5 list; counts from actual output;
+exit codes captured; executed 2026-11-02 at HEAD `3d19ffb1…`, executable bytes proven identical to V's tree above;
+the focused suites ran SEQUENTIALLY — the §25.10 load-ranked spawn-storm lesson):
+
+| Command | Result | Exit |
+| --- | --- | --- |
+| `npm run test:shell-research` | First execution: **1341 tests / 1340 pass / 1 fail / 0 skipped / 0 cancelled** (duration 1275.8 s), exit 1 — the single failure is `a quoted destination value containing spaces is stripped completely` (`tests/shell-wait-probe.test.mjs:422`, the assertion at :425), the KNOWN nested-spawn contention family: the test re-spawns the ENTIRE shell-research suite as a nested CLI child (~136 s) and that nested child exited 1, while the seven sibling nested-suite spawns in the same block all passed (the §25.10 load-ranked spawn-storm family). Re-run ONCE per the established flake convention: **green — 1341 tests / 1341 pass / 0 fail / 0 skipped / 0 cancelled** (duration 1274.9 s) | 1, then 0 |
+| `node --test tests/test-selection.test.mjs` | 6/6 pass, 0 fail, 0 skipped | 0 |
+| `node --test tests/rescue-preparation.test.mjs tests/rescue-binding.test.mjs tests/rescue-route-planner.test.mjs` | 417 tests / 417 pass / 0 fail / 0 skipped | 0 |
+| `node --test tests/rescue-lifecycle.test.mjs tests/rescue-child-reconciliation.test.mjs tests/rescue-progress-relay.test.mjs` | 126 tests / 126 pass / 0 fail / 0 skipped | 0 |
+| `node --test tests/job-control.test.mjs tests/mcp-result.test.mjs` | 213 tests / 213 pass / 0 fail / 0 skipped | 0 |
+| `npm run lint` | clean | 0 |
+| `npm run typecheck` | clean | 0 |
+| `node scripts/check-line-endings.mjs` | `LF line endings verified in 549 tracked files.` | 0 |
+| `git diff --check` | no output | 0 |
+| `git diff a8f54d06f640777d539e8b6b44bb23dc924bec5f --stat -- scripts/ hooks/ skills/ agents/ .codex-plugin/ prompts/ schemas/ marketplace/ docs/superpowers/specs/ package.json npm-shrinkwrap.json` | **EMPTY** — the prohibited-path diff is empty | 0 |
+| `npm test` | routine suite **3397 tests / 3394 pass / 0 fail / 3 skipped / 0 cancelled, exit 0**, and the `&&`-chained second command `node --test tests/integration/marketplace-snapshot-build.mjs` **2 tests / 2 pass / 0 fail / 0 skipped, exit 0**. The 3 skips are the standing opt-in-gated E2E guards, NAMED: `codex-skills-unqualified` ×2 (`ZCODE_CODEX_SKILLS_E2E=1`, `ZCODE_CODEX_RESCUE_E2E=1`) and `real-zcode-unqualified` (`ZCODE_REAL_E2E=1`). The marketplace install test `isolated Codex marketplace lists and installs the eight-skill snapshot` PASSED inside the routine suite (11.2 s) against the clean exact source (the worktree itself: `.git` present, a real installed `node_modules`, porcelain EMPTY at run time) — the §24.14-era packaging failure did NOT reproduce on these bytes. | 0 |
+
+**The one first-run failure and its once-only re-run (recorded honestly; no forced skip, no lucky-path selection):** the
+failing test asserts on a nested child that re-executes the whole research suite, so its exit code aggregates every
+nested-suite risk into one spawn; the identical sibling spawns before and after it passed, and the §25.10 record
+already classified this load-ranked spawn-storm family with the same once-only re-run discipline. The re-run on the
+SAME bytes returned **1341/1341 pass, 0 failed, exit 0** (~1274.9 s) — the first-run failure is retained above
+verbatim as the named transient nested-spawn contention flake; it is not converted into a pass, and the unchanged
+implementation bytes are the equality-proven tree (no test or source edit was made for either run).
+
+**Unowned scratch:** the battery's logs live in disposable `/tmp/local-settlement-t5-battery/` (outside the
+repository, never staged); the worktree carried only the docs deltas above at commit time.
+
+**The independent final reviews are COMPLETED AND RECORDED — both CLEAR, ZERO blocking findings (2026-11-02; the
+root's separate step on the actual FINAL revision, the Task-5 close-out commit
+`7986c9b71b2579873545e8ebc06f1997a4dd8a28`, per the plan's Task-5 review duty and the §23.11.4/§24.14 precedent).
+This record replaces the reserved pending note and is the review-outcome record that note anticipated — NOT a new
+closing section (the "no further closing records" rule above stands; the recording commit's only deltas are this
+replacement and §25.10's dated review-history addendum, both docs-only — no executable/test byte changed, and no
+other byte of §25.1–§25.10 or of this section's battery records was touched):**
+
+1. **Spec/authority review — SPEC CLEAR, zero blocking findings (2026-11-02, independent reviewer).** The review
+   walked plan Tasks 1–5 against the §25 records: every completed checkbox honest; supersession discipline clean
+   (the four dated §24 pointers supersede only the plan §1-authorized "no synthetic route" family; history appended,
+   not rewritten; live requirements preserved); the `do-not-adopt-yet` decision grounded strictly in measured facts
+   with no overclaim; ledger integrity clean (V 1 of 1, V-fix 0 of 1, hosted work stopped); the plan file
+   byte-unmodified since Task 1; and the prohibited-path diff re-verified EMPTY by the reviewer. Two NON-BLOCKING P3
+   observations recorded (each already self-disclosed in-record; no recheck owed): the `closure-preload.mjs`
+   extraction is not a §2 table row — self-corrected in-record; and the Task-2 files block predates that extraction —
+   disclosed later in the same section.
+2. **Implementation/evidence/privacy review — EVIDENCE/PRIVACY CLEAR, zero findings (2026-11-02, independent
+   reviewer).** The V record chain verified intact end to end: the private record re-hashes to its registered
+   SHA-256 (`710c071e…d3ce0`, mode 0600); `EXECUTING_OBSERVER_PROVENANCE.digest` equals the recorded value with
+   `sourcesChangedDuringRun: false`; all 12 freeze module digests match HEAD bytes; the `localProcess` block is
+   digest-only (no raw nonce values anywhere; the wrapper-cell raw body withheld inside the private record itself);
+   the oracle's `qualified: false` — the nine named reasons and both ancestry `generation-lifetime-unverifiable`
+   refusals — reproduces offline from the record's own fields; and the fail-closed discipline and non-interference
+   are verified in the code (spot-checked reviewer-round claims all implement what the report says). One
+   NON-BLOCKING note recorded (owing no recheck): the observer header's write-scope sentence coexists with the
+   registered materialization cache write — documented in the same header and §25.10 round 8.
+
+**With both reviews recorded, the Task-5 review checkbox is now honestly complete:** the mandated independent final
+Spec/authority and implementation/evidence/privacy reviews have run on the actual FINAL revision, their verdicts and
+non-blocking observations are recorded here and in §25.10's round-38 review-history entry, zero blocking findings
+means no dated narrow recheck is owed, and no byte change resulted from either review.
+
+**The 2026-11-02 user-review round — the CI `lts/*` demand, the located defect, and the campaign's FIRST recorded
+production-surface deviation (dated; this is the review-fix record the closing rule above prescribes fresh applicable
+checks for, not another closing section; the Task-5 history above stays byte-unchanged):** the user review of the
+close-out head `28bd2885` accepted the Companion-observation proofs and issued three demands — the two spec
+corrections (both recorded: §25.10's dated re-assessment for the authorized-path evaluation and the V-fix
+re-assessment against the plan's actual bar, and the §25.11/§24.13 corrections above) and the CI demand: PR #74's
+three `lts/*` CI jobs fail while the three `22.13.0` jobs pass, the failing FileHandle is never explicitly closed,
+and the red must not be treated as green without the defect located and the baseline pinned.
+
+**The pinned version mechanism (from the actual failed-run logs, run `41397409719`):** `lts/*` on the runners now
+resolves to **Node 26.13.0** (all three OS jobs), which delivers a garbage-collection close of an open FileHandle as
+an **error — an uncaughtException the test runner reports after the enclosing suite finished** (`"A FileHandle object
+was closed during garbage collection. This used to be allowed with a deprecation warning but is now considered an
+error."`, descriptor path `…/cancel-locks/<jobId>.lock/advisory.lock`); the `22.13.0` jobs and local Node
+`v24.14.0` emit only the DEP0137 deprecation warning, which is why the failure was locally repro-negative in the
+pre-review attribution. The baseline attribution stands as recorded on the PR: attribution PR #75 (bytes identical
+to base `a8f54d0` plus an empty commit) failed its macos+ubuntu `lts` jobs identically, while main's own single
+re-run went 3/3 `lts` green and this branch went 9/9 red across three reruns — a load- and timing-dependent
+high-probability failure that pre-exists the branch's bytes and became chronic when GitHub's `lts/*` moved to the
+error-emitting Node 26 line after 2026-10-28.
+
+**The located defect (real, pre-existing, crash-class on current Node LTS):** every reachable path in
+`withFileLock` (`scripts/lib/fs.mjs`) already closes the advisory-lock descriptor explicitly — open failure,
+acquire failure, and the unconditional unlock+close after the operation settles. The leak is REACHABILITY, not a
+missing close: the staged recovery (`scripts/lib/rescue-child-reconciliation.mjs`, the `ranStage` shared-budget
+`Promise.race`) abandons the losing stage-operation promise when the budget expires mid-stage, and when the
+abandoned chain holds a `withJobCancellationLock` → `withFileLock` frame, the whole suspended frame — descriptor
+still open — becomes unreachable; the collector closes the descriptor, and Node 26 turns that into the recorded
+uncaughtException. In a long-lived plugin host the same abandonment happens on every budget-expired recovery pass,
+so the crash class is not test-only.
+
+**The fix and the boundary release (recorded as the deviation it is):** `withFileLock` now retains each pending
+operation promise in a module-level set until settlement, keeping the abandoned frame alive so its explicit
+unlock+close always runs; the entry is deleted at settlement, so nothing outlives a settled operation, and every
+existing awaiting caller observes identical semantics. This touches **production bytes** — the campaign's FIRST
+production-surface change: `scripts/lib/fs.mjs` digest `ea222a08…512792` (the Task-5 freeze's "never modified"
+claim was true AT THE TASK-5 CLOSE and is superseded from this fix forward) → `b36fb67c…5d938f`, with the
+marketplace mirror `marketplace/plugins/zcode/scripts/lib/fs.mjs` byte-identical at the same digest. The plan §2
+read-only boundary and the pre-review attribution comment's "this branch has no authority to touch it" paragraph
+are released by the user's explicit review directive ("处理 CI" on this PR); the release is one isolated,
+independently revertible commit. V's record stays bound to the bytes it executed on — the historical Task-5
+digests remain the authoritative description of V's runtime and are not retroactively edited. The battery rows
+above (prohibited-path diff EMPTY, npm test 3397) describe the Task-5 close; the new head carries THIS recorded
+deviation instead.
+
+**The regression test (deterministic RED→GREEN):** `tests/state.test.mjs` gains `an abandoned in-flight lock
+operation keeps its advisory handle out of the garbage collector` (file digest `56c13d7c…8e258c`), which drops the
+only reference to an in-flight `withFileLock` chain whose operation never resolves, forces collection twice with
+`--expose-gc`, and asserts no garbage-collection close was emitted through any channel. RED on the pre-fix bytes
+(local `v24.14.0`): both emission shapes captured — `"Closing file descriptor 14 on garbage collection"` and the
+DEP0137 `"Closing a FileHandle object on garbage collection is deprecated…"`; on Node 26 the same class arrives as
+the recorded uncaughtException error. GREEN on the fixed bytes. The test skips with a named reason when
+`--expose-gc` is absent, and its fatal-event capture is matching-only (any other fatal event keeps its crash
+semantics).
+
+**The fresh applicable checks on the changed bytes (the closing rule's requirement; every exit explicit):**
+`node --test tests/state.test.mjs` **106 tests / 105 pass / 1 skip** plain (the new test names its `--expose-gc`
+skip) and **106/106 pass with `--expose-gc`**; `node --test tests/rescue-child-reconciliation.test.mjs` **55/55**;
+`node --test tests/test-selection.test.mjs` **6/6**; the plan's focused Task-5 suites on the final bytes —
+preparation/binding/route-planner **417/417**, lifecycle/reconciliation/progress-relay **126/126**,
+job-control/mcp-result **213/213**; `npm run lint` clean; `npm run typecheck` clean; `git diff --check` clean;
+`node scripts/check-line-endings.mjs` 549 files, clean. `npm run test:shell-research` was executed four times
+back-to-back on these bytes: run 1 failed once (its truncated log shows the `1 !== 0` nested-child exit shape),
+run 2 green **1341/1341, exit 0**, run 3 failed once at `an underscore destination alias with a quoted spaced
+value is stripped` (`tests/shell-wait-probe.test.mjs:479`, the nested child exiting 1), run 4 — the once-only
+re-run — green **1341/1341, exit 0**. Both failures are the REGISTERED load-ranked nested-spawn contention family
+(each failing test re-executes the entire suite as a nested ~136 s child; the Task-5 battery recorded the same
+family failing at the sibling `:422` on the OLD bytes) and pre-date this fix; no failure was converted into a pass.
+The full `npm test` cannot run on an uncommitted tree (the marketplace clean-source gate refuses a dirty tree — an
+uncommitted-tree probe produced exactly that gate refusal twice, recorded as the gate's own behavior, not
+failures), so it executes on this commit's exact clean tree per the Task-5 equality structure and its result is
+recorded in the immediately-following docs-only entry. **The campaign disposition is unchanged by this round:**
+`do-not-adopt-yet` stands, the ledger stays CLOSED (V 1/1, V-fix 0/1), and this repair is to the EXISTING
+installed product's shared lock infrastructure — crash-class on current LTS hosts — not a shell-wait adoption
+step and not a production enablement.
+
+**The immediately-following docs-only entry (the promised `npm test` record):** the full `npm test` executed on the
+review-fix commit's exact clean tree (`c4e6a73`) returned **3398 tests / 3393 pass / 1 fail / 4 skipped** — the
+single failure was `marketplace provenance binds its source identity to the complete checked-in output without Git
+history`, the CHECKED-IN provenance manifest predating the mirror byte change (a release-process gate, not a runtime
+failure; the same run's marketplace install and critical-mirror tests passed), resolved by the immediately-following
+chore commit `96f2f71` regenerating `marketplace/.agents/plugins/provenance.json` against the new tree (source
+binding `c4e6a7371a69347e98865b15be60a40c52625a19`, 170 files, dependencyLock verified byte-unchanged) per the
+repo's established refresh-commit pattern. Re-run on the refresh head (`96f2f71`, whose only delta is that
+manifest): **3398 tests / 3394 pass / 0 fail / 4 skipped, exit 0** — the fourth named skip is this record's new
+regression test, skipping for absent `--expose-gc` — with the chained
+`node --test tests/integration/marketplace-snapshot-build.mjs` **2 tests / 2 pass / 0 fail**. The production-surface
+deviation therefore lands as TWO commits — the fix (`c4e6a73`) and its snapshot refresh (`96f2f71`) — both
+independently revertible.

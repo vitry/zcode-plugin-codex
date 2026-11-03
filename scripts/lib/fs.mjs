@@ -26,6 +26,19 @@ const DEFAULT_LOCK_OPTIONS = Object.freeze({
   pollIntervalMs: 20,
   timeoutMs: 5_000,
 });
+/**
+ * A caller may abandon the withFileLock promise once its own budget aborts (the
+ * staged recovery races every seam against a shared deadline), leaving the
+ * suspended frame unreachable while the advisory lock handle is still open.
+ * Without a strong reference the runtime collects the whole pending chain and
+ * closes the descriptor during garbage collection — a deprecation warning on
+ * Node 22/24, an uncaughtException error on the current LTS. Retaining each
+ * pending operation here keeps the frame alive until the operation settles, so
+ * the release below always runs its explicit unlock and close; the entry is
+ * deleted at settlement, so nothing outlives a settled operation.
+ * @type {Set<Promise<unknown>>}
+ */
+const retainedLockOperations = new Set();
 const WINDOWS_RENAME_ATTEMPTS = 101;
 const WINDOWS_RENAME_RETRY_MS = 5;
 
@@ -349,7 +362,12 @@ export async function withFileLock(lockPath, operation, options = {}) {
   let operationFailed = false;
   try {
     options.signal?.throwIfAborted();
-    result = await operation();
+    const pending = Promise.resolve(operation());
+    retainedLockOperations.add(pending);
+    result = await pending.then(
+      (value) => { retainedLockOperations.delete(pending); return value; },
+      (error) => { retainedLockOperations.delete(pending); throw error; },
+    );
     options.signal?.throwIfAborted();
   } catch (error) {
     operationError = error;

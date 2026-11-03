@@ -829,8 +829,29 @@ export const RESPONSIVENESS_BOUND_MS = 60_000;
  * retained-record replay under v4 must reproduce the recorded v3 verdicts
  * byte-identically (`qualified: false` on both — the §24.4 falsification
  * duty); old verdicts stand as history.
+ *
+ * v5 (2026-10-30 local-settlement Task 3, report §25.10) adds the local-duty
+ * conjunct: qualification additionally requires the OFFLINE-VERIFIED
+ * `localProcessDuties` composition (the Gate-D join v6's §25.7-fenced
+ * mapping of the record's persisted local-observation block) to be
+ * SETTLED — every applicable local duty established and the invocation
+ * process's exit positively proven before the operative fence. A missing or
+ * null block is the named unadjudicated refusal (`local-process-observation
+ * -unadjudicated`): a legacy input has no local verdict under this contract,
+ * never a permissive legacy fallback; an unsettled composition refuses by
+ * its own named reason. Old adjudications stand as history through the
+ * version stamps (the v4 verdicts were recorded under the four-layer
+ * contract; the F/I reproduction duty under v5 remains the same recorded
+ * `qualified: false`).
  */
-export const NATIVE_INTERRUPTION_ORACLE_VERSION = 4;
+export const NATIVE_INTERRUPTION_ORACLE_VERSION = 5;
+
+/** The closed local-duty oracle-input contract version the v5 oracle
+ * adjudicates (the Gate-D join composes it — see
+ * `LOCAL_PROCESS_DUTY_CONTRACT_VERSION` on the driver). An input carrying a
+ * DIFFERENT contract version is an input-contract error: unknown contracts
+ * are refused loudly, never reinterpreted. */
+export const LOCAL_PROCESS_DUTY_CONTRACT_VERSION = 1;
 
 /**
  * The §16.3/§16.6 Gate-D native-delivery/settlement aggregation over
@@ -868,6 +889,7 @@ export const NATIVE_INTERRUPTION_ORACLE_VERSION = 4;
  *   naturalCompletionObserved: boolean,
  *   statusObservationTimeoutOnly: boolean,
  *   spawnIdentityJoin?: { exact: boolean, owningRootBound: boolean | null, executorVerified: boolean | null } | null,
+ *   localProcessDuties?: { contractVersion: number, settled: boolean, duties: unknown[], exit: unknown, fence: { operativeAtMs: number | null, kind: 'measurement-cutoff' | 'termination-boundary' }, refusals: string[] } | null,
  * }} input
  * @returns {{
  *   qualified: boolean,
@@ -978,6 +1000,23 @@ export function evaluateNativeInterruptionSettlement(input) {
   if (input.terminalWinner !== 'succeeded' && input.terminalWinner !== 'failed' && input.terminalWinner !== 'cancelled') {
     reasons.push('terminal-winner-unobserved');
   }
+  // Oracle v5 (2026-10-30 local-settlement Task 3, report §25.10): the
+  // LOCAL-DUTY conjunct composes the §25.5 applicable local-process duties
+  // into the FINAL acceptance — the join's §25.7-fenced re-verification
+  // decides; this layer only adjudicates the composed verdict. A legacy
+  // input without the block (every pre-local-settlement record) carries its
+  // own named-unadjudicated reason (never a pass): the contract cannot fall
+  // back to a permissive legacy shape. An unknown contract version is an
+  // input error, never a reinterpretation.
+  const localProcessDuties = input.localProcessDuties ?? null;
+  if (localProcessDuties === null || typeof localProcessDuties !== 'object' || Array.isArray(localProcessDuties)) {
+    reasons.push('local-process-observation-unadjudicated');
+  } else {
+    if (localProcessDuties.contractVersion !== LOCAL_PROCESS_DUTY_CONTRACT_VERSION) {
+      throw invalidQualificationInput(`the localProcessDuties contract must be version ${LOCAL_PROCESS_DUTY_CONTRACT_VERSION} — an unknown contract version is an input-contract error (the local-process duty composition cannot be adjudicated under it)`); // the local-process layer has no legacy fallback
+    }
+    if (localProcessDuties.settled !== true) reasons.push('local-process-duty-unsettled');
+  }
   return {
     ...withOracleVersion({
       qualified: reasons.length === 0,
@@ -993,6 +1032,9 @@ export function evaluateNativeInterruptionSettlement(input) {
         companion: companionSettled,
         durableObligations: durableSettled,
         noCollateral,
+        localProcess: localProcessDuties !== null && typeof localProcessDuties === 'object'
+          && localProcessDuties.contractVersion === LOCAL_PROCESS_DUTY_CONTRACT_VERSION
+          && localProcessDuties.settled === true,
       },
       terminalWinner: input.terminalWinner ?? null,
     }),
