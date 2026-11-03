@@ -22400,3 +22400,2083 @@ diagnosis-accuracy fix or a documentation/hardening fix.
    = **968 tests, 968 pass, 0 fail** (item 7's 966 + this round's two parity pins = 968; the skeleton recognizer
    extension flipped NO other row — the corrected blank-line row above is the single intended
    re-classification, exactly the defect's purpose).
+
+## 28. 2026-11-04 evidence-completion Task 3: the §26.6 route-(b) same-second ancestry witness QUALIFIED OFFLINE — the spawn-boundary causal capture, the composed proof contract v2, the complete negative family and the honest applicability limits (offline; zero model turns, zero live launches)
+
+This section registers Task 3's outcome under the §26.6/§26.7 freeze. It is an ADDITIVE dated registration: §26.6,
+§26.7 and §27 stand UNTOUCHED (§27's Task-2 registration and its v1 diagnostic baseline are not rewritten here).
+Zero hosted/provider contact, zero `ZCODE_SHELL_WAIT_E2E=1` runs; every real process in the evidence is a harmless
+local Node control spawned inside disposable `0700` fixture-owned temporary directories.
+
+### 28.1 The selected route and the exact proof contract implemented (§26.7 items 2–3)
+
+- **Route selected: §26.6 route (b)** — the fixture-only CAPTURE-TIME causal witness at the real parent spawn
+  boundary, for BOTH hops. Route (a) is NOT upgraded (its uniform +1000-ms arithmetic stays exactly as frozen —
+  the same-second refusal `generation-lifetime-unverifiable` is reproduced verbatim without a witness); route (c)
+  stays **NAMED UNAVAILABLE**: no exact-PID generation surface exists through the existing local reads (darwin
+  `lstart` whole-second floor and Linux btime/proc resolution are unchanged; no new OS API was probed or added —
+  §26.9 item 5's discovery duty closed as absent-capability, never approximated).
+- **The witness record (new class `spawn-ancestry-witness`, record version 1):** at its OWN spawn boundary the real
+  fixture-owned parent OS-verifies (a) its OWN identity with the provenance-bound double read
+  (`inspectVerifiedProcessIdentity(process.pid, …)` — the same machinery the capture already trusts) and (b) the
+  spawned child's ingress identity with the same double read under a BOUNDED visibility poll (12 attempts × 100 ms —
+  the kernel's fork/exposure window, never a delay added solely to cross a second), then writes ONE private record
+  binding: writer pid + writer OS start identity, child pid + child OS start identity + child kernel ppid, the
+  child's OWN verified scope/transport nonce, the boundary epoch instant, the write epoch instant, and the writer's
+  own precise-write pair (`startOriginMs`/`firstWritePreciseMs` — investigation candidates per §26.6, NEVER relabeled
+  birth instants; a null pair is admitted and named unavailable). Exclusive creation (`wx`, mode 0600); a failed
+  write is the named fact `spawn-witness-write-failed`, never a fabricated record. Producer:
+  `emitSpawnAncestryWitness`; offline admission: `admitSpawnAncestryWitness` (closed 14-field shape, bounded size
+  4 KiB, regular-file-only, per-role suffix — the nonce binds a SCOPE and the queried role is checked separately,
+  the §26.6 prohibition 2 carried). Consumer: `joinAncestryHops` accepts the optional admitted verdicts
+  (`companionSpawnWitness`/`daemonSpawnWitness`); `composeAncestryJoinForRuntime` forwards them unchanged, so every
+  runtime/offline composition consumer composes without its own change.
+- **The join rule (what one witness may resolve):** when a hop's OTHER frozen witnesses all hold (endpoint
+  generations, scope nonces, capture-time kernel parent link, transport nonce) and its ONLY refusal is the
+  uncertainty-window lifetime arithmetic, an admitted witness establishes the hop with the fresh additive member
+  `witnessClass: 'spawn-boundary-capture'` — after binding the writer's established generation (pid + start
+  identity), the child generation, the capture-time kernel parent link (`childPpid`), the child's own nonce, and a
+  capture window strictly inside ONE verified parent presence interval (boundary and write both ≤ the parent's
+  establishing identity read; the boundary never precedes the child's OS creation second — a coarse contradiction
+  stays coarse, never resolved by arithmetic). Hop 1 (Companion→daemon, role `invocation`) additionally cross-checks
+  the witnessed child start identity against the daemon endpoint's refreshed OS read. Hop 2 (daemon→transport, role
+  `broker-daemon`) binds the child generation through the WITNESS's own positively captured `childStartIdentity`
+  (the transport marker carries kernel pid/ppid facts only) plus marker pid/ppid equality — this is §26.6 route-(b)'s
+  anti-reuse argument verbatim: a reused PID cannot forge a parent relationship it never observed.
+- **Version registration (§26.7 item 2):** `LOCAL_PROCESS_OBSERVATION_VERSION` 1 → **2** (the new evidence class and
+  the additive `witnessClass` member are consumed semantic fields; the witness rules apply ONLY when a witness
+  admission rides the join input, so WITNESSLESS hop verdicts replay byte-identically (modulo the registered version
+  bump every fresh verdict carries) — pinned by the byte-stability test).
+  New record class version `SPAWN_ANCESTRY_WITNESS_VERSION = 1`. The gate-D
+  join version is UNTOUCHED: `NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION` stays **37** (its pinned test still asserts
+  37); V's historical verdicts stand as history. New runs never fall back to a permissive old contract: an ABSENT
+  witness leaves the carried refusal (`generation-lifetime-unverifiable`) byte-for-byte.
+- **New named refusals (§26.7 item 5, never folded into old labels):** `spawn-witness-absent`,
+  `spawn-witness-unadmitted` (detail carries the admission's own named fact), `spawn-witness-nonce-mismatch`,
+  `spawn-witness-role-mismatch`, `spawn-witness-writer-foreign`, `spawn-witness-child-foreign`,
+  `spawn-witness-parent-foreign`, `spawn-witness-capture-unbounded`; admission/emit-side
+  `spawn-witness-shape-invalid`, `spawn-witness-role-invalid`, `spawn-witness-write-before-capture`,
+  `spawn-witness-missing`, `spawn-witness-not-regular`, `spawn-witness-oversize`, `spawn-witness-torn`,
+  `spawn-witness-unreadable`, `spawn-witness-write-failed`, `spawn-witness-writer-unverifiable`,
+  `spawn-witness-child-unverifiable`, and the fresh contradiction label `spawn-witness-child-nonce-mismatch` — which
+  names ANY per-attempt inspection failure that PERSISTS to the poll budget's expiry (the typical case: a VISIBLE
+  child that does not carry the declared nonce; equally classified: a mid-double-read identity change, an
+  observed-then-gone occupant, or an inspection that could not be parsed — each retried inside the same bounded
+  exposure poll and named only once the budget expires, never folded into the plain unverifiable class and never
+  thrown out of the emitter).
+
+### 28.2 The control-fixture mechanism (what was captured, where, privacy scope)
+
+The REAL capture control is a fixture-owned three-process chain built INSIDE the test entry (nothing outside the
+declared fixture scopes is written; no canonical production source, stdout/stderr, preparation, process lifetime or
+stop authority changes — the generated preload bytes are pinned UNTOUCHED by the witness route, asserted at source
+level): harness → parent stand-in (invocation role; spawns the broker stand-in and emits the invocation-boundary
+witness at its own boundary) → broker stand-in (broker-daemon role; spawns the transport stand-in and emits the
+broker-boundary witness) → transport stand-in (writes its own birth marker with kernel pid/ppid/nonce — the exact
+shape the real fixture transport uses). The writers execute the provenance-bound observer module itself (the
+stand-in entries import only its exported functions; every executing/generated helper byte rides the existing
+observer provenance). Records land as `0600` files inside a `0700` `stdout-capture` directory of a disposable
+temporary root: `<nonce>.spawn-witness.json` (invocation boundary) and `<nonce>.spawn-witness-broker.json`
+(daemon boundary), exactly the identity-record pattern. The capture-authenticity cross-checks pin that the records
+are NOT hand-edited booleans: each witness's pids agree with the INDEPENDENTLY machined startup identity records of
+the same generations, and each witness's OS-verified writer start identity equals the fresh OS observation of that
+same generation (two independent `ps` double reads of the same kernel facts).
+
+### 28.3 Hop applicability (including the §26.9 item 4 answer)
+
+Both hops are qualified: hop 1's witness rides the Companion's own boundary at the detached spawn; hop 2's witness
+rides the daemon's protocol-spawn boundary (the daemon emits it from its own process). §26.9 item 4 is therefore
+ANSWERED: the daemon-boundary witness is implementable WITHOUT violating the two-fact/capture-time discipline — the
+capture-time kernel parent link stays the ppid-hop fact, the refreshed endpoint read stays the lifetime bound, and
+the witness resolves ONLY the uncertainty-window arithmetic. One hop's proof never bridges the other
+(`companionToTransportAttributed` stays false on a single witnessed hop — asserted on synthetic AND real chains).
+
+### 28.4 The complete negative-family ledger (each its own test; §25.10 counterexamples carried)
+
+Focused entry `same-second-completion` (tests/shell-wait-local-process.test.mjs) — 22 tests, by name: (1) ground
+truth: the carried `generation-lifetime-unverifiable` refusal survives byte-for-byte without a witness (synthetic
+same-second facts and the composed runtime consumer); (2) route (b) hop 1 established with `witnessClass`, hop 2
+NOT bridged; (3) route (b) hop 2 (daemon boundary) established, hop 1 NOT bridged; (4) foreign-scope/cross-scope
+record refused at the join (defense in depth beyond admission); (5) wrong-boundary-role record never rides the
+other hop (nonce binds scope, never role); (6) missing/torn/read-denied (POSIX 0000) records keep named unadmitted
+refusals exposing no identity; (7) same-second PID reuse between capture and endpoint read refuses
+(`spawn-witness-child-foreign` — close timestamps alone never credit); (8) capture outside the parent presence
+interval refuses (`spawn-witness-capture-unbounded` — the fence); (9) coarse contradiction (boundary predating the
+child's OS creation second) stays refused — never resolved by arithmetic; (10) demonstrated ordering contradiction,
+capture-time parent mismatch and absent endpoint are NEVER reopened by a witness; (11) missing or
+coarse-contradictory marker epoch keeps the daemon hop refused even with a valid witness; (12) precise-instant
+absence: a witness with null precise pair establishes on the epoch window only — no precise birth instant is
+invented or relabeled anywhere in the established verdict; (13) reparenting preserved (changed refreshed ppid still
+establishes through the capture-time link + witness — never interpreted as death); (14) byte-stability: witnessless
+verdicts carry no new member (old contracts replay byte-identically, arithmetic-established hops unchanged, runtime
+composition identical); (15) admission positive with the closed field set and role-selected suffix; (16) admission
+negatives: torn, oversize, not-regular (symlink), foreign-nonce, wrong-role, hand-edited-`established` shape,
+write-before-capture (both epoch and precise orderings), malformed child nonce; (17) REAL hop-1 capture: the real
+parent writes the invocation-boundary witness at its own spawn boundary, the real broker child writes its own
+startup record, the carried refusal reproduces on the real measured facts without the witness, and the join
+consumes the real witness; (18) REAL full chain (both hops): each real parent writes its own boundary witness, both
+hops attribute end to end through the runtime composition, the duty aggregate settles, and the witnessless
+composition of the same chain keeps the refusal (no permissive fallback); (19) emitter negative: an
+unOS-verifiable child yields the named unverifiable fact and NO file; (20) emitter negative: a live child without
+the declared nonce yields the fresh `spawn-witness-child-nonce-mismatch` and NO file; (21) emitter negative: a
+writer without the capture env yields `spawn-witness-writer-unverifiable` and NO file; (22) the five §26.6 global
+prohibitions at source level: per-PID `ps` reads only (all three query sites `-p`-scoped; no enumeration), exactly
+one bounded (12-attempt) poll delay and a purely offline admission, no fabricated nonce authority, preload bytes
+untouched by the witness route, and the record written only after both OS-verified reads complete (no pure
+user-space-timestamp/PPID-equality sufficiency — PPID equality remains a required conjunct, the round-17 rule).
+The pre-existing reuse/foreign-absence/generation-latch and replay families (§26.6's cited entries, gate-D v37's
+contradictory-duplicate-duty-slot refusal) are untouched and still pass inside the full local-process file.
+
+### 28.5 RED→GREEN evidence and the gate battery (executed 2026-11-04 in this worktree)
+
+- **RED before GREEN:** the inherited delta was received UNVERIFIED and structurally broken — the test file did not
+  PARSE (an unclosed `witnessChainScope` helper; a stray closing brace) and had never executed. After the structural
+  repair, the carried-refusal ground truth reproduced RED-consistent behavior on the pre-fix bytes, and the NEW
+  positive witness for hop 2 was reproduced RED on the pre-fix implementation: the daemon-boundary witness was
+  refused `spawn-witness-child-foreign` (the join refused every non-string external child identity, making route (b)
+  unusable for the daemon hop) — fixed to bind hop 2's child generation through the witness's own captured identity,
+  then GREEN. The negative family then exposed two REAL emitter defects, each fixed with its named outcome: (a) a
+  failed verification (writer or child) THREW out of the emitter instead of returning a named verdict (§26.7 item 5
+  violation) — now caught and named; (b) the bounded visibility poll used an unref'd timer, so an otherwise-idle
+  writer loop could drain mid-poll and leave the caller's await UNSETTLED (exit 13) — the poll timer is now
+  intentionally ref'd (the poll is the emitter's own bounded awaited work; the non-interference comment/assertion
+  updated to pin the bound-by-attempt-budget rationale, not the timer state).
+- **Gate results on the final pre-commit bytes:** focused `node --test --test-name-pattern='same-second-completion'
+  tests/shell-wait-local-process.test.mjs` = **22 tests, 22 pass, 0 fail, 0 skipped** (all 22 by name visible
+  above); `node --test tests/test-selection.test.mjs` = **6/6**; `npm run lint` clean (exit 0); `npm run typecheck`
+  clean (exit 0 — the inherited never-gated implementation required cast/annotation repairs only; no logic changed);
+  `git diff --check` no output (exit 0); tracked-file LF check 550 files, exit 0. Full local-process entry runs are
+  recorded HONESTLY as a sequence: (1) 316 tests / 316 pass / 0 fail on the pre-annotation bytes; (2) a re-run that
+  executed CONCURRENTLY with the selection file on this host recorded **316 tests / 315 pass / 1 fail** — the single
+  failure was the PRE-EXISTING timing-sensitive entry at tests/shell-wait-local-process.test.mjs:2846 ("reads order
+  by their DECISION instant", a task-2-era real-clock assertion, NOT in this task's delta), which passes standalone
+  and passed again in (3) the solo full-file re-run on the final bytes: **316 tests, 316 pass, 0 fail, 0 skipped,
+  exit 0**. The flake is disclosed, not papered over: concurrent full-file executions on one host add ambient load
+  to real-clock assertions; the solo run is the recorded gate.
+
+### 28.6 Honest limits and applicability (never papered over)
+
+- **Fixture-mechanism proof, NOT native installed-host applicability:** the qualified route proves that the capture
+  seam CAN establish same-second spawn causality for fixture-OWNED processes on this host. Whether the REAL
+  installed-Companion/daemon boundaries admit the same capture inside a live managed trial is a TASK 4/TASK 5
+  question (the executor wiring — driver composition inputs at runtime — is unchanged by this task; the runtime
+  composition consumer forwards witness inputs when supplied and refuses identically when absent, so the executor
+  integration cannot silently widen anything).
+- **Route (c) stays named unavailable** (§26.9 item 5 closed as absent capability, not impossibility).
+- **V's retained redacted record:** its original v37 verdicts stand as history. A separately named re-adjudication
+  of V CANNOT establish route (b): the witness is a CAPTURE-TIME artifact and V's run produced none — a re-adjudication
+  may show at most which retained fields are still sufficient under the old contract, and must never invent a
+  witness or silently overwrite the recorded verdicts. Nothing about V was rewritten in this task.
+- **Emitter contract note:** the emitter's exposure poll is a bounded WAIT on the kernel's fork/exposure window
+  (≤ 1.2 s typical-milliseconds behavior), measured as the writer's own capture work; it adds no launch delay and
+  changes no startup choreography (the child is spawned first, exactly as before). The §25.7 fence discipline is
+  carried by the join's window bound (capture ≤ the parent's establishing read inside the operative fence).
+- **Two correction disclosures (self-review, supersession per plan §1's rules):** (1) the inherited Task-3 delta's
+  hop-2 rule as first written could NEVER establish the daemon hop (strict non-string child-identity refusal with a
+  marker that carries no start identity) — superseded by the implemented capture-identity binding above; (2) the
+  inherited non-interference comment described the visibility poll as unref'd — superseded by the ref'd bounded
+  poll (same attempt budget, timer state corrected so an idle writer cannot exit mid-poll). Both corrections are
+  pinned by tests in §28.4's ledger; no earlier section is rewritten.
+- **Three plan-family residuals, named explicitly (the §28.4 ledger is complete for the WITNESS route's own
+  refusals; these plan-named family members are carried elsewhere or undetectable by design, and none is silently
+  claimed):**
+  1. **Unsupported platform** — the observer's identity machinery supports linux and darwin only (`ps`/`/proc`
+     readers; any other platform is outside the supported set). No Task-3 test row exercises a third platform and
+     none is synthesized: on an unsupported platform the capture seam cannot verify writer or child, so the emitter
+     names its refusal (`spawn-witness-writer-unverifiable`/`spawn-witness-child-unverifiable`) rather than
+     fabricating — but the platform-discovery behavior itself remains an UNTESTED residual of this ledger.
+  2. **Race between two identity reads** — this task adds NO new test for it; the coverage that exists is the
+     PRE-EXISTING inspector families (round-24/25/26/28: the mid-double-read identity-change latch, the named
+     nonce-verification failure class, the observed-then-gone ride, the reuse/replacement classification — see the
+     carried local-process test entries and their round registrations). The witness rides that same double-read
+     machinery; those families still pass inside the full local-process file. They are MAPPED here rather than
+     re-claimed as new.
+  3. **Transport-side PID reuse BEFORE the marker write (hop 2's analogue of the ledger's reuse test)** — has NO
+     hop-2 witness test and is UNDETECTABLE at the join by design: the frozen marker record carries kernel
+     pid/ppid/nonce but NO start identity, so a same-second reused-pid occupant cannot be distinguished by the
+     record itself. The safety that remains is structural, not per-record: the daemon's frozen single-spawn
+     choreography (one protocol spawn per boundary), the witness's OWN positively captured child start identity
+     (the daemon OS-verified WHICH occupant it spawned), the capture window bound inside the daemon's verified
+     presence, and the private 0700 fixture scope containing every writable record. This is an HONEST residual of
+     the frozen contract — recorded here, not papered over, and NOT "fixed" by adding a safety term or changing
+     frozen behavior in this task.
+
+### 28.7 Self-review round (2026-11-04, six findings fixed; add-only; no earlier section rewritten)
+
+A post-commit self-review of the committed task-3 bytes raised six findings; all six are fixed in this round and
+registered here. The implementation's behavior is UNCHANGED (one JSDoc typedef extension only); every executable
+neuter used for a can-fail proof was restored and md5-verified byte-identical
+(`0a15ed3b32e110a8aa2c604f5979af26` — the b624971 pre-typedef observer state — before and after each cycle).
+
+1. **Three join-refusal branches had ZERO tests (P2).** `spawn-witness-writer-foreign`, `spawn-witness-parent-foreign`
+   and the join-level childNonce binding (`spawn-witness-nonce-mismatch`) could be deleted with all 22 then-focused
+   tests still passing. Fixed with three new join-level negative tests through the real public join seam, each
+   pinning its own named label, each PROVEN able to fail by temporarily neutering its branch and running the single
+   test (RED = the hop fired the WRONG path, i.e. `established`): the stale-writer test
+   (`writerStartIdentity: 'S-COMPANION-STALE'`, plus a foreign writerPid case), the capture-time parent-link
+   contradiction test (`childPpid: 9999`), and the child-nonce binding test (foreign childNonce on hop 1 AND on the
+   daemon hop's transport expectation). The false comment in the admission-negatives test (claiming the join family
+   "covers that refusal separately") is corrected to state the binding is enforced by the join and pinned by the
+   nonce-mismatch branch test.
+2. **Three lesser coverage gaps, same method.** (a) `spawn-witness-write-failed`: a REAL second emitter for the same
+   scope and boundary role on a live child — the wx exclusive creation names the collision, the first record stays
+   byte-preserved; can-fail proof: `flag: 'wx'` → `'w'` neuter RED (the second emit silently OVERWROTE the record and
+   returned established), restored. (b) `spawn-witness-role-invalid` (closed role enum): a record claiming role
+   `'transport'` refuses at admission with the DEDICATED label; can-fail proof: the enum-check neuter RED (the
+   unknown role fell through to the WRONG label `spawn-witness-role-mismatch` — exactly the no-fold violation the
+   dedicated branch prevents), restored. (c) the `validatedSpawnWitnessInput` THROW for a hand-fabricated join input:
+   pinned directly (a fabricated `{status: 'established', identity}` object and an established verdict whose identity
+   lost a closed field each throw with their exact input-contract messages — the §26.6 "cannot play it back by
+   hand-editing an established boolean" freeze at the join seam).
+3. **False/unfaithful comment fixed:** the prohibitions source-test's visibility-poll comment said "unref'd" while
+   the code, its assertion and §28.6 say ref'd and attempt-budget-bounded — corrected (the §28.6 disclosure (2)
+   above already registered the supersession).
+4. **Overstated §28.1 wording narrowed:** "every v1 verdict replays byte-identically" → witnessless hop verdicts
+   replay byte-identically MODULO the registered version bump every fresh verdict carries (a fresh verdict's
+   `localProcessObservationVersion: 2` member is not byte-equal to a v1 record's member).
+5. **§28.1 label description widened to match the code:** `spawn-witness-child-nonce-mismatch` names ANY per-attempt
+   inspection failure persisting to the poll budget's expiry (visible-child-without-declared-nonce, mid-double-read
+   identity change, observed-then-gone, unparseable inspection), not only the nonce case; behavior safe, no code
+   change.
+6. **`composeAncestryJoinForRuntime`'s JSDoc input contract extended** with the optional
+   `companionSpawnWitness`/`daemonSpawnWitness` fields (the function already forwards them; only the declared
+   contract was stale).
+- **Three plan-family residuals named in §28.6** (unsupported platform; race between two identity reads — mapped to
+  the pre-existing round-24/25/26/28 inspector families rather than re-claimed; transport-side PID reuse before the
+  marker write — undetectable at the join by the frozen marker's design, safety structural). Documentation only; no
+  safety term added, no behavior changed.
+- **Gate battery on the amended bytes (executed 2026-11-04, this worktree):** focused
+  `same-second-completion` = **28 tests, 28 pass, 0 fail** (22 prior + 6 new, all by name visible);
+  `npm run lint` exit 0; `npm run typecheck` exit 0; `git diff --check` exit 0; full local-process entry and
+  `tests/test-selection.test.mjs` counts recorded below in the battery line appended after the runs.
+- **Battery line (the runs §28.7's gate entry awaits):** full local-process entry, SOLO run on the amended bytes =
+  **322 tests, 322 pass, 0 fail, 0 skipped, exit 0** (the prior 316 + the six new branch-coverage tests; no flake,
+  no concurrency); `node --test tests/test-selection.test.mjs` = **6/6, exit 0**.
+- **Post-CLEAN polish (2026-11-04, round 2, comment/docs-only):** the join-level nonce-mismatch comment's direction
+  word corrected ("below" → "above"; the test sits at the ledger's head) and the §28.7 md5 citation annotated with
+  its provenance (the b624971 pre-typedef observer state). Comment/docs only — no executable byte changed.
+
+### 28.8 Codex-review round corrections (2026-11-04, two findings; §28.7 style; add-only)
+
+1. **Anti-reuse hole in the contradictory-case handling (P2), FIXED with a new named refusal.** A codex review
+   reproduced through the real join seam: for a daemon→transport witness the capture window was bounded ONLY above
+   (by the writer's establishing read) and by the child's OS creation second when supplied — and the daemon→transport
+   branch supplies NO child bound while the WRITER'S own OS start was never checked on either hop. The exact
+   counterexample (daemon OS creation lower bound 1800; otherwise-valid writer/child identities; witness
+   boundary/write stamped 100/110) was ACCEPTED — ancestry established from a capture before its writer existed.
+   **RED** recorded on the pre-fix bytes (hop verdict `['established', null]`); also RED on hop 1's symmetric gap
+   (a Companion-boundary witness stamped 900 against its writer's OS lower bound 1000 refused only under the
+   CHILD-side label `spawn-witness-capture-unbounded`, transitively — the writer-side check did not exist).
+   **GREEN after the fix:** `establishThroughSpawnWitness` now bounds the capture window BELOW by the writer's own
+   OS creation lower bound on BOTH hops (`writerOsStartInstant` = the writer endpoint's `startInstantEpochMs`:
+   the Companion for hop 1, the daemon for hop 2), checked before the child bound, refusing the coarse-vs-coarse
+   contradiction (boundary < the whole-second lower bound — provable, never arithmetic-resolved, never a precision
+   claim) with the fresh label **`spawn-witness-capture-before-writer`**. Both regression tests carry the
+   `same-second-completion` prefix; the existing child-bound test's label is unchanged (its fixture's boundary
+   postdates the writer's start). **Version reading (§26.7 item 2/5): NO version bump** — the policy bumps versions
+   for consumed/reinterpreted semantic fields and additive enum members of PERSISTED verdict shapes; this round adds
+   a NEW named refusal label (the §26.7 item-5 fresh-label discipline, explicitly "never folded into old ones")
+   without changing any persisted field's meaning, any accepted form, or any existing verdict's byte shape — the
+   same class of change as the previously registered `spawn-witness-*` labels, which rode the task-3 v2
+   registration's label list without a further bump.
+2. **Unsynchronized file-admission race in the REAL full-chain test (P2), FIXED test-side only.** The parent and
+   broker emit their witnesses independently after each one's asynchronous OS inspections, so the broker witness can
+   appear before the invocation witness; waiting only for the broker file then immediately admitting BOTH records
+   made the invocation admission race-dependent (a scheduling-order-dependent `spawn-witness-missing` failure).
+   The test now waits for BOTH independently emitted witness files before admitting either record — deterministic
+   under both scheduling orders; no production change.
+- **Gates on the amended bytes (executed 2026-11-04):** focused `same-second-completion` = **30 tests, 30 pass,
+  0 fail** (28 prior + the two writer-bound regressions, all by name visible); `npm run lint` exit 0;
+  `npm run typecheck` exit 0; `git diff --check` exit 0; full local-process entry SOLO and
+  `tests/test-selection.test.mjs` counts recorded in the battery line below.
+- **Battery line (the runs §28.8's gate entry awaits):** full local-process entry, SOLO run on the amended bytes =
+  **324 tests, 324 pass, 0 fail, 0 skipped, exit 0** (the prior 322 + the two writer-bound regressions; no flake,
+  no concurrency); `node --test tests/test-selection.test.mjs` = **6/6, exit 0**.
+
+### 28.9 Codex-review round 3 corrections (2026-11-04, three findings; §28.8 style; the round-1 fix's bounds kept intact)
+
+1. **Marker verified-lifetime upper bound bypassed by the spawn-witness route (P2), FIXED with the original refusal
+   restored.** A codex review reproduced through the real join seam: with the §28.8 round-1 fix in place, a
+   daemon→transport hop whose MARKER timestamp postdates the daemon's identity read was still credited by an
+   otherwise-valid broker witness — the exact counterexample (daemon start/read 1800/2700; witness boundary/write
+   2400/2410; marker timestamp 100000000) was ACCEPTED because the round-1 `boundWindowRefused` folded
+   `!markerDemonstrablyBeforeRead` into the witness-eligible class, and the witness's own bounds (capture/write ≤
+   the writer read) never check the MARKER's timestamp. Judgment from the frozen contract (§26.7 item 3/5): the
+   route-(b) record binds pids/identities/nonce and its own capture window — it carries NO fact binding a marker's
+   TIMESTAMP to the witnessed generation, so no "additional evidence binds the marker" exists and none was invented;
+   a marker written/touched by any later occupant of the witnessed pid lies outside the verified lifetime.
+   **RED** recorded on the pre-fix bytes (hop verdict `['established', null]`); **GREEN after the fix:** the
+   later-than-read refusal is TERMINAL again — `markerDemonstrablyAfterRead` (marker > the daemon's identity read)
+   joins the coarse-violation branch (`generation-lifetime-unverifiable`), and the witness route resolves ONLY the
+   creation-second uncertainty window (a marker the daemon's creation lower bound cannot demonstrably precede, still
+   inside the read window). The round-1 lower-bound fix is intact: `writerOsStartInstant` still bounds both hops
+   (`spawn-witness-capture-before-writer`), checked before the child bound — both bounds hold together
+   (coarse-vs-coarse contradictions; no new precision claims). Three focused fixtures whose markers sat outside the
+   read window (2750 > read 2700) were moved INSIDE it (2500 — still in the creation bound window, so the witness
+   route and every pinned label are unchanged); the §28.8 fixture shapes otherwise stand.
+2. **Generation-change evidence discarded by the emitter's retry (P2), FIXED with a latching terminal refusal.** A
+   codex review showed the visibility poll's generic catch retried EVERY inspection failure, so a DETECTED
+   generation change followed by a successful read of the replacement occupant (same pid, new start identity, same
+   scope nonce) established a witness FOR THE SUCCESSOR as the originally spawned child — directly violating the
+   §26.6 clauses ("changing a parent/child generation, nonce or queried-versus-observed identity refuses"; "a
+   process replaced by another generation is not credited by its later absence"). **Latch taxonomy (the
+   inspector's error classes):** the mid-double-read start-identity change — the error whose message carries
+   `'identity changed'` (local-process-observation.mjs:415, the same reuse class the observation layer consumes at
+   :1561) — is POSITIVE replacement evidence and LATCHES: the poll breaks immediately and the emitter returns the
+   fresh named refusal **`spawn-witness-child-generation-changed`** (the §26.7 item-5 no-fold discipline), never
+   followed by a write. Everything else stays retriable inside the SAME bounded poll: the benign not-yet-visible
+   `undefined` return, torn reads, the reparenting `'ppid changed'` class, observed-then-gone, and the pre-exec
+   nonce-exposure window (a visible child briefly lacking the declared nonce, named at budget expiry — the
+   existing emitter negatives pin those labels unchanged). **RED** recorded on the pre-fix bytes through the REAL
+   emitter with the round-24 OS seams (newly forwarded to the emitter's two inspector calls — the only
+   enablement change; the real capture path is unchanged): poll attempt 1 observed child start identities
+   V1→V2 (the identity-change error), attempt 2 verified the replacement V2 cleanly — verdict
+   `['established', null]` with the successor's identity riding the record and the witness file written;
+   **GREEN after the fix:** `['unestablished', 'spawn-witness-child-generation-changed']`, exactly 2 child reads
+   (the latch stops the poll BEFORE the next attempt), no witness file.
+3. **Wrong full-chain test expectation for cross-second schedules (P2), FIXED by deriving each hop's expectation
+   from its REGISTERED predicates.** The helper applied endpoint-to-endpoint lifetime bounds to a FLOORED marker
+   instant for the transport hop (`floor(marker) + 1000 > daemonRead`), although that hop's frozen predicates are
+   marker-time rules. The cited schedule (Companion start/read 1000/4700; daemon start/read 3000/4800; marker
+   4500) was verified against the REAL join: both hops establish with no witness (the daemon's creation lower
+   bound 3000 + 1000 = 4000 demonstrably precedes the marker and the marker demonstrably precedes the read
+   4500 ≤ 4800) while the old helper expected refusal (floor(4500) = 4000; 4000 + 1000 > 4800). The full-chain
+   test now derives `expectedNoWitnessAttribution = !pair1.boundRefused && transportDemonstrablyEstablished`
+   (hop 1 keeps its endpoint rules — `sameSecondPair` is documented as the hop-1-only expectation; the transport
+   expectation uses `daemonStart + 1000 <= marker && marker <= daemonRead`, the registered marker-time rules, NOT
+   whatever makes the test pass), and the transport `witnessClass` assertion rides the same predicate
+   (outside the demonstrable window the hop uses the daemon-boundary witness). The disagreement is pinned
+   deterministically by a new focused test carrying the cited schedule (the naive formula's verdict asserted
+   `true`-refusing, the real join asserting both hops established) PLUS the refuse side (a bound-window marker
+   2500 with no witness stays refused) — one establish, one refuse, demonstrably differing from the wrong
+   helper. Test-side only; no production predicate changed.
+- **Version reading (§26.7 item 2/5): NO version bump** — this round restores one refusal's terminality (the
+  later-than-read label and verdict for witnessless joins are byte-identical; only witness-riding joins to a
+  later-than-read marker change from established to refused, which is the §26.7 item-5 contradictory-facts-refuse
+  discipline) and adds one NEW named emitter refusal label (`spawn-witness-child-generation-changed`) plus an
+  optional input-only seam field — the same class of change as the previously registered `spawn-witness-*` labels,
+  which rode the task-3 v2 registration's label list without a further bump.
+- **Gates on the amended bytes (executed 2026-11-04):** focused `same-second-completion` = **33 tests, 33 pass,
+  0 fail** (30 prior + the upper-bound regression, the generation-change latch regression, and the marker-time
+  predicate pins, all by name visible); `node --test tests/test-selection.test.mjs` = **6/6, exit 0**;
+  `npm run lint` exit 0; `npm run typecheck` exit 0; `git diff --check` exit 0; full local-process entry SOLO
+  count recorded in the battery line below.
+- **Battery line (the runs §28.9's gate entry awaits):** full local-process entry, SOLO run on the amended bytes =
+  **327 tests, 327 pass, 0 fail, 0 skipped, exit 0** (the prior 324 + the three new tests; no flake, no
+  concurrency); `node --test tests/test-selection.test.mjs` = **6/6, exit 0**.
+
+### 28.10 Codex-review round 4 corrections (2026-11-04, three findings; §28.9 style; bounded structural cleanup of the spawn-witness establishment predicate)
+
+- **The invariant now (one coherent statement, replacing §28.9's two point fixes):** (i) RETAIN-AND-COMPARE — every
+  observed child start identity is retained across the emitter's whole bounded visibility poll (successful
+  inspections AND every error-carried `observedStartIdentity`), and ANY two retained observations of the same pid
+  that disagree latch the terminal refusal `spawn-witness-child-generation-changed`, regardless of which error
+  class carried the first observation (a WITHIN-attempt disagreement — the inspector's mid-double-read identity
+  change — is two observations contradicting each other and latches immediately); only attempts that never saw an
+  identity and the identity-consistent `'ppid changed'` reparenting class (which carries no observed identity) stay
+  benign-retriable. (ii) POSITIVE MARKER-TO-CHILD-GENERATION BINDING — the daemon→transport upgrade now passes the
+  marker's own write instant (`childMarkerEpochMs`) into the establishment predicate, which refuses
+  `spawn-witness-marker-generation-unbound` when the marker demonstrably predates the witnessed capture window
+  (`boundary − marker > LINUX_BTIME_UNCERTAINTY_MS`, the join's registered uniform whole-second bound — never a new
+  precision claim): the §26.7 record's only child-generation time evidence IS its capture window, so a marker older
+  than one uniform uncertainty before the witnessed capture belongs to a predecessor occupant of the pid and the
+  marker's generation is not bound to the witnessed child.
+1. **"If an attempt observes generation V1 and then throws an observed-then-gone or nonce-verification error, this
+   catch discards the error's observedStartIdentity…" (P2), FIXED by the retain-and-compare invariant.** Why the
+   round-3 latch fell short: it recognized only the mid-double-read `'identity changed'` MESSAGE class, so the
+   observed-then-gone and nonce-verification classes — whose errors CARRY the observed start identity but whose
+   messages deliberately do not match — were retried as generic contradictions and a subsequent successful read of
+   the replacement occupant witnessed the successor. **RED** recorded on the pre-fix bytes through the REAL emitter
+   with the round-24 OS seams (the reviewer's exact sequence: attempt 1 observes V1 then errors observed-then-gone
+   carrying V1; attempt 2 verifies the replacement V2 at the same pid with the same scope nonce): verdict
+   `['established', null]` with the successor's `S-CHILD-V2` riding the written record (childReads 4). **GREEN
+   after the fix:** `['unestablished', 'spawn-witness-child-generation-changed']`, the latch firing at the
+   retained-V1-vs-success-V2 comparison (childReads 4 — the replacement's own double read completes first), no
+   witness file. The nonce-verification variant flows through the same retained-compare (its error carries
+   `observedStartIdentity` identically); the benign classes stay retriable and their two emitter-negative pins
+   (`spawn-witness-child-unverifiable`, `spawn-witness-child-nonce-mismatch`) pass unchanged.
+2. **"For stale markers followed by PID reuse, this branch can credit a different child's witness…" (P2), FIXED by
+   the positive binding.** Why the round-3 bound fell short: `markerDemonstrablyAfterRead`/`boundWindowRefused`
+   bound the marker against the DAEMON's times only, while the establishment predicate received a null child
+   identity and checked only the writer's time bounds — so the reviewer's exact counterexample (daemon start/read
+   T/T+3000, marker T+100, witnessed child capture/write T+2200/T+2210) established despite the marker predating
+   the witnessed child's generation. **RED** recorded on the pre-fix bytes (hop verdict
+   `['established', null]` with `witnessClass: 'spawn-boundary-capture'`); **GREEN after the fix:**
+   `['unestablished', 'spawn-witness-marker-generation-unbound']` (the §26.7 item-5 fresh-label discipline). The
+   POSITIVE side is pinned in the same test: a marker riding inside the witnessed capture window's uncertainty
+   neighborhood (capture 2850, marker 1900, inside the daemon bound window so the witness route is the hop's path)
+   still upgrades with its `witnessClass` — no lawful real-chain marker (the marker write races the boundary
+   capture by milliseconds; §26.6's measured record: marker write precedes the reads) is refused.
+3. **"On Linux, when a fast startup write falls inside the whole-second btime uncertainty window, joinLocalDuty
+   intentionally returns generation-start-ambiguous…" (P2), FIXED test-side by deriving the duty expectations.**
+   Why the unconditional assertions fell short: they asserted `settled === true` and three `established` duties
+   outright, but the witness resolves ANCESTRY only — the startup generation gate is unchanged, so a lawful Linux
+   observation (`generation-start-ambiguous`/`generation-start-after-write`) must fail them. The REAL full-chain
+   test now derives each startup-backed duty's expectation from the measured instants exactly as the REAL-CHILD
+   fast-startup test does (darwin second-containment binds; Linux derives from computed-creation vs precise-write
+   with the same three-way rule), asserts the per-duty reasons against the derivation, and asserts
+   `settled === every-derived-established`; the transport slot (no startup record; binds on its own OS observation
+   and transport nonce) stays established on every platform. The test's name no longer claims an unconditional
+   settle ("…the duty aggregate matches the measured platform bounds"). No production change.
+- **Version reading (§26.7 item 2/5): NO version bump** — one new named emitter refusal existed since §28.9 (its
+  trigger widened to the retain-and-compare invariant without changing the label or any persisted field), one new
+  named join refusal label (`spawn-witness-marker-generation-unbound`) for the witness route's own negative
+  outcome, and one new input-only expected field on the offline establishment predicate — the same class of change
+  as the previously registered `spawn-witness-*` labels, which rode the task-3 v2 registration's label list
+  without a further bump.
+- **Prior-counterexample re-run (this round's own evidence, by name, all ✔):** the §28.9 upper-bound regression
+  (marker `100000000` > daemon read refuses), the §28.9 message-class latch sequence (V1→V2 mid-double-read,
+  childReads 2, immediate latch), the §28.9 marker-time predicate pins (cited cross-second schedule establishes;
+  bound-window marker refuses), both §28.8 writer-bound regressions (`spawn-witness-capture-before-writer`, both
+  hops), and the REAL full-chain positive (both-witness-file wait, runtime attribution `true`, derived duty
+  aggregate, `ancestryRefusal` undefined).
+- **Gates on the amended bytes (executed 2026-11-04):** focused `same-second-completion` = **35 tests, 35 pass,
+  0 fail** (33 prior + the retain-and-compare regression and the stale-marker regression, all by name visible);
+  `node --test tests/test-selection.test.mjs` = **6/6, exit 0**; `npm run lint` exit 0; `npm run typecheck`
+  exit 0; `git diff --check` exit 0; full local-process entry SOLO count recorded in the battery line below.
+- **Battery line (the runs §28.10's gate entry awaits):** full local-process entry, SOLO run on the amended bytes =
+  **329 tests, 329 pass, 0 fail, 0 skipped, exit 0** (the prior 327 + the two round-4 regressions; no flake, no
+  concurrency); `node --test tests/test-selection.test.mjs` = **6/6, exit 0**.
+
+### 28.11 Codex-review round 5 corrections (2026-11-04, two findings; §28.10 style; the round-4 bounds kept intact; third strike on the retained-identity family resolved structurally)
+
+- **The two failed attempts named (superseded, kept honest):** attempt 1 (§28.9) latched ONLY the mid-double-read
+  `'identity changed'` MESSAGE class and bounded the marker against the DAEMON's times alone; attempt 2 (§28.10)
+  retained observed identities only from SUCCESSFUL inspections and from the error classes that already carried
+  `observedStartIdentity` (ordinary I/O failures attach none, so a retained V1 was still lost across them) and bound
+  the marker by capture-window proximity (`boundary − markerTime ≤ LINUX_BTIME_UNCERTAINTY_MS`), which a replacement
+  child starting INSIDE that window satisfies — proximity never bound the generations.
+- **The invariant now (one coherent statement per family):** (i) UNIFORM IDENTITY RIDE + POLL-SCOPED RETAINED SET —
+  every inspector failure thrown AFTER the first read verified an occupant now carries that observed start identity on
+  the error (the round-24 window-closed class, the environment query's and the second identity read's ORDINARY I/O
+  errors, the mid-double-read and ppid-reparenting classes alike — evidence preservation on the existing error shape,
+  never a reclassification: each failure keeps its own message class; the ride's only consumer comparisons are the
+  already-registered carried-identity rules), and the emitter retains every observation in a poll-scoped set
+  (`retainedChildIdentities`) that NEVER resets between attempts for the whole bounded poll lifetime — successful
+  inspections retain their identity before terminating the poll, benign identity-less attempts retain nothing and
+  reset nothing, and ANY later observation contradicting ANY retained observation latches
+  `spawn-witness-child-generation-changed` immediately (the structurally simplest correct form for the family's third
+  strike: refusal on any contradiction, not a third error-classification patch). (ii) POSITIVE MARKER-TO-GENERATION
+  BINDING (design (a) CAPTURE-AND-BIND) — the witness record v2 gains the additive `childOsStartInstantMs` member:
+  the witnessed child's numeric OS start instant derived at capture from the SAME start identity the boundary double
+  read verified (darwin: the module's field-explicit UTC parse of the captured lstart text — a pure derivation of
+  already-captured evidence, NO new OS query; Linux: the module's existing cached boot-clock resolution, surfaced as
+  an optional `linuxClock` emitter input for seam symmetry), and the join's marker establishment now REQUIRES the
+  marker ∈ [childOsStartInstantMs, the daemon's identity read]: the lower endpoint refuses
+  `spawn-witness-marker-generation-unbound` when the marker demonstrably precedes the witnessed child's OS creation
+  LOWER bound, the upper endpoint is the hop-level terminal later-than-read refusal (§28.9, kept), and the round-4
+  proximity conjunct is RETAINED as one refusal conjunct among several (never alone sufficient — no
+  proximity-only establishment path remains).
+- **Finding 1 [P2 — marker cannot be generation-bound by proximity] — design adjudication: (a) CAPTURE-AND-BIND, not
+  (b) FAIL-CLOSED.** Why (a) is available: the finding's precondition ("if the inspector's double-read already
+  produces it numerically at capture time — do NOT add a new OS query pattern") is met in the honest sense — the
+  double read produces the child's OS start IDENTITY (the lstart text / proc ticks), and the module's OWN
+  `resolveObservationStartInstantMs` converts that captured identity to the numeric instant (a pure parse on darwin;
+  the already-registered cached boot-clock seam on Linux), so the record gains the number without any new observation
+  pattern; design (b)'s removal of the marker-derived establishment was therefore unnecessary and would have
+  forfeited lawful real-chain upgrades (§26.7 item 3: valid new routes may establish previously unknown facts; the
+  missing-witness clause only forbids flipping absent facts). Contract basis: §26.7 item 3 (the required witnesses
+  per route (b) — the record must positively bind the child generation the marker is attributed to), item 2 (the
+  additive persisted member is a version event) and item 5 (contradictory facts refuse). **The strict lower endpoint
+  (the one deliberate refinement of the proposed interval [start − uniform uncertainty, read]):** the OS start
+  instant is the registered whole-second/proc LOWER bound (true creation ∈ [reported, reported + the uniform
+  uncertainty]) and the marker's mtime is the SAME kernel epoch wall clock, so "the marker cannot precede the child's
+  existence" is exactly `markerEpochMs ≥ childOsStartInstantMs` — subtracting the 1000-ms uniform uncertainty on THIS
+  comparison would re-admit the finding's own counterexample (marker 1900 ≥ 2000 − 1000), so the strict comparison IS
+  the honest derivation; the uncertainty stays consumed where it belongs (the hop lifetime orderings and the
+  proximity conjunct). A record that cannot supply the binding — a retained v1 replay record (the member genuinely
+  absent under its recorded version) or a v2 record whose parse resolved to the named-absent null — never upgrades
+  the marker path: new runs never fall back to the permissive old contract (every new record carries the member),
+  and replay stays refused, which is the honest outcome.
+- **"If a PID is reused within this one-second window, a stale marker still establishes the transport hop…" (P2),
+  FIXED by the positive binding.** **RED** recorded on the pre-fix bytes through the REAL join seam, the reviewer's
+  exact schedule (daemon start/read 1000/3000, marker 1900, witnessed replacement child floor 2000, boundary
+  2100/write 2110 — every previously checked bound holds and the round-4 proximity passes at 200 ≤ 1000): verdict
+  `['established', null]` with `witnessClass: 'spawn-boundary-capture'` on the retained v1 record shape. **GREEN
+  after the fix:** the same schedule refuses `['unestablished', 'spawn-witness-marker-generation-unbound']` with the
+  v2 record (`childOsStartInstantMs: 2000`), the named-absent-null record refuses identically, and the v1 replay
+  record refuses identically (the version polarity); the POSITIVE control (`childOsStartInstantMs: 1000` — the
+  witnessed child existed before its own startup write) still upgrades with its `witnessClass`. The two §28.10/§28.9
+  positives that consumed the old shape were RE-DERIVED honestly, not weakened: the route-(b) daemon-boundary
+  positive and the fresh-marker positive now ride v2 records whose numeric instant precedes the marker (both still
+  establish with `spawn-boundary-capture`), each with the v1-replay refusal of the SAME schedule pinned beside it.
+- **Finding 2 [P2 — retained identity lost across ordinary inspection failures] — FIXED by the uniform ride plus the
+  never-resetting poll-scoped set.** **RED** recorded on the pre-fix bytes through the REAL emitter with the round-24
+  OS seams, the reviewer's exact sequence (attempt 1's first read observes V1, the SECOND identity read throws an
+  ORDINARY I/O error carrying no identity, attempt 2 verifies the replacement V2): verdict `['established', null]`
+  with the successor's `S-CHILD-V2` riding the written record after four child reads. **GREEN after the fix:**
+  `['unestablished', 'spawn-witness-child-generation-changed']` at the retained-V1-vs-success-V2 comparison
+  (childReads 4), no witness file; and the task's three-attempt sequence (V1 errored → an identity-less BENIGN
+  attempt → V2) latches identically with childReads 5 — the set survived the attempt that carried no identity
+  evidence at all, which is the invariant the finding demanded ("must persist ACROSS attempts for the whole poll
+  lifetime").
+- **Version reading (§26.7 item 2): VERSION EVENT — `LOCAL_PROCESS_OBSERVATION_VERSION` 2→3 (the task-mandated
+  additive persisted-shape member) AND the owning record version `SPAWN_ANCESTRY_WITNESS_VERSION` 1→2** (the record's
+  closed shape changes; a v1-numbered record must keep meaning exactly its recorded shape). Admission replays each
+  record under its RECORDED closed shape (v1: the pre-round-5 14-key identity, member genuinely absent — never
+  fabricated; v2: the 15-key identity with the number or the named-absent null; any other version shape-invalid),
+  old v1 verdicts stay byte-stable, and no recorded verdict is silently reclassified — the v1 marker-path refusal is
+  a NEW named condition on the SAME label's semantic (the marker's generation is unbindable from that record), pinned
+  at the route-(b) polarity assertion.
+- **One observation-layer polarity strengthened and pinned, not regressed:** the ppid-reparenting error now carries
+  its (identity-consistent) observed identity; a reparenting whose observed identity EQUALS the bound generation
+  stays the non-deciding generic torn class (the physical reparenting shape, the pinned test re-seamed
+  generation-consistently — its old seam fabricated a bound-generation mismatch that never occurs physically), while
+  a reparenting whose observed identity demonstrably DIFFERS from the bound generation latches the reuse class (the
+  carried-identity rule, round-27/30/31, class-independent — a reparented REPLACEMENT is never credited to the bound
+  generation). Both polarities are pinned in the same test.
+- **Prior-counterexample re-run (all by name on the amended bytes, all ✔):** the §28.9 upper-bound regression (marker
+  `100000000` > daemon read refuses), the §28.9 mid-double-read message-class latch (V1→V2, childReads 2, immediate
+  latch), the §28.10 observed-then-gone retained latch (V1→undefined→V2, childReads 4), the §28.9 cross-second
+  marker-time schedule (both hops establish with NO witness), the §28.10 stale-marker/PID-reuse schedule
+  (T+100-vs-T+2200 refuses), both §28.8 writer-bound regressions (`spawn-witness-capture-before-writer`, daemon and
+  Companion hops), both round-1 route-(b) positives (Companion→daemon hop and daemon→transport hop — re-derived on
+  v2 records, both still positive with `spawn-boundary-capture`), plus the REAL spawn-boundary capture (hop 1) and
+  REAL full-chain (both witnesses, runtime attribution `true`, derived duty aggregate) on REAL emitted v2 records
+  with REAL parsed instants and the REAL marker mtime.
+- **Gates on the amended bytes (executed 2026-11-04):** focused `same-second-completion` = **38 tests, 38 pass,
+  0 fail** (35 prior + the ordinary-failure retention regression, the never-resetting-set regression and the
+  replacement-in-proximity-window regression, all by name visible); `node --test tests/test-selection.test.mjs` =
+  **6/6, exit 0**; `npm run lint` exit 0; `npm run typecheck` exit 0; `git diff --check` exit 0.
+- **Battery line (the runs §28.11's gate entry awaits):** full local-process entry, SOLO run on the amended bytes =
+  **332 tests, 332 pass, 0 fail, 0 skipped, exit 0** (the prior 329 + the three round-5 regressions; no flake, no
+  concurrency; the one interim SOLO failure was the reparenting seam re-derivation above, fixed before this count).
+
+### 28.12 Codex-review round 6 corrections (2026-11-04, two findings; §28.11 style; the ROOT marker adjudication and the guarded resolver; §28.11's strict-floor lower endpoint superseded on the marker family)
+
+- **Finding 1 [P2 — same-second marker generations must stay ambiguous] — FIXED by the ROOT adjudication, adopted
+  exactly as ruled: `markerTime ≥ childOsStartInstantMs + LINUX_BTIME_UNCERTAINTY_MS`.** Why the round-5 strict
+  lower endpoint fell short: with a whole-second creation floor, temporal compatibility (marker ≥ floor) proves
+  NOTHING about generation identity — when a predecessor and its same-pid replacements all report the SAME floor T,
+  a predecessor marker anywhere in [T, T+1000) is temporally compatible with a replacement that did not exist when
+  the marker was written. The only sound positive binding under the registered coarseness is the marker postdating
+  the child's ENTIRE possible creation window [floor, floor+1000): the establishment predicate
+  (local-process-observation.mjs:2352-2393) now refuses a marker BELOW the witnessed floor with the carried
+  `spawn-witness-marker-generation-unbound` (demonstrable precedence) and a marker INSIDE the window with the FRESH
+  label `spawn-witness-marker-generation-ambiguous` (the §26.7 item-5 no-fold discipline — the ambiguous case is a
+  new negative outcome, not a widening of the old one), and upgrades only when the marker postdates the whole window
+  and rides inside the daemon's verified lifetime. The round-4 proximity conjunct and the hop-level upper bound are
+  retained; v1-replay and named-absent records keep refusing `…-unbound`. Coarse-vs-coarse honest: the ambiguity is
+  refused, never resolved as true. **Version reading (§26.7 item 2/5, the §28.10 precedent): NO version bump** — one
+  fresh named refusal label for the witness route's own negative outcome and one guarded catch, no persisted-shape
+  change.
+- **"When parent and child PIDs are reused within one Darwin lstart second, this check still credits a stale
+  marker…" (P2), FIXED by the ambiguous-band refusal.** **RED** recorded on the pre-round-6 bytes through the REAL
+  join seam with the reviewer's EXACT schedule (predecessor marker T+100 = 1100; replacements actually started T+200
+  and T+400, both reporting creation floor T = 1000; witness capture T+500 = 1500; parent read T+700 = 1700): verdict
+  `['established', null]` with `witnessClass: 'spawn-boundary-capture'` although neither replacement existed when the
+  marker was written. **GREEN after the fix:** `['unestablished', 'spawn-witness-marker-generation-ambiguous']` —
+  pinned twice by name (the schedule matrix and the isolated reviewer repro at
+  tests/shell-wait-local-process.test.mjs:12306/:12447). **The POSITIVE side pinned:** a marker postdating the
+  child's entire window (2050 ≥ 1000 + 1000) inside the daemon's verified lifetime upgrades through the witness route
+  with its `witnessClass`, and on a lawful schedule the post-creation-second marker (2900) establishes on the
+  registered marker-time arithmetic with NO witness member riding.
+- **Honest real-chain consequences (registered plainly, per the adjudication's instruction):** the real chain's
+  transport marker is written at the transport's birth — INSIDE its first possible second — so the daemon→transport
+  hop's MARKER-UPGRADE path is honestly unestablishable for same-second chains under this rule; the upgrade requires
+  a POST-CREATION-SECOND marker (or the daemon arithmetic establishing outright when the daemon and transport birth
+  seconds differ, which the registered marker-time predicate already credits without any witness). **Positive
+  expectations re-derived, never weakened:** (i) the §28.10 stale-marker positive pin ("a marker riding inside the
+  witnessed capture window's uncertainty neighborhood still upgrades") is SUPERSEDED — that exact schedule (marker
+  1900, floor 1000) now refuses `…-ambiguous` (tests/shell-wait-local-process.test.mjs:12271-12297) with the
+  post-creation-second positive (2950) pinned beside it; (ii) the route-(b) daemon-boundary positive is re-derived
+  (tests/shell-wait-local-process.test.mjs:11924): the same-second marker schedule (2500, floor 1800) honestly
+  refuses `…-ambiguous`, the post-creation-second schedule (2950 against a read extended to 3000) establishes, and
+  the v1-replay polarity (`…-unbound` for the member-absent record) is carried; (iii) the REAL full-chain test's
+  expectations are now DERIVED from the registered marker-time predicate instead of asserted outright — attribution
+  equals `daemonStart + 1000 ≤ markerEpochMs ≤ daemonRead` (hop 1 always establishes on the real chain through its
+  invocation witness or the cross-second arithmetic), an unattributed composition asserts
+  `['unestablished', 'spawn-witness-marker-generation-ambiguous']` on hop 2 (marker within the read), and the duty
+  aggregate's `settled`/`ancestryRefusal` follow the derived attribution (`ancestry-hops-unattributed` rides exactly
+  the unattributed compositions) — tests/shell-wait-local-process.test.mjs:13064-13107. No witness reinterpretation,
+  no rule weakening; the witness's OTHER positive bindings (parent generation, role, argv/scope, nonce, capture
+  relationship) are untouched.
+- **Finding 2 [P2 — uncaught Linux start-instant resolution failure in the emitter] — FIXED by the
+  guarded-resolver pattern (the observeLocalProcess mirror), preserving the named-absent null.** Adjudication per
+  §26.7: item 5's "absent facts stay absent" and item 3's missing-witness clause make the null the honest state — a
+  masked /proc/stat arriving AFTER the child's identity verified is an unrelated host masking condition, and
+  discarding the WHOLE capture (a named unestablished verdict) would forfeit the witness's positive bindings over
+  it; the join's marker path already refuses the named-absent member downstream, so the refusal is not lost.
+  **RED** recorded on the pre-fix bytes through the REAL emitter with the round-24 OS seams (platform linux, ps seam
+  reporting `proc:12345` for the verified child, `linuxClock` a rejecting boot-clock promise — the masked
+  /proc/stat): the emitter's await REJECTED and the caller received neither a named verdict nor the nullable instant.
+  **GREEN after the fix** (local-process-observation.mjs:1226-1241): the catch preserves `childOsStartInstantMs:
+  null`, the verdict is `['established', null]` with the member null and the witness record written
+  (tests/shell-wait-local-process.test.mjs:13402).
+- **Prior-counterexample re-run (all by name on the amended bytes, all ✔):** the §28.9 marker-`100000000` upper
+  bound; the round-5 1900-vs-2000 reuse (`…-unbound`); both §28.8 capture-before-writer hops; the §28.9
+  mid-double-read message-class latch (childReads 2); the §28.10 observed-then-gone latch (childReads 4); the §28.5
+  ordinary-I/O retention latch and the never-resetting-set latch (childReads 4/5); the §28.9 cross-second
+  marker-time schedule (both hops establish with NO witness); the §28.10 stale-marker/PID-reuse schedule (proximity
+  conjunct fires first, label unchanged); both round-1 route-(b) positives (hop 1 unchanged; the daemon boundary
+  re-derived per above); both REAL chain tests under the derived expectations.
+- **Gates on the amended bytes (executed 2026-11-04):** focused `same-second-completion` = **40 tests, 40 pass,
+  0 fail** (38 prior + the round-6 ambiguous-band matrix and the isolated reviewer-repro pin, plus the guarded-resolver
+  emitter test, net of the two honestly re-derived rewrites — all by name visible); `node --test
+  tests/test-selection.test.mjs` = **6/6, exit 0**; `npm run lint` exit 0; `npm run typecheck` exit 0;
+  `git diff --check` exit 0.
+- **Battery line (the runs §28.12's gate entry awaits):** full local-process entry, SOLO run on the amended bytes =
+  **334 tests, 334 pass, 0 fail, 0 skipped, exit 0** (the prior 332 + the two round-6 net-new tests — the isolated
+  reviewer-repro pin and the guarded-resolver emitter test; the other round-6 changes were honest re-derivations of
+  existing tests, not additions; no flake, no concurrency).
+
+### 28.13 Codex-review round 7 correction (2026-11-04, one finding; §28.12 style; the round-6 marker rule applied SYMMETRICALLY to the parent-side continuity conclusion; add-only)
+
+- **Finding [P2 — ambiguous parent generations in same-second upgrades] — adjudication: the reviewer's option (i),
+  sharpened with the one positive disambiguator the coarse seams afford.** Route (c) was re-verified NAMED UNAVAILABLE
+  (§28.1: "no exact-PID generation surface exists through the existing local reads"), so no higher-resolution
+  generation evidence exists to resolve the ambiguity, and the equality conjunct at the cited lines
+  (record writerPid/writerStartIdentity vs the READ-TIME parent endpoint, local-process-observation.mjs:2288-2291)
+  is — under the whole-second darwin lstart floor — compatible with same-generation AND same-second reuse, i.e.
+  fundamentally ambiguous on its own. The witness's causal capture (writer pid == child kernel ppid at the real
+  boundary, writer identity, capture epochs) DOES positively prove that the floor-S process alive at the boundary
+  spawned D; what it cannot prove alone is that the READ-TIME parent endpoint is that same generation. The
+  DISAMBIGUATING evidence is the witness's own write instant against the read-time parent's ENTIRE possible creation
+  window: the writer is provably alive at `firstWriteEpochMs`, so any same-floor reuse must be born after the
+  writer's death — which postdates the write — and would therefore carry a LATER floor, contradicting the equality
+  conjunct. Hence the establishment predicate (local-process-observation.mjs:2394-2429) now refuses
+  **`spawn-witness-parent-generation-ambiguous`** (the §26.7 item-5 fresh-label discipline; the round-6 marker rule
+  applied symmetrically — no establishment conclusion may exceed what the coarse facts prove) when the witness write
+  lies INSIDE `[writerOsStartInstant, writerOsStartInstant + LINUX_BTIME_UNCERTAINTY_MS)`, ESTABLISHES with the
+  continuity PROVEN when the write postdates the whole window, keeps `spawn-witness-writer-foreign` for
+  demonstrably-different identities, and refuses `spawn-witness-capture-unbounded` when the read-time parent's
+  creation floor is absent entirely (the continuity conclusion cannot even be placed — absent facts stay absent,
+  §26.7 item 3/5). This is option (i) plus the reviewer's own first clause ("require generation-disambiguating
+  evidence"): the write-instant bound IS that evidence where it exists; where it does not, the verdict is preserved
+  unestablished. Contract basis: §26.7 item 3 (a missing witness never flips; the route proves only what it
+  captures), item 4 (cross-ordering credit names the two instants and the derivation — writer-alive-at-write vs the
+  read-time floor's whole-second window, same kernel epoch wall clock), item 5 (contradictory facts refuse; absent
+  facts stay absent; the fresh label never folds into `spawn-witness-writer-foreign`). **Version reading: NO version
+  bump** — one fresh named refusal for the route's own negative outcome, no persisted-shape change (§28.10/§28.12
+  precedent).
+- **"On Darwin, startIdentity is whole-second ps lstart, so a same-scope process reusing the Companion PID within
+  that second passes this equality without having written the witness…" (P2), FIXED by the parent-continuity
+  binding.** **RED** recorded on the pre-round-7 bytes through the REAL join seam with the reviewer's EXACT schedule
+  (P0 pid 5100/floor 1000 spawns D and writes the witness at T+100 — boundary 1100, write 1110; same-scope P1 takes
+  the pid at T+400 reporting the SAME floor and identity string; endpoint read T+700 = 1700; D's capture-time parent
+  PID supplied): the join returned `['established', null]` with `witnessClass: 'spawn-boundary-capture'` — it
+  established P1→D although D belonged to P0. **GREEN after the fix:**
+  `['unestablished', 'spawn-witness-parent-generation-ambiguous']` (tests/shell-wait-local-process.test.mjs:12490).
+  **The POSITIVE side pinned in the same test:** the identical schedule with the witness written OUTSIDE the
+  parent's first possible second (write 2510 ≥ floor 1000 + 1000, inside the extended read window 2700) PROVES
+  continuity and establishes with its `witnessClass` — the late-writing-parent chain stays establishable. The
+  round-6 marker-matrix positive schedule was adjusted for the same reason (the daemon witness now writes at
+  2850/2860 against a 2900 read, satisfying BOTH the marker binding and the parent-continuity binding) — the pinned
+  discrimination remains the marker band.
+- **Honest consequence statement (the narrowing is the deliverable):** for SAME-SECOND chains — the carried §26.6
+  defect shape — route (b) can no longer establish the PARENT-GENERATION continuity conclusion: the real parent
+  writes its boundary witness within its own first possible second, the writer-vs-read-time-parent comparison is
+  ambiguous under the whole-second floor, and the hop honestly refuses `spawn-witness-parent-generation-ambiguous`;
+  the same applies to the daemon-side witness on the transport hop (though there the round-6 marker-ambiguous
+  binding fires first whenever the witness route engages at all). What ROUTE (B) STILL PROVES for same-second
+  chains: everything except the parent-continuity conclusion — the child-generation capture binding (the witnessed
+  child is the generation the join binds), the capture-time kernel parent link (writer pid == child ppid at the
+  boundary), the child's own scope/transport nonce, the role/scope bindings, and the capture-inside-parent-presence
+  bounds — and the hop's arithmetic establishment when the endpoint reads are late enough for the registered
+  lifetime predicates (`generation-lifetime-unverifiable` never reopens). For CROSS-SECOND chains, hop arithmetic
+  (and, where the writer provably wrote after its own first second, the witness route) establishes as before. The
+  facts that remain UNSUPPORTED for same-second chains and the capability whose absence prevents a safe correction
+  are registered plainly: an exact-PID generation surface (route (c), §28.1's named-unavailable registration) is
+  the ONLY evidence that could distinguish a same-scope same-second pid reuse from the witnessed writer; until such
+  a mechanism is discovered and justified exact per §26.6 route (c), the parent-continuity conclusion for
+  same-second chains stays an open proof obligation, honestly refused rather than credited.
+- **Re-derived tests (honest outcomes, never weakened):** (i) the REAL spawn-boundary capture (hop 1) test now
+  DERIVES its expectation from the measured instants (the witness upgrades only when its write postdates the real
+  parent's whole creation window; a fast real chain asserts the ambiguous refusal with the measured floor/write
+  instants in the message) — tests/shell-wait-local-process.test.mjs:13020-13052; (ii) the REAL full-chain test's
+  attribution equals `expectedHop1Established && transportDemonstrablyEstablished` with `expectedHop1Established =
+  !pair1.boundRefused || invocationWitnessContinuityUsable`, and an unestablished hop 1 asserts the ambiguous label
+  with the measured instants — tests/shell-wait-local-process.test.mjs:13160-13187; (iii) the round-6 matrix
+  positive schedule (the one test the new binding legitimately re-orders) now writes the daemon's witness at
+  2850/2860 against a 2900 read so the MARKER band remains the pinned discrimination. All pinned refusal labels from
+  earlier rounds are unchanged (the new check sits AFTER the marker binding in the predicate, so the round-6 marker
+  pins fire exactly as before).
+- **Prior-counterexample re-run (all by name on the amended bytes, all ✔):** the §28.9 marker-`100000000` upper
+  bound; the round-5 1900-vs-2000 reuse (`…-unbound`); the round-6 same-second marker ambiguity (band matrix and the
+  isolated T+100 repro); both §28.8 capture-before-writer hops; the §28.9 mid-double-read latch; the §28.10
+  observed-then-gone latch; the §28.5 ordinary-I/O and never-resetting retained-set latches; the §28.9 cross-second
+  marker-time schedule; the §28.10 stale-marker/PID-reuse schedule; the ground-truth no-witness same-second refusal;
+  the §28.10 same-second PID-reuse-child-foreign, outside-presence, coarse-contradiction, foreign-scope, wrong-role
+  and the three join-refusal branch pins (writer-foreign/parent-foreign/nonce-mismatch — the demonstrable family,
+  unchanged); both round-1 route-(b) positives (hop 1's synthetic late-write schedule stays positive; the daemon
+  boundary test's post-creation-second schedule adjusted to a late-writing daemon witness); both REAL chain tests
+  under the derived expectations.
+- **Gates on the amended bytes (executed 2026-11-04):** focused `same-second-completion` = **41 tests, 41 pass,
+  0 fail** (40 prior + the P0/P1 parent-continuity regression, by name visible); `node --test
+  tests/test-selection.test.mjs` = **6/6, exit 0**; `npm run lint` exit 0; `npm run typecheck` exit 0;
+  `git diff --check` exit 0.
+- **Battery line (the runs §28.13's gate entry awaits):** full local-process entry, SOLO run on the amended bytes =
+  **335 tests, 335 pass, 0 fail, 0 skipped, exit 0** (the prior 334 + the round-7 parent-continuity regression; no
+  flake, no concurrency).
+
+### 28.14 Codex-review round 8 corrections (2026-11-04, two findings; §28.13 style; family convergence — the child-side continuity binding closes the generation-ambiguity family; add-only)
+
+- **Finding 1 [P2 — child generation not disambiguated before upgrade] — FIXED by the child-continuity binding,
+  with the suggested nonce disambiguator examined and REJECTED on the frozen contract's own terms.** Why the nonce is
+  NOT a sound generation disambiguator: §26.6 freezes the nonce as a SCOPE binding, never a generation authority ("no
+  fabricated nonce authority (the nonce binds scope, never role)"; "a reused PID is a different process; a fresh
+  start identity is the discriminator") — and the reviewer's own schedule requires the replacement to be SAME-SCOPE
+  (an out-of-scope replacement cannot reach the predicate at all: the endpoint's scope check and the witness's
+  childNonce equality at the join refuse it first), so every replacement that reaches the child-equality conjunct
+  carries the SAME nonce by construction — a nonce match proves scope, not generation, and a nonce mismatch is
+  already refused elsewhere; comparing nonces therefore adds no discrimination and crediting a same-scope
+  same-second respawn as the witnessed generation on a nonce match would violate exactly the freeze. The
+  disambiguator instead mirrors the parent fix (codex round 7) with the child's own provable-alive instant: the
+  witnessed child is positively verified alive at the boundary (the writer's OS-verified ingress double read), so
+  `boundaryEpochMs ≥ childOsStartInstant + LINUX_BTIME_UNCERTAINTY_MS` PROVES the read-time occupant is the
+  witnessed generation (any same-floor reuse would be born after the witnessed child's death — which postdates the
+  boundary — and would carry a LATER floor, contradicting the identity-equality conjunct), while a boundary INSIDE
+  the child's first possible second refuses the fresh label **`spawn-witness-child-generation-ambiguous`**
+  (§26.7 item 5 no-fold; route (c) stays NAMED UNAVAILABLE per §28.1, so the ambiguity cannot be resolved). The
+  binding consumes only hops that bind a READ-TIME child endpoint (`childOsStartInstant` supplied — the
+  Companion→daemon hop); the daemon→transport hop binds the witness record's own captured child generation and has
+  no read-time comparison to contradict. Demonstrably-different child identities keep `spawn-witness-child-foreign`.
+  **Version reading: NO version bump** — one fresh named refusal, no persisted-shape change (§28.10/§28.12/§28.13
+  precedent).
+- **"On Darwin, a same-scope replacement can reuse the daemon PID within the same lstart second and pass this
+  identity equality…" (P2), FIXED by the child-continuity binding (local-process-observation.mjs:2432-2459).**
+  **RED** recorded on the pre-round-8 bytes through the REAL join seam with the reviewer's EXACT schedule (parent
+  floor T−2000 = 1000, daemon floor T = 3000, witness boundary/write T+100 = 3100/3110, parent read T+700 = 3700,
+  daemon read T+800 = 3800, `daemonCaptureParentPid` supplied): the round-7 parent-continuity binding PASSED (the
+  parent wrote outside its own first second — exactly why the child-side check is required) and the join returned
+  `['established', null]` with `witnessClass: 'spawn-boundary-capture'`, upgrading the hop although the read-time
+  occupant may be a different-parent replacement. **GREEN after the fix:**
+  `['unestablished', 'spawn-witness-child-generation-ambiguous']` (tests/shell-wait-local-process.test.mjs:12573).
+  **The POSITIVE side pinned in the same test:** a witnessed daemon born inside the Companion's first possible
+  second (floor 1500) with the boundary capture POSTDATING its entire possible creation window (2600 ≥ 1500 + 1000)
+  proves the read-time occupant is the witnessed generation and establishes through the witness route with its
+  `witnessClass`.
+- **Finding 2 [P2 — real-chain test assertion on wrong predicate] — FIXED test-side by conditioning the hop-2
+  refusal assertion on the TRANSPORT hop's own predicate.** **The defect:** the REAL full-chain test required hop 2
+  to be unestablished whenever the COMBINED attribution was false — but attribution can be false solely from hop 1
+  (the parent-continuity refusal) while a transport marker written just after the daemon's second boundary
+  legitimately establishes hop 2, so a legitimate scheduling outcome failed the test. **The fix**
+  (tests/shell-wait-local-process.test.mjs:13343-13354): hop 2 asserts `['established', null]` when its own
+  registered marker-time predicate holds (`transportDemonstrablyEstablished`) and the named ambiguous/later-than-read
+  refusal otherwise. **BOTH scheduling outcomes pinned:** (a) at the join level by name
+  (tests/shell-wait-local-process.test.mjs:12642 "scheduling independence"): hop 1 refuses
+  `spawn-witness-parent-generation-ambiguous` while hop 2 establishes on the post-window marker — attribution false
+  SOLELY from hop 1 with hop 2 riding its own establishment; (b) the same schedule with a same-second marker keeps
+  hop 2 refused (`generation-lifetime-unverifiable` — the bound window stays witness-resolvable and no witness
+  upgrades it); and on the REAL chain the derived conditional now admits whichever scheduling the measured instants
+  produce.
+- **Honest consequence statement (the generation-ambiguity family is now CLOSED symmetric):** every
+  read-time-vs-captured generation comparison in the establishment predicate is bound by the same rule — a
+  coarse-floor identity equality proves temporal compatibility, never generation identity; continuity is credited
+  ONLY when a provable-alive instant (the witness write for the parent, the boundary capture for the child) or a
+  marker write postdates the compared generation's ENTIRE possible creation window, and every ambiguous band refuses
+  with its own named label (`spawn-witness-parent-generation-ambiguous`,
+  `spawn-witness-child-generation-ambiguous`, `spawn-witness-marker-generation-ambiguous`). For same-second chains
+  the honest consequence is unchanged from §28.13 and now complete: route (b) proves the child-generation capture
+  binding ONLY when the boundary capture postdates the child's whole first second (atypical on a fast chain — the
+  usual outcome is the named ambiguous refusal), so same-second ancestry attribution remains an open proof
+  obligation whose only possible correction is a route-(c) exact-PID generation surface (§28.1 named unavailable).
+  No rule weakening; no ambiguity resolved as true.
+- **Re-derived tests (honest outcomes, never weakened):** the route-(b) hop-1 positive, the precise-instants-absent
+  positive and the reparenting-preserved positive now write their witnesses at 2850/2860 against reads extended to
+  3000/3200 — schedules where BOTH continuity conclusions are proven, so each test still pins exactly what its name
+  claims (the epoch-window establishment, the capture-time reparenting link); the round-7 test pins survive
+  unchanged (the parent binding fires before the child binding, so the fast-chain label is the parent's).
+- **Prior-counterexample re-run (all by name on the amended bytes, all ✔ — 44 pins):** the §28.9 marker-`100000000`
+  upper bound; the round-5 1900-vs-2000 reuse; the round-6 same-second marker ambiguity (band matrix + the isolated
+  T+100 repro); the round-7 P0/P1 parent-reuse schedule and its late-write positive; the round-8 daemon-reuse
+  schedule and its proven-child positive; both §28.8 capture-before-writer hops; the §28.9 mid-double-read latch;
+  the §28.10 observed-then-gone latch; the §28.5 ordinary-I/O and never-resetting retained-set latches; the §28.9
+  cross-second marker-time schedule; the §28.10 stale-marker/PID-reuse schedule; the ground-truth no-witness
+  refusal; the §28.10 same-second PID-reuse-child-foreign, outside-presence, coarse-contradiction,
+  foreign-scope/wrong-role and the three join-refusal branch pins; the route-(b) hop-1/daemon-boundary positives
+  (re-derived); the scheduling-independence pins (both outcomes); the precise-instants-absent and
+  reparenting-preserved positives; the REAL chains; the observation-layer reparenting polarity (the round-5 ride).
+- **Gates on the amended bytes (executed 2026-11-04):** focused `same-second-completion` = **43 tests, 43 pass,
+  0 fail** (41 prior + the daemon-reuse regression and the scheduling-independence regression, by name visible);
+  `node --test tests/test-selection.test.mjs` = **6/6, exit 0**; `npm run lint` exit 0; `npm run typecheck` exit 0;
+  `git diff --check` exit 0.
+- **Battery line (the runs §28.14's gate entry awaits):** full local-process entry, SOLO run on the amended bytes =
+  **337 tests, 337 pass, 0 fail, 0 skipped, exit 0** (the prior 335 + the two round-8 regressions — the
+  daemon-reuse child-continuity pin and the scheduling-independence pin; no flake, no concurrency).
+
+### 28.15 Codex-review round 9 corrections (2026-11-04, three findings; §28.14 style; completions of the child-continuity invariant — read ordering, timestamp provenance, and the real-chain expectations; add-only)
+
+- **Finding 1 [P2 — child continuity proof lacks endpoint-read ordering] — FIXED by the ordering conjunct, adopted
+  per the reviewer's preferred option.** Why: the child-continuity comparison is witness-capture-vs-READ-TIME
+  occupant, so the proof's own structure ASSUMES the endpoint read follows the capture — an endpoint read that
+  PRECEDES the capture may describe a PREDECESSOR (a same-floor occupant that died before the witnessed replacement
+  was captured) and proves nothing about the witnessed generation's survival; the daemon→transport hop has no
+  read-time child comparison at all, so hop 1 (whose endpoint IS the read-time daemon) takes the ordering. The
+  establishment predicate (local-process-observation.mjs:2462-2493) now requires BOTH conjuncts of the ONE
+  continuity conclusion — the creation-window bound (round 8: `boundaryEpochMs ≥ childOsStartInstant + 1000`) AND
+  the read ordering (`childReadEpochMs ≥ boundaryEpochMs`, the call site now passes the daemon's identity-read
+  instant) — and either failing refuses `spawn-witness-child-generation-ambiguous` (the trigger widened, the label
+  kept — the §28.10 precedent; both are the same evidentiary state: the child's continuity ambiguous under the
+  coarse facts). An absent read instant is an unknown ordering, never credited. Contract basis: §26.7 item 3 (the
+  conclusion proves only what the captured facts span — capture AND a later read), item 4 (the compared instants and
+  their orderings are named), item 5 (ambiguous refuses). **Version reading: NO version bump** — a widened trigger
+  on the existing label plus one input-only predicate field (§28.10/§28.12/§28.13/§28.14 precedent).
+- **"On Darwin, an endpoint read at T+100 and a witness capturing a replacement at T+1100 can share the same PID,
+  nonce, and lstart floor T…" (P2), FIXED by the ordering conjunct.** **RED** recorded on the pre-round-9 bytes
+  (verified by running the new test against the pre-fix module) through the REAL join seam with the reviewer's
+  EXACT schedule (endpoint read T+100 = 1100, witness capture of the replacement T+1100 = 2100, same pid/nonce/
+  floor T = 1000, parent read after the witness = 2200 — the round-7 parent binding passes and the round-8 window
+  conjunct passes): the join returned `['established', null]` with `witnessClass: 'spawn-boundary-capture'`.
+  **GREEN after the fix:** `['unestablished', 'spawn-witness-child-generation-ambiguous']`
+  (tests/shell-wait-local-process.test.mjs:12642). **The POSITIVE side pinned in the same test:** the identical
+  schedule with the daemon read FOLLOWING the capture (4200 ≥ 2100) satisfies both conjuncts and establishes with
+  its `witnessClass`. No existing pin changed label: every prior hop-1 witness schedule has its daemon read after
+  the boundary capture, and the daemon→transport hop never consumed the conjunct.
+- **Finding 2 [P2 — child-capture timestamp taken after clock resolution] — FIXED by the timestamp-provenance
+  rule.** The emitter (local-process-observation.mjs:1240-1253) now samples the child-capture instant
+  (`childCaptureEpochMs`) IMMEDIATELY when the ingress double read completes — BEFORE the
+  `resolveObservationStartInstantMs` await — and that instant IS the record's `boundaryEpochMs`. The proof "the
+  witnessed child was alive at the boundary" is anchored to the READ, never to a post-advance clock: a stalling
+  resolution (a masked or slow /proc/stat on Linux) can no longer fabricate a survival instant that a same-tick pid
+  replacement sharing the proc: start identity could ride into an established verdict. The WRITE instants stay
+  sampled at the actual write (the writer's own act, provably after the capture — the record's write ≥ boundary
+  ordering is preserved), and the round-6 guarded-resolver semantics (`childOsStartInstantMs: null` on resolution
+  failure) are unchanged. **RED** recorded on the pre-round-9 bytes through the REAL emitter with the round-24 OS
+  seams (platform linux, a verified `proc:1000` child, a boot-clock promise held for 500 ms before resolving to a
+  floor placed ~700 ms before the actual read — so floor + 1000 sits ~300 ms inside the stall window): pre-fix the
+  record's `boundaryEpochMs − childOsStartInstantMs` crossed the window edge (the fabricated survival instant) and
+  the join consumed it; **GREEN after the fix:** the recorded boundary is the pre-resolution read instant (the
+  provenance assertion) and the admitted record's join honestly refuses
+  `spawn-witness-child-generation-ambiguous` (tests/shell-wait-local-process.test.mjs:13820).
+- **Finding 3 [P2 — real-chain expectations omit child continuity] — FIXED test-side; BOTH expectations now carry
+  the full join predicate.** The REAL hop-1 capture test
+  (tests/shell-wait-local-process.test.mjs:13266-13303) and the REAL full-chain test
+  (tests/shell-wait-local-process.test.mjs:13413-13460) derive their hop-1 expectations from the measured instants
+  with the COMPLETE conjunct set — the write postdating the parent's whole creation window (round 7), the boundary
+  postdating the daemon's whole creation window (round 8), and the daemon read following the boundary (round 9) —
+  assert `established` only when every conjunct holds (or the arithmetic establishes outright), and assert the
+  continuity label of whichever conjunct fails first (the join's decision order: parent before child). **The
+  reviewer's exact legit scheduling is pinned by name**
+  (tests/shell-wait-local-process.test.mjs:12747 "straddle scheduling"): the parent born just before its second
+  boundary (floor 1000), the broker just after it (floor 2000), the witness write satisfying PARENT continuity
+  (2060 ≥ 1000 + 1000) yet INSIDE the child's window (2050 < 2000 + 1000) → the join returns
+  `spawn-witness-child-generation-ambiguous` and the test asserts it as the legitimate outcome, never a failure.
+- **Prior-counterexample re-run (all by name on the amended bytes, all ✔ — 49 named pins):** the §28.9
+  marker-`100000000` upper bound; the round-5 1900-vs-2000 reuse; the round-6 same-second marker ambiguity (band
+  matrix + the isolated T+100 repro); the round-7 P0/P1 parent-reuse schedule and its late-write positive; the
+  round-8 daemon-reuse schedule and its proven-child positive (its daemon read follows the capture — the ordering
+  conjunct holds); the round-9 ordering schedule and its ordered-read positive; the round-9 stall-clock provenance
+  pin; the round-9 straddle scheduling pin; both §28.8 capture-before-writer hops; the §28.9 mid-double-read
+  latch; the §28.10 observed-then-gone latch; the §28.5 ordinary-I/O and never-resetting retained-set latches; the
+  §28.9 cross-second marker-time schedule; the §28.10 stale-marker/PID-reuse schedule; the ground-truth no-witness
+  refusal; the §28.10 same-second PID-reuse-child-foreign, outside-presence, coarse-contradiction,
+  foreign-scope/wrong-role and the three join-refusal branch pins; the route-(b) hop-1/daemon-boundary positives;
+  the scheduling-independence pins (both outcomes); the precise-instants-absent and reparenting-preserved
+  positives; the guarded-resolver named-absent pin; the REAL chains (derived expectations incl. the child
+  predicate); the observation-layer reparenting polarity.
+- **Gates on the amended bytes (executed 2026-11-04):** focused `same-second-completion` = **46 tests, 46 pass,
+  0 fail** (43 prior + the read-ordering regression, the stall-clock provenance regression and the straddle
+  scheduling regression, by name visible); `node --test tests/test-selection.test.mjs` = **6/6, exit 0**;
+  `npm run lint` exit 0; `npm run typecheck` exit 0; `git diff --check` exit 0.
+- **Battery line (the runs §28.15's gate entry awaits):** full local-process entry, SOLO run on the amended bytes =
+  **340 tests, 340 pass, 0 fail, 0 skipped, exit 0** (the prior 337 + the three round-9 regressions — the
+  read-ordering pin, the stall-clock provenance pin and the straddle scheduling pin; no flake, no concurrency).
+
+### 28.16 Codex-review round 10 correction (2026-11-04, one finding; §28.15 style; the LAST conjunct of the generation-continuity invariant — creation order; add-only)
+
+- **Finding [P2 — witnessed children predating their writer accepted] — FIXED by the creation-order binding with a
+  FRESH label.** The broker-boundary path never compared the record's `childOsStartInstantMs` with the writer's OS
+  creation lower bound, so contradictory generation evidence — a witnessed child whose ENTIRE possible creation
+  window [floor, floor + 1000) lies before the writer's creation floor — could establish ancestry the no-witness
+  arithmetic refuses. The establishment predicate (local-process-observation.mjs:2348-2373) now refuses
+  **`spawn-witness-creation-order-inverted`** when `childOsStartInstantMs < writerOsStartInstantMs` (both carried):
+  the kernel's own spawn order is inverted and the writer did not exist when the witnessed child's window closed —
+  it cannot have spawned that child. **Label judgment (per the finding's instruction):** §28.8's registration shows
+  `spawn-witness-capture-before-writer` is specifically the writer-vs-CAPTURE precedence ("a witness stamped before
+  its writer existed" — whole-second lower bound vs the writer's own coarse stamp), NOT the child-vs-writer creation
+  precedence between two generations; the §26.7 item-5 no-fold discipline therefore requires the distinct label.
+  Coarse-vs-coarse demonstrable contradiction, symmetric to the marker/parent rules — never a new precision claim.
+  Consumed whenever both instants are carried (hop 1: the endpoint's daemon floor vs the record's witnessed daemon
+  floor; hop 2: the daemon's floor vs the witnessed transport floor); an absent member stays absent (the
+  v1-replay/named-absent conjuncts upstream). **Version reading: NO version bump** — one fresh named refusal, no
+  persisted-shape change (the standing §28.10-line precedent).
+- **"The broker-boundary path never compares childOsStartInstantMs with the writer's OS creation instant…"
+  (P2), FIXED by the creation-order binding.** **RED** recorded on the pre-round-10 bytes (verified by running the
+  new test against the pre-fix module) through the REAL join seam with the reviewer's EXACT numbers (writer start
+  3000, child start 2000, marker 3100, boundary/write 4050/4060, writer read 4100): every previously checked bound
+  held — the marker postdates the child's window (round 6), the parent continuity holds (round 7), the capture rides
+  inside the writer's read window (round 9's ordering) — and the join returned `['established', null]` with
+  `witnessClass: 'spawn-boundary-capture'`; with a valid first hop the whole chain would have become attributed.
+  **GREEN after the fix:** `['unestablished', 'spawn-witness-creation-order-inverted']`
+  (tests/shell-wait-local-process.test.mjs:12791). **The POSITIVE control pinned in the same test:** a physically
+  consistent schedule (child floor 3100 ≥ writer floor 3000, marker 4150 ≥ child floor + 1000, capture 4150/4160
+  inside the writer's read window 4200) still establishes.
+- **The honest closure this conjunct forces (registered plainly):** on a PHYSICALLY CONSISTENT chain the witnessed
+  child's floor is ≥ the writer's floor, so a marker that passes the child-window binding (marker ≥ child floor +
+  1000) ALWAYS also postdates the writer's own window (marker ≥ writer floor + 1000) — the daemon→transport hop
+  establishes on the registered marker-time ARITHMETIC and the witness route's marker upgrade is unreachable for
+  consistent chains. The round-6 witness-route marker-upgrade positive pin is therefore honestly RE-DERIVED
+  (tests/shell-wait-local-process.test.mjs:12399-12428): its schedule now uses a physically consistent child floor
+  (1800 = the daemon's floor, replacing the pre-round-10 inverted floor 1000 < 1800 that the new conjunct
+  demonstrably refuses) with a post-window marker (2850), and asserts the ARITHMETIC establishment with NO
+  `witnessClass` member — the round-6 analysis's vacuity, now enforced by the predicate. Hop 1's witness route
+  (no marker) is unaffected.
+- **Prior-counterexample re-run (all by name on the amended bytes, all ✔ — 48 named pins):** the §28.9
+  marker-`100000000` upper bound; the round-5 1900-vs-2000 reuse; the round-6 same-second marker ambiguity (band
+  matrix + the isolated T+100 repro, incl. the re-derived physically consistent positive); the round-7 P0/P1
+  parent-reuse schedule and its late-write positive; the round-8 daemon-reuse schedule and its proven-child
+  positive; the round-9 ordering schedule and its ordered-read positive; the round-9 stall-clock provenance pin;
+  the round-9 straddle scheduling pin; the round-10 inverted-order schedule and its consistent-chain positive; both
+  §28.8 capture-before-writer hops; the §28.9 mid-double-read latch; the §28.10 observed-then-gone latch; the §28.5
+  ordinary-I/O and never-resetting retained-set latches; the §28.9 cross-second marker-time schedule; the §28.10
+  stale-marker/PID-reuse schedule; the ground-truth no-witness refusal; the §28.10 same-second
+  PID-reuse-child-foreign, outside-presence, coarse-contradiction, foreign-scope/wrong-role and the three
+  join-refusal branch pins; the route-(b) hop-1/daemon-boundary positives; the scheduling-independence pins (both
+  outcomes); the precise-instants-absent and reparenting-preserved positives; the guarded-resolver named-absent
+  pin; the REAL chains; the observation-layer reparenting polarity. NO prior positive changed outcome — every
+  consistent schedule satisfies the new conjunct trivially; the one re-derived pin is listed above.
+- **Gates on the amended bytes (executed 2026-11-04):** focused `same-second-completion` = **47 tests, 47 pass,
+  0 fail** (46 prior + the inverted-order regression, by name visible); `node --test tests/test-selection.test.mjs`
+  = **6/6, exit 0**; `npm run lint` exit 0; `npm run typecheck` exit 0; `git diff --check` exit 0.
+- **Battery line (the runs §28.16's gate entry awaits):** full local-process entry, SOLO run on the amended bytes =
+  **341 tests, 341 pass, 0 fail, 0 skipped, exit 0** (the prior 340 + the round-10 inverted-order regression; no
+  flake, no concurrency).
+
+### 28.17 Codex-review round 11 corrections (2026-11-04, two findings; §28.16 style; the meta-class rule — completion timestamps prove neither presence nor ordering; add-only)
+
+- **The invariant now (the meta-class rule both findings instantiate):** OBSERVATION instants prove PRESENCE;
+  COLLECTION bounds prove ORDERING; COMPLETION instants prove NEITHER. Every ancestry conclusion consumes the first
+  two, never the third.
+- **Finding 1 [P2 — witness boundary anchored to response completion, not proven presence] — FIXED by surfacing the
+  inspector's final-read TAKEN instant and anchoring the record's boundary on it.** The emitter's
+  `childCaptureEpochMs` (local-process-observation.mjs:1263-1266) was a `Date.now()` sampled when the inspection's
+  PROMISE resolved — the reviewer's sequence (both snapshots observe the original at 1100, the original dies at
+  1200, a same-second pid reuse is born at 1400, the response arrives 2100) recorded a boundary that cleared the
+  creation-window check and established ancestry for a generation the child observation never witnessed. The
+  inspector (local-process-observation.mjs:438-470) now samples `takenEpochMs` immediately BEFORE dispatching its
+  final identity read and surfaces it on the returned identity (the taken instant is the conservative collection
+  bound: the snapshot was taken at or after it); the emitter anchors `boundaryEpochMs` on the surfaced instant
+  (a `Date.now()` fallback remains only for a legacy seam that surfaces none). The survival proof is anchored to a
+  real observation's own collection bound, never to response completion; the write instants stay sampled at the
+  actual write (the writer's own act, provably after the capture), and the round-9 pre-resolution anchoring (the
+  boundary never waits on boot-clock resolution either) composes with this rule — BOTH awaits are now outside the
+  boundary's provenance. **RED** recorded on the pre-round-11 bytes (verified by running the new test against the
+  pre-fix module) through the REAL emitter with a DELAYED-RESOLUTION seam (both child snapshots taken at their
+  dispatch instants, each response arriving one full 1500 ms delay later): pre-fix the record's boundaryEpochMs
+  landed at RESPONSE ARRIVAL (≥ emitStart + 1.9× the delay) and crossed the child's creation-window edge;
+  **GREEN after the fix:** the boundary is the TAKEN instant (within [emitStart + 0.6×, emitStart + 1.4×] the
+  delay), the write still postdates it by the second read's response delay, and the admitted record's join refuses
+  `spawn-witness-child-generation-ambiguous` with the child floor placed so floor + 1000 falls BETWEEN the taken
+  instant and the response arrival (tests/shell-wait-local-process.test.mjs:14050).
+- **Finding 2 [P2 — endpoint ordering uses completion instead of collection] — FIXED by carrying the endpoint's
+  COLLECTION bound into the ordering conjunct.** The round-9 ordering consumed the daemon endpoint's completion
+  instant (`childReadEpochMs` = identityReadEpochMs): the reviewer's schedule — an endpoint COLLECTED at 1200 (its
+  snapshot shows the PREDECESSOR) that COMPLETES at 2200, while a same-pid same-scope replacement born 1400 with
+  the same coarse start identity is witnessed at 2100 — passed it and established although the endpoint describes
+  the predecessor. The ordering conjunct (local-process-observation.mjs:2522-2545) now consumes the endpoint's
+  COLLECTION bound (the observeLocalProcess read-start bound, `childReadStartedEpochMs`, carried at the
+  Companion→daemon call site :2778): establishment requires the identity provably COLLECTED after the witness
+  boundary (`childReadStartedEpochMs ≥ boundaryEpochMs`); a collection window that OVERLAPS the capture (read-start
+  before the boundary — the endpoint may describe the predecessor) refuses; an ABSENT bound is an unknown ordering
+  and refuses. The refusal keeps the round-9 label `spawn-witness-child-generation-ambiguous` (the trigger widened,
+  the label kept — the standing §28.10-line precedent) — completion-after-capture is not collection-after-capture.
+  **RED** recorded on the pre-round-11 bytes (verified against the pre-fix module) with the reviewer's exact
+  numbers (endpoint read-start 1200, identity-read completion 2200, replacement born 1400 with the same floor 1000,
+  witnessed boundary 2100): pre-fix `['established', null]` with `witnessClass`; **GREEN:**
+  `['unestablished', 'spawn-witness-child-generation-ambiguous']`. **The POSITIVE side pinned in the same test:**
+  the identical schedule with the daemon identity COLLECTED after the boundary (read-start 2150 ≥ 2100, completion
+  2200) establishes through the witness route with its `witnessClass`, and an endpoint with UNKNOWN collection
+  bounds (no read-start) refuses (tests/shell-wait-local-process.test.mjs:12707).
+- **Real-chain derivations updated to the collection bound:** the REAL hop-1 capture test and the REAL full-chain
+  test derive their hop-1 ordering from `daemonObserved.readStartedEpochMs` (tests/shell-wait-local-process.test.mjs
+  :13431/:13580) — on the real chain the observations run after the witness files exist, so the collection bound
+  postdates the boundary and every derived expectation is unchanged; the three re-derived late-read fixtures
+  (route-(b) hop-1, precise-instants-absent, reparenting-preserved) now override the daemon's `readStartedEpochMs`
+  (3150) alongside its completion so the schedules remain physically consistent under the interval rule
+  (:11928/:13013-13019/:13046-13052).
+- **Prior-counterexample re-run (all by name on the amended bytes, all ✔ — 51 named pins):** the §28.9
+  marker-`100000000` upper bound; the round-5 1900-vs-2000 reuse; the round-6 same-second marker ambiguity (band
+  matrix + the isolated T+100 repro + the re-derived consistent positive); the round-7 P0/P1 parent-reuse schedule
+  and its late-write positive; the round-8 daemon-reuse schedule and its proven-child positive; the round-9
+  ordering schedule and its ordered-read positive; the round-9 stall-clock provenance pin (composed: the boundary
+  is now anchored pre-resolution AND pre-response-arrival); the round-9 straddle scheduling pin; the round-10
+  inverted-order schedule and its consistent-chain positive; both §28.8 capture-before-writer hops; the §28.9
+  mid-double-read latch; the §28.10 observed-then-gone latch; the §28.5 ordinary-I/O and never-resetting
+  retained-set latches; the §28.9 cross-second marker-time schedule; the §28.10 stale-marker/PID-reuse schedule;
+  the ground-truth no-witness refusal; the §28.10 same-second PID-reuse-child-foreign, outside-presence,
+  coarse-contradiction, foreign-scope/wrong-role and the three join-refusal branch pins; the route-(b)
+  hop-1/daemon-boundary positives (re-derived read-starts); the scheduling-independence pins (both outcomes); the
+  precise-instants-absent and reparenting-preserved positives (re-derived read-starts); the guarded-resolver
+  named-absent pin; the round-11 overlapping-collection and collected-after pins (refuse/establish); the REAL
+  chains; the observation-layer reparenting polarity. NO prior positive changed outcome: every consistent schedule's
+  collection bound postdates its witness boundary by construction (the observations run after the witness files
+  exist).
+- **Gates on the amended bytes (executed 2026-11-04):** focused `same-second-completion` = **49 tests, 49 pass,
+  0 fail** (47 prior + the late-response provenance regression and the overlapping-collection regression, by name
+  visible); `node --test tests/test-selection.test.mjs` = **6/6, exit 0**; `npm run lint` exit 0;
+  `npm run typecheck` exit 0; `git diff --check` exit 0.
+- **Battery line (the runs §28.17's gate entry awaits):** full local-process entry, SOLO run on the amended bytes =
+  **343 tests, 343 pass, 0 fail, 0 skipped, exit 0** (the prior 341 + the two round-11 regressions; no flake, no
+  concurrency).
+
+### 28.18 Codex-review round 12 correction (2026-11-04, one finding; §28.17 style; the parent-side mirror of the round-11 collection rule — the interval meta-class's last symmetric face; add-only)
+
+- **Finding [P2 — writer endpoint's collection bound not validated] — FIXED by carrying the writer endpoint's
+  COLLECTION bound into the writer-continuity proof, mirroring the round-11 child-side rule.** The round-7
+  writer-continuity conclusion compared the witness write against the READ-TIME parent occupant but consumed the
+  endpoint's COMPLETION instant only: an endpoint inspection that SAMPLED the predecessor before the witness was
+  written and COMPLETED afterward described the predecessor regardless of its late completion. The establishment
+  predicate (local-process-observation.mjs:2494-2521) now additionally requires the writer endpoint's identity
+  provably COLLECTED after the witness write (`writerReadStartedEpochMs ≥ firstWriteEpochMs`, the observeLocalProcess
+  read-start bound, carried at BOTH call sites — the Companion endpoint on hop 1 :2798 and the daemon endpoint on hop
+  2 :2808-ish — the read-time writer occupant must be the witnessed writer generation on either boundary); an
+  overlapping collection window (read-start before the write) or an absent/unknown bound refuses the established
+  `spawn-witness-parent-generation-ambiguous` label (the trigger widened, the label kept — the §28.10-line
+  precedent). The two conjuncts compose: with the write postdating the writer's ENTIRE creation window (round 7)
+  AND the identity collected at/after the write (round 12), the snapshot instant sits at or after the write, so any
+  same-floor reuse would be born after the writer's death (≥ the write ≥ floor + 1000) and carry a LATER floor,
+  contradicting the equality conjunct — continuity is proven, never guessed from a completion instant. Contract
+  basis: §26.7 item 3 (the conclusion proves only what the captured facts span), item 4 (the compared instants and
+  orderings named), item 5 (ambiguous refuses; absent facts stay absent). **Version reading: NO version bump** — a
+  widened trigger on the existing label plus one input-only predicate field (the standing precedent).
+- **"When a Companion query samples P0 at 1100 but completes at 2500, P0 can exit at 1200 and a same-scope P1
+  reuse its PID at 1400…" (P2), FIXED by the writer collection-bound conjunct.** **RED** recorded on the
+  pre-round-12 bytes (verified by running the new test against the pre-fix module) through the REAL join seam with
+  the reviewer's EXACT schedule (Companion query samples P0 at 1100 (read-start), completes 2500; P0 exits 1200;
+  same-scope P1 reuses the pid at 1400 with the same floor 1000; P1 captures its daemon at 2100 and writes the
+  witness at 2110): the join returned `['established', null]` with `witnessClass: 'spawn-boundary-capture'` — the
+  first hop established for P1's witness although the endpoint DESCRIBES P0; with a valid second hop the whole chain
+  would have become attributed. **GREEN after the fix:**
+  `['unestablished', 'spawn-witness-parent-generation-ambiguous']`. **The POSITIVE control pinned in the same
+  test:** the identical schedule with the parent identity COLLECTED after the witness write (read-start 2150 ≥
+  write 2110, completion 2500) establishes through the witness route with its `witnessClass`; a writer endpoint
+  with UNKNOWN collection bounds (no read-start) refuses (tests/shell-wait-local-process.test.mjs:12783).
+- **Re-derived tests (consistency updates, no outcome changes):** the round-6 marker-matrix positive and the
+  round-10 consistent-chain positive now carry daemon COLLECTION bounds (2910/4165) that postdate their broker
+  witness writes (2860/4160); the route-(b) hop-1, precise-instants-absent and reparenting-preserved schedules
+  carry Companion COLLECTION bounds (2950) that postdate their invocation witness writes (2860); the REAL hop-1
+  capture and REAL full-chain derivations consume the Companion read-start in their parent-continuity expectations
+  (on the real chain the observations run after the witness files exist, so every derived expectation is unchanged).
+  All other pins were already collection-consistent and pass unchanged.
+- **Prior-counterexample re-run (all by name on the amended bytes, all ✔ — 52 named pins):** the §28.9
+  marker-`100000000` upper bound; the round-5 1900-vs-2000 reuse; the round-6 same-second marker ambiguity (band
+  matrix + the isolated T+100 repro + the re-derived consistent positive); the round-7 P0/P1 parent-reuse schedule
+  and its late-write positive; the round-8 daemon-reuse schedule and its proven-child positive; the round-9
+  ordering schedule and its ordered-read positive; the round-9 stall-clock provenance pin; the round-9 straddle
+  scheduling pin; the round-10 inverted-order schedule and its consistent-chain positive; the round-11
+  overlapping-child-collection and collected-after-child pins; the round-11 late-response provenance pin; the
+  round-12 overlapping-writer-collection refuse / collected-after establish / unknown-bounds refuse pins; both
+  §28.8 capture-before-writer hops; the §28.9 mid-double-read latch; the §28.10 observed-then-gone latch; the
+  §28.5 ordinary-I/O and never-resetting retained-set latches; the §28.9 cross-second marker-time schedule; the
+  §28.10 stale-marker/PID-reuse schedule; the ground-truth no-witness refusal; the §28.10 same-second
+  PID-reuse-child-foreign, outside-presence, coarse-contradiction, foreign-scope/wrong-role and the three
+  join-refusal branch pins; the route-(b) hop-1/daemon-boundary positives; the scheduling-independence pins (both
+  outcomes); the precise-instants-absent and reparenting-preserved positives; the guarded-resolver named-absent
+  pin; the REAL chains (derived expectations incl. the parent collection bound); the observation-layer reparenting
+  polarity.
+- **Gates on the amended bytes (executed 2026-11-04):** focused `same-second-completion` = **50 tests, 50 pass,
+  0 fail** (49 prior + the writer-collection-bound regression, by name visible); `node --test
+  tests/test-selection.test.mjs` = **6/6, exit 0**; `npm run lint` exit 0; `npm run typecheck` exit 0;
+  `git diff --check` exit 0.
+- **Battery line (the runs §28.18's gate entry awaits):** full local-process entry, SOLO run on the amended bytes =
+  **344 tests, 344 pass, 0 fail, 0 skipped, exit 0** (the prior 343 + the round-12 writer-collection-bound
+  regression; no flake, no concurrency).
+
+### 28.19 Codex-review round 13 correction (2026-11-04, one finding; §28.18 style; regression of this task's own round-6/8 identity-ride — evidence timing; add-only)
+
+- **Finding [P2 — stale error-carried identity misdated at failure completion] — FIXED by the carried-timing rule:
+  evidence is dated at its OBSERVATION, never at the failure's completion.** The rounds 6–8 uniform identity ride
+  attached `observedStartIdentity` to post-read failures WITHOUT the observation's timing, and observeLocalProcess
+  dated the carried evidence at the FAILURE's completion (`readEpochMs`) — so a delayed failure carrying a stale
+  identity became post-baseline replacement evidence and adjudicateLocalExit latched terminal PID reuse for a
+  generation whose absence was later confirmed. **The rule now:** the error carries the identity and its observation
+  timing as a UNIT — the inspector samples its FIRST identity read's taken instant before dispatching
+  (`beforeTakenEpochMs`, local-process-observation.mjs:402-405) and every identity-riding error (the uniform ride
+  :405, the nonce-verification failure :430, `observedThenGoneError` :340) carries
+  `observedIdentityTakenEpochMs` beside `observedStartIdentity`; observeLocalProcess consumes the carried instant in
+  BOTH carrying verdict paths (the observed-then-gone absence verdict :1786-1788 and the generic/nonce-failure
+  `liveness-read-failed` verdict :1816-1820), dating `observedIdentityReadEpochMs` at the carried observation instant
+  (the completion sample remains only the fallback for a legacy error that carries no timing); adjudicateLocalExit's
+  carried-instant machinery (carriedIdentityEpochMs, the round-33 ordering — unchanged) then compares the TRUE
+  observation instant against the presence baseline. Contract basis: §26.7 item 4 (instants compared are the ones
+  the evidence actually spans) and the §25.4 generation rules (a predecessor snapshotted BEFORE the bound
+  generation's presence is never replacement evidence). **Version reading: NO version bump** — the field
+  `observedIdentityReadEpochMs` already existed on the observation verdict (the round-31 registration) and the error
+  fields are in-flight, not persisted.
+- **"When an inspection observes a predecessor before a concurrent presence baseline but fails afterward, this
+  attaches the identity without its observation time…" (P2), FIXED.** **RED** recorded on current HEAD (the test
+  was written first and failed against the unmodified bytes) by reproducing the reviewer's exact schedule through
+  the REAL inspection seam (a delayed-resolution ps seam: the predecessor's snapshot TAKEN at the dispatch instant,
+  the response arriving one full delay later; the current generation's presence baseline observed INSIDE the
+  in-flight window; the second identity read failing with an ORDINARY I/O error carrying the stale predecessor
+  identity; a confirmed absence following): the carried identity was UNDATED (the verdict carried
+  `observedStartIdentity` with no `observedIdentityReadEpochMs`) so the adjudicator dated it at the failure
+  completion — post-baseline — and returned `pid-start-identity-reused` instead of the lawful `disappeared`.
+  **GREEN after the fix:** the verdict carries `observedIdentityReadEpochMs` at the observation instant (strictly
+  pre-baseline, asserted) and the exit returns `['disappeared', null]`
+  (tests/shell-wait-local-process.test.mjs:2220). The delayed-failure shape is exercised with REAL clock sequencing
+  (the stale read in flight across the baseline observation), never fabricated instants.
+- **Latch families verified unaffected (their error-carried identities still latch):** the mid-double-read
+  `'identity changed'` latch (its class is decided by the inspector's own message, unchanged); the round-28
+  observed-then-gone latch (its carried instant shifts from the failure-completion sample to the first-read taken
+  instant — the same order, both ≥ the schedules' baselines — and every pinned latch still fires); the §28.5
+  ordinary-I/O and never-resetting emitter latches (the WITNESS emitter consumes only the identity, not the
+  timing); the no-over-correction pin (`start-identity-generation-changed` still latches terminally); the
+  reparenting polarity pins (identity-consistent stays non-deciding, demonstrably-different latches). NO pin
+  changed outcome.
+- **Prior-counterexample re-run (all by name on the amended bytes, all ✔ — 140 matching pins incl. the complete
+  task-2 exit family):** every §28.9–§28.18 pin from the standing table (marker upper bound; 1900-vs-2000; marker
+  ambiguity band matrix + T+100 repro; P0/P1 parent reuse + late-write; daemon-reuse + proven-child; ordering
+  schedule + ordered-read; stall-clock; straddle; inverted-order + consistent chain; overlapping child/writer
+  collections + collected-after controls + unknown-bounds refusals; late-response provenance; capture-before-writer
+  both hops; all latch families; cross-second marker schedule; stale-marker/PID-reuse; ground truth;
+  PID-reuse-child-foreign; outside-presence; coarse-contradiction; foreign-scope/wrong-role; the three join-refusal
+  branches; route-(b) positives; scheduling independence; precise-instants-absent; reparenting-preserved;
+  guarded-resolver named-absent; the REAL chains; the observation-layer reparenting polarity) PLUS the task-2 exit
+  family (reparenting adjudication, no-over-correction latch, nonce-mismatch non-reuse, the new stale-identity
+  regression). The witness-path behavior from rounds 6–12 is untouched (the emitter consumes only the identity, not
+  the timing).
+- **Gates on the amended bytes (executed 2026-11-04):** focused `same-second-completion` = **51 tests, 51 pass,
+  0 fail** (50 prior + the stale-identity provenance regression, by name visible); `node --test
+  tests/test-selection.test.mjs` = **6/6, exit 0**; `npm run lint` exit 0; `npm run typecheck` exit 0;
+  `git diff --check` exit 0.
+- **Battery line (the runs §28.19's gate entry awaits):** full local-process entry, SOLO run on the amended bytes =
+  **345 tests, 345 pass, 0 fail, 0 skipped, exit 0** (the prior 344 + the round-13 regression; no flake, no
+  concurrency).
+
+### 28.20 Codex-review round 14 corrections (2026-11-04, two findings; §28.19 style; the evidence-timing rule completed into INTERVALS — the two adjacent branches of the round-13 fix; add-only)
+
+- **The invariant now (the interval rule completing the round-13 carried-timing rule):** an error-carried identity
+  travels with its whole COLLECTION INTERVAL — the taken/dispatch instant (the lower bound, round 13) and the read's
+  RESOLUTION instant (the upper bound, new) — and the exit adjudication classifies the carried evidence by the
+  INTERVAL, never by either bound alone: a collection window that merely OVERLAPS the presence baseline is AMBIGUOUS
+  evidence (the snapshot may show the predecessor or a replacement; neither reading is provable), a collection that
+  COMPLETED at or before the baseline is definitively stale (old evidence, never latching, and a later confirmed
+  absence admits as the bound generation's lawful disappearance), and a collection that STARTED at or after the
+  baseline is definitively post-baseline (positive replacement evidence). Completion instants prove neither presence
+  nor ordering. The ambiguous outcome is a FRESH named adjudicator fact `pid-start-identity-ambiguous` (§26.7 item-5
+  no-fold; never folded into `pid-start-identity-reused` or converted into `disappeared`). **Version reading: NO
+  version bump** — the interval fields ride the in-flight observation verdicts (the verdict field
+  `observedIdentityCompletedEpochMs` is additive to the round-31 `observedIdentityReadEpochMs` lineage) and the
+  adjudicator reason is a new named fact on the existing unestablished verdict shape (the §28.10-line precedent).
+- **Finding 1 [P2 — dispatch timestamp misdates a late-collected successor] — FIXED by the interval ride and the
+  overlap rule.** The round-13 ride carried only the DISPATCH instant, so a ps request dispatched before the
+  presence baseline that COLLECTS a successor's identity afterward was misdated definitively pre-baseline and the
+  adjudicator "ignored the replacement and reported a later absence as disappeared" — while the BASE (dating at the
+  completion) returned `pid-start-identity-reused`; BOTH readings exceed the facts. The inspector's ride now carries
+  `observedIdentityCompletedEpochMs` (the read's resolution upper bound) beside the taken instant
+  (local-process-observation.mjs:415-418, the nonce-mismatch ride :443, `observedThenGoneError` :341); the
+  observation verdicts carry both bounds (:1807-1811, :1857-1861); and the adjudicator's carried-identity latch
+  sites are interval-aware (:2059-2065 helper, :2130-2158 the gate's generation-changed and carried shapes, the
+  ambiguous return :2169-2181). **RED** recorded on the pre-round-14 bytes (verified by running the new test against
+  the pre-fix module) with the reviewer's exact schedule through the REAL inspection seam (ps dispatched before the
+  presence baseline, COLLECTED after it showing the nonce-less successor, `expectedStartIdentity` omitted, environ
+  mismatch, a later confirmed absence): the patch returned `disappeared` (the base returned
+  `pid-start-identity-reused`). **GREEN after the fix:** the observation verdict carries the interval
+  (lower < baseline identity read < upper, asserted) and the exit returns the fresh
+  `['unestablished', 'pid-start-identity-ambiguous']` — never disappeared, never reused. **The POSITIVE control
+  pinned:** a read DISPATCHED after the baseline (its whole interval definitively post-baseline) latches
+  `pid-start-identity-reused` (tests/shell-wait-local-process.test.mjs:2288).
+- **Finding 2 [P2 — generation-change promotion branch discards the carried timing] — FIXED by the promotion
+  consuming the carried interval exactly like the generic path.** With `expectedStartIdentity` supplied, the
+  identity-mismatch promotion (ordinary second-read failures whose carried identity differs from the expected
+  generation) returned `start-identity-generation-changed` dated at the FAILURE COMPLETION, discarding the carried
+  timing — a predecessor sampled before the presence baseline became apparent replacement evidence when the failure
+  finished afterward. The promotion (local-process-observation.mjs:1843-1862) now carries the carried timing AND
+  interval onto the promoted verdict, and the adjudicator's promotion latch rule (:2255-2273) is interval-aware
+  (overlap → the ambiguous fact; completion at or before the horizon → definitively stale, never deciding; no
+  interval → the legacy behavior). **RED** recorded on the pre-round-14 bytes (verified against the pre-fix module)
+  with the lawful schedule (predecessor sampled and collected BEFORE the baseline, the ordinary I/O failure
+  FINISHING afterward, `expectedStartIdentity` supplied, a later confirmed absence): the patch returned
+  `pid-start-identity-reused` (the base returned `disappeared`). **GREEN after the fix:** the definitively
+  pre-baseline schedule adjudicates `['disappeared', null]` (the base-lawful outcome) and the OVERLAP variant (the
+  promotion's collection window straddling its own concurrent baseline) returns the ambiguous fact
+  (tests/shell-wait-local-process.test.mjs:2356).
+- **The round-13 regression re-derived under the interval rule (listed per the re-run discipline):** the round-13
+  test's original schedule dispatched the predecessor read before the baseline and RESOLVED it after (its collection
+  window overlapped the baseline), so under the completed interval rule its honest outcome is the ambiguous fact,
+  not `disappeared` — the test is re-derived to the DEFINITIVELY pre-baseline schedule (the predecessor collected
+  instantly, the delayed FAILURE completing afterward), which preserves the round-13 GREEN case (`disappeared`) as
+  the lawful outcome for definitively pre-baseline evidence (tests/shell-wait-local-process.test.mjs:2234). The
+  distinction is the rule itself: definitively-pre evidence dates the lawful absence; overlapping evidence is the
+  ambiguous fact.
+- **Prior-counterexample re-run (all by name on the amended bytes, all ✔ — 159 matching pins incl. the complete
+  task-2 exit family):** every standing pin from §28.9–§28.19 (marker upper bound; 1900-vs-2000; marker ambiguity
+  matrix + T+100 repro; P0/P1 parent reuse + late-write; daemon-reuse + proven-child; ordering + ordered-read;
+  stall-clock; straddle; inverted-order + consistent chain; overlapping child/writer collections + collected-after
+  controls + unknown-bounds refusals; late-response provenance; capture-before-writer both hops; ALL latch
+  families — mid-double-read, observed-then-gone, ordinary-I/O, never-resetting; cross-second marker schedule;
+  stale-marker/PID-reuse; ground truth; PID-reuse-child-foreign; outside-presence; coarse-contradiction;
+  foreign-scope/wrong-role; the three join-refusal branches; route-(b) positives; scheduling independence;
+  precise-instants-absent; reparenting-preserved; guarded-resolver named-absent; the REAL chains; the
+  observation-layer reparenting polarity and its no-over-correction latch) PLUS the new round-14 pins. NO prior pin
+  changed outcome except the round-13 regression's honest re-derivation listed above (its definitively-pre schedule
+  still returns `disappeared`).
+- **Gates on the amended bytes (executed 2026-11-04):** focused `same-second-completion` = **53 tests, 53 pass,
+  0 fail** (51 prior + the two round-14 interval regressions, by name visible); `node --test
+  tests/test-selection.test.mjs` = **6/6, exit 0**; `npm run lint` exit 0; `npm run typecheck` exit 0;
+  `git diff --check` exit 0.
+- **Battery line (the runs §28.20's gate entry awaits):** full local-process entry, SOLO run on the amended bytes =
+  **347 tests, 347 pass, 0 fail, 0 skipped, exit 0** (the prior 345 + the two round-14 regressions; no flake, no
+  concurrency).
+
+### 28.21 Codex-review round 15 completions (2026-11-04, two findings; §28.20 style; the classification-coverage rule and the legacy recency-guard rule; add-only; completed from a quota-interrupted partial delta)
+
+- **Provenance note (the inherited delta):** this round's fixes were started by a prior session that hit the
+  5-hour model limit mid-fix, leaving an UNCOMMITTED partial delta (+91 test lines, +32 observer lines) against the
+  task commit `4b60197`. The delta was surveyed and re-verified honestly, not trusted: both fixes were found
+  structurally complete and were KEPT (the observer hunks implement exactly the two required behaviors — no
+  half-written blocks, no orphaned helpers, `node --check` clean), the two matching regression tests were found
+  present and were KEPT after a RED re-run against the committed HEAD bytes reproduced both findings, and ONE
+  inherited defect was FIXED: the finding-1 test carried a dead `goneReadCalls` counter (declared, incremented,
+  never read) that failed `npm run lint` (`no-unused-vars`) — removed (the interval-overlap assertion already
+  proves the schedule ordering; the test re-verified ✔ after the removal).
+- **The classification-coverage rule now (completing the round-14 interval rule):** the interval classification is
+  a property of the CARRIED EVIDENCE, not of which verdict shape happens to transport it — EVERY identity-bearing
+  verdict is classified by its carried collection interval (the taken/dispatch instant — carried on the inspection
+  rides as `observedIdentityTakenEpochMs` and surfaced on verdicts as `observedIdentityReadEpochMs` per the
+  round-31 lineage — plus the resolution upper bound `observedIdentityCompletedEpochMs`; the classifier
+  `carriedIdentityIntervalOverlapsPresence`; the ambiguous fact `pid-start-identity-ambiguous`): an interval
+  OVERLAPPING the presence instant is the ambiguous fact, an interval COMPLETING at or before it is definitively
+  stale (the evidence never latches), and an interval TAKEN at or after it with a different start identity is
+  definitively post-baseline (the reuse latch). This now explicitly covers the round-28 observed-then-gone rides:
+  a SUCCESSFUL `absent` verdict carrying a different observed identity is exactly as ambiguous about the
+  baseline's occupant generation as an error-carried one — disappearance never establishes on ambiguous
+  generation evidence, and subsequent confirmed absences cannot rescue it into `disappeared`.
+- **Finding 1 [P2 — identity-bearing absent verdicts skip the interval classification] — FIXED by extending the
+  round-29/31 absence latch with the interval classification before any disappearance establishes.** The round-14
+  machinery applied the overlap checks only to unestablished reads; an observed-then-gone ABSENT verdict (the
+  round-28 ride carrying `observedStartIdentity`/`observedIdentityReadEpochMs`/
+  `observedIdentityCompletedEpochMs`) fell straight to the carried-instant reuse latch, so a collection spanning
+  the presence baseline (dispatched 1000-class, resolved 2500-class, presence baseline 2000-class, a DIFFERENT
+  start identity carried, a later confirmed absence) adjudicated `disappeared` on ambiguous generation evidence.
+  Fixed: the adjudicator's identity-bearing-absent branch (local-process-observation.mjs:2222-2242) applies the
+  interval classification FIRST — overlap ⇒ the named `pid-start-identity-ambiguous` fact (:2233-2234);
+  definitively post-baseline (carried instant at/after the presence instant) ⇒ the reuse latch (:2236-2240,
+  unchanged round-29/31 semantics); definitively stale ⇒ the absence admits normally (:2241). **RED** recorded on
+  the committed HEAD bytes (the new test run against the pre-fix module, the reviewer's exact schedule through the
+  REAL inspection seam — ps dispatched before the presence baseline, collected after it, environ gone mid-read,
+  a later confirmed absence): the patch returned `disappeared` (reason null). **GREEN after the fix:** the exit
+  returns `['unestablished', 'pid-start-identity-ambiguous']` and the test additionally asserts the carried
+  interval truly overlaps the baseline (lower bound < baseline identity read < upper bound)
+  (tests/shell-wait-local-process.test.mjs:2449).
+- **The legacy recency-guard rule now (restoring the round-29/31 base law):** when the interval upper bound is
+  ABSENT (a pre-round-14 legacy verdict shape), the carried instant is a definitive read instant and replacement
+  detection keeps its recency guard `carriedIdentityEpochMs(read) >= lastPresenceEpochMs` — a stale carried
+  identity observed BEFORE the presence baseline never latches reuse, and the base-lawful outcome (ignore the
+  stale identity, accept the subsequent confirmed absence as the lawful disappearance) holds. The round-14
+  rewrite had turned the legacy arm's guard into an unconditional latch (a `||` where the base had `&&`).
+- **Finding 2 [P2 — legacy reads lost the carried-instant recency guard] — FIXED by restoring the conjunct in the
+  legacy arm.** The unestablished-read replacement gate (local-process-observation.mjs:2156-2166) kept the
+  round-14 overlap branch but its legacy arm (`observedIdentityCompletedEpochMs` absent) detected replacement
+  UNCONDITIONALLY once the gate opened — a failed read carrying a predecessor identity observed at 1100-class but
+  completing at 3000-class (no upper bound) latched `pid-start-identity-reused` against a presence baseline at
+  2000-class, discarding the existing carried-instant recency check. Fixed: the legacy arm requires the recency
+  guard again (`&&` at :2158-2159, the rule stated at :2160-2164) — only a definitively POST-baseline carried
+  identity latches. **RED** recorded on the committed HEAD bytes (the reviewer's exact schedule: predecessor
+  identity observed before the baseline, no interval upper bound, presence baseline, a later confirmed absence):
+  the patch returned `['unestablished', 'pid-start-identity-reused']` (the base correctly ignores the stale
+  identity). **GREEN after the fix:** the stale identity is ignored and the subsequent confirmed absence
+  adjudicates `['disappeared', null]` (tests/shell-wait-local-process.test.mjs:2496).
+- **Prior-counterexample re-run (all by name on the final amended bytes, all ✔ — 349 pins incl. the complete
+  task-2 exit family):** every standing pin from §28.9–§28.20 (round-13 disappeared regression; round-14's three
+  schedules + both new pins — the overlapping-absent ambiguous and the definitively-post reused — and the
+  promotion disambiguation; marker upper bound; 1900-vs-2000; round-6 marker ambiguity matrix + T+100 repro +
+  consistent positive; round-7 P0/P1 + late-write; round-8 daemon-reuse + proven-child; round-9 ordering +
+  ordered-read; stall-clock; straddle; round-10 inverted-order + consistent chain; round-11
+  overlapping-child-collection + collected-after + unknown-bounds; late-response provenance; round-12
+  overlapping-writer-collection + collected-after + unknown-bounds; capture-before-writer both hops; ALL latch
+  families — mid-double-read, observed-then-gone, ordinary-I/O, never-resetting; cross-second marker schedule;
+  stale-marker/PID-reuse; ground truth; PID-reuse-child-foreign; outside-presence; coarse-contradiction;
+  foreign-scope/wrong-role; the three join-refusal branches; route-(b) positives; scheduling independence both
+  outcomes; precise-instants-absent; reparenting-preserved; guarded-resolver named-absent; the REAL chains; the
+  observation-layer reparenting polarity and its no-over-correction latch) PLUS the two new round-15 pins. NO
+  prior pin changed outcome.
+- **Gates on the final amended bytes (executed 2026-11-04):** focused `same-second-completion` = **55 tests, 55
+  pass, 0 fail** (53 prior + the two round-15 regressions, by name visible); `node --test
+  tests/test-selection.test.mjs` = **6/6, exit 0**; `npm run lint` exit 0 (after the inherited-delta dead-variable
+  fix listed above; exit 1 before it); `npm run typecheck` exit 0; `git diff --check` exit 0.
+- **Battery line:** full local-process entry, SOLO run on the final amended bytes = **349 tests, 349 pass, 0
+  fail, 0 skipped, exit 0** (the §28.20 347 + the two round-15 regressions; no flake, no concurrency; duration
+  ~77s).
+
+### 28.22 Codex-review round 16 corrections (2026-11-04, two findings; §28.21 style; the interval classification's tie edge completed + the daemon witness route explicitly classified UNSATISFIABLE; add-only)
+
+- **Finding 1 [P2 — tie-inclusive reuse detection lost] — FIXED by the tie-inclusive boundary rule across the four
+  interval classification sites.** The round-14 interval rewrite classified a collection by strict overlap
+  (ambiguous) and `completion <= baseline` (stale), so a nonce-failing replacement read whose collection bounds and
+  completion ALL EQUALED the presence baseline fell through both — the gate excluded it and the later recency filter
+  discarded it, producing `disappeared` where the base (dating the carried identity at its own read instant with the
+  `>=` guard) returned `pid-start-identity-reused`. **The rule now (all four sites — the gate's generation-changed
+  shape, the gate's carried-identity shape, the generation-changed rule, and the carried-identity rule):
+  TIE-INCLUSIVE at the post-baseline edge** — strictly-overlapping intervals are the ambiguous fact
+  (`pid-start-identity-ambiguous`), collections completing STRICTLY before the baseline are definitively stale
+  (old evidence, never latching), and a collection bound EQUALING the baseline (or starting after it) is
+  definitively POST-BASELINE and latches `pid-start-identity-reused` — equality belongs to the post-baseline side,
+  exactly as the base's `carriedIdentityEpochMs >= lastPresenceEpochMs` guard did. Contract basis: §25.4 item 6's
+  strict-recency discipline (a tie can never manufacture disappearance — and equally, a tie must never erase
+  positive replacement evidence), §26.7 item 5 (contradictory facts refuse; an ambiguous interval is never resolved
+  into a definitive stale reading). **Version reading: NO version bump** — the trigger's boundary handling only.
+- **"When expectedStartIdentity is omitted and a nonce-failing read observes a different identity in the same
+  millisecond as the presence baseline…" (P2), FIXED.** **RED** recorded on the pre-round-16 bytes with the
+  reviewer's exact schedule (all bounds == the baseline's identity-read instant, different carried identity,
+  expectedStartIdentity omitted, nonce mismatch, a later confirmed absence): the join's exit returned
+  `['disappeared', null]`. **GREEN after the fix:** `['unestablished', 'pid-start-identity-reused']`
+  (tests/shell-wait-local-process.test.mjs:2538). Ties elsewhere in the standing table verified unchanged (the
+  strict-recency absence rule — a tie never manufactures disappearance — is untouched; only the replacement latch's
+  edge moved).
+- **Finding 2 [P2 — daemon witness success path unsatisfiable] — ROOT ADJUDICATION: option (b), the route is
+  explicitly classified UNSATISFIABLE, not qualified.** Basis: the plan's Task 3 closing clause ("If no route is
+  sound with available seams, record the exact counterexample/absent capability and a bounded repair proposal; do
+  not force a positive test by removing a safety term") and the §26.7 freeze (no bound may be weakened to make a
+  route satisfiable). **The full predicate contradiction:** the daemon→transport witness route is consulted only
+  when `markerTime < daemonStart + LINUX_BTIME_UNCERTAINTY_MS` (the bound-window entry), while its establishment
+  requires `markerTime >= childOsStartInstantMs + LINUX_BTIME_UNCERTAINTY_MS` (the round-6 positive
+  marker-to-generation binding) under `childOsStartInstantMs >= daemonStart` (the round-10 creation-order binding)
+  — jointly `markerTime >= daemonStart + LINUX_BTIME_UNCERTAINTY_MS`, contradicting the entry condition. With a
+  marker epoch present (guaranteed on this route — `markerTimeOk` gates it), EVERY admitted-witness outcome is one
+  of the named refusals (`spawn-witness-marker-generation-unbound` / `…-ambiguous` / the capture and continuity
+  family); establishment can never occur.
+- **The explicit classification (choice stated): a NAMED unavailable classification, not dead-path removal** — the
+  unreachable establishment arm (local-process-observation.mjs:3071-3091) now returns the fail-closed named label
+  **`spawn-witness-route-unsatisfiable`** instead of composing an established `witnessClass` verdict: the refusal
+  behavior below it is preserved byte-for-byte (the arm never executes today; the labels the §28.9–§28.12 pins
+  consume flow through the following branch untouched), and if a future change ever made the arm reachable, the hop
+  REFUSES with the named label rather than crediting — never folded into the existing labels, per the §26.7 item-5
+  discipline. No test asserted a daemon-hop `witnessClass` establishment (the round-10/12 re-derivations already
+  assert arithmetic establishment WITHOUT the member — both `witnessClass: undefined` pins verified unchanged).
+- **The route's REMAINING sound contributions (enumerated, all still pinned):** its REFUSAL evidence —
+  `spawn-witness-marker-generation-unbound` (stale/pre-floor markers and v1-replay records),
+  `spawn-witness-marker-generation-ambiguous` (markers inside the witnessed child's first possible second),
+  `spawn-witness-capture-before-writer`, `spawn-witness-creation-order-inverted`, the generation-ambiguity and
+  interval checks (rounds 7–15) — every one still refuses through this route by name. The hop's POSITIVES are
+  ARITHMETIC-only (the registered marker-time predicate: `daemonStart + 1000 <= markerTime <= daemonRead`), with NO
+  witnessClass member riding an established hop.
+- **The bounded repair proposal (registered):** a route-(c) exact-PID generation surface is the only evidence that
+  could make same-second daemon-hop witness establishment sound — already NAMED UNAVAILABLE in §28.1 ("no exact-PID
+  generation surface exists through the existing local reads"); until such a mechanism is discovered and justified
+  exact per §26.6 route (c), **same-second daemon-hop ancestry attribution remains the open proof obligation,
+  refused rather than credited.**
+- **Prior-counterexample re-run (all by name on the amended bytes, all ✔ — 163 matching pins):** the complete
+  standing table from §28.9–§28.21 (all marker/parent/child family schedules and positives, capture-before-writer
+  both hops, all latch families, the cross-second marker schedule, stale-marker/PID-reuse, ground truth,
+  PID-reuse-child-foreign, outside-presence, coarse-contradiction, foreign-scope/wrong-role, the three join-refusal
+  branches, route-(b) positives, scheduling independence, precise-instants-absent, reparenting-preserved,
+  guarded-resolver named-absent, the round-13 disappeared regression (re-derived definitively-pre), the round-14
+  overlap/promotion/collected-after schedules, the round-15 overlap-absence and legacy-recency pins, the REAL
+  chains, the observation-layer reparenting polarity) PLUS the round-16 tie and refusal-only pins. **Pin changes:
+  ONLY the new tie schedule** (previously `disappeared` on the pre-round-16 bytes — never a pinned verdict); the
+  daemon-hop witness refusal labels are byte-identical (verified by the unchanged §28.12/§28.14/§28.16 pins).
+- **Gates on the amended bytes (executed 2026-11-04):** focused `same-second-completion` = **57 tests, 57 pass,
+  0 fail** (55 prior + the tie-inclusive regression and the refusal-only classification pin, by name visible);
+  `node --test tests/test-selection.test.mjs` = **6/6, exit 0**; `npm run lint` exit 0; `npm run typecheck`
+  exit 0; `git diff --check` exit 0.
+- **Battery line (the runs §28.22's gate entry awaits):** full local-process entry, SOLO run on the amended bytes =
+  **351 tests, 351 pass, 0 fail, 0 skipped, exit 0** (the prior 349 + the two round-16 regressions; no flake, no
+  concurrency).
+
+### 28.23 Codex-review round 17 correction (2026-11-04, one finding; §28.22 style; the BASELINE side of the interval meta-class — the staleness comparison becomes interval-to-interval; add-only)
+
+- **Finding [P2 — baseline dated at completion makes genuine replacement evidence look stale] — FIXED by carrying
+  the successful baseline's own collection bounds and making the staleness comparison INTERVAL-TO-INTERVAL.** The
+  presence horizon was dated at its completion instant alone (`lastPresenceEpochMs` = the identity-read completion,
+  the ROUND-27 horizon), so a replacement collected INSIDE the baseline's collection window (the baseline snapshotted
+  S0 at 1000-class instants, completed 3000-class; the concurrent nonce-failing query observed S1 at 1500-class) was
+  classified definitively stale (its collection completed before 3000) and discarded — the subsequent absence then
+  produced `disappeared`, although the baseline's completion cannot prove it was COLLECTED after S1. **The rule
+  now:** the presence horizon carries BOTH collection bounds — the dispatch lower bound (`readStartedEpochMs`,
+  tracked as `lastPresenceStartedEpochMs`, local-process-observation.mjs:2119-2122, advanced with the horizon
+  :2248-2251) and the identity-read completion upper bound (`lastPresenceEpochMs`) — and the carried-identity
+  classifier (`carriedIdentityIntervalClass` :2074-2086) compares INTERVAL-TO-INTERVAL: **stale** only when the
+  replacement's collection completed STRICTLY BEFORE the presence's dispatch (the presence provably cannot have seen
+  it); **post-baseline** (tie-inclusive, the round-16 rule) when the replacement's collection started at/after the
+  presence's completion (the presence provably finished first); **overlapping** any part of the presence's collection
+  window is the ambiguous fact (`pid-start-identity-ambiguous`). Reads without an interval upper bound stay LEGACY
+  (the round-15/16 carried-instant recency guard — via `carriedIdentityEpochMs`, whose fallback covers the
+  successful-mismatch verdicts that carry no explicit carried field); a presence without a dispatch bound keeps the
+  round-16 instant rules. All five classification sites consume the classifier (the gate's generation-changed and
+  carried-identity shapes :2164-2182, the generation-changed rule :2327-2343, the carried-identity rule
+  :2356-2372, and — migrated for the same symmetry — the identity-bearing ABSENT rule :2283-2296). Contract basis:
+  §26.7 item 4 (the compared instants are the intervals the evidence actually spans — completion alone never proves
+  ordering), item 5 (ambiguous refuses; the absent fact stays absent). **Version reading: NO version bump** — the
+  comparison's boundary semantics only.
+- **"When a baseline query snapshots S0 at 1000 but completes at 3000, a concurrent nonce-failing query can observe
+  replacement S1 at 1500 and finish at 4000…" (P2), FIXED.** **RED** recorded on the pre-round-17 bytes with the
+  reviewer's exact schedule through the REAL inspection seams (the baseline dispatched first with a delayed ps
+  double read — snapshotted at dispatch, identity read completing ~800 ms later; the concurrent nonce-failing query
+  dispatched ~100 ms into that window, S1 collected ~150 ms later INSIDE it, and the failure completing AFTER the
+  baseline's identity read via a delayed environ `runProcess` — the finish-4000 shape; a later confirmed absence):
+  the pre-fix verdict was `['disappeared', null]` (S1's interval [inside-baseline-window] read as definitively
+  stale against the baseline's completion). **GREEN after the fix:** the interval comparison
+  (S1's window overlaps the baseline's collection window ⇒ overlap) returns
+  `['unestablished', 'pid-start-identity-ambiguous']` — the disappeared outcome is gone
+  (tests/shell-wait-local-process.test.mjs:2586). **The boundary controls pinned in the same test:** (i) a
+  replacement collected STRICTLY BEFORE the baseline's dispatch is definitively stale — the confirmed absence
+  adjudicates the lawful `['disappeared', null]`; (ii) a replacement DISPATCHED at/after the baseline's completion
+  latches `['unestablished', 'pid-start-identity-reused']` (tie-inclusive per round 16).
+- **Standing-pin movements (enumerated honestly): NONE.** Every standing schedule's intervals are either
+  definitively disjoint (the round-13/14/15 definitively-pre schedules: the replacement collected instantly BEFORE
+  the baseline dispatched — stale, outcomes unchanged) or already classified ambiguous under the round-14
+  instant-overlap rule (the round-14 overlap schedules: S1's window straddling an INSTANT baseline — the interval
+  comparison returns the same overlap class). The round-15 legacy pin (no interval upper bound → the recency guard)
+  and the round-16 tie pin (hand-built bounds equal to an instant baseline — the classifier's legacy-baseline and
+  tie-inclusive arms preserve the latch) pass unchanged. One TRANSITIONAL defect found and fixed during this
+  round's own focused run: the classifier's legacy arm initially required an explicit
+  `observedIdentityReadEpochMs`, which the SUCCESSFUL-mismatch verdicts (the expectedStartIdentity seam) never
+  carry — the round-22 tie-latch pin (`NAMED generation-change reads tie-latch…`) caught it; the arm now uses the
+  `carriedIdentityEpochMs` fallback (identity-read ?? completion — the exact round-15 form). No pin outcome changed.
+- **Prior-counterexample re-run (all by name on the amended bytes, all ✔ — 185 matching pins incl. the complete
+  task-2 exit family and every tie/old-evidence pin):** the complete standing table from §28.9–§28.22 (all
+  marker/parent/child family schedules and positives, capture-before-writer both hops, ALL latch families —
+  mid-double-read, observed-then-gone, ordinary-I/O, never-resetting — the cross-second marker schedule,
+  stale-marker/PID-reuse, ground truth, PID-reuse-child-foreign, outside-presence, coarse-contradiction,
+  foreign-scope/wrong-role, the three join-refusal branches, route-(b) positives, scheduling independence,
+  precise-instants-absent, reparenting-preserved, guarded-resolver named-absent, the round-13 disappeared
+  regression, the round-14 overlap/promotion/collected-after schedules, the round-15 overlap-absence and
+  legacy-recency pins, the round-16 tie and refusal-only pins, the REAL chains, the observation-layer reparenting
+  polarity and its no-over-correction latch) PLUS the new round-17 schedule and its two boundary controls.
+- **Gates on the amended bytes (executed 2026-11-04):** focused `same-second-completion` = **58 tests, 58 pass,
+  0 fail** (57 prior + the interval-to-interval regression, by name visible); `node --test
+  tests/test-selection.test.mjs` = **6/6, exit 0**; `npm run lint` exit 0; `npm run typecheck` exit 0;
+  `git diff --check` exit 0.
+- **Battery line (the runs §28.23's gate entry awaits):** full local-process entry, SOLO run on the amended bytes =
+  **352 tests, 352 pass, 0 fail, 0 skipped, exit 0** (the prior 351 + the round-17 regression; no flake, no
+  concurrency).
+
+### 28.24 Codex-review round 18 correction (2026-11-04, one finding; §28.23 style; the pipeline ordering — interval classification precedes all completion-based filters; add-only)
+
+- **Finding [P2 — overlapping intervals bypassed by the outer completion guard] — FIXED by the CLASSIFY-FIRST
+  reordering.** The round-17 interval-to-interval classifier lived INSIDE the completion-gated gate and below the
+  recency filter, so a carried-evidence failure whose COMPLETION predated the presence horizon was skipped by the
+  gate (`identityEvidenceEpochMs(read)` = the failure completion) and discarded by the recency filter before the
+  interval classification ever ran — query latency determined whether disappearance was credited (the reviewer's
+  schedule: failure completing 2000 < the horizon 3000 produced `disappeared`, while the identical schedule with the
+  failure completing 4000 produced the ambiguous verdict). **The decision order now** (the CLASSIFY-FIRST block,
+  local-process-observation.mjs:2131-2170, at the TOP of the adjudication loop — before the completion gate and the
+  recency filter): (1) when the read is same-scope carried replacement evidence (a carried different identity or a
+  promoted `start-identity-generation-changed` unestablished read) or an identity-bearing ABSENT verdict, AND it
+  carries a collection interval, the round-17 interval-to-interval classification EXCLUSIVELY governs — overlap ⇒
+  `pid-start-identity-ambiguous`; post-baseline (tie-inclusive) ⇒ the `pid-start-identity-reused` latch; stale
+  (completed strictly before the presence's own collection START) ⇒ non-deciding old evidence; (2) only legacy reads
+  without bounds fall through to the completion-based rules (the round-15/16 instant arms, unchanged). The failure's
+  completion instant is metadata about the ERROR — it never gates or filters the identity's collection interval.
+  The in-loop interval arms (the gate shapes, the generation-changed rule, the carried rule, the absent rule) are
+  retained as unreachable defensive fallbacks — the hoist is the single classification entry for interval-bearing
+  carried evidence. Contract basis: §26.7 item 4 (the interval the evidence spans decides; a completion instant of
+  the FAILURE is not the identity's collection bound), item 5 (an ambiguous interval is never resolved by latency).
+  **Version reading: NO version bump** — ordering only.
+- **"When the baseline spans [1000, 3000], a different identity is collected during [1500, 1600], its failing query
+  completes at 2000, and absence is confirmed at 4000…" (P2), FIXED.** **RED** recorded on the pre-round-18 bytes
+  (the reviewer's exact hand-built schedule through the REAL adjudicator seam): `['disappeared', null]`. **GREEN:**
+  `['unestablished', 'pid-start-identity-ambiguous']` (tests/shell-wait-local-process.test.mjs:2705). **The
+  reviewer's named second regression** — the same schedule family with the failure completing BEFORE the baseline
+  completion (failure 2500 < 3000, intervals still overlapping) — **RED** `['disappeared', null]` → **GREEN**
+  `['unestablished', 'pid-start-identity-ambiguous']` (:2747): completion latency no longer determines the verdict.
+  **The third control pinned** (tests/shell-wait-local-process.test.mjs:2786): a failing query whose replacement
+  was collected [500, 900] — strictly before the baseline's dispatch 1000, truly disjoint — classifies STALE
+  through the classify-first path and the lawful `['disappeared', null]` holds.
+- **Site audit (every consumer of `carriedIdentityIntervalClass`, grep-verified):** the classifier is defined once
+  (:2074) and consumed at SIX sites — the new CLASSIFY-FIRST hoist (:2131-2170, the ordering entry for ALL
+  interval-bearing carried evidence: carried-different unestablished reads, promoted generation-changed reads, and
+  identity-bearing absent verdicts), the gate's generation-changed shape (:2165), the gate's carried-identity shape
+  (:2191), the identity-bearing ABSENT rule (:2283), the generation-changed rule (:2330) and the carried-identity
+  rule (:2359) — the last five are the in-loop fallbacks, now reachable ONLY by legacy reads (no interval bound),
+  whose completion-based gate/filter ordering is the intended legacy semantics (the round-15/16 instant rules).
+  The ABSENT rule was included in the hoist (not just the named carried-failure site): an absence confirmation
+  completing before the horizon had the identical bypass shape for its carried identity.
+- **Prior-counterexample re-run (all by name on the amended bytes, all ✔ — 187 matching pins):** the complete
+  standing table from §28.9–§28.23 (all marker/parent/child family schedules and positives, capture-before-writer
+  both hops, ALL latch families — mid-double-read, observed-then-gone, ordinary-I/O, never-resetting — the
+  cross-second marker schedule, stale-marker/PID-reuse, ground truth, PID-reuse-child-foreign, outside-presence,
+  coarse-contradiction, foreign-scope/wrong-role, the three join-refusal branches, route-(b) positives, scheduling
+  independence, precise-instants-absent, reparenting-preserved, guarded-resolver named-absent, the round-13
+  disappeared regression, the round-14 overlap/promotion/collected-after schedules, the round-15 overlap-absence
+  and legacy-recency pins, the round-16 tie and refusal-only pins, the round-17 schedule and its two boundary
+  controls, the REAL chains, the observation-layer reparenting polarity and its no-over-correction latch, the
+  round-22 tie-latch and old-evidence pins) PLUS the three round-18 pins. **Standing-pin movements: NONE** — the
+  round-17 schedule (its failure completing AFTER the baseline) classifies identically through the hoist; every
+  definitively-disjoint schedule stays stale; every already-ambiguous schedule stays ambiguous.
+- **Gates on the amended bytes (executed 2026-11-04):** focused `same-second-completion` = **61 tests, 61 pass,
+  0 fail** (58 prior + the two classify-first regressions and the disjoint control, by name visible); `node --test
+  tests/test-selection.test.mjs` = **6/6, exit 0**; `npm run lint` exit 0; `npm run typecheck` exit 0;
+  `git diff --check` exit 0.
+- **Battery line (the runs §28.24's gate entry awaits):** full local-process entry, SOLO run on the amended bytes =
+  **355 tests, 355 pass, 0 fail, 0 skipped, exit 0** (the prior 352 + the three round-18 regressions/pins; no
+  flake, no concurrency).
+
+### 28.25 Codex-review round 19 corrections (2026-11-04, two findings; §28.24 style; the replay-agreement rule + the emitter label rule; add-only)
+
+- **Finding 1 [P2 — persisted replay ignores the collection interval] — FIXED by the replay-agreement rule: the
+  persisted replay applies the SAME interval-to-interval classification as the runtime.** The replay's
+  carried-identity staleness comparison (driver.mjs, the exit-reuse latch inside
+  `joinRecordLocalProcessDuties`) dated the replacement at its DISPATCH alone (`observedIdentityReadEpochMs`) and
+  skipped it whenever that instant preceded the presence horizon — so a replacement whose collection INTERVAL
+  overlapped the presence's own window (presence [1900, 2100]; replacement collection [1800, 2200]; failure
+  completing 2400) vanished from the replay while the runtime adjudication on the SAME schedule returns
+  `pid-start-identity-ambiguous`: a persisted summary claiming disappeared received settlement credit. **The rule
+  now (driver.mjs:6030-6051):** when a replacement-detecting read carries its collection interval
+  (`observedIdentityCompletedEpochMs`) and the presence verdict carries its dispatch bound (`readStartedEpochMs`),
+  the latch classifies interval-to-interval — a collection window OVERLAPPING the presence's own collection window
+  refuses `exit-reuse-interval-ambiguous` (the fresh named refusal, the exit-reuse family discipline); only a
+  collection completing STRICTLY before the presence's dispatch is definitively stale (the skip below, unchanged);
+  a collection starting at/after the horizon latches (tie-inclusive, unchanged). **Runtime/offline agreement is the
+  frozen clause (§26.7 + plan Task 3): replay re-adjudicates from its own fields — runtime AMBIGUITY survives
+  persistence, never downgraded to a settled disappearance.** **Version reading: NO VERSION BUMP** — the interval
+  bounds ALREADY ride existing persisted verdict fields (`observedIdentityReadEpochMs` since round 28/31;
+  `observedIdentityCompletedEpochMs` since the round-14 carried interval; the presence's `readStartedEpochMs`/
+  `identityReadEpochMs` since the §25.4 item-6 registration) — the fix CONSUMES them; no persisted-shape member is
+  added, so per §26.7 item 2 no version event applies. **RED** recorded on the pre-round-19 bytes through the REAL
+  persistence shapes (the armed replay record + the injected carried read — the exact block format the runtime
+  serializes; serialize → reload via cleanCopy): the runtime agreement pin (adjudicateLocalExit on the same
+  schedule) returns `pid-start-identity-ambiguous` while the replay returned `settled: true, refusals: []`.
+  **GREEN:** `settled: false` with `exit-reuse-interval-ambiguous` surfaced, PLUS the definitely-stale control (a
+  replacement collected [1500, 1850] — strictly before the presence's dispatch 1900 — is old evidence and the
+  lawful settlement holds, unchanged) (tests/shell-wait-local-process.test.mjs:6899).
+- **"a persisted summary claiming disappeared still receives settled: true, while adjudicateLocalExit correctly
+  returns pid-start-identity-ambiguous" — resolved by the above; the replay and the runtime now agree on every
+  interval relationship (stale / post-baseline latch / overlap-ambiguous).**
+- **Finding 2 [P2 — ordinary inspection failures misclassified as nonce contradictions] — FIXED by the label rule:
+  the contradiction flag is set ONLY by an actual nonce VERIFICATION failure.** The emitter's poll catch set
+  `childNonceContradiction = true` UNCONDITIONALLY on every inspection error, so budget expiry reported
+  `spawn-witness-child-nonce-mismatch` even when the environment was never inspected (a seam that verifies the
+  writer but throws an ordinary OS-query error from every child read reproduced it). **The rule now**
+  (local-process-observation.mjs:1238-1244): the flag is set only when the error is the inspector's canonical
+  nonce-verification failure class (`/nonce identity verification failed/u` — a seen child whose nonce contradicted
+  the expectation); failed or torn identity queries keep the budget-expiry label
+  **`spawn-witness-child-unverifiable`** (the registered unverified label — no-fold: the real contradiction label is
+  never replaced, and unsupported scope-mismatch evidence is never asserted). **The mixed history still
+  classifies the contradiction:** one real nonce-verification failure among ordinary failures keeps
+  `spawn-witness-child-nonce-mismatch` (the flag is monotone within the poll). **RED** recorded on the
+  pre-round-19 bytes through the REAL emitter seam (the writer verified; every child ps read throwing an ordinary
+  error; budget expiry): `spawn-witness-child-nonce-mismatch`. **GREEN:** `spawn-witness-child-unverifiable`, no
+  witness file (:14964); the MIXED pin (a pid-aware runProcess seam — the writer's env carries the capture nonce,
+  the child's env lacks the child nonce, so attempt 1's nonce verification genuinely fails; later attempts throw
+  ordinary errors) passes on BOTH sides of the fix — it passed pre-fix (the unconditional flag) and post-fix (the
+  real contradiction is retained) (:14994).
+- **Latch families verified unaffected:** the mid-double-read `'identity changed'` latch (decided before the flag,
+  unchanged); the round-6/8 retained-identity latches (the retained-and-compare logic is untouched — only the
+  FLAG's condition changed); the budget-expiry unverifiable pins (the pid-4000000 shape returns undefined reads,
+  not errors — no flag, unchanged); the round-5/8 ordinary-I/O + later-V2 latch schedules (they latch at the
+  retained-vs-success comparison BEFORE expiry — unchanged).
+- **Prior-counterexample re-run (all by name on the amended bytes, all ✔ — 190 matching pins incl. the complete
+  task-2 exit family):** the complete standing table from §28.9–§28.24 (all marker/parent/child family schedules
+  and positives, capture-before-writer both hops, ALL latch families, the cross-second marker schedule,
+  stale-marker/PID-reuse, ground truth, PID-reuse-child-foreign, outside-presence, coarse-contradiction,
+  foreign-scope/wrong-role, the three join-refusal branches, route-(b) positives, scheduling independence,
+  precise-instants-absent, reparenting-preserved, guarded-resolver named-absent, the round-13 disappeared
+  regression, the round-14/15/16/17/18 schedules and controls, the REAL chains, the observation-layer reparenting
+  polarity, the round-22 tie-latch/old-evidence pins, the classify-first schedules) PLUS the three round-19 pins.
+  **Standing-pin movements: NONE** — the definitely-stale replay control pins the preserved skip; every latch
+  family keeps its verdict.
+- **Gates on the amended bytes (executed 2026-11-04):** focused `same-second-completion` = **63 tests, 63 pass,
+  0 fail** (61 prior + the two round-19 regressions — the replay-agreement F6 pin and the emitter label pin — plus
+  the mixed-history polarity pin, by name visible); `node --test tests/test-selection.test.mjs` = **6/6, exit 0**;
+  `npm run lint` exit 0; `npm run typecheck` exit 0; `git diff --check` exit 0.
+- **Battery lines (the runs §28.25's gate entries await):** full local-process entry, SOLO run on the amended bytes
+  = **358 tests, 358 pass, 0 fail, 0 skipped, exit 0** (the prior 355 + the three round-19 pins; no flake, no
+  concurrency). The Finding-1 replay change touches `driver.mjs`'s replay comparison, so the NATIVE-INTERRUPTION
+  suite (Task 2's file, consumed read-only — no edit, no pin conflict) was ALSO run solo on the amended bytes:
+  **98 tests, 98 pass, 0 fail, 0 skipped, exit 0** — Task 2's pins are unaffected by the replay-agreement rule.
+
+### 28.26 Codex-review round 20 correction (2026-11-04, one finding; §28.25 style; the classifier's input validation — malformed intervals never enable discarding; add-only)
+
+- **Finding [P2 — inverted carried interval silently classified stale] — FIXED by the classifier's input
+  validation with a DEDICATED named inconsistency refusal.** The round-14→19 interval classifier consumed the
+  carried collection interval WITHOUT validating it: an INVERTED interval (the carried identity's taken instant
+  3500 following its completion 500 — a backwards-moving or garbage clock) classified as definitively stale (its
+  completion preceded the presence's dispatch), the replacement was discarded, and the adjudication returned
+  `disappeared` instead of refusing the inconsistent evidence. **The rule now**
+  (local-process-observation.mjs:2090-2105): the classifier validates its INPUT at entry — ORDERED: the carried
+  identity's taken instant must not follow its completion — and an interval failing the check is INCONSISTENT
+  EVIDENCE: the stale/discard path is FORBIDDEN for malformed input; every consumer refuses by name
+  **`pid-start-identity-interval-inconsistent`** — never disappeared, never reused, never ambiguous-folded. The
+  dedicated label is MY CHOICE per the §26.7 item-5 no-fold discipline (malformed evidence is a distinct
+  contradiction from generation ambiguity, symmetric to the replay's own
+  `exit-reuse-carried-instant-outside-interval` refusal for the same malformed-input shape), and validation lives
+  at the CLASSIFIER'S ENTRY (consumption-side): all seven consumer sites (the round-18 hoist + the five in-loop
+  arms + the absent rule) inherit it, no persisted-shape member is added or rejected at construction, so per
+  §26.7 item 2 **NO VERSION BUMP** applies (a construction-side rejection changes nothing persisted either —
+  real producers cannot emit inverted intervals, since the inspector samples the taken instant before the
+  resolved instant with its own monotonic-enough clock; the malformed shapes are torn/garbage-clock evidence).
+- **"If the carried timestamps are inverted, this classifier silently treats replacement evidence as stale…"
+  (P2), FIXED.** **RED** recorded on the pre-round-20 bytes with the reviewer's exact schedule (presence
+  [1000, 3000]; a different identity carrying the inverted [3500, 500]; absence confirmed 5000):
+  `['disappeared', null]`. **GREEN:** `['unestablished', 'pid-start-identity-interval-inconsistent']`
+  (tests/shell-wait-local-process.test.mjs:2823). **The BASE-EQUIVALENCE pin (the reviewer's stated base
+  behavior):** the SAME replacement WITHOUT the upper bound (the legacy instant 3500 only) still LATCHES
+  `pid-start-identity-reused` — the validation never changes legacy classification. **The well-formed control:** an
+  ordered, contained interval [3500, 3600] classifies exactly as the standing rules — definitively post-baseline,
+  latch.
+- **Adjudicated WITHIN this round (evidence-based): the PLAUSIBLE containment check REJECTED as unsound.** The
+  finding offered a containment variant (the interval within the carrying verdict's [readStartedEpochMs,
+  readEpochMs] window). Implementing it falsified FOUR standing nonce-mismatch pins: the inspector's
+  taken/resolved instants ride the inspector's own real clock while the verdict's read stamps can ride a synthetic
+  `nowEpochMs` clock (the fixtures' clock seam), so a cross-domain containment comparison is an IMPLICIT CLOCK
+  JOIN — §26.7 item 4 forbids implicit clock joins, and the standing pins demonstrated it condemns real evidence
+  (a real [now, now] interval inside a synthetic [2000, 2000] window reads as "beyond the observation window").
+  The order check is SAME-DOMAIN (both bounds sampled by the inspector's own clock) and sound; the reviewer's
+  inverted schedule is caught by it. The containment rejection and its evidence are registered here and in the
+  classifier's comment; the test documents the adjudication (an ordered interval that exceeds a synthetic read
+  stamp classifies by the standing rules — post latch).
+- **Prior-counterexample re-run (all by name on the amended bytes, all ✔ — 194 matching pins):** the complete
+  standing table from §28.9–§28.25 (all marker/parent/child family schedules and positives, capture-before-writer
+  both hops, ALL latch families, the cross-second marker schedule, stale-marker/PID-reuse, ground truth,
+  PID-reuse-child-foreign, outside-presence, coarse-contradiction, foreign-scope/wrong-role, the three
+  join-refusal branches, route-(b) positives, scheduling independence, precise-instants-absent,
+  reparenting-preserved, guarded-resolver named-absent, the round-13 disappeared regression, the
+  round-14/15/16/17/18 schedules and controls, the REAL chains, the observation-layer reparenting polarity, the
+  round-22 tie-latch/old-evidence pins, the classify-first schedules, the round-19 replay pins and the
+  mixed-history polarity) PLUS the round-20 inverted-interval pin, its base-equivalence pin and its well-formed
+  control. **Standing-pin movements: NONE** — the four transitional failures observed during the round were the
+  rejected containment check's own false condemnations (real same-domain intervals in synthetic-clock fixtures),
+  eliminated by the adjudicated order-only rule; no pinned outcome changed.
+- **Gates on the amended bytes (executed 2026-11-04):** focused `same-second-completion` = **64 tests, 64 pass,
+  0 fail** (63 prior + the inverted-interval regression with its base-equivalence and well-formed controls, by
+  name visible); `node --test tests/test-selection.test.mjs` = **6/6, exit 0**; `npm run lint` exit 0;
+  `npm run typecheck` exit 0; `git diff --check` exit 0.
+- **Battery line (the runs §28.26's gate entry awaits):** full local-process entry, SOLO run on the amended bytes =
+  **359 tests, 359 pass, 0 fail, 0 skipped, exit 0** (the prior 358 + the round-20 regression; no flake, no
+  concurrency).
+
+### 28.27 Codex-review round 21 correction (2026-11-04, one finding; §28.26 style; the replay-side mirror of the round-20 ordered validation — replay-agreement completion; add-only)
+
+- **Finding [P2 — replay discards inverted intervals without validation] — FIXED by the mirrored ordered
+  validation in the replay's carried-identity comparison.** The round-19 replay-agreement comparison dated the
+  replacement at its dispatch alone and skipped anything before the horizon WITHOUT validating the interval's
+  ORDER: an INVERTED carried interval (the taken instant 1500 following its completion 1400 — a backwards-moving
+  or garbage clock) was stale-skipped into settlement credit, while the runtime classifier on the same evidence
+  returns `pid-start-identity-interval-inconsistent` (the round-20 rule). **The rule now**
+  (driver.mjs:6031-6043, immediately before the round-19 interval classification and the stale skip): a
+  replacement-detecting read carrying BOTH interval bounds with the lower EXCEEDING the completion is INCONSISTENT
+  EVIDENCE — the summary refuses **`exit-reuse-interval-inconsistent`** (the exit-reuse family mirror of the
+  runtime's `pid-start-identity-interval-inconsistent`; no-fold: malformed input is a distinct contradiction, never
+  folded into stale, ambiguous, or the latch), settlement refused, never classified stale, never skipped into
+  credit. Well-formed intervals classify exactly as the round-19 rules already do. Placement: BEFORE the
+  classification and the skip, per the finding ("before classifying or skipping it") and the round-18
+  classify-first ordering discipline. **Version reading: NO VERSION BUMP** — the validation consumes the existing
+  persisted bounds (`observedIdentityReadEpochMs` + `observedIdentityCompletedEpochMs`); no persisted-shape change.
+- **"For a presence interval [1900, 2100] and replacement evidence carrying an inverted interval [1500, 1400],
+  this check treats the replacement as stale and allows a persisted disappeared summary to receive settled: true…"
+  (P2), FIXED.** **RED** recorded on the pre-round-21 bytes through the REAL persistence shapes (the armed replay
+  record + the injected inverted carried read; serialize → reload via cleanCopy; the RUNTIME/REPLAY AGREEMENT pin:
+  the runtime classifier on the same evidence returns `pid-start-identity-interval-inconsistent`):
+  `settled: true, refusals: []`. **GREEN:** `settled: false` with `exit-reuse-interval-inconsistent` surfaced
+  (tests/shell-wait-local-process.test.mjs:7045). **The WELL-FORMED replay controls pinned (round-19, carried):**
+  an ordered OVERLAPPING interval [1800, 2200] keeps `exit-reuse-interval-ambiguous` (settled: false) and an
+  ordered DEFINITIVELY-STALE interval [1500, 1850] keeps the lawful settlement (settled: true) — both unchanged.
+- **Runtime/replay agreement (the frozen clause, now complete):** the same carried evidence classifies identically
+  on both sides for every interval relationship — definitively stale ⇒ skipped (lawful settlement); overlapping ⇒
+  ambiguous (`pid-start-identity-ambiguous` runtime / `exit-reuse-interval-ambiguous` replay); definitively
+  post-baseline ⇒ the reuse latch; INVERTED/malformed ⇒ inconsistent (`pid-start-identity-interval-inconsistent`
+  runtime / `exit-reuse-interval-inconsistent` replay).
+- **Prior-counterexample re-run (all by name on the amended bytes, all ✔ — 195 matching pins incl. the complete
+  task-2 exit family):** the complete standing table from §28.9–§28.26 (all marker/parent/child family schedules
+  and positives, capture-before-writer both hops, ALL latch families, the cross-second marker schedule,
+  stale-marker/PID-reuse, ground truth, PID-reuse-child-foreign, outside-presence, coarse-contradiction,
+  foreign-scope/wrong-role, the three join-refusal branches, route-(b) positives, scheduling independence,
+  precise-instants-absent, reparenting-preserved, guarded-resolver named-absent, the round-13 disappeared
+  regression, the round-14/15/16/17/18 schedules and controls, the REAL chains, the observation-layer reparenting
+  polarity, the round-22 tie-latch/old-evidence pins, the classify-first schedules, the round-19 replay pins and
+  the mixed-history polarity, the round-20 inverted-interval pin with its base-equivalence pin and well-formed
+  control) PLUS the round-21 inverted-replay pin with its two well-formed replay controls. **Standing-pin
+  movements: NONE** — the F6 pins (overlap-ambiguous and definitely-stale) and every legacy/instant pin are
+  byte-identical; only the new inverted-replay schedule changed.
+- **Gates on the amended bytes (executed 2026-11-04):** focused `same-second-completion` = **64 tests, 64 pass,
+  0 fail** (63 prior… the focused family count is unchanged: the F7 replay pin rides the round-3 replay describe,
+  not the same-second-completion pattern; the same-second-completion family re-verified **64 pass, 0 fail**);
+  `node --test tests/test-selection.test.mjs` = **6/6, exit 0**; `npm run lint` exit 0; `npm run typecheck`
+  exit 0; `git diff --check` exit 0.
+- **Battery lines (the runs §28.27's gate entries await):** full local-process entry, SOLO run on the amended
+  bytes = **360 tests, 360 pass, 0 fail, 0 skipped, exit 0** (the prior 359 + the round-21 replay regression; no
+  flake, no concurrency). The replay change touches `driver.mjs`'s replay comparison (Task-3-owned replay lines
+  only), so the NATIVE-INTERRUPTION suite (Task 2's file, consumed read-only — no edit, no pin conflict) was ALSO
+  run solo on the amended bytes: **98 tests, 98 pass, 0 fail, 0 skipped, exit 0** (an interleaved first attempt
+  reported 96 while the local-process SOLO was still draining; the clean solo re-run is the recorded 98/98) —
+  Task 2's pins are unaffected by the mirrored ordered validation.
+
+### 28.28 Codex-review round 22 correction (2026-11-04, one finding; §28.27 style; the fallback-branch completion of the round-21 replay ordered-validation; add-only)
+
+- **Finding [P2 — the inversion check skips the fallback lower bound] — FIXED by validating the RESOLVED carried
+  lower bound.** The round-21 ordered validation required the EXPLICIT `observedIdentityReadEpochMs` field, so a
+  PARTIALLY torn persisted read that OMITS it fell through the check entirely: the carried lower bound silently
+  falls back to `identityReadEpochMs` (the same fallback `carriedInstant` performs for the latch), and with the
+  fallback lower 1500 inverted against the carried upper (`observedIdentityCompletedEpochMs` 1400) the replay
+  stale-skipped the replacement (1500 < the horizon 2100) and an otherwise-coherent summary claiming disappeared
+  received settlement credit — while the runtime classifier resolves the SAME fallback (`carriedIdentityEpochMs`:
+  observedIdentityReadEpochMs, else identityEvidenceEpochMs) and returns
+  `pid-start-identity-interval-inconsistent`. **The rule now** (driver.mjs:6031-6046): the ordered validation
+  consumes the RESOLVED carried lower bound (`carried` — the identical fallback chain the runtime's
+  `carriedIdentityEpochMs` performs) against `observedIdentityCompletedEpochMs`: a resolved-inverted interval is
+  INCONSISTENT EVIDENCE — settlement refused with the carried `exit-reuse-interval-inconsistent` label (the
+  round-21 pattern), never stale-skipped into credit, never latched. Well-formed resolved intervals keep the
+  round-19/21 classifications byte-identical. Placement: the same site (the check now consumes the resolved
+  bound), preserving the round-18 classify-first ordering (the validation still precedes the classification and
+  the skip). **Version reading: NO VERSION BUMP** — consumption-side resolution of existing persisted fields.
+- **"When a persisted replacement read omits observedIdentityReadEpochMs, carriedInstant supports falling back to
+  identityReadEpochMs, but this inversion check skips that fallback…" (P2), FIXED.** **RED** recorded on the
+  pre-round-22 bytes through the REAL persistence shapes (the armed replay record + the injected partially torn
+  read: observedIdentityReadEpochMs omitted, identityReadEpochMs 1500 (the fallback lower), observedIdentity-
+  CompletedEpochMs 1400, readEpochMs 2400; serialize → reload via cleanCopy; the RUNTIME/REPLAY AGREEMENT pin: the
+  runtime resolves the same fallback and returns `pid-start-identity-interval-inconsistent`): `settled: true,
+  refusals: []`. **GREEN:** `settled: false` with `exit-reuse-interval-inconsistent` surfaced
+  (tests/shell-wait-local-process.test.mjs:7127). **The CONTROL pinned in the same test:** a torn record whose
+  RESOLVED interval is WELL-FORMED (fallback lower 1800, upper 2200 — overlapping the presence window) classifies
+  by the NORMAL interval rules — `exit-reuse-interval-ambiguous` (settled: false), unchanged.
+- **Runtime/replay agreement (the frozen clause, maintained):** the resolved lower bound is resolved by the SAME
+  fallback chain on both sides, so every interval relationship — definitively stale, overlapping, post-baseline,
+  and now inverted/malformed — classifies identically (the runtime labels vs the exit-reuse family mirrors).
+- **Prior-counterexample re-run (all by name on the amended bytes, all ✔ — 196 matching pins incl. the complete
+  task-2 exit family):** the complete standing table from §28.9–§28.27 (all marker/parent/child family schedules
+  and positives, capture-before-writer both hops, ALL latch families, the cross-second marker schedule,
+  stale-marker/PID-reuse, ground truth, PID-reuse-child-foreign, outside-presence, coarse-contradiction,
+  foreign-scope/wrong-role, the three join-refusal branches, route-(b) positives, scheduling independence,
+  precise-instants-absent, reparenting-preserved, guarded-resolver named-absent, the round-13 disappeared
+  regression, the round-14/15/16/17/18 schedules and controls, the REAL chains, the observation-layer reparenting
+  polarity, the round-22 tie-latch/old-evidence pins, the classify-first schedules, the round-19 replay pins and
+  the mixed-history polarity, the round-20 inverted pin with its base-equivalence pin and well-formed control,
+  the round-21 direct-inverted pin with its two well-formed replay controls) PLUS the round-22
+  fallback-inverted pin with its well-formed-resolved control. **Standing-pin movements: NONE** — the F7
+  direct-inverted pin still latches its refusal byte-identically (the check is strictly broader: an explicit
+  observed lower bound resolves to itself); the F6 overlap/stale controls and every legacy pin unchanged.
+- **Gates on the amended bytes (executed 2026-11-04):** focused `same-second-completion` = **64 tests, 64 pass,
+  0 fail** (the count unchanged: the F8 pin rides the round-3 replay describe, verified passing there);
+  `node --test tests/test-selection.test.mjs` = **6/6, exit 0**; `npm run lint` exit 0; `npm run typecheck`
+  exit 0; `git diff --check` exit 0.
+- **Battery lines (the runs §28.28's gate entries await):** full local-process entry, SOLO run on the amended
+  bytes = **361 tests, 361 pass, 0 fail, 0 skipped, exit 0** (the prior 360 + the round-22 regression; no flake,
+  no concurrency). The replay change touches `driver.mjs`'s replay comparison (Task-3-owned replay lines only),
+  so the NATIVE-INTERRUPTION suite (Task 2's file, consumed read-only — no edit, no pin conflict) was ALSO run
+  solo on the amended bytes: **98 tests, 98 pass, 0 fail, 0 skipped, exit 0** (Task 2's pins are unaffected by
+  the resolved-bound validation).
+
+### 28.29 Codex-review round 23 correction (2026-11-04, one finding, two sides; §28.28 style; the three-state bound resolution — absent vs supplied-valid vs supplied-invalid; add-only)
+
+- **Finding [P2 — supplied non-integer upper bound bypasses validation and classification] — FIXED by the
+  THREE-STATE BOUND RESOLUTION on BOTH sides.** The safe-integer guards conflated two distinct shapes: a bound
+  that is ABSENT (undefined/null — the genuine legacy shape) and a bound that is SUPPLIED INVALID (present but not
+  a positive safe integer — a string, a float, NaN, a non-positive value). The guards treated both as absent, so a
+  replacement read supplying the STRING upper bound "2200" was legacy-classified (the round-15/16 instant rules),
+  stale-discarded (its dispatch 1800 precedes the horizon 2100), and the adjudication returned `disappeared` —
+  while the numeric 2200 correctly classifies ambiguous; the replay's settlement comparison had the identical
+  bypass (`settled: true` for the string shape, ambiguous for the numeric). **The rule now (BOTH sides,
+  identically):** (1) ABSENT (undefined/null) → the round-15/16 instant rules apply, UNCHANGED; (2) SUPPLIED VALID
+  (a positive safe integer — positive plausibility added: an epoch-ms collection instant is positive by
+  definition, so 0/negative is garbage evidence) → the interval classification applies, UNCHANGED; (3) SUPPLIED
+  INVALID → MALFORMED EVIDENCE refusing by name — **`pid-start-identity-interval-inconsistent`** on the runtime
+  (the classifier, local-process-observation.mjs:2087-2106, resolving BOTH the upper and the explicit lower bound)
+  and **`exit-reuse-interval-inconsistent`** on the replay (the settlement comparison, driver.mjs:6032-6049,
+  refusing either a malformed upper or a malformed explicit lower) — never silently downgraded to absent, never
+  stale-discarded, never settled. Runtime and replay resolve identically (the frozen replay-agreement clause).
+  **Version reading: NO VERSION BUMP** — consumption-side resolution of the existing fields; no persisted-shape
+  change (the same clause as rounds 20–22).
+- **"When a replacement read supplies a non-integer observedIdentityCompletedEpochMs, the safe-integer guards skip
+  interval validation and classification, allowing malformed evidence to be discarded as stale…" (P2), FIXED on
+  both sides.** **RED (a, runtime)** recorded on the pre-round-23 bytes (presence [1900, 2100]; the replacement
+  lower 1800; upper "2200"; completion 2400): `['disappeared', null]`. **GREEN:** the classifier resolves the
+  string as SUPPLIED INVALID → `['unestablished', 'pid-start-identity-interval-inconsistent']`
+  (tests/shell-wait-local-process.test.mjs:2901). **RED (b, replay)** on the armed fixture with the same shapes:
+  `settled: true, refusals: []`. **GREEN:** `settled: false` with `exit-reuse-interval-inconsistent`
+  (:7264). **The controls pinned (both tests):** the ABSENT variant (no upper bound) keeps the legacy
+  classification — runtime: the lawful `disappeared`; replay: the lawful stale skip with `settled: true` —
+  UNCHANGED; the SUPPLIED-VALID variant (numeric 2200) keeps the ambiguous refusal — UNCHANGED; the float 2200.5
+  and negative -2200 variants refuse the inconsistent classification on both sides.
+- **Prior-counterexample re-run (all by name on the amended bytes, all ✔ — 197 matching pins incl. the complete
+  task-2 exit family):** the complete standing table from §28.9–§28.28 (all marker/parent/child family schedules
+  and positives, capture-before-writer both hops, ALL latch families, the cross-second marker schedule,
+  stale-marker/PID-reuse, ground truth, PID-reuse-child-foreign, outside-presence, coarse-contradiction,
+  foreign-scope/wrong-role, the three join-refusal branches, route-(b) positives, scheduling independence,
+  precise-instants-absent, reparenting-preserved, guarded-resolver named-absent, the round-13 disappeared
+  regression, the round-14/15/16/17/18 schedules and controls, the REAL chains, the observation-layer reparenting
+  polarity, the round-22 tie-latch/old-evidence pins, the classify-first schedules, the round-19 replay pins and
+  the mixed-history polarity, the round-20 inverted pin with its base-equivalence pin and well-formed control,
+  the round-21 direct-inverted pin with its controls, the round-22 fallback-inverted pin with its
+  well-formed-resolved control) PLUS the round-23 supplied-invalid pins (runtime string/float/negative, replay
+  string/float) with their absent and supplied-valid controls. **Standing-pin movements: NONE** — the absent and
+  supplied-valid shapes are byte-identical to their pre-round-23 outcomes; only the supplied-invalid schedules
+  (never pinned before) changed.
+- **Gates on the amended bytes (executed 2026-11-04):** focused `same-second-completion` = **65 tests, 65 pass,
+  0 fail** (64 prior + the round-23 three-state regression with its controls, by name visible); `node --test
+  tests/test-selection.test.mjs` = **6/6, exit 0**; `npm run lint` exit 0; `npm run typecheck` exit 0;
+  `git diff --check` exit 0.
+- **Battery lines (the runs §28.29's gate entries await):** full local-process entry, SOLO run on the amended
+  bytes = **363 tests, 363 pass, 0 fail, 0 skipped, exit 0** (the prior 361 + the round-23 three-state regression
+  with its controls; no flake, no concurrency). The replay side touches `driver.mjs`'s settlement comparison
+  (Task-3-owned replay lines only), so the NATIVE-INTERRUPTION suite (Task 2's file, consumed read-only — no
+  edit, no pin conflict) was ALSO run solo on the amended bytes: **98 tests, 98 pass, 0 fail, 0 skipped, exit 0**
+  (Task 2's pins are unaffected by the three-state resolution).
+
+### 28.30 Codex-review round 24 correction (2026-11-04, one finding; §28.29 style; VALIDATE-FIRST — the round-23 three-state validator precedes the recency filter at the gate; add-only)
+
+- **Finding [P2 — recency filter pre-empts the three-state validator] — FIXED by extending the round-18
+  classify-first hoist to fire whenever ANY bound is SUPPLIED (present, non-null), so the three-state resolution
+  (and its inconsistent refusal) runs BEFORE the completion-time gate and the recency filter.** The round-23
+  validator lived inside `carriedIdentityIntervalClass`, which the hoist consulted only when the upper bound was a
+  safe integer — a SUPPLIED-INVALID bound (the string "2000") failed that requirement, the completion-time gate
+  (`identityEvidenceEpochMs(read)` = the failure completion 2000 < the horizon 2100) skipped the shape arms, the
+  recency filter discarded the carried evidence, and the adjudication returned `disappeared` — while the NUMERIC
+  2000 correctly classified ambiguous. **The decision order at the site is now exactly the round-18 discipline:**
+  (1) the three-state bound resolution first — supplied-invalid ⇒ the inconsistent refusal
+  (`pid-start-identity-interval-inconsistent`), supplied-valid ⇒ the interval classification
+  (overlap-ambiguous / post-latch / stale-non-deciding), completed-absent-with-lower-supplied ⇒ the classifier's
+  'legacy' (the completion-based legacy pipeline below governs unchanged — the hoist never touches legacy
+  classification; a transitional defect where the hoist's stale arm swallowed classifier-'legacy' reads was caught
+  by the round-20 base-equivalence pin during this round's focused run and fixed by the explicit legacy
+  fall-through); (2) only absent-legacy evidence proceeds to the instant rules. **Version reading: NO VERSION
+  BUMP** — ordering only.
+- **"When a replacement read completes before the presence horizon, a supplied non-integer upper bound bypasses
+  this gate and is subsequently discarded by the recency filter…" (P2), FIXED.** **RED** recorded on the
+  pre-round-24 bytes with the reviewer's exact schedule (presence [1900, 2100]; replacement lower 1800; upper
+  "2000" [string]; completion 2000; a later confirmed absence): `['disappeared', null]`. **GREEN:**
+  `['unestablished', 'pid-start-identity-interval-inconsistent']`
+  (tests/shell-wait-local-process.test.mjs:2969). **The controls pinned in the same test:** the numeric-2000
+  variant keeps the ambiguous refusal (unchanged); the ABSENT variant keeps the legacy classification (the lawful
+  `disappeared`, unchanged); a definitively-stale well-formed replacement ([500, 900], strictly before the
+  presence dispatch) keeps the lawful `disappeared` (unchanged).
+- **Site audit (the replay side): ALREADY VALIDATE-FIRST — pinned as such, no replay change.** The round-23
+  three-state block sits at the TOP of the driver's latch loop (driver.mjs:6032-6049), immediately after the
+  resolved-bound computation and BEFORE the round-21 ordered validation, the round-19 interval classification, and
+  the stale skip; the only guards preceding it REFUSE BY NAME (`exit-reuse-carried-instant-outside-interval` for a
+  supplied-non-integer lower, `exit-reuse-read-instant-unprovable` for an unprovable completion) — never a
+  discard — so a malformed bound can never be stale-skipped into credit on the replay side either. **The
+  already-correct pin added to F9** (tests/shell-wait-local-process.test.mjs, the round-19 describe): a
+  supplied-invalid upper bound ("2000") whose failure completes BEFORE the horizon still refuses
+  `exit-reuse-interval-inconsistent` (settled: false).
+- **Prior-counterexample re-run (all by name on the amended bytes, all ✔ — 198 matching pins incl. the complete
+  task-2 exit family):** the complete standing table from §28.9–§28.29 (all marker/parent/child family schedules
+  and positives, capture-before-writer both hops, ALL latch families, the cross-second marker schedule,
+  stale-marker/PID-reuse, ground truth, PID-reuse-child-foreign, outside-presence, coarse-contradiction,
+  foreign-scope/wrong-role, the three join-refusal branches, route-(b) positives, scheduling independence,
+  precise-instants-absent, reparenting-preserved, guarded-resolver named-absent, the round-13 disappeared
+  regression, the round-14/15/16/17/18 schedules and controls, the REAL chains, the observation-layer reparenting
+  polarity, the round-22 tie-latch/old-evidence pins, the classify-first schedules, the round-19 replay pins and
+  the mixed-history polarity, the round-20 inverted pin with its base-equivalence pin and well-formed control,
+  the round-21 direct-inverted pin with its controls, the round-22 fallback-inverted pin with its
+  well-formed-resolved control, the round-23 supplied-invalid pins with their absent and supplied-valid controls)
+  PLUS the round-24 validate-first pin with its three controls and the replay already-correct pin. **Standing-pin
+  movements: NONE** — the round-20 base-equivalence pin (transitionally failing during the round) was the legacy
+  fall-through defect above, fixed before the count; every legacy/instant/interval pin is byte-identical.
+- **Gates on the amended bytes (executed 2026-11-04):** focused `same-second-completion` = **66 tests, 66 pass,
+  0 fail** (65 prior + the round-24 validate-first regression with its three controls, by name visible); `node
+  --test tests/test-selection.test.mjs` = **6/6, exit 0**; `npm run lint` exit 0; `npm run typecheck` exit 0;
+  `git diff --check` exit 0.
+- **Battery lines (the runs §28.30's gate entries await):** full local-process entry, SOLO run on the amended
+  bytes = **364 tests, 364 pass, 0 fail, 0 skipped, exit 0** (the prior 363 + the round-24 validate-first
+  regression; no flake, no concurrency). The NATIVE-INTERRUPTION suite (Task 2's file, consumed read-only — no
+  edit, no pin conflict) run solo on the amended bytes: **98 tests, 98 pass, 0 fail, 0 skipped, exit 0** — Task
+  2's pins are unaffected (the replay side required no change; the already-correct pin is test-side in the
+  Task-3-owned file).
+
+### 28.31 Codex-review round 25 corrections (2026-11-04, two findings; §28.30 style; witness-record self-consistency + the replay ordered-horizon mirror; add-only)
+
+- **Finding 1 [P2 — witness child-start after its own capture boundary accepted] — FIXED by the RECORD
+  SELF-CONSISTENCY rule at admission.** The witness record validation accepted a v2 record whose
+  `childOsStartInstantMs` STRICTLY postdated its own `boundaryEpochMs` — a record claiming the child was OBSERVED
+  (the boundary capture) before its earliest possible creation — and such a record could establish the
+  Companion→daemon hop with `witnessClass: 'spawn-boundary-capture'` when the endpoint supplied a compatible earlier
+  start instant (the establishment consumes the ENDPOINT's start instant for the continuity window; the record's own
+  numeric instant was never checked against the boundary). **The rule now**
+  (local-process-observation.mjs:1072-1083, in `validateSpawnWitnessRecord`): for v2 records with a non-null
+  `childOsStartInstantMs`, the instant must NOT STRICTLY postdate `boundaryEpochMs` — equality stays allowed (a
+  child born in the same millisecond as its capture is fine — the module's tie convention; the reviewer's
+  "equality within the coarse semantics" case). A violating record refuses admission with the dedicated label
+  **`spawn-witness-child-start-after-capture`** — MY CHOICE per the established self-contradiction admission-label
+  style (`spawn-witness-write-before-capture` is the writer-side sibling: the write preceding its own capture; this
+  is the child-creation-side sibling: the creation following its own capture), never folded into
+  `spawn-witness-shape-invalid`. **The join-level input contract** re-validates through the same validator (the
+  established fabricated-boolean throw path), so the raw contradictory shape at the join THROWS rather than
+  silently establishing. **The endpoint-consistency coverage (the reviewer's named second half):** the
+  establishment path already binds the record's child generation to the endpoint by the childStartIdentity STRING
+  equality (the identity string IS the generation binding — the round-14 freeze), so a record describing a
+  DIFFERENT generation than the endpoint already refuses `spawn-witness-child-foreign`; the numeric instant's
+  boundary-consistency is the new admission gate, and a boundary-consistent record's instant cannot contradict the
+  endpoint window the establishment consumes (the continuity window consumes the ENDPOINT instant, whose
+  generation is identity-bound). **Version reading: NO VERSION BUMP** — admission-side validation of the existing
+  v2 fields. **RED** recorded on the pre-round-25 bytes with the reviewer's exact record (childOsStartInstantMs
+  9000, boundaryEpochMs 2850) through the REAL admission path: `established` (and the hand-built shape at the join
+  seam established with `witnessClass` — verified in the same RED run). **GREEN:** `['invalid',
+  'spawn-witness-child-start-after-capture']`; the join throws the shape-invalid input contract for the raw shape
+  (tests/shell-wait-local-process.test.mjs:14567). **The controls pinned:** EQUALITY (childOsStartInstantMs 2850
+  === boundaryEpochMs 2850) keeps admitted (the tie convention); BELOW keeps admitted (the standing route-(b)
+  positives: childOsStart 1800 ≤ boundary 2850 — verified unchanged); the round-23-era admission pin re-derived
+  (its fixture's boundary moved after the child start — 1700000000300 > 1700000000000 — the closed-identity
+  assertions unchanged).
+- **Finding 2 [P2 — replay compares every interval against the ORIGINAL baseline instead of the runtime's ordered
+  horizon walk] — FIXED by the ORDERED HORIZON MIRROR in the replay's settlement comparison.** The replay's
+  carried-identity classification compared every interval against the INITIAL baseline
+  (`presenceHorizon`/`presenceVerdict.readStartedEpochMs`) forever, while the runtime ADVANCES its presence horizon
+  with every same-generation established read it processes in decision order and classifies each carried interval
+  against the horizon AS IT STOOD at the carried evidence's own decision instant. **The rule now**
+  (driver.mjs:6028-6060, the mirror block before the round-23/22/19 checks and the stale skip): for each
+  replacement-detecting read, the mirror scans the SAME horizon sources the replay's own walk consumes (the
+  persisted reads plus the refreshed same-generation companion endpoint, same-scope same-generation established,
+  the identity instant contained in its own collection window — the walk's exact guards) and takes the latest
+  presence whose DECISION instant (its identity instant, the ordering source the runtime consumed) does not follow
+  the carried evidence's own decision instant (observedIdentityReadEpochMs, else the absent confirmation, else the
+  identity instant); the round-19 ambiguous condition and the stale skip then classify against the MIRRORED
+  horizon [mirrorStart, mirrorEnd]. **Both sides consume the same persisted fields in the same decision order**
+  (identity instants for ordering; readStarted/identityRead for the horizon window) — the agreement is STRUCTURAL.
+  **Version reading: NO VERSION BUMP** — the ordering is derivable from the existing persisted fields (the same
+  clause as rounds 19–24).
+- **"For an identity-bearing absent read using the supported identityReadEpochMs fallback, replay can reject a
+  runtime-established disappearance…" (P2), FIXED.** **RED** recorded on the pre-round-25 bytes through the REAL
+  persistence path (the armed replay record + the injected identity-bearing absent read — collection [1800, 2200]
+  via the identityReadEpochMs fallback, confirmation completing 5100 — with the recorded refresh [4600, 4650];
+  serialize → reload): the replay returned `exit-reuse-interval-ambiguous` (settled false) while the runtime on
+  the same persisted sequence classifies the carried interval STALE against the REFRESHED horizon (its decision
+  instant 5100 sorts after the refresh's 4650) and credits the lawful disappearance (`['disappeared', null]` with
+  the base confirmed absence [4900, 5100] in the sequence). **GREEN:** the replay mirrors the ordered walk — the
+  interval classified stale (non-deciding), the base absence correlated, and **the lawful disappearance settlement
+  STANDS (settled: true)** — runtime and replay AGREE (tests/shell-wait-local-process.test.mjs:7411). **The
+  ordering control pinned:** a carried interval whose decision instant sorts AFTER the refresh (collected [4700,
+  4800]) classifies against the REFRESHED horizon exactly as the runtime does — definitively post-baseline,
+  `exit-reuse-latched` (settled: false). **Honest note (the reviewer's anticipated outcome corrected
+  empirically):** the reviewer's parenthetical anticipated the stale classification to yield a settled
+  `disappeared`; empirically the runtime ALSO credits the disappearance (the stale carried evidence is discarded
+  and the base absence [4900, 5100] is after the refreshed horizon) — so the mirror yields settled: true WITH the
+  runtime, which is the agreement the frozen clause requires.
+- **Prior-counterexample re-run (all by name on the amended bytes, all ✔ — 200 matching pins incl. the complete
+  task-2 exit family):** the complete standing table from §28.9–§28.30 (all marker/parent/child family schedules
+  and positives, capture-before-writer both hops, ALL latch families, the cross-second marker schedule,
+  stale-marker/PID-reuse, ground truth, PID-reuse-child-foreign, outside-presence, coarse-contradiction,
+  foreign-scope/wrong-role, the three join-refusal branches, route-(b) positives, scheduling independence,
+  precise-instants-absent, reparenting-preserved, guarded-resolver named-absent, the round-13 disappeared
+  regression, the round-14/15/16/17/18 schedules and controls, the REAL chains, the observation-layer reparenting
+  polarity, the round-22 tie-latch/old-evidence pins, the classify-first schedules, the round-19 replay pins and
+  the mixed-history polarity, the round-20 inverted pin with its base-equivalence pin and well-formed control, the
+  round-21/22 replay pins, the round-23 supplied-invalid pins with their controls, the round-24 validate-first pin
+  with its controls) PLUS the round-25 admission pin (postdates/equality/join-throw), the F10 mirror pin and the
+  post-refresh ordering control. **Standing-pin movements (enumerated):** the round-23-era admission pin's v2
+  fixture re-derived (its boundary moved after the child's creation — the closed-identity assertions unchanged);
+  the REAL full-chain/route-(b) fixtures' records satisfy childOsStart ≤ boundary by construction and pass
+  unchanged.
+- **Gates on the amended bytes (executed 2026-11-04):** focused `same-second-completion` = **67 tests, 67 pass,
+  0 fail** (66 prior + the round-25 admission self-consistency regression, by name visible; the F10 mirror
+  regression rides the round-3 replay describe and is counted in the by-name table); `node --test
+  tests/test-selection.test.mjs` = **6/6, exit 0**; `npm run lint` exit 0; `npm run typecheck` exit 0;
+  `git diff --check` exit 0.
+- **Battery lines (the runs §28.31's gate entries await):** full local-process entry, SOLO run on the amended
+  bytes = **366 tests, 366 pass, 0 fail, 0 skipped, exit 0** (the prior 364 + the two round-25 regressions; no
+  flake, no concurrency). The Finding-2 mirror touches `driver.mjs`'s settlement comparison (Task-3-owned replay
+  lines only), so the NATIVE-INTERRUPTION suite (Task 2's file, consumed read-only — no edit, no pin conflict) was
+  ALSO run solo on the amended bytes: **98 tests, 98 pass, 0 fail, 0 skipped, exit 0** — Task 2's pins are
+  unaffected by the ordered-horizon mirror.
+
+### 28.32 Codex-review round 26 corrections (2026-11-04, two findings; §28.31 style; the replay horizon walk's observed-pid gate + the tied-source ordering; add-only)
+
+- **Finding 1 [P2 — wrong-PID reads advance the horizon] — FIXED by the OBSERVED-PID gate at every site where a
+  persisted established read acts as PRESENCE evidence for the bound process.** The replay's horizon walk, the
+  round-25 mirror scan, AND the supersession walk gated presence reads by the QUERIED pid and the START-IDENTITY
+  string but never by the OBSERVED pid — a read about a DIFFERENT process (observed pid 60999, queried 60100, the
+  start-identity string coincidentally 'S-COMPANION') walked the horizon to 5100, uncredited the base confirmed
+  absence [4900, 5100] (its collection 4900 < 5100), and settled the summary FALSE while the runtime IGNORES the
+  wrong-PID read (the established branch's `observation.pid !== bound.pid → continue` gate precedes every use) and
+  credits the lawful disappearance. **The rule now** (three sites, driver.mjs): the horizon walk (:5900 area), the
+  round-25 mirror scan (:6070 area), and the supersession walk (:6180 area) each require
+  `observation.pid === boundIdentity.pid` before using the read — mirroring the runtime's gate exactly. **RED**
+  recorded on the pre-round-26 bytes with the reviewer's schedule (baseline [1900, 2100]; the wrong-PID presence
+  [5000, 5100, 5600]; the base confirmed absence [4900, 5100]): the replay returned `settled: false` with
+  `['exit-absence-overlaps-presence', 'exit-absence-superseded']` while the runtime returned
+  `['disappeared', null]`. **GREEN:** the replay ignores the wrong-PID read (all three gates) → the base absence
+  correlated → **settled: true** — agreeing with the runtime (tests/shell-wait-local-process.test.mjs:7492, F11).
+- **Finding 2 [P2 — tied presence instants select different horizon sources than runtime] — FIXED by consuming the
+  horizon sources in the RUNTIME'S INSERTION ORDER (the selected Companion refresh BEFORE the phase reads) — MY
+  CHOICE, stated: exact-order mirroring over conservative union, because it keeps runtime/replay agreement
+  STRUCTURAL (both sides derive the tied-instant window from the same first-inserted source over the same persisted
+  fields, rather than from a synthesized union window the runtime never sees).** The mirror appended the refresh
+  AFTER the phase reads, so a TIED presence instant (the phase presence [4650, 4650] vs the refresh [4600, 4650])
+  never replaced the first-selected window (the strict `>` advance) and the NARROWER phase window [4650, 4650] was
+  selected — an identity-bearing absence collected [4590, 4640] was stale-discarded and the summary settled TRUE
+  while the runtime (the refresh-first insertion; its canonical read order per the reviewer) classifies the carried
+  interval against [4600, 4650] → **AMBIGUOUS** (empirically verified: the runtime with the canonical insertion
+  order [refresh, phase, carried] returns `pid-start-identity-ambiguous`; the [phase, refresh, carried] order
+  returns 'live' — the replay must mirror the CANONICAL order the reviewer names). **The fix** (driver.mjs, the
+  mirror's source construction): `mirrorSources = [refreshedCompanion?, ...reads]` — the refresh FIRST. **RED**
+  recorded on the pre-round-26 bytes with the reviewer's exact schedule: the replay settled TRUE via the narrower
+  phase window; the runtime returned ambiguous. **GREEN:** the replay selects the refresh-first window
+  [4600, 4650] → `exit-reuse-interval-ambiguous` (settled: false) — agreeing with the runtime. **The CONTROL
+  pinned:** a genuinely-ordered (non-tied) post-refresh replacement [4700, 4800] keeps the round-25 behavior —
+  `exit-reuse-latched` (settled: false), unchanged.
+- **Prior-counterexample re-run (all by name on the amended bytes, all ✔ — 202 matching pins incl. the complete
+  task-2 exit family):** the complete standing table from §28.9–§28.31 (all marker/parent/child family schedules
+  and positives, capture-before-writer both hops, ALL latch families, the cross-second marker schedule,
+  stale-marker/PID-reuse, ground truth, PID-reuse-child-foreign, outside-presence, coarse-contradiction,
+  foreign-scope/wrong-role, the three join-refusal branches, route-(b) positives, scheduling independence,
+  precise-instants-absent, reparenting-preserved, guarded-resolver named-absent, the round-13 disappeared
+  regression, the round-14/15/16/17/18 schedules and controls, the REAL chains, the observation-layer reparenting
+  polarity, the round-22 tie-latch/old-evidence pins, the classify-first schedules, the round-19 replay pins and
+  the mixed-history polarity, the round-20 inverted pin with its base-equivalence pin and well-formed control, the
+  round-21 direct-inverted pin with its controls, the round-22 fallback-inverted pin with its
+  well-formed-resolved control, the round-23 supplied-invalid pins with their absent and supplied-valid controls,
+  the round-24 validate-first pin with its three controls, the round-25 admission self-consistency pin, the F10
+  mirror pin and the post-refresh ordering control) PLUS the round-26 wrong-PID and tied-window pins with their
+  controls. **Standing-pin movements: NONE** — the armed fixture's own companion endpoint [4600, 4650] and every
+  single-presence schedule classify identically (the refresh-first order changes only which window wins at TIED
+  instants, and no standing pin has tied presence instants).
+- **Gates on the amended bytes (executed 2026-11-04):** focused `same-second-completion` = **67 tests, 67 pass,
+  0 fail** (66 prior — the count unchanged: the two round-26 regressions ride the round-3 replay describe; the
+  combined same-second + F-pin run is **69 pass, 0 fail**, by name visible); `node --test
+  tests/test-selection.test.mjs` = **6/6, exit 0**; `npm run lint` exit 0; `npm run typecheck` exit 0;
+  `git diff --check` exit 0.
+- **Battery lines (the runs §28.32's gate entries await):** full local-process entry, SOLO run on the amended
+  bytes = **368 tests, 368 pass, 0 fail, 0 skipped, exit 0** (the prior 366 + the two round-26 regressions; no
+  flake, no concurrency). The horizon walk/mirror/supersession gates touch `driver.mjs`'s replay comparison
+  (Task-3-owned replay lines only), so the NATIVE-INTERRUPTION suite (Task 2's file, consumed read-only — no edit,
+  no pin conflict) was ALSO run solo on the amended bytes: **98 tests, 98 pass, 0 fail, 0 skipped, exit 0** (an
+  interleaved first attempt reported 96 while the local-process SOLO was still draining; the clean solo re-run is
+  the recorded 98/98) — Task 2's pins are unaffected by the observed-pid gates and the source reordering.
+
+### 28.33 Codex-review round 27 correction (2026-11-04, one finding; §28.32 style; the ordered-horizon mirror carries the runtime's COMPLETE ordering key including tie rank; add-only)
+
+- **Finding [P2 — mirror lacks the runtime's tie ranking] — FIXED by the TIE-RANK dimension in the mirror's
+  horizon-source scan, mirroring adjudicateLocalExit's comparator VERBATIM.** The runtime's read ordering key is
+  (1) the decision instant — `orderingEpochMs`: the carried `observedIdentityReadEpochMs` when a safe integer, else
+  for ABSENT reads their confirmation completion (`readEpochMs`), else the identity-evidence instant
+  (`identityReadEpochMs ?? readEpochMs`) — then (2) the TIE RANK — `decisionRank`: ABSENT reads 0, ESTABLISHED
+  reads 1, other reads 2 (absences sort BEFORE established reads on decision-instant ties). The mirror
+  (driver.mjs:6049-6078) already carried dimension (1) verbatim; it LACKED dimension (2): on a decision-instant
+  TIE between the carried evidence and a presence source, the mirror included the presence unconditionally, while
+  the runtime orders the carried ABSENT read (rank 0) BEFORE the established presence (rank 1) — so the runtime
+  classifies the replacement against the horizon AS IT STOOD (before the presence advanced it). **The rule now:**
+  the mirror's horizon source advances only when it precedes the carried evidence in the COMPLETE key — a strictly
+  earlier decision instant, or a tie with the carried read ordered AFTER it (the carried read unestablished, rank
+  2). A tied established presence does not pre-empt an identity-bearing ABSENT replacement's classification.
+  **Version reading: NO VERSION BUMP** — the ordering key's missing dimension, no persisted-shape change.
+- **"When an identity-bearing absent read uses the supported identityReadEpochMs fallback, its decision time is its
+  completion. If that completion ties a presence's identity instant, this comparison includes the presence…"
+  (P2), FIXED.** **RED** recorded on the pre-round-27 bytes with the reviewer's exact schedule (baseline
+  [1900, 2100]; the replacement on the identityReadEpochMs FALLBACK — the lower 2200, the upper 2300 — completing
+  at 4650, TIEING the refreshed presence [4600, 4650]'s identity instant; the subsequent absence [4900, 5100]):
+  the runtime returned `['unestablished', 'pid-start-identity-reused']` (the tie rank processes the replacement
+  FIRST — against the pre-advancement horizon [1900, 2100], where [2200, 2300] is definitively post-baseline)
+  while the replay returned `settled: true, refusals: []` (the tied presence prematurely advanced the horizon to
+  [4600, 4650] and the replacement was stale-discarded). **GREEN:** the mirror's tie-rank guard excludes the tied
+  established presence → the replacement classified against the pre-advancement horizon → **`exit-reuse-latched`**
+  (settled: false) — agreeing with the runtime (tests/shell-wait-local-process.test.mjs:7629, F13). **The CONTROL
+  pinned in the same test:** the same schedule WITHOUT the completion tie (readEpochMs 5000 — the replacement
+  sorts AFTER the refresh) classifies against the REFRESHED horizon exactly as the runtime does —
+  stale-discarded, and the base absence credits the lawful disappearance (settled: true, unchanged).
+- **The comparator dimensions mirrored (enumerated, verbatim from adjudicateLocalExit):** (1) the decision-instant
+  source — `orderingEpochMs`: observedIdentityReadEpochMs when a safe integer, else the ABSENT read's
+  confirmation completion, else identityReadEpochMs ?? readEpochMs (the mirror carried this since round 25);
+  (2) the TIE RANK — `decisionRank`: absent 0 / established 1 / other 2, applied at decision-instant ties (the
+  round-27 addition); (3) the stable insertion order for FULL ties (the same instant AND rank) — governed by the
+  round-26 registered source order (the selected Companion refresh before the phase reads). No further dimensions
+  exist in the comparator.
+- **Prior-counterexample re-run (all by name on the amended bytes, all ✔ — 203 matching pins incl. the complete
+  task-2 exit family):** the complete standing table from §28.9–§28.32 (all marker/parent/child family schedules
+  and positives, capture-before-writer both hops, ALL latch families, the cross-second marker schedule,
+  stale-marker/PID-reuse, ground truth, PID-reuse-child-foreign, outside-presence, coarse-contradiction,
+  foreign-scope/wrong-role, the three join-refusal branches, route-(b) positives, scheduling independence,
+  precise-instants-absent, reparenting-preserved, guarded-resolver named-absent, the round-13 disappeared
+  regression, the round-14/15/16/17/18 schedules and controls, the REAL chains, the observation-layer reparenting
+  polarity, the round-22 tie-latch/old-evidence pins, the classify-first schedules, the round-19 replay pins and
+  the mixed-history polarity, the round-20 inverted pin with its base-equivalence pin and well-formed control, the
+  round-21 direct-inverted pin with its controls, the round-22 fallback-inverted pin with its
+  well-formed-resolved control, the round-23 supplied-invalid pins with their absent and supplied-valid controls,
+  the round-24 validate-first pin with its three controls, the round-25 admission self-consistency pin, the F10
+  mirror pin, the round-26 wrong-PID and tied-window pins with their controls) PLUS the round-27 tie-rank pin and
+  its non-tied control. **Standing-pin movements: NONE** — the tie-rank guard fires ONLY on decision-instant ties
+  between the carried evidence and a presence source, a shape no standing pin contains (every standing schedule's
+  carried evidence sorts strictly before or after its horizon sources).
+- **Gates on the amended bytes (executed 2026-11-04):** focused `same-second-completion` = **67 tests, 67 pass,
+  0 fail** (the count unchanged — the round-27 regression rides the round-3 replay describe; the by-name table is
+  **203 pass, 0 fail**); `node --test tests/test-selection.test.mjs` = **6/6, exit 0**; `npm run lint` exit 0;
+  `npm run typecheck` exit 0; `git diff --check` exit 0.
+- **Battery lines (the runs §28.33's gate entries await):** full local-process entry, SOLO run on the amended
+  bytes = **369 tests, 369 pass, 0 fail, 0 skipped, exit 0** (the prior 368 + the round-27 tie-rank regression; no
+  flake, no concurrency). The tie-rank guard touches `driver.mjs`'s replay comparison (Task-3-owned replay lines
+  only), so the NATIVE-INTERRUPTION suite (Task 2's file, consumed read-only — no edit, no pin conflict) was ALSO
+  run solo on the amended bytes: **98 tests, 98 pass, 0 fail, 0 skipped, exit 0** (an interleaved first attempt
+  reported 96 while the local-process SOLO was still draining; the clean solo re-run is the recorded 98/98) —
+  Task 2's pins are unaffected by the tie-rank guard.

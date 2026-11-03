@@ -50,7 +50,7 @@
  * with the executing closure-observation bytes and the generated capture
  * source; the record-time working-tree re-read detects source drift.
  */
-import { copyFileSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { lstat, readFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join } from 'node:path';
@@ -69,8 +69,25 @@ import {
 
 export { EXECUTING_CLOSURE_PRELOAD_SOURCE } from './closure-preload.mjs';
 
-/** The closed version carried by every verdict of this module. */
-export const LOCAL_PROCESS_OBSERVATION_VERSION = 1;
+/**
+ * The closed version carried by every verdict of this module. v2
+ * (evidence-completion Task 3, §26.6/§26.7): an ancestry-join verdict that
+ * may rest on the preregistered route-(b) spawn-boundary causal witness is
+ * composed, and the established hop verdict carries the additive
+ * `witnessClass` member — old v1 verdicts replay byte-identically because
+ * the witness rules only ever apply when a witness admission rides the join
+ * input, which no v1 record carries. v3 (codex-review round 5, 2026-11-04):
+ * the spawn-witness record gains the additive `childOsStartInstantMs`
+ * persisted member (the witnessed child's numeric OS start instant, derived
+ * from the SAME captured boundary start identity — no new OS query), the
+ * positive marker-to-generation binding the transport hop's establishment
+ * consumes; old v1 witness records replay under their recorded version and
+ * never upgrade the marker path (the record without the member cannot bind
+ * the marker's generation), which is the honest replay outcome — new runs
+ * never fall back to the permissive old contract because every new record
+ * carries the member (number or named-absent null).
+ */
+export const LOCAL_PROCESS_OBSERVATION_VERSION = 3;
 
 /**
  * Version tag of the local-observer provenance construction: bump when the
@@ -312,12 +329,16 @@ async function readProcessEnvironmentMarker(pid, expectedNonce, nonceVariable, o
  * positive replacement evidence, never the bound generation's lawful
  * absence. The message carries no 'identity changed' (that phrase stays the
  * mid-double-read reuse class) and no 'ppid changed' (the reparenting class).
- * @param {string} observedStartIdentity @returns {Error}
+ * @param {string} observedStartIdentity @param {number} observedTakenEpochMs @param {number} observedResolvedEpochMs @returns {Error}
  */
-function observedThenGoneError(observedStartIdentity) {
+function observedThenGoneError(observedStartIdentity, observedTakenEpochMs, observedResolvedEpochMs) {
   const error = new Error('the exact fake-ZCode process disappeared after its start identity was observed');
   /** @type {any} */ (error).observedThenGone = true;
+  // (codex round 13) the identity and its OBSERVATION instant travel as a
+  // unit — the failure completion never dates the carried evidence.
   /** @type {any} */ (error).observedStartIdentity = observedStartIdentity;
+  /** @type {any} */ (error).observedIdentityTakenEpochMs = observedTakenEpochMs;
+  /** @type {any} */ (error).observedIdentityCompletedEpochMs = observedResolvedEpochMs;
   return error;
 }
 
@@ -328,7 +349,7 @@ function observedThenGoneError(observedStartIdentity) {
  * and termination.
  * @param {number} pid @param {string} expectedNonce @param {string} [nonceVariable]
  * @param {{ platform?: string, ps?: (pid: number) => Promise<{ pid: number, ppid: number, lstart: string }>, environ?: 'present' | 'mismatch' | 'gone', runProcess?: osSeamsRunProcess }} [osSeams]
- * @returns {Promise<{ pid: number, ppid: number, startIdentity: string, nonce: string } | undefined>}
+ * @returns {Promise<{ pid: number, ppid: number, startIdentity: string, nonce: string, takenEpochMs: number } | undefined>}
  */
 export async function inspectVerifiedProcessIdentity(pid, expectedNonce, nonceVariable = FAKE_ZCODE_NONCE_VARIABLE, osSeams = {}) {
   if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error('the exact fake-ZCode PID is invalid');
@@ -357,11 +378,53 @@ export async function inspectVerifiedProcessIdentity(pid, expectedNonce, nonceVa
           : { ...psResult, startIdentity: psResult.lstart };
       })
     : (platform === 'linux' ? readLinuxProcessStart : (/** @type {number} */ observedPid) => readMacProcessStart(observedPid, osSeams));
+  // (codex round 13 — EVIDENCE TIMING) the FIRST identity read's TAKEN
+  // instant is sampled before the read is dispatched: the ride below
+  // carries it as a UNIT with the observed start identity, so a failure
+  // that completes arbitrarily later (a delayed response, a slow OS query)
+  // can never misdate the carried evidence at the failure's completion
+  // time. Consumers date the carried identity at this instant — the
+  // presence/recency comparisons compare what was OBSERVED and WHEN it was
+  // observed, never when the failure happened to finish.
+  const beforeTakenEpochMs = Date.now();
   const before = await readStart(pid);
   if (!before) return undefined;
-  if (inspectorWindowClosed()) throw windowClosedError();
-  const markerState = osSeams.environ !== undefined ? osSeams.environ : await readProcessEnvironmentMarker(pid, expectedNonce, nonceVariable, osSeams);
-  if (inspectorWindowClosed()) throw windowClosedError();
+  // (codex round 14 — the COLLECTION INTERVAL) the taken instant is only a
+  // collection LOWER bound: a ps request dispatched before a concurrent
+  // presence baseline can COLLECT a successor's identity after it (the
+  // kernel table read lands whenever the response says it does). The ride
+  // therefore carries the whole collection INTERVAL as a unit with the
+  // observed identity — the taken/dispatch lower bound and the read's
+  // RESOLUTION upper bound — so consumers treat an interval OVERLAPPING a
+  // presence baseline as AMBIGUOUS evidence instead of definitively dating
+  // it at either bound.
+  const beforeResolvedEpochMs = Date.now();
+  // (codex round 5) UNIFORM IDENTITY RIDE: every failure thrown AFTER the
+  // first read verified an occupant carries that observed start identity on
+  // the error (`observedStartIdentity`) — an ORDINARY I/O error (the
+  // environment query or the second identity read failing) is still an
+  // attempt that OBSERVED V1, and discarding the observation there let the
+  // next attempt verify a same-pid REPLACEMENT occupant and witness it as
+  // the originally spawned child. The ride is evidence preservation, not
+  // error reclassification: each failure keeps its own message class, the
+  // observation layer compares the carried identity against the bound
+  // generation exactly as it already does for the nonce-mismatch and
+  // observed-then-gone classes, and an identity-consistent failure stays
+  // non-deciding.
+  const rideObservedIdentity = (/** @type {Error} */ error) => {
+    /** @type {any} */ (error).observedStartIdentity = before.startIdentity;
+    /** @type {any} */ (error).observedIdentityTakenEpochMs = beforeTakenEpochMs;
+    /** @type {any} */ (error).observedIdentityCompletedEpochMs = beforeResolvedEpochMs;
+    return error;
+  };
+  if (inspectorWindowClosed()) throw rideObservedIdentity(windowClosedError());
+  let markerState;
+  try {
+    markerState = osSeams.environ !== undefined ? osSeams.environ : await readProcessEnvironmentMarker(pid, expectedNonce, nonceVariable, osSeams);
+  } catch (markerError) {
+    throw rideObservedIdentity(/** @type {Error} */ (markerError));
+  }
+  if (inspectorWindowClosed()) throw rideObservedIdentity(windowClosedError());
   // ROUND-25: a NONCE-VERIFICATION failure is NOT an observed start-identity
   // change — its message deliberately does NOT carry 'identity changed', so
   // it maps to the named non-reuse torn class (never latched as reuse). Only
@@ -376,6 +439,8 @@ export async function inspectVerifiedProcessIdentity(pid, expectedNonce, nonceVa
     const nonceFailure = new Error('the exact fake-ZCode process nonce identity verification failed');
     if (before && typeof before.startIdentity === 'string') {
       /** @type {any} */ (nonceFailure).observedStartIdentity = before.startIdentity;
+      /** @type {any} */ (nonceFailure).observedIdentityTakenEpochMs = beforeTakenEpochMs;
+      /** @type {any} */ (nonceFailure).observedIdentityCompletedEpochMs = beforeResolvedEpochMs;
     }
     throw nonceFailure;
   }
@@ -387,29 +452,49 @@ export async function inspectVerifiedProcessIdentity(pid, expectedNonce, nonceVa
     // the failure (the same shape as the nonce-mismatch ride); the message
     // deliberately carries no 'identity changed' (that phrase stays the
     // mid-double-read reuse class).
-    throw observedThenGoneError(before.startIdentity);
+    throw observedThenGoneError(before.startIdentity, beforeTakenEpochMs, beforeResolvedEpochMs);
   }
-  if (inspectorWindowClosed()) throw windowClosedError();
-  const after = await readStart(pid);
+  if (inspectorWindowClosed()) throw rideObservedIdentity(windowClosedError());
+  // (codex round 11 — TIMESTAMP PROVENANCE for the boundary capture) The
+  // FINAL identity read's TAKEN instant is sampled BEFORE the read is
+  // dispatched and SURFACED on the returned identity: the read's response
+  // can arrive arbitrarily later than its snapshot (a seam that resolves
+  // late, a slow OS query, scheduler delay), and a capture instant sampled
+  // at RESPONSE ARRIVAL would fabricate survival the snapshot never
+  // witnessed — a same-second pid replacement born after the snapshots and
+  // dead before the response could ride it into an established ancestry
+  // verdict. The taken instant is the conservative collection bound (the
+  // snapshot was taken at or after it); consumers anchor survival claims on
+  // it, never on response completion.
+  const takenEpochMs = Date.now();
+  let after;
+  try {
+    after = await readStart(pid);
+  } catch (secondReadError) {
+    throw rideObservedIdentity(/** @type {Error} */ (secondReadError));
+  }
   if (!after) {
     // ROUND-28: the same ride when the pid vanished before the SECOND
     // start-identity read (the marker nonce's presence is scope-only
     // evidence — it never attests the generation).
-    throw observedThenGoneError(before.startIdentity);
+    throw observedThenGoneError(before.startIdentity, beforeTakenEpochMs, beforeResolvedEpochMs);
   }
   // SELF-DESCRIBING ERRORS (review round 24): a changed START IDENTITY
   // between the double reads is POSITIVE replacement evidence (a PID reused
   // between the two reads) and its message carries 'identity changed' — the
   // reuse latch consumes it. A PPID-ONLY change is ordinary REPARENTING
   // (the daemon whose Companion dies) and its message carries 'ppid
-  // changed' — the generic torn class, NEVER the reuse class.
+  // changed' — the generic torn class, NEVER the reuse class. Both carry the
+  // first-read identity on the error (the uniform round-5 ride: a
+  // within-call contradiction is two observations, and the ppid-only class's
+  // consistent identity is retained evidence — never discarded).
   if (before.startIdentity !== after.startIdentity) {
-    throw new Error('the exact fake-ZCode process identity changed');
+    throw rideObservedIdentity(new Error('the exact fake-ZCode process identity changed'));
   }
   if (before.ppid !== after.ppid) {
-    throw new Error('the exact fake-ZCode process ppid changed between reads');
+    throw rideObservedIdentity(new Error('the exact fake-ZCode process ppid changed between reads'));
   }
-  return { ...after, nonce: expectedNonce };
+  return { ...after, nonce: expectedNonce, takenEpochMs };
 }
 
 /**
@@ -876,6 +961,486 @@ export async function admitStartupIdentityRecord(input) {
 }
 
 // ---------------------------------------------------------------------------
+// The preregistered route-(b) SAME-SECOND ANCESTRY WITNESS (evidence-completion
+// Task 3; report §26.6/§26.7): the CAPTURE-TIME causal record the fixture-owned
+// PARENT writes at ITS OWN spawn boundary — the ingress double-read of the
+// spawned child plus the writer's own OS-verified self-identity, both sampled
+// inside the writer's live presence — and its read-side admission. The record
+// binds kernel-assigned facts only (pid/ppid, ps start identities, env-verified
+// nonces, the writer's own instants); it never attests another process or
+// scope, and a revived record can never be "played back" by a hand-edited
+// boolean: the join recomputes every binding from the positively captured
+// endpoints, and OS coarse intervals stay coarse (a precise write is never
+// relabeled a precise birth instant).
+// ---------------------------------------------------------------------------
+
+/** Role-selected spawn-witness file suffixes (exactly the identity-record pattern). */
+export const SPAWN_ANCESTRY_WITNESS_SUFFIXES = Object.freeze({
+  invocation: '.spawn-witness.json',
+  'broker-daemon': '.spawn-witness-broker.json',
+});
+
+/** The closed version of the spawn-witness record. v2 (codex-review round 5,
+ * 2026-11-04) adds the `childOsStartInstantMs` member — the witnessed child's
+ * numeric OS start instant derived from the SAME captured boundary start
+ * identity (the owning persisted-shape version event, §26.7 item 2); retained
+ * v1 records replay under their recorded version and never upgrade the marker
+ * path (a record without the member cannot bind the marker's generation). */
+export const SPAWN_ANCESTRY_WITNESS_VERSION = 2;
+
+/** The witness record's closed bounded size (like every fixture-owned JSON). */
+export const SPAWN_ANCESTRY_WITNESS_MAX_BYTES = 4 * 1024;
+
+/**
+ * The closed spawn-witness record facts (file identity, writer identity and
+ * capture identities in one bounded shape). v2 adds `childOsStartInstantMs`:
+ * the witnessed child's numeric OS start instant, derived at capture from the
+ * SAME start identity the boundary double read verified (darwin: the
+ * field-explicit UTC parse of the captured lstart text — no new OS query;
+ * Linux: the module's existing cached boot-clock resolution). Null is the
+ * named-absent fact (an unresolvable parse never guesses), and the join's
+ * marker binding consumes it so the transport hop's marker upgrade carries
+ * positive generation evidence.
+ * @typedef {{
+ *   version: number,
+ *   class: 'spawn-ancestry-witness',
+ *   role: IdentityRole,
+ *   nonce: string,
+ *   writerPid: number,
+ *   writerStartIdentity: string,
+ *   childPid: number,
+ *   childPpid: number,
+ *   childStartIdentity: string,
+ *   childNonce: string,
+ *   boundaryEpochMs: number,
+ *   firstWriteEpochMs: number,
+ *   startOriginMs: number | null,
+ *   firstWritePreciseMs: number | null,
+ *   childOsStartInstantMs?: number | null,
+ * }} SpawnAncestryWitnessIdentity
+ */
+
+/** One spawn-witness admission/emit verdict (the same verdict categories as every other fixture-owned file). @typedef {{
+ *   localProcessObservationVersion: number,
+ *   class: 'spawn-ancestry-witness',
+ *   status: 'established' | 'missing' | 'invalid' | 'unestablished',
+ *   reason: string | null,
+ *   identity: SpawnAncestryWitnessIdentity | null,
+ *   readStartedEpochMs?: number,
+ *   readEpochMs?: number,
+ * }} SpawnAncestryWitnessVerdict
+ */
+
+/** @param {SpawnAncestryWitnessVerdict['status']} status @param {string | null} reason @param {{ identity?: SpawnAncestryWitnessIdentity | null, readStartedEpochMs?: number, readEpochMs?: number }} [extra] @returns {SpawnAncestryWitnessVerdict} */
+function spawnWitnessVerdict(status, reason, extra = {}) {
+  return {
+    localProcessObservationVersion: LOCAL_PROCESS_OBSERVATION_VERSION,
+    class: 'spawn-ancestry-witness',
+    status,
+    reason,
+    identity: extra.identity ?? null,
+    ...(extra.readStartedEpochMs === undefined ? {} : { readStartedEpochMs: extra.readStartedEpochMs }),
+    ...(extra.readEpochMs === undefined ? {} : { readEpochMs: extra.readEpochMs }),
+  };
+}
+
+/**
+ * Validate the closed spawn-witness record contract. Returns the typed
+ * identity or the named shape-violation reason.
+ * @param {unknown} record @returns {{ ok: true, identity: SpawnAncestryWitnessIdentity } | { ok: false, reason: string }}
+ */
+function validateSpawnWitnessRecord(record) {
+  if (!isPlainObject(record)) return { ok: false, reason: 'spawn-witness-shape-invalid' };
+  const keys = Object.keys(record).sort();
+  // Versioned replay (§26.7 item 2): each record replays under its RECORDED
+  // closed shape. v1 records (without the numeric child OS start instant)
+  // keep their recorded semantics; the join consumes the member's ABSENCE as
+  // a named-unbound marker generation (never an upgrade). v2 records carry
+  // the member (number or named-absent null). Any other version is foreign.
+  const v1Required = ['boundaryEpochMs', 'childNonce', 'childPid', 'childPpid', 'childStartIdentity', 'class', 'firstWriteEpochMs', 'firstWritePreciseMs', 'nonce', 'role', 'startOriginMs', 'version', 'writerPid', 'writerStartIdentity'];
+  const v2Required = ['boundaryEpochMs', 'childNonce', 'childOsStartInstantMs', 'childPid', 'childPpid', 'childStartIdentity', 'class', 'firstWriteEpochMs', 'firstWritePreciseMs', 'nonce', 'role', 'startOriginMs', 'version', 'writerPid', 'writerStartIdentity'];
+  const required = record.version === 1 ? v1Required : record.version === SPAWN_ANCESTRY_WITNESS_VERSION ? v2Required : null;
+  if (required === null || keys.join(',') !== required.join(',')) return { ok: false, reason: 'spawn-witness-shape-invalid' };
+  if (record.class !== 'spawn-ancestry-witness') return { ok: false, reason: 'spawn-witness-shape-invalid' };
+  if (record.version !== 1 && record.version !== SPAWN_ANCESTRY_WITNESS_VERSION) return { ok: false, reason: 'spawn-witness-shape-invalid' };
+  // The v2 numeric child OS start instant: a positive epoch millisecond, or
+  // the named-absent null (an unresolvable parse is recorded AS absent — the
+  // join's marker binding refuses rather than guessing, §26.7 item 3/5).
+  if (record.version === SPAWN_ANCESTRY_WITNESS_VERSION
+    && record.childOsStartInstantMs !== null
+    && (!Number.isSafeInteger(record.childOsStartInstantMs) || /** @type {number} */ (record.childOsStartInstantMs) <= 0)) {
+    return { ok: false, reason: 'spawn-witness-shape-invalid' };
+  }
+  // (codex round 25 — RECORD SELF-CONSISTENCY) the child cannot have been
+  // OBSERVED (the boundary capture) before its earliest possible creation:
+  // a childOsStartInstantMs STRICTLY postdating the record's own
+  // boundaryEpochMs is a physically contradictory record. Equality stays
+  // allowed (a child born in the same millisecond as its capture is fine —
+  // the module's tie convention). The admission label follows the
+  // established self-contradiction style (spawn-witness-write-before-
+  // capture — the writer-side sibling): spawn-witness-child-start-after-
+  // capture, never folded into the shape label.
+  if (record.version === SPAWN_ANCESTRY_WITNESS_VERSION
+    && record.childOsStartInstantMs !== null
+    && Number.isSafeInteger(record.childOsStartInstantMs)
+    && Number.isSafeInteger(record.boundaryEpochMs)
+    && /** @type {number} */ (record.childOsStartInstantMs) > /** @type {number} */ (record.boundaryEpochMs)) {
+    return { ok: false, reason: 'spawn-witness-child-start-after-capture' };
+  }
+  if (!IDENTITY_ROLES.includes(/** @type {any} */ (record).role)) return { ok: false, reason: 'spawn-witness-role-invalid' };
+  if (typeof record.nonce !== 'string' || !HEX_64.test(record.nonce)) return { ok: false, reason: 'spawn-witness-shape-invalid' };
+  if (typeof record.childNonce !== 'string' || !HEX_64.test(record.childNonce)) return { ok: false, reason: 'spawn-witness-shape-invalid' };
+  for (const field of ['writerStartIdentity', 'childStartIdentity']) {
+    const value = /** @type {any} */ (record)[field];
+    if (typeof value !== 'string' || value.length === 0 || value.length > 256) return { ok: false, reason: 'spawn-witness-shape-invalid' };
+  }
+  for (const field of ['writerPid', 'childPid', 'childPpid', 'boundaryEpochMs', 'firstWriteEpochMs']) {
+    const value = /** @type {any} */ (record)[field];
+    if (!Number.isSafeInteger(value) || /** @type {number} */ (value) <= 0) return { ok: false, reason: 'spawn-witness-shape-invalid' };
+  }
+  // The writer's own orderings: the boundary stamp follows the verified reads
+  // and the write follows the boundary stamp (the writer's own synchronous
+  // order); the precise instants keep the identity-record discipline (a null
+  // pair is admitted and named unavailable downstream; write >= start).
+  if (!Number.isSafeInteger(record.boundaryEpochMs)) return { ok: false, reason: 'spawn-witness-shape-invalid' };
+  if (/** @type {number} */ (record.firstWriteEpochMs) < /** @type {number} */ (record.boundaryEpochMs)) {
+    return { ok: false, reason: 'spawn-witness-write-before-capture' };
+  }
+  for (const field of ['startOriginMs', 'firstWritePreciseMs']) {
+    const value = /** @type {any} */ (record)[field];
+    if (value !== null && (typeof value !== 'number' || !Number.isFinite(value) || value <= 0)) {
+      return { ok: false, reason: 'spawn-witness-shape-invalid' };
+    }
+  }
+  if (record.startOriginMs !== null && record.firstWritePreciseMs !== null
+    && /** @type {number} */ (record.firstWritePreciseMs) < /** @type {number} */ (record.startOriginMs)) {
+    return { ok: false, reason: 'spawn-witness-write-before-capture' };
+  }
+  return {
+    ok: true,
+    identity: {
+      version: /** @type {number} */ (record.version),
+      class: 'spawn-ancestry-witness',
+      role: /** @type {IdentityRole} */ (record.role),
+      nonce: /** @type {string} */ (record.nonce),
+      writerPid: /** @type {number} */ (record.writerPid),
+      writerStartIdentity: /** @type {string} */ (record.writerStartIdentity),
+      childPid: /** @type {number} */ (record.childPid),
+      childPpid: /** @type {number} */ (record.childPpid),
+      childStartIdentity: /** @type {string} */ (record.childStartIdentity),
+      childNonce: /** @type {string} */ (record.childNonce),
+      boundaryEpochMs: /** @type {number} */ (record.boundaryEpochMs),
+      firstWriteEpochMs: /** @type {number} */ (record.firstWriteEpochMs),
+      startOriginMs: /** @type {number | null} */ (record.startOriginMs),
+      firstWritePreciseMs: /** @type {number | null} */ (record.firstWritePreciseMs),
+      // v1 replay records keep the member genuinely ABSENT (the join's marker
+      // binding reads the absence as a named-unbound generation); v2 records
+      // carry the number or the named-absent null.
+      ...(record.childOsStartInstantMs === undefined ? {} : { childOsStartInstantMs: /** @type {number | null} */ (record.childOsStartInstantMs) }),
+    },
+  };
+}
+
+/**
+ * Emit the spawn-boundary causal witness FROM INSIDE the fixture-owned parent:
+ * at its own real spawn boundary the parent OS-verifies the spawned child (the
+ * race-safe environment-nonce double read, with a bounded visibility poll for
+ * the kernel's fork/exposure window) and verifies its own live identity, then
+ * writes ONE private identity-scoped record. No startup choreography changes,
+ * no added delay beyond the child's own kernel exposure, no stop authority.
+ * @param {{
+ *   captureDirectory: string,
+ *   nonce: string,
+ *   role: IdentityRole,
+ *   childPid: number,
+ *   childNonce: string,
+ *   childNonceVariable?: string,
+ *   nowEpochMs?: number,
+ *   osSeams?: { platform?: string, ps?: (pid: number) => Promise<{ pid: number, ppid: number, lstart: string }>, environ?: 'present' | 'mismatch' | 'gone', runProcess?: osSeamsRunProcess },
+ *   linuxClock?: { statText?: string, clkTick?: string, clock?: { btimeMs: number, hz: number } },
+ * }} input
+ * @returns {Promise<SpawnAncestryWitnessVerdict>}
+ */
+export async function emitSpawnAncestryWitness(input) {
+  if (!isPlainObject(input)) throw invalidLocalProcessInput('the spawn witness emit input must be an object.');
+  const { captureDirectory, nonce, childPid, childNonce } = input;
+  if (typeof captureDirectory !== 'string' || captureDirectory.length === 0 || !isAbsolute(captureDirectory)) {
+    throw invalidLocalProcessInput('the capture directory must be an absolute path.');
+  }
+  validateCaptureNonce(nonce, 'capture');
+  const role = input.role ?? 'invocation';
+  if (!IDENTITY_ROLES.includes(role)) throw invalidLocalProcessInput('the identity role must be invocation or broker-daemon.');
+  if (!Number.isSafeInteger(childPid) || /** @type {number} */ (childPid) <= 0) {
+    throw invalidLocalProcessInput('the spawned child pid must be a positive integer.');
+  }
+  validateCaptureNonce(childNonce, 'child');
+  // The writer's own OS-verified identity at the boundary (the creator):
+  // the same double-read the capture machinery trusts, addressed at the
+  // WRITER'S own pid. A failed writer verification (this process does not
+  // carry the capture env) is a NAMED unestablished fact — never a thrown
+  // error and never a fabricated witness (§26.7 item 5's no-fold rule).
+  let writerVerified;
+  try {
+    writerVerified = await inspectVerifiedProcessIdentity(process.pid, nonce, CAPTURE_NONCE_VARIABLE, input.osSeams);
+  } catch {
+    return spawnWitnessVerdict('unestablished', 'spawn-witness-writer-unverifiable');
+  }
+  if (writerVerified === undefined) {
+    return spawnWitnessVerdict('unestablished', 'spawn-witness-writer-unverifiable');
+  }
+  // The child's ingress observation at the boundary: the kernel's own
+  // fork/exposure window means the child may not be visible to `ps` for its
+  // first instants, so the read polls under a BOUNDED budget (never a delay
+  // added solely to cross a second boundary — typical children appear within
+  // milliseconds and return immediately). A VISIBLE child that does not
+  // carry the declared child nonce is a live contradiction of the declared
+  // scope; because the same window may briefly expose the child before its
+  // exec/export completes, the contradiction is retried inside the SAME
+  // bounded poll and only the budget-expired outcome names it
+  // ('spawn-witness-child-nonce-mismatch') — the §26.7 item-5 fresh label,
+  // never folded into the plain unverifiable class.
+  const readStartedEpochMs = Date.now();
+  /** @type {Awaited<ReturnType<typeof inspectVerifiedProcessIdentity>> | undefined} */
+  let childVerified = undefined;
+  let childNonceContradiction = false;
+  // (codex rounds 4–5 — the §26.6 generation invariant, RETAIN-AND-COMPARE
+  // over a POLL-SCOPED retained-observation set that NEVER resets between
+  // attempts) EVERY observation of the child's start identity is RETAINED for
+  // the whole poll lifetime — successful inspections AND every post-observation
+  // failure's error-carried `observedStartIdentity` (the inspector's uniform
+  // ride: the observed-then-gone, nonce-verification, mid-double-read,
+  // ppid-reparenting, window-closed AND ordinary-I/O classes all carry the
+  // first-read identity after a read verified an occupant) — and ANY later
+  // observation contradicting ANY retained observation latches the terminal
+  // refusal, regardless of which error class carried the earlier observation:
+  // an attempt that OBSERVED V1 and then errored is positive identity
+  // evidence, never a torn read, and retrying after it would let a subsequent
+  // successful read of the REPLACEMENT occupant (same pid, new start
+  // identity, same scope nonce) witness the successor as the originally
+  // spawned child (§26.6: changing a generation refuses; a replaced process
+  // is never credited by later evidence). Only attempts that never saw an
+  // identity (the benign not-yet-visible undefined return — which retains
+  // nothing and resets NOTHING) stay benign-retriable inside the SAME bounded
+  // poll, and the pre-exec nonce-exposure window (a visible child briefly
+  // lacking the declared nonce) stays named only at budget expiry. A
+  // WITHIN-attempt disagreement (the inspector's own mid-double-read identity
+  // change, its message carrying 'identity changed') is already two
+  // observations contradicting each other and latches immediately.
+  const retainedChildIdentities = new Set();
+  let childGenerationChanged = false;
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    try {
+      childVerified = await inspectVerifiedProcessIdentity(/** @type {number} */ (childPid), childNonce, input.childNonceVariable ?? CAPTURE_NONCE_VARIABLE, input.osSeams);
+    } catch (inspectionError) {
+      if (inspectionError instanceof Error && /identity changed/u.test(inspectionError.message)) {
+        childGenerationChanged = true;
+        break;
+      }
+      const observedIdentity = inspectionError instanceof Error ? (/** @type {any} */ (inspectionError)).observedStartIdentity : undefined;
+      if (typeof observedIdentity === 'string' && observedIdentity.length > 0) {
+        if (retainedChildIdentities.size > 0 && !retainedChildIdentities.has(observedIdentity)) {
+          childGenerationChanged = true;
+          break;
+        }
+        retainedChildIdentities.add(observedIdentity);
+      }
+      // (codex round 19) the contradiction flag ONLY for an actual nonce
+      // VERIFICATION failure — a seen child whose nonce contradicted the
+      // expectation (the inspector's own canonical failure class). Ordinary
+      // OS-query errors and torn reads never inspected the environment:
+      // budget expiry with only such failures keeps the honest
+      // `spawn-witness-child-unverifiable` label rather than asserting
+      // unsupported scope-mismatch evidence. A mixed history (one real
+      // nonce-verification failure among failures) still sets the flag —
+      // the real contradiction is never downgraded.
+      if (inspectionError instanceof Error
+        && /nonce identity verification failed/u.test(inspectionError.message)) {
+        childNonceContradiction = true;
+      }
+    }
+    if (childVerified !== undefined) {
+      if (retainedChildIdentities.size > 0 && !retainedChildIdentities.has(childVerified.startIdentity)) {
+        childGenerationChanged = true;
+        break;
+      }
+      retainedChildIdentities.add(childVerified.startIdentity);
+      break;
+    }
+    // The poll timer is INTENTIONALLY ref'd: the poll is the emitter's own
+    // awaited work (bounded at 12 attempts), and an unref'd timer would let
+    // an otherwise-idle writer loop drain before the next attempt — leaving
+    // the caller's await unsettled. The bound (never a delay added solely to
+    // cross a second boundary) is the attempt budget, not the timer state.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  if (childGenerationChanged) {
+    // The latched terminal refusal (the §26.7 item-5 fresh-label discipline):
+    // never folded into the budget-expiry classes, never followed by a write.
+    return spawnWitnessVerdict('unestablished', 'spawn-witness-child-generation-changed', { readStartedEpochMs, readEpochMs: Date.now() });
+  }
+  if (childVerified === undefined) {
+    return spawnWitnessVerdict('unestablished', childNonceContradiction ? 'spawn-witness-child-nonce-mismatch' : 'spawn-witness-child-unverifiable', { readStartedEpochMs, readEpochMs: Date.now() });
+  }
+  // (codex rounds 5–6 — the CAPTURE-AND-BIND design with the GUARDED
+  // RESOLVER) The witnessed child's NUMERIC OS start instant, derived from
+  // the SAME start identity the boundary double read just verified — never a
+  // new OS query pattern: darwin resolves the captured lstart text with the
+  // module's field-explicit UTC parse (a pure derivation of the
+  // already-captured evidence), Linux resolves the captured proc ticks
+  // against the module's existing cached boot-clock seam (the same resolution
+  // observeLocalProcess performs — and GUARDS the same way: a resolution
+  // FAILURE, e.g. a masked or unreadable /proc/stat on Linux arriving AFTER
+  // the identity verified, is caught here and preserved as the documented
+  // nullable named-absent null, never an escaped exception; the caller
+  // receives the established witness verdict with its other positive
+  // bindings intact, and the join's marker binding treats the absence as an
+  // unbindable marker generation and refuses — absent facts stay absent,
+  // §26.7 item 3/5).
+  // (codex round 9 — TIMESTAMP PROVENANCE) The child-alive instant is
+  // sampled IMMEDIATELY when the ingress double read completes — BEFORE the
+  // boot-clock resolution await — and IS the record's boundary capture
+  // instant. A stalling resolution (a masked or slow /proc/stat on Linux)
+  // must never advance the capture instant: the continuity proof is
+  // "the witnessed child was alive at the boundary", and a boundary sampled
+  // AFTER an unrelated clock-resolution await would claim survival the
+  // child observation never witnessed (a same-tick pid replacement sharing
+  // the proc: start identity could ride that fabricated survival into an
+  // established verdict). The WRITE instants below stay sampled at the
+  // actual write (the writer's own act, provably after the capture).
+  // (codex round 11, the completion of this provenance rule) the capture
+  // instant is the FINAL OS INSPECTION'S OWN TAKEN instant — surfaced by
+  // the inspector from before its last identity read was dispatched —
+  // never a Date.now() sampled at the inspection's response arrival: the
+  // reviewer's sequence (both snapshots observe the original at 1100, the
+  // original dies at 1200, a same-second reuse is born at 1400, the
+  // response arrives 2100) would otherwise record a boundary (2100) that
+  // "proves" survival the child observation never witnessed. Defensive
+  // fallback only for a legacy seam that surfaces no taken instant.
+  const childCaptureEpochMs = Number.isSafeInteger(childVerified.takenEpochMs)
+    ? /** @type {number} */ (childVerified.takenEpochMs)
+    : Date.now();
+  let childOsStartInstantMs = null;
+  try {
+    childOsStartInstantMs = await resolveObservationStartInstantMs(childVerified.startIdentity, {
+      linuxClock: input.linuxClock,
+      osSeams: { platform: input.osSeams?.platform },
+    });
+  } catch {
+    childOsStartInstantMs = null;
+  }
+  const boundaryEpochMs = childCaptureEpochMs;
+  const startOriginMs = (typeof performance === 'object' && performance !== null
+    && typeof performance.timeOrigin === 'number' && Number.isFinite(performance.timeOrigin))
+    ? performance.timeOrigin
+    : null;
+  const firstWritePreciseMs = startOriginMs === null ? null : startOriginMs + performance.now();
+  const firstWriteEpochMs = Date.now();
+  /** @type {SpawnAncestryWitnessIdentity} */
+  const payload = {
+    version: SPAWN_ANCESTRY_WITNESS_VERSION,
+    class: 'spawn-ancestry-witness',
+    role,
+    nonce,
+    writerPid: process.pid,
+    writerStartIdentity: writerVerified.startIdentity,
+    childPid: childVerified.pid,
+    childPpid: childVerified.ppid,
+    childStartIdentity: childVerified.startIdentity,
+    childNonce,
+    boundaryEpochMs,
+    firstWriteEpochMs,
+    startOriginMs,
+    firstWritePreciseMs,
+    childOsStartInstantMs,
+  };
+  // One witness per scope and boundary role: created exclusively (wx); a
+  // failed write is a NAMED fact, never a fabricated witness.
+  try {
+    writeFileSync(join(captureDirectory, `${nonce}${SPAWN_ANCESTRY_WITNESS_SUFFIXES[/** @type {IdentityRole} */ (role)]}`), `${JSON.stringify(payload)}\n`, { mode: 0o600, flag: 'wx' });
+  } catch {
+    return spawnWitnessVerdict('unestablished', 'spawn-witness-write-failed');
+  }
+  return spawnWitnessVerdict('established', null, { identity: payload, readStartedEpochMs, readEpochMs: Date.now() });
+}
+
+/**
+ * Admit one spawned-boundary witness record from a fixture-owned capture
+ * directory, bound to the fixture nonce and boundary role. Purely offline;
+ * performs NO writes. The admission is its OWN evidence class: a missing,
+ * non-regular, oversize, unreadable, torn, shape-invalid, foreign-nonce or
+ * role-mismatched record is a NAMED fact that exposes no identity and is
+ * never folded into a launch/liveness/absent claim.
+ * @param {{
+ *   captureDirectory: string,
+ *   nonce: string,
+ *   role?: IdentityRole,
+ *   nowEpochMs?: number | (() => number),
+ *   readRecordFile?: (root: string, path: string, maximumBytes: number) => Promise<unknown>,
+ * }} input
+ * @returns {Promise<SpawnAncestryWitnessVerdict>}
+ */
+export async function admitSpawnAncestryWitness(input) {
+  if (!isPlainObject(input)) throw invalidLocalProcessInput('the spawn witness admission input must be an object.');
+  const { captureDirectory, nonce } = input;
+  if (typeof captureDirectory !== 'string' || captureDirectory.length === 0 || !isAbsolute(captureDirectory)) {
+    throw invalidLocalProcessInput('the capture directory must be an absolute path.');
+  }
+  validateCaptureNonce(nonce, 'capture');
+  const role = input.role ?? 'invocation';
+  if (!IDENTITY_ROLES.includes(role)) throw invalidLocalProcessInput('the identity role must be invocation or broker-daemon.');
+  const stampMs = completionClock(input.nowEpochMs);
+  const readStartedEpochMs = stampMs();
+  if (input.readRecordFile !== undefined && typeof input.readRecordFile !== 'function') {
+    throw invalidLocalProcessInput('the record read seam must be a function.');
+  }
+  const recordPath = join(captureDirectory, `${nonce}${SPAWN_ANCESTRY_WITNESS_SUFFIXES[/** @type {IdentityRole} */ (role)]}`);
+  const recordStats = await lstat(recordPath).catch((error) => {
+    if (/** @type {NodeJS.ErrnoException} */ (error)?.code === 'ENOENT') return null;
+    return 'unreadable';
+  });
+  const sampleCompletion = () => stampMs();
+  if (recordStats === 'unreadable') {
+    return spawnWitnessVerdict('invalid', 'spawn-witness-unreadable', { readStartedEpochMs, readEpochMs: sampleCompletion() });
+  }
+  if (recordStats === null) {
+    return spawnWitnessVerdict('missing', 'spawn-witness-missing', { readStartedEpochMs, readEpochMs: sampleCompletion() });
+  }
+  if (recordStats.isSymbolicLink() || !recordStats.isFile()) {
+    return spawnWitnessVerdict('invalid', 'spawn-witness-not-regular', { readStartedEpochMs, readEpochMs: sampleCompletion() });
+  }
+  if (recordStats.size > SPAWN_ANCESTRY_WITNESS_MAX_BYTES) {
+    return spawnWitnessVerdict('invalid', 'spawn-witness-oversize', { readStartedEpochMs, readEpochMs: sampleCompletion() });
+  }
+  const readRecordFile = input.readRecordFile
+    ?? (async (root, path, maximumBytes) => (await loadMaterializedHelperModules()).readBoundedJsonFile(root, path, maximumBytes, { requirePrivatePermissions: true }));
+  /** @param {unknown} error @returns {boolean} */
+  const isTornJson = (error) => error instanceof SyntaxError;
+  let record;
+  let readError = null;
+  try {
+    record = await readRecordFile(captureDirectory, recordPath, SPAWN_ANCESTRY_WITNESS_MAX_BYTES);
+  } catch (error) {
+    readError = error;
+  }
+  const readEpochMs = sampleCompletion();
+  if (readError !== null) {
+    return spawnWitnessVerdict('invalid', isTornJson(readError) ? 'spawn-witness-torn' : 'spawn-witness-unreadable', { readStartedEpochMs, readEpochMs });
+  }
+  const shape = validateSpawnWitnessRecord(record);
+  if (!shape.ok) return spawnWitnessVerdict('invalid', shape.reason, { readStartedEpochMs, readEpochMs });
+  // The witness is bound to the QUERIED fixture scope nonce (a foreign
+  // scope's witness never attests this scope), and to the QUERIED boundary
+  // role (a daemon-boundary record can never ride the invocation hop).
+  if (shape.identity.nonce !== nonce) {
+    return spawnWitnessVerdict('invalid', 'spawn-witness-nonce-mismatch', { readStartedEpochMs, readEpochMs });
+  }
+  if (shape.identity.role !== role) {
+    return spawnWitnessVerdict('invalid', 'spawn-witness-role-mismatch', { readStartedEpochMs, readEpochMs });
+  }
+  return spawnWitnessVerdict('established', null, { identity: shape.identity, readStartedEpochMs, readEpochMs });
+}
+
+// ---------------------------------------------------------------------------
 // OS-verified live observation and the exit/absence adjudication (§25.4
 // items 4/5/6). The reads reuse the fixture's race-safe double-read (PID +
 // OS start identity + environment-nonce verification) bound to the CAPTURE
@@ -903,6 +1468,7 @@ export async function admitStartupIdentityRecord(input) {
  *   identityReadEpochMs?: number,
  *   observedStartIdentity?: string,
  *   observedIdentityReadEpochMs?: number,
+ *   observedIdentityCompletedEpochMs?: number,
  *   readEpochMs: number,
  *   absenceConfirmed: boolean | null,
  * }} LocalProcessObservation
@@ -1252,13 +1818,23 @@ export async function observeLocalProcess(input) {
       const absenceVerdict = await absenceOutcome();
       /** @type {any} */ (absenceVerdict).observedStartIdentity = goneAfterIdentity;
       // ROUND-31: the carried identity's evidence instant is the INSPECTION
-      // instant (the outer sample above, taken before the confirmation
-      // await) — never the later absence-confirmation completion the
+      // instant — never the later absence-confirmation completion the
       // verdict's readEpochMs carries: an old generation read BEFORE the
       // bound generation's presence must never latch it, and a replacement
       // genuinely read after it still latches (the adjudicator compares this
-      // instant).
-      /** @type {any} */ (absenceVerdict).observedIdentityReadEpochMs = readEpochMs;
+      // instant). (codex round 13) the inspector now surfaces the identity's
+      // OWN taken instant on the error — the failure's completion sample is
+      // the fallback only for a legacy error that carries no timing.
+      /** @type {any} */ (absenceVerdict).observedIdentityReadEpochMs = Number.isSafeInteger(/** @type {any} */ (inspectionError).observedIdentityTakenEpochMs)
+        ? /** @type {any} */ (inspectionError).observedIdentityTakenEpochMs
+        : readEpochMs;
+      // (codex round 14) the identity's COLLECTION INTERVAL travels as a
+      // unit: the upper bound (the first read's resolution) lets the
+      // adjudicator distinguish a definitively pre-baseline observation from
+      // one whose collection window merely OVERLAPS the baseline.
+      if (Number.isSafeInteger(/** @type {any} */ (inspectionError).observedIdentityCompletedEpochMs)) {
+        /** @type {any} */ (absenceVerdict).observedIdentityCompletedEpochMs = /** @type {any} */ (inspectionError).observedIdentityCompletedEpochMs;
+      }
       return absenceVerdict;
     }
     // ROUND-26: a nonce-verification failure that still exposes an OBSERVED
@@ -1269,7 +1845,23 @@ export async function observeLocalProcess(input) {
     const observedStartIdentity = /** @type {any} */ (/** @type {any} */ (inspectionError)).observedStartIdentity;
     if (typeof observedStartIdentity === 'string' && input.expectedStartIdentity !== undefined
       && observedStartIdentity !== input.expectedStartIdentity) {
-      return observationVerdict('unestablished', 'start-identity-generation-changed', readEpochMs, queried, readStartedEpochMs);
+      // (codex round 14) the IDENTITY-MISMATCH promotion consumes the
+      // carried observation timing exactly like the generic path (the
+      // round-13 rule): the generation-changed evidence is dated at its
+      // carried observation interval — lower and upper bounds — never at
+      // the failure completion, so a predecessor sampled before the
+      // presence baseline whose failure finishes afterward is adjudicated
+      // by the interval rule (ambiguous when overlapping; the lawful
+      // disappeared outcome when definitively pre-baseline), not promoted
+      // into apparent replacement evidence by its late completion.
+      const promotedVerdict = observationVerdict('unestablished', 'start-identity-generation-changed', readEpochMs, queried, readStartedEpochMs);
+      if (Number.isSafeInteger(/** @type {any} */ (inspectionError).observedIdentityTakenEpochMs)) {
+        /** @type {any} */ (promotedVerdict).observedIdentityReadEpochMs = /** @type {any} */ (inspectionError).observedIdentityTakenEpochMs;
+        if (Number.isSafeInteger(/** @type {any} */ (inspectionError).observedIdentityCompletedEpochMs)) {
+          /** @type {any} */ (promotedVerdict).observedIdentityCompletedEpochMs = /** @type {any} */ (inspectionError).observedIdentityCompletedEpochMs;
+        }
+      }
+      return promotedVerdict;
     }
     // ROUND-27: with the OPTIONAL expectedStartIdentity omitted (or a
     // same-generation identity) the read stays the named nonce failure, but
@@ -1282,6 +1874,19 @@ export async function observeLocalProcess(input) {
     const nonceFailureVerdict = observationVerdict('unestablished', 'liveness-read-failed', readEpochMs, queried, readStartedEpochMs);
     if (typeof observedStartIdentity === 'string') {
       /** @type {any} */ (nonceFailureVerdict).observedStartIdentity = observedStartIdentity;
+      // (codex round 13 — EVIDENCE TIMING) the carried identity is dated at
+      // its OBSERVATION instant (the inspector's first-read taken bound,
+      // carried as a unit on the error), never at the failure's completion:
+      // a delayed failure carrying a stale identity must not become
+      // post-baseline replacement evidence — the adjudicator's
+      // presence/recency comparisons consume this instant.
+      if (Number.isSafeInteger(/** @type {any} */ (inspectionError).observedIdentityTakenEpochMs)) {
+        /** @type {any} */ (nonceFailureVerdict).observedIdentityReadEpochMs = /** @type {any} */ (inspectionError).observedIdentityTakenEpochMs;
+        // (codex round 14) the interval's upper bound rides with it.
+        if (Number.isSafeInteger(/** @type {any} */ (inspectionError).observedIdentityCompletedEpochMs)) {
+          /** @type {any} */ (nonceFailureVerdict).observedIdentityCompletedEpochMs = /** @type {any} */ (inspectionError).observedIdentityCompletedEpochMs;
+        }
+      }
     }
     return nonceFailureVerdict;
   }
@@ -1469,6 +2074,81 @@ export function adjudicateLocalExit(input) {
   const carriedIdentityEpochMs = (/** @type {any} */ read) => (Number.isSafeInteger(read.observedIdentityReadEpochMs)
     ? read.observedIdentityReadEpochMs
     : identityEvidenceEpochMs(read));
+  // (codex round 14 — the COLLECTION-INTERVAL rule) a carried identity whose
+  // collection INTERVAL straddles the presence baseline is AMBIGUOUS
+  // evidence: the snapshot may show the predecessor (collected before the
+  // baseline) or a replacement (collected after it), and neither reading is
+  // provable. Only a collection that COMPLETED at or before the baseline is
+  // definitively stale (old evidence, never latching), and only a collection
+  // that STARTED at or after the baseline is definitively post-baseline
+  // (positive replacement evidence). Reads without an explicit interval are
+  // definitive instants (the legacy fixtures' recorded read instants) — the
+  // legacy behavior is preserved exactly.
+  // (codex round 17 — INTERVAL-TO-INTERVAL) the replacement's collection
+  // interval classifies against the PRESENCE HORIZON'S OWN collection
+  // interval — the dispatch lower bound (`readStartedEpochMs`) and the
+  // identity-read completion upper bound (`lastPresenceEpochMs`, the same
+  // unit the ride carries) — never against either side's completion alone:
+  // a completion instant cannot prove that the presence was COLLECTED after
+  // the replacement. Stale requires the replacement's collection to have
+  // completed STRICTLY BEFORE the presence's dispatch (the presence provably
+  // cannot have seen it); post-baseline requires the replacement's
+  // collection to have started at/after the presence's completion
+  // (tie-inclusive — the presence provably finished first); everything else
+  // OVERLAPS the presence's collection window and is the ambiguous fact.
+  // Reads without an interval upper bound stay LEGACY (the round-15/16
+  // carried-instant recency guard applies); a presence without a dispatch
+  // bound keeps the round-16 instant rules.
+  const carriedIdentityIntervalClass = (/** @type {any} */ read) => {
+    // (codex round 23 — THREE-STATE BOUND RESOLUTION) the bounds resolve
+    // into THREE states, never two: ABSENT (undefined/null — the genuine
+    // legacy shape; the round-15/16 instant rules apply unchanged),
+    // SUPPLIED VALID (a positive safe integer — the interval classification
+    // applies), and SUPPLIED INVALID (present but not a positive safe
+    // integer — a string, a float, NaN, a non-positive value: an epoch-ms
+    // collection instant is positive by definition) — MALFORMED EVIDENCE
+    // that refuses pid-start-identity-interval-inconsistent, never silently
+    // downgraded to absent, never stale-discarded. Positive plausibility is
+    // part of supplied-valid (an epoch instant is positive; 0/negative is
+    // garbage). Runtime and replay resolve identically (the frozen
+    // replay-agreement clause).
+    const boundAbsent = (/** @type {any} */ v) => v === undefined || v === null;
+    const boundSuppliedValid = (/** @type {any} */ v) => Number.isSafeInteger(v) && /** @type {number} */ (v) > 0;
+    const readBound = read.observedIdentityReadEpochMs;
+    const completedBound = read.observedIdentityCompletedEpochMs;
+    if (!boundAbsent(readBound) && !boundSuppliedValid(readBound)) return 'inconsistent';
+    if (boundAbsent(completedBound)) return 'legacy';
+    if (!boundSuppliedValid(completedBound)) return 'inconsistent';
+    const lower = carriedIdentityEpochMs(read);
+    const upper = /** @type {number} */ (completedBound);
+    // (codex round 20 — INPUT VALIDATION) the interval must be WELL-FORMED
+    // before any classification may DISCARD evidence: ORDERED — the carried
+    // identity's taken instant must not follow its completion (a
+    // backwards-moving or garbage clock yields an inverted interval). An
+    // interval failing the check is INCONSISTENT EVIDENCE: the stale/discard
+    // path is FORBIDDEN for malformed input — the consumers refuse by name
+    // (`pid-start-identity-interval-inconsistent`), never disappeared,
+    // never reused. Well-formed intervals classify exactly as the
+    // round-17→19 rules already do. (Adjudicated: the PLAUSIBLE containment
+    // check — the interval within the carrying verdict's
+    // [readStartedEpochMs, readEpochMs] window — is REJECTED as unsound:
+    // the inspector's taken/resolved instants ride the inspector's own real
+    // clock while the verdict's read stamps can ride a synthetic
+    // `nowEpochMs` clock, so a cross-domain containment comparison is an
+    // implicit clock join (§26.7 item 4 forbids) and falsely condemns real
+    // evidence in the synthetic-clock fixtures — demonstrated by the
+    // standing nonce-mismatch pins failing under it. The order check is
+    // same-domain (both bounds sampled by the inspector's own clock) and
+    // sound; the reviewer's inverted schedule [3500, 500] is caught by it.)
+    const ordered = Number.isSafeInteger(lower) && lower <= upper;
+    if (!ordered) return 'inconsistent';
+    if (lastPresenceStartedEpochMs === null) {
+      return upper < lastPresenceEpochMs ? 'stale' : 'post';
+    }
+    if (upper < lastPresenceStartedEpochMs) return 'stale';
+    if (lower >= lastPresenceEpochMs) return 'post';
+    return 'overlap';
+  };
   // ROUND-29: reads order by their DECISION instant — identity-bearing reads
   // by the identity-READ instant, absences by their confirmation completion —
   // the same instants the recency checks below consume. Sorting by the
@@ -1498,6 +2178,14 @@ export function adjudicateLocalExit(input) {
   // live reads move it forward, so both live and disappeared verdicts report
   // when this generation was LAST seen, never just its first capture.
   let lastPresenceEpochMs = identityEvidenceEpochMs(presence);
+  // (codex round 17) the horizon's collection START (the dispatch bound):
+  // the interval-to-interval staleness comparison consumes BOTH bounds of
+  // the presence's collection window, never the completion alone. Null when
+  // the presence read carries no dispatch bound (legacy — the round-16
+  // instant rules apply).
+  let lastPresenceStartedEpochMs = Number.isSafeInteger(presence.readStartedEpochMs)
+    ? presence.readStartedEpochMs
+    : null;
   // ROUND-20 LATCH: once a generation change is detected in the read
   // sequence (an established read with a different start identity, or a
   // named start-identity-generation-changed read), the refusal is TERMINAL —
@@ -1507,6 +2195,72 @@ export function adjudicateLocalExit(input) {
   let reuseLatched = false;
   for (const read of ordered) {
     const readEpochMs = /** @type {any} */ (read).readEpochMs;
+    // (codex round 18 — CLASSIFY FIRST) the interval classification runs
+    // BEFORE any completion-instant guard or recency filter: a carried
+    // evidence failure's completion instant is metadata about the ERROR,
+    // never a filter on the identity's collection interval — query latency
+    // must never determine whether replacement evidence is credited,
+    // discarded as stale, or named ambiguous. When BOTH sides carry
+    // collection bounds, the round-17 interval-to-interval classification
+    // EXCLUSIVELY governs (stale / post-baseline latch / overlap-ambiguous);
+    // only legacy reads without bounds fall through to the completion-based
+    // rules below. The in-loop interval arms further down are retained as
+    // unreachable defensive fallbacks for these shapes.
+    const earlyQueried = /** @type {any} */ (read).queried;
+    const earlySameScope = isPlainObject(earlyQueried) && earlyQueried.pid === bound.pid && earlyQueried.nonce === bound.nonce;
+    const earlyIsCarriedReplacement = earlySameScope && read.status === 'unestablished'
+      && ((typeof /** @type {any} */ (read).observedStartIdentity === 'string'
+        && /** @type {any} */ (read).observedStartIdentity !== bound.startIdentity)
+        || read.reason === 'start-identity-generation-changed');
+    const earlyIsIdentityBearingAbsence = earlySameScope && read.status === 'absent'
+      && typeof /** @type {any} */ (read).observedStartIdentity === 'string'
+      && /** @type {any} */ (read).observedStartIdentity !== bound.startIdentity;
+    // (codex round 24 — VALIDATE-FIRST extended to the three-state
+    // validator) the hoist fires whenever ANY bound is SUPPLIED (present,
+    // non-null) — not only when the upper bound is a safe integer: a
+    // SUPPLIED-INVALID bound (a string, a float, garbage) must receive the
+    // inconsistent refusal BEFORE the completion-time gate and the recency
+    // filter can pre-empt it (the reviewer's schedule: a carried failure
+    // completing 2000 before the horizon 2100 bypassed the validator and
+    // was discarded into a disappeared verdict). A read with NO supplied
+    // bound at all (the genuine legacy shape) falls through to the legacy
+    // pipeline unchanged.
+    const earlyCompletedBound = /** @type {any} */ (read).observedIdentityCompletedEpochMs;
+    const earlyReadBound = /** @type {any} */ (read).observedIdentityReadEpochMs;
+    const earlyBoundSupplied = (earlyCompletedBound !== undefined && earlyCompletedBound !== null)
+      || (earlyReadBound !== undefined && earlyReadBound !== null);
+    if ((earlyIsCarriedReplacement || earlyIsIdentityBearingAbsence) && earlyBoundSupplied) {
+      const intervalClass = carriedIdentityIntervalClass(read);
+      if (intervalClass === 'legacy') {
+        // completed ABSENT (the genuine legacy shape — only the lower bound
+        // supplied): the completion-based legacy pipeline below governs
+        // unchanged (the hoist never touches legacy classification).
+      } else if (intervalClass === 'overlap') {
+        return { ...unestablished('pid-start-identity-ambiguous'), boundIdentity, lastVerifiedPresenceEpochMs: lastPresenceEpochMs };
+      } else if (intervalClass === 'inconsistent') {
+        // (codex rounds 20+24) malformed intervals are inconsistent
+        // evidence — never classified stale, never discarded, never
+        // latched, never pre-empted by a completion guard or the recency
+        // filter.
+        return { ...unestablished('pid-start-identity-interval-inconsistent'), boundIdentity, lastVerifiedPresenceEpochMs: lastPresenceEpochMs };
+      } else if (intervalClass === 'post') {
+        state = 'reused';
+        reuseLatched = true;
+        continue;
+      } else {
+        // stale: the replacement's collection completed strictly before the
+        // presence's own collection started — the presence provably cannot
+        // have seen it. Old evidence, non-deciding: the identity-bearing
+        // ABSENCE it rides may still admit below (its own collection bounds
+        // govern), and a carried-failure read is skipped as old evidence.
+        if (earlyIsCarriedReplacement) {
+          sawUnestablished = true;
+          continue;
+        }
+        // stale ABSENT-carrying (interval-bearing) evidence falls through
+        // to the absence admission below (its own bounds govern).
+      }
+    }
     // STRICT recency over ALL prior same-generation presence, including the
     // baseline itself (lastPresenceEpochMs starts at the baseline): an
     // absence at or before the last verified presence is a tie with that
@@ -1526,6 +2280,7 @@ export function adjudicateLocalExit(input) {
       const readQueried = /** @type {any} */ (read).queried;
       const sameScope = isPlainObject(readQueried) && readQueried.pid === bound.pid && readQueried.nonce === bound.nonce;
       let replacementDetected = false;
+      let replacementAmbiguous = false;
       if (sameScope && read.status === 'established') {
         const candidate = /** @type {any} */ (read).observation;
         if (isPlainObject(candidate) && candidate.pid === bound.pid
@@ -1534,25 +2289,82 @@ export function adjudicateLocalExit(input) {
         }
       } else if (sameScope && read.status === 'unestablished'
         && read.reason === 'start-identity-generation-changed') {
-        replacementDetected = true;
+        // (codex round 14) the promotion's carried interval governs: an
+        // interval overlapping the presence baseline is AMBIGUOUS evidence
+        // (never definitive replacement), an interval that completed at or
+        // before the baseline is definitively stale (old evidence, never
+        // latching), and a collection that started at or after the baseline
+        // is definitively post-baseline (replacement).
+        const intervalClass = carriedIdentityIntervalClass(read);
+        if (intervalClass === 'overlap') {
+          replacementAmbiguous = true;
+        } else if (intervalClass === 'inconsistent') {
+          // (codex round 20) malformed intervals refuse by name — never
+          // classified stale, never discarded.
+          return { ...unestablished('pid-start-identity-interval-inconsistent'), boundIdentity, lastVerifiedPresenceEpochMs: lastPresenceEpochMs };
+        } else if (intervalClass === 'post') {
+          // (codex rounds 16–17) TIE-INCLUSIVE at the post-baseline edge:
+          // an interval starting at/after the presence horizon's completion
+          // (equality included) is definitively post-baseline.
+          replacementDetected = true;
+        } else if (intervalClass === 'legacy'
+          && carriedIdentityEpochMs(read) >= lastPresenceEpochMs) {
+          replacementDetected = true;
+        }
+        // stale (completed strictly before the presence's collection start)
+        // is old evidence — never latching.
       } else if (sameScope && read.status === 'unestablished'
         && typeof /** @type {any} */ (read).observedStartIdentity === 'string'
-        && /** @type {any} */ (read).observedStartIdentity !== bound.startIdentity
-        && carriedIdentityEpochMs(read) >= lastPresenceEpochMs) {
-        // ROUND-27/30/31: a read CARRYING an observed start identity that
-        // differs from the BOUND generation is positive replacement evidence
-        // (the inspector's first read SAW the replacement) — INDEPENDENTLY
-        // of its named failure class (the nonce-failure ride and the
-        // observed-then-gone confirmation failures alike) — and evaluated at
-        // the CARRIED identity's own inspection instant: an old generation
-        // read before the baseline's presence never latches it (round 22's
-        // old-evidence rule, at the carried instant), tie-inclusive.
-        replacementDetected = true;
+        && /** @type {any} */ (read).observedStartIdentity !== bound.startIdentity) {
+        // ROUND-27/30/31 (codex round 14 interval-aware): a read CARRYING an
+        // observed start identity that differs from the BOUND generation is
+        // positive replacement evidence INDEPENDENTLY of its named failure
+        // class (the nonce-failure ride and the observed-then-gone
+        // confirmation failures alike), evaluated at the CARRIED identity's
+        // own collection interval: definitively post-baseline latches, an
+        // interval overlapping the presence baseline is the AMBIGUOUS fact,
+        // and a definitively stale interval (collection completed at or
+        // before the baseline) is old evidence that never latches.
+        const intervalClass = carriedIdentityIntervalClass(read);
+        if (intervalClass === 'overlap') {
+          replacementAmbiguous = true;
+        } else if (intervalClass === 'inconsistent') {
+          // (codex round 20) malformed intervals refuse by name — never
+          // classified stale, never discarded.
+          return { ...unestablished('pid-start-identity-interval-inconsistent'), boundIdentity, lastVerifiedPresenceEpochMs: lastPresenceEpochMs };
+        } else if (intervalClass === 'post') {
+          // (codex rounds 16–17) TIE-INCLUSIVE at the post-baseline edge: a
+          // collection starting at/after the presence horizon's completion
+          // (equality included) is definitively post-baseline — the latch
+          // fires here, so the later recency filter never discards it into
+          // a disappearance.
+          replacementDetected = true;
+        } else if (intervalClass === 'legacy'
+          && carriedIdentityEpochMs(read) >= lastPresenceEpochMs) {
+          // (codex round 15) the LEGACY arm keeps its carried-instant recency
+          // guard: without an interval upper bound the carried instant is a
+          // definitive read instant, so only a definitively POST-baseline
+          // carried identity latches — a stale identity observed before the
+          // baseline never does.
+          replacementDetected = true;
+        }
+        // stale (completed strictly before the presence's collection start)
+        // is old evidence — never latching.
       }
       if (replacementDetected) {
         state = 'reused';
         reuseLatched = true;
         continue;
+      }
+      if (replacementAmbiguous) {
+        // (codex round 14) an overlapping collection interval is never
+        // resolved into either definitive reading: the pid's occupant
+        // generation at the baseline is not provable, so the lawful
+        // outcome is the named ambiguous fact — never `disappeared` (a
+        // replacement may have held the pid) and never
+        // `pid-start-identity-reused` (the predecessor may never have
+        // left).
+        return { ...unestablished('pid-start-identity-ambiguous'), boundIdentity, lastVerifiedPresenceEpochMs: lastPresenceEpochMs };
       }
     }
     // Recency filter (round-28 instants): ABSENCE evidence is the
@@ -1574,6 +2386,10 @@ export function adjudicateLocalExit(input) {
       if (observation.startIdentity === bound.startIdentity) {
         state = 'live';
         lastPresenceEpochMs = identityEvidenceEpochMs(read);
+        // (codex round 17) the horizon's collection start advances with it.
+        if (Number.isSafeInteger(read.readStartedEpochMs)) {
+          lastPresenceStartedEpochMs = read.readStartedEpochMs;
+        }
       } else {
         state = 'reused';
         reuseLatched = true;
@@ -1593,11 +2409,32 @@ export function adjudicateLocalExit(input) {
       // baseline's lawful disappearance. Carried-equal (or no carried
       // identity) admits the absence normally.
       const carriedIdentity = /** @type {any} */ (read).observedStartIdentity;
-      if (typeof carriedIdentity === 'string' && carriedIdentity !== bound.startIdentity
-        && carriedIdentityEpochMs(read) >= lastPresenceEpochMs) {
-        state = 'reused';
-        reuseLatched = true;
-        continue;
+      if (typeof carriedIdentity === 'string' && carriedIdentity !== bound.startIdentity) {
+        // (codex rounds 15+17) the interval classification applies to
+        // IDENTITY-BEARING ABSENT verdicts exactly like the unestablished
+        // ones, INTERVAL-TO-INTERVAL: a collection window OVERLAPPING the
+        // presence horizon's own collection window is the ambiguous fact —
+        // the occupant generation at the horizon is not provable, so
+        // disappearance never establishes on ambiguous generation evidence;
+        // a collection that completed STRICTLY before the horizon's
+        // collection start is definitively stale (the absence admits
+        // normally); a collection that started at or after the horizon's
+        // completion (tie-inclusive) latches the reuse (the successor's
+        // mid-read absence is never the bound generation's death).
+        const absentIntervalClass = carriedIdentityIntervalClass(read);
+        if (absentIntervalClass === 'overlap') {
+          return { ...unestablished('pid-start-identity-ambiguous'), boundIdentity, lastVerifiedPresenceEpochMs: lastPresenceEpochMs };
+        }
+        if (absentIntervalClass === 'inconsistent') {
+          return { ...unestablished('pid-start-identity-interval-inconsistent'), boundIdentity, lastVerifiedPresenceEpochMs: lastPresenceEpochMs };
+        }
+        if (absentIntervalClass === 'post'
+          || (absentIntervalClass === 'legacy' && carriedIdentityEpochMs(read) >= lastPresenceEpochMs)) {
+          state = 'reused';
+          reuseLatched = true;
+          continue;
+        }
+        // definitively stale: the absence admits normally below.
       }
       // ROUND-36: an absence whose COLLECTION overlaps the presence
       // evidence (its read START predates the presence evidence's
@@ -1628,6 +2465,25 @@ export function adjudicateLocalExit(input) {
     // start identity holding this pid — a DIFFERENT process, never our
     // generation's death. Every other unestablished read never decides.
     if (read.reason === 'start-identity-generation-changed') {
+      // (codex round 14) interval-aware: a promoted generation-changed read
+      // whose collection interval overlaps the presence horizon is the
+      // ambiguous fact, never definitive reuse; one whose collection
+      // completed at or before the horizon is definitively stale and never
+      // decides. Without an interval the legacy behavior stands.
+      if (Number.isSafeInteger(read.observedIdentityCompletedEpochMs)) {
+        const intervalClass = carriedIdentityIntervalClass(read);
+        if (intervalClass === 'overlap') {
+          return { ...unestablished('pid-start-identity-ambiguous'), boundIdentity, lastVerifiedPresenceEpochMs: lastPresenceEpochMs };
+        }
+        if (intervalClass === 'inconsistent') {
+          return { ...unestablished('pid-start-identity-interval-inconsistent'), boundIdentity, lastVerifiedPresenceEpochMs: lastPresenceEpochMs };
+        }
+        // (codex rounds 16–17) only a collection completing STRICTLY before
+        // the presence horizon's own collection START is definitively stale
+        // (the presence provably cannot have seen it); ties and any overlap
+        // classify above.
+        if (intervalClass === 'stale') continue;
+      }
       state = 'reused';
       reuseLatched = true;
       continue;
@@ -1642,11 +2498,32 @@ export function adjudicateLocalExit(input) {
     // latches it. A carried identity EQUAL to the bound one is the
     // same-generation failure and stays a non-deciding unestablished fact.
     if (typeof /** @type {any} */ (read).observedStartIdentity === 'string'
-      && /** @type {any} */ (read).observedStartIdentity !== bound.startIdentity
-      && carriedIdentityEpochMs(read) >= lastPresenceEpochMs) {
-      state = 'reused';
-      reuseLatched = true;
-      continue;
+      && /** @type {any} */ (read).observedStartIdentity !== bound.startIdentity) {
+      // (codex round 14) interval-aware: overlapping collection intervals
+      // are the ambiguous fact; definitively stale intervals never decide;
+      // definitively post-baseline collections latch.
+      if (Number.isSafeInteger(read.observedIdentityCompletedEpochMs)) {
+        const intervalClass = carriedIdentityIntervalClass(read);
+        if (intervalClass === 'overlap') {
+          return { ...unestablished('pid-start-identity-ambiguous'), boundIdentity, lastVerifiedPresenceEpochMs: lastPresenceEpochMs };
+        }
+        if (intervalClass === 'inconsistent') {
+          return { ...unestablished('pid-start-identity-interval-inconsistent'), boundIdentity, lastVerifiedPresenceEpochMs: lastPresenceEpochMs };
+        }
+        // (codex rounds 16–17) only a collection completing STRICTLY before
+        // the presence horizon's own collection START is definitively stale
+        // (the presence provably cannot have seen it) — completion alone
+        // never proves ordering; ties and any overlap classify above.
+        if (intervalClass === 'stale') {
+          sawUnestablished = true;
+          continue;
+        }
+      }
+      if (carriedIdentityEpochMs(read) >= lastPresenceEpochMs) {
+        state = 'reused';
+        reuseLatched = true;
+        continue;
+      }
     }
     sawUnestablished = true;
   }
@@ -1737,13 +2614,333 @@ export function adjudicateLocalExit(input) {
 /**
  * One ancestry-hop verdict. `detail` names the capture-time-only character
  * of a ppid equality (a later mismatch proves reparenting, never death).
+ * `witnessClass` (additive member; the §26.6 route-(b) registration) rides
+ * ONLY an established hop whose lifetime refusal was resolved by the
+ * positively captured spawn-boundary causal witness — old verdicts carry no
+ * member and stay byte-stable.
  * @typedef {{
  *   hop: 'companion-to-daemon' | 'daemon-to-transport',
  *   status: 'established' | 'unestablished',
  *   reason: string | null,
  *   detail?: string,
+ *   witnessClass?: 'spawn-boundary-capture',
  * }} AncestryHop
  */
+
+/**
+ * Route-(b) validation: the join accepts ONLY an admitted spawn-witness
+ * verdict (the {@link admitSpawnAncestryWitness} shape). Any other value is
+ * an input-contract error, never a silent ignore.
+ * @param {unknown} verdict @param {string} label @returns {any}
+ */
+function validatedSpawnWitnessInput(verdict, label) {
+  if (verdict === undefined) return undefined;
+  if (!isPlainObject(verdict) || verdict.class !== 'spawn-ancestry-witness'
+    || (verdict.status !== 'established' && verdict.status !== 'invalid' && verdict.status !== 'missing' && verdict.status !== 'unestablished')
+    || (verdict.status === 'established' && !isPlainObject(verdict.identity))) {
+    throw invalidLocalProcessInput(`the ${label} spawn witness must be an admitted spawn-ancestry-witness verdict.`);
+  }
+  if (verdict.status === 'established' && validateSpawnWitnessRecord(verdict.identity).ok !== true) {
+    throw invalidLocalProcessInput(`the ${label} spawn witness identity is shape-invalid.`);
+  }
+  return verdict;
+}
+
+/**
+ * Route-(b) application (the §26.6 freeze; §26.7 item 3 witnesses): a
+ * positively captured spawn-boundary witness ESTABLISHES the hop only when
+ * it binds the writer's established generation, the child's capture-time
+ * generation, the kernel parent link at the boundary, the child's own
+ * verified nonce and a capture window inside the parent's verified presence
+ * interval. Every divergence is a NEW named refusal (never folded into the
+ * old labels); the witness never fabricates or relabels an OS birth instant.
+ * @param {SpawnAncestryWitnessVerdict | undefined} witness
+ * @param {{
+ *   writerPid: number, writerStartIdentity: string,
+ *   childPid: number, childStartIdentity: string | null,
+ *   childPpid: number, childNonce: string,
+ *   writerReadEpochMs: number | null, childOsStartInstant?: number,
+ *   writerOsStartInstant?: number, childMarkerEpochMs?: number,
+ *   childReadStartedEpochMs?: number, writerReadStartedEpochMs?: number,
+ *   scopeNonce?: string, expectedRole?: IdentityRole,
+ * }} expected
+ * @returns {{ status: 'established', reason: null, witnessClass: 'spawn-boundary-capture' } | { status: 'unestablished', reason: string, detail?: string | null }}
+ */
+function establishThroughSpawnWitness(witness, expected) {
+  if (witness === undefined) return { status: 'unestablished', reason: 'spawn-witness-absent' };
+  if (witness.status !== 'established' || !isPlainObject(witness.identity)) {
+    return {
+      status: 'unestablished',
+      reason: 'spawn-witness-unadmitted',
+      detail: typeof witness.reason === 'string' ? witness.reason : null,
+    };
+  }
+  const facts = /** @type {SpawnAncestryWitnessIdentity} */ (witness.identity);
+  /** @param {string} reason @returns {{ status: 'unestablished', reason: string, detail: null }} */
+  const mismatch = (reason) => ({ status: 'unestablished', reason, detail: null });
+  // The PARENT presence interval: the witness capture window must ride
+  // inside the parent's verified presence — the establishing read of the
+  // writer's own generation must POSTDATE the boundary and the write.
+  if (!Number.isSafeInteger(expected.writerReadEpochMs)) return mismatch('spawn-witness-capture-unbounded');
+  // The witness binds the JOIN's declared scope (defense in depth — the
+  // admission already refused a foreign file) and the boundary role that
+  // matches this hop: an inherited witness in a wrong role never bridges.
+  if (expected.scopeNonce !== undefined && facts.nonce !== expected.scopeNonce) return mismatch('spawn-witness-nonce-mismatch');
+  if (expected.expectedRole !== undefined && facts.role !== expected.expectedRole) return mismatch('spawn-witness-role-mismatch');
+  // The WRITER identity: the witness's creator must BE the established
+  // parent generation (pid + OS-verified start identity at the boundary).
+  if (facts.writerPid !== expected.writerPid || facts.writerStartIdentity !== expected.writerStartIdentity) {
+    return mismatch('spawn-witness-writer-foreign');
+  }
+  // The CHILD capture identity: the child generation the writer positively
+  // observed at the boundary must be the child generation this hop binds —
+  // a same-pid reused successor can never ride the witness. When the hop
+  // binds an externally observed child start identity (the Companion→daemon
+  // hop's refreshed daemon read), it must EQUAL the witnessed one. When the
+  // caller has NO external child start identity (the daemon→transport hop:
+  // the marker carries kernel pid/ppid facts only), the witness's OWN
+  // captured childStartIdentity — validated non-empty from the writer's
+  // OS-verified boundary double read — is the positively captured generation
+  // binding (the §26.6 anti-reuse argument: the witness binds the child's
+  // own start identity and the parent's capture-time presence interval; a
+  // reused PID cannot forge a parent relationship it never observed).
+  if (expected.childPid === null) return mismatch('spawn-witness-child-foreign');
+  if (facts.childPid !== expected.childPid) return mismatch('spawn-witness-child-foreign');
+  if (typeof expected.childStartIdentity === 'string' && facts.childStartIdentity !== expected.childStartIdentity) {
+    return mismatch('spawn-witness-child-foreign');
+  }
+  // The CAPTURE-TIME kernel parent link: the child's OS ppid observed at the
+  // boundary was the writer's pid (the actual spawn relationship).
+  if (facts.childPpid !== expected.childPpid) return mismatch('spawn-witness-parent-foreign');
+  // The CHILD's own verified nonce (its scope/transport expectation) at the
+  // boundary: an env-inherited nonce in a wrong role never bridges.
+  if (facts.childNonce !== expected.childNonce) return mismatch('spawn-witness-nonce-mismatch');
+  // The window bounds: the boundary observation and the witness write both
+  // completed before the parent's establishing read; the boundary can never
+  // precede the WRITER'S OWN OS creation second (the codex round-2 review's
+  // anti-reuse hole: the daemon→transport branch supplied no child bound and
+  // the writer's start was never checked, so a witness stamped before its
+  // writer existed could establish); and the boundary can never precede the
+  // child's OS creation second. Every bound is a coarse-vs-coarse
+  // contradiction refusal (whole-second lower bound vs the writer's own
+  // coarse stamp) — never resolved by arithmetic, never a new precision
+  // claim; the writer-side contradiction carries its own named label.
+  if (Number.isSafeInteger(expected.writerOsStartInstant) && facts.boundaryEpochMs < /** @type {number} */ (expected.writerOsStartInstant)) {
+    return mismatch('spawn-witness-capture-before-writer');
+  }
+  if (facts.boundaryEpochMs > /** @type {number} */ (expected.writerReadEpochMs) || facts.firstWriteEpochMs > /** @type {number} */ (expected.writerReadEpochMs)) {
+    return mismatch('spawn-witness-capture-unbounded');
+  }
+  if (Number.isSafeInteger(expected.childOsStartInstant) && facts.boundaryEpochMs < /** @type {number} */ (expected.childOsStartInstant)) {
+    return mismatch('spawn-witness-capture-unbounded');
+  }
+  // The CREATION-ORDER binding (codex round 10 — the last conjunct of the
+  // generation-continuity invariant): the witnessed child's OS creation must
+  // not demonstrably PRECEDE the writer's. The broker-boundary path never
+  // compared the record's `childOsStartInstantMs` with the writer's OS
+  // creation lower bound, so contradictory generation evidence — a witnessed
+  // child whose ENTIRE possible creation window [floor, floor + 1000) lies
+  // before the writer's OS creation floor — could establish ancestry the
+  // no-witness arithmetic refuses (the reviewer's schedule: writer start
+  // 3000, child start 2000, marker 3100, boundary/write 4050/4060, writer
+  // read 4100). The kernel's own spawn order is inverted in that case: the
+  // writer did not exist when the witnessed child's window closed, so it
+  // cannot have spawned that child — a coarse-vs-coarse demonstrable
+  // contradiction, symmetric to the marker/parent rules, never a new
+  // precision claim. Fresh label per the §26.7 item-5 no-fold discipline:
+  // §28.8's `spawn-witness-capture-before-writer` is specifically the
+  // writer-vs-CAPTURE precedence (a witness stamped before its writer
+  // existed); this is the CHILD-vs-WRITER creation precedence — a different
+  // contradiction between two generations. Consumed whenever both instants
+  // are carried (hop 1: the endpoint's daemon floor vs the record's
+  // witnessed daemon floor; hop 2: the daemon's floor vs the witnessed
+  // transport floor); an absent member stays absent (the v1-replay/named-
+  // absent conjuncts upstream).
+  if (Number.isSafeInteger(expected.writerOsStartInstant)
+    && Number.isSafeInteger(facts.childOsStartInstantMs)
+    && /** @type {number} */ (facts.childOsStartInstantMs) < /** @type {number} */ (expected.writerOsStartInstant)) {
+    return mismatch('spawn-witness-creation-order-inverted');
+  }
+  // The MARKER-GENERATION binding (codex round 4): when the hop's child
+  // evidence is an ARTIFACT the child generation itself writes (the
+  // daemon→transport hop's marker, whose write instant the caller supplies
+  // here), the §26.7 record's only child-generation time evidence is its
+  // own capture window — the boundary is when the writer positively
+  // observed THIS child generation alive. A marker write instant more than
+  // one uniform uncertainty OLDER than the witnessed capture demonstrably
+  // belongs to a predecessor occupant of the same pid (the emitter's
+  // bounded ingress observation completes within ~1.2 s of the very spawn
+  // attempt it witnesses), so the marker's generation is NOT bound to the
+  // witnessed child and the upgrade refuses. Coarse-vs-coarse: the
+  // uniform whole-second bound is the join's registered uncertainty, never
+  // a new precision claim.
+  if (Number.isSafeInteger(expected.childMarkerEpochMs)
+    && facts.boundaryEpochMs - /** @type {number} */ (expected.childMarkerEpochMs) > LINUX_BTIME_UNCERTAINTY_MS) {
+    return mismatch('spawn-witness-marker-generation-unbound');
+  }
+  // The POSITIVE marker-to-generation binding (codex rounds 5–6, the ROOT
+  // adjudication): with a whole-second creation floor, temporal
+  // compatibility (marker ≥ floor) proves NOTHING about generation identity —
+  // when a predecessor and its same-pid replacements all report the SAME
+  // creation floor T, a predecessor marker anywhere in [T, T+1000) is
+  // temporally compatible with a replacement that did not exist when the
+  // marker was written (the reviewer's schedule: marker T+100, replacements
+  // T+200/T+400, witness capture T+500, parent read T+700). The only sound
+  // positive binding under the registered coarseness: the marker must
+  // POSTDATE the witnessed child's ENTIRE possible creation window —
+  // markerTime ≥ childOsStartInstantMs + LINUX_BTIME_UNCERTAINTY_MS (the
+  // window is [floor, floor + the uniform uncertainty); the marker's mtime is
+  // the same kernel epoch wall clock, the upper endpoint (marker ≤ the
+  // daemon's identity read) stays the hop-level terminal later-than-read
+  // refusal, and the round-4 proximity conjunct above is retained as one
+  // refusal conjunct among several — never alone sufficient). The two
+  // negative bands each carry their OWN named label (§26.7 item 5 no-fold):
+  // a marker BELOW the witnessed floor demonstrably precedes the child's
+  // earliest possible existence (`spawn-witness-marker-generation-unbound`,
+  // the round-5 pin); a marker INSIDE the possible creation window is
+  // generation-AMBIGUOUS — a same-second predecessor's write is
+  // indistinguishable from the witnessed child's own — and refuses
+  // (`spawn-witness-marker-generation-ambiguous`, the fresh round-6 label).
+  // Coarse-vs-coarse honest: the ambiguity is refused, never resolved as
+  // true. Records that cannot supply the binding — a retained v1 replay
+  // record (the member genuinely absent under its recorded version, §26.7
+  // item 2) or a v2 record whose parse resolved to the named-absent null —
+  // never upgrade the marker path either. Honest real-chain consequence: the
+  // transport hop's marker is typically written within the child's creation
+  // second, so the marker upgrade requires a POST-CREATION-SECOND marker;
+  // same-second chains keep the carried refusal (the witness's OTHER
+  // positive bindings — parent generation, role, argv/scope, nonce, capture
+  // relationship — are unaffected).
+  if (Number.isSafeInteger(expected.childMarkerEpochMs)) {
+    if (!Number.isSafeInteger(facts.childOsStartInstantMs)
+      || /** @type {number} */ (expected.childMarkerEpochMs) < /** @type {number} */ (facts.childOsStartInstantMs)) {
+      return mismatch('spawn-witness-marker-generation-unbound');
+    }
+    if (/** @type {number} */ (expected.childMarkerEpochMs) < /** @type {number} */ (facts.childOsStartInstantMs) + LINUX_BTIME_UNCERTAINTY_MS) {
+      return mismatch('spawn-witness-marker-generation-ambiguous');
+    }
+  }
+  // The WRITER-GENERATION continuity binding (codex round 7 — the
+  // parent-side sibling of the round-6 marker adjudication): on darwin the
+  // start identity is the whole-second ps lstart floor, so the equality
+  // conjunct above (record writerPid/writerStartIdentity vs the READ-TIME
+  // parent endpoint) is compatible with same-generation AND same-second
+  // reuse — a same-scope P1 taking the Companion's pid inside the shared
+  // lstart second passes it without having written the witness (P0 spawns D
+  // and writes at T+100, exits; P1 takes the pid at T+400; the endpoint read
+  // at T+700 observes P1). Capture-before-read bounds never establish
+  // generation continuity. The DISAMBIGUATING evidence is the witness's own
+  // write instant against the read-time parent's ENTIRE possible creation
+  // window: with the writer provably alive at firstWriteEpochMs, a
+  // same-floor reuse would have to be born after the writer's death — which
+  // postdates the write — so a write POSTDATING the whole window
+  // (firstWriteEpochMs ≥ writerOsStartInstant + LINUX_BTIME_UNCERTAINTY_MS)
+  // PROVES the read-time occupant is the writer's generation (any same-floor
+  // reuse would carry a LATER floor, contradicting the equality conjunct),
+  // while a write INSIDE [floor, floor+1000) leaves the reuse compatible and
+  // refuses `spawn-witness-parent-generation-ambiguous` (the §26.7 item-5
+  // fresh-label discipline; the marker family's round-6 rule applied
+  // symmetrically — no establishment conclusion may exceed what the coarse
+  // facts prove; route (c)'s higher-resolution generation evidence stays
+  // NAMED UNAVAILABLE, §28.1, so the ambiguity cannot be resolved).
+  // Demonstrably-different identities keep `spawn-witness-writer-foreign`
+  // above. Honest consequence: a witness written inside the parent's first
+  // possible second — the real chain's typical shape — cannot establish the
+  // parent-continuity conclusion; the ambiguity is refused, never resolved
+  // as true.
+  if (!Number.isSafeInteger(expected.writerOsStartInstant)) {
+    // Without the read-time parent's creation floor the writer's generation
+    // window is unbounded and the continuity conclusion cannot be drawn at
+    // all (absent facts stay absent, §26.7 item 3/5).
+    return mismatch('spawn-witness-capture-unbounded');
+  }
+  if (/** @type {number} */ (facts.firstWriteEpochMs) < /** @type {number} */ (expected.writerOsStartInstant) + LINUX_BTIME_UNCERTAINTY_MS) {
+    return mismatch('spawn-witness-parent-generation-ambiguous');
+  }
+  // (codex round 12 — the parent-side mirror of the round-11 collection
+  // rule) The writer-continuity proof ALSO requires the writer endpoint's
+  // identity to be provably COLLECTED after the witness write: the
+  // comparison is witness-write-vs-READ-TIME parent occupant, and an
+  // endpoint inspection that SAMPLED the predecessor before the witness was
+  // written but COMPLETED afterward describes the predecessor regardless of
+  // its late completion (the reviewer's schedule: the Companion query
+  // samples P0 at 1100 and completes at 2500; P0 exits at 1200; a
+  // same-scope P1 reuses the pid at 1400 with the same floor 1000 and
+  // writes the witness at 2110 — the late completion accepted P0's presence
+  // bound as continuity evidence for P1's witness). The conjunct consumes
+  // the writer endpoint's COLLECTION bound (the observeLocalProcess
+  // read-start): establishment requires the parent identity provably
+  // COLLECTED after the witness write (`writerReadStartedEpochMs ≥
+  // firstWriteEpochMs`, aligned with the creation-window conjunct above —
+  // with BOTH, the snapshot instant sits at or after the write, so any
+  // same-floor reuse would be born after the writer's death (≥ the write ≥
+  // floor + 1000) and carry a LATER floor, contradicting the equality
+  // conjunct); an overlapping collection window (read-start before the
+  // write) or an absent/unknown bound refuses the same
+  // `spawn-witness-parent-generation-ambiguous` label (the trigger widened,
+  // the label kept — the §28.10-line precedent). Carried by BOTH call sites
+  // (the Companion endpoint on hop 1, the daemon endpoint on hop 2 — the
+  // read-time writer occupant must be the witnessed writer generation on
+  // either boundary).
+  if (!Number.isSafeInteger(expected.writerReadStartedEpochMs)
+    || /** @type {number} */ (expected.writerReadStartedEpochMs) < /** @type {number} */ (facts.firstWriteEpochMs)) {
+    return mismatch('spawn-witness-parent-generation-ambiguous');
+  }
+  // The CHILD-GENERATION continuity binding (codex round 8 — the child-side
+  // sibling of the rounds 6–7 adjudications): the identity-equality conjunct
+  // above (witness childStartIdentity vs the READ-TIME child endpoint) is
+  // equally ambiguous within the shared lstart second — a same-scope
+  // replacement reusing the daemon pid inside that second passes it without
+  // having been the witnessed generation (a nonce comparison is NOT a sound
+  // disambiguator here: §26.6 freezes the nonce as a SCOPE binding, never a
+  // generation authority — every same-scope replacement carries the same
+  // nonce by construction, so a match proves scope, not generation, and a
+  // mismatch is already refused by the scope bindings above). The
+  // disambiguating evidence mirrors the parent fix: the witnessed child is
+  // provably alive at the boundary (the writer's OS-verified ingress double
+  // read), so a boundary POSTDATING the read-time child's ENTIRE possible
+  // creation window (boundaryEpochMs ≥ childOsStartInstant +
+  // LINUX_BTIME_UNCERTAINTY_MS) PROVES the read-time occupant is the
+  // witnessed generation (any same-floor reuse would be born after the
+  // witnessed child's death — which postdates the boundary — and would
+  // carry a LATER floor, contradicting the equality conjunct), while a
+  // boundary INSIDE the window refuses
+  // `spawn-witness-child-generation-ambiguous` (the §26.7 item-5 fresh-label
+  // discipline; no establishment conclusion beyond what the coarse facts
+  // prove; route (c)'s higher-resolution generation evidence stays NAMED
+  // UNAVAILABLE, §28.1). Only hops that bind a READ-TIME child endpoint
+  // (childOsStartInstant supplied — the Companion→daemon hop) consume this;
+  // the daemon→transport hop binds the witness record's own captured child
+  // generation and has no read-time comparison to contradict.
+  // (codex rounds 9+11 — the INTERVAL-vs-COMPLETION rule) The continuity
+  // proof ALSO requires the child endpoint's identity to be provably
+  // COLLECTED after the boundary capture: the comparison is
+  // witness-capture-vs-READ-TIME occupant, so an endpoint whose collection
+  // window STARTED before the capture may describe a PREDECESSOR — a
+  // same-floor occupant snapshotted before the witnessed replacement was
+  // captured — regardless of when the inspection's response completed
+  // (completion instants prove neither presence nor ordering; collection
+  // bounds prove ordering; observation instants prove presence). The
+  // ordering conjunct therefore consumes the endpoint's COLLECTION bound
+  // (`childReadStartedEpochMs ≥ boundaryEpochMs`, the observeLocalProcess
+  // read-start bound): a collection window that overlaps the capture
+  // (started before the boundary) refuses, and an ABSENT bound is an
+  // unknown ordering, never credited — both refuse the same named label
+  // (the trigger widened, the label kept — the §28.10 precedent; the
+  // reviewer's schedule: endpoint collected 1200, completed 2200,
+  // replacement born 1400 with the same coarse identity, witnessed 2100).
+  // A hop whose contract binds an EARLIER endpoint has none of the required
+  // structure and stays refused (the collection bound is always supplied by
+  // the Companion→daemon call site).
+  if (Number.isSafeInteger(expected.childOsStartInstant)) {
+    if (/** @type {number} */ (facts.boundaryEpochMs) < /** @type {number} */ (expected.childOsStartInstant) + LINUX_BTIME_UNCERTAINTY_MS
+      || !Number.isSafeInteger(expected.childReadStartedEpochMs)
+      || /** @type {number} */ (expected.childReadStartedEpochMs) < /** @type {number} */ (facts.boundaryEpochMs)) {
+      return mismatch('spawn-witness-child-generation-ambiguous');
+    }
+  }
+  return ({ status: 'established', reason: null, witnessClass: 'spawn-boundary-capture' });
+}
 
 /**
  * Resolve one join endpoint. Absent (not supplied) and VALID negative
@@ -1780,6 +2977,19 @@ function joinEndpointFacts(observation, label) {
  * capture time only. An unestablished endpoint names the hop unestablished;
  * the Companion↔transport attribution never crosses an unestablished hop.
  * Purely offline; performs NO reads or writes.
+ *
+ * Evidence-completion Task 3 (§26.6 route (b) / §26.7 freeze): when a hop's
+ * other frozen witnesses all hold and its ONLY refusal is the same-second
+ * lifetime arithmetic, a positively captured SPAWN-BOUNDARY CAUSAL WITNESS
+ * — the fixture-owned parent's capture-time ingress observation of the
+ * spawned child, admitted through {@link admitSpawnAncestryWitness} — may
+ * establish the hop. The witness is bound to the two endpoint generations,
+ * the capture-time kernel parent link, the child's own scope/transport
+ * nonce, and the captured window rides inside ONE verified parent presence
+ * interval; OS coarse instants stay coarse; the route NEVER reopens another
+ * refusal, never bridges a missing endpoint, and a fresh
+ * `witnessClass: 'spawn-boundary-capture'` member rides the established hop
+ * (additive enum member; old verdicts byte-stable).
  * @param {{
  *   nonce: string,
  *   companionObservation: LocalProcessObservation | null,
@@ -1788,6 +2998,8 @@ function joinEndpointFacts(observation, label) {
  *   expectedTransportNonce?: string,
  *   markerEpochMs?: number,
  *   daemonCaptureParentPid?: number,
+ *   companionSpawnWitness?: SpawnAncestryWitnessVerdict,
+ *   daemonSpawnWitness?: SpawnAncestryWitnessVerdict,
  * }} input
  * @returns {{ localProcessObservationVersion: number, class: 'ancestry-join', nonce: string, hops: AncestryHop[], companionToTransportAttributed: boolean }}
  */
@@ -1820,6 +3032,12 @@ export function joinAncestryHops(input) {
   if (daemonCaptureParentPid !== undefined && (!Number.isSafeInteger(daemonCaptureParentPid) || daemonCaptureParentPid <= 0)) {
     throw invalidLocalProcessInput('the daemon capture-time parent pid must be a positive integer.');
   }
+  // Evidence-completion Task 3 (route (b)): the optional preregistered
+  // spawn-boundary witnesses. Malformed inputs are input-contract errors —
+  // the witness route never silently declines (~a hand-fabricated verdict is
+  // never mistaken for an admitted one).
+  const companionSpawnWitness = validatedSpawnWitnessInput(input.companionSpawnWitness, 'companion');
+  const daemonSpawnWitness = validatedSpawnWitnessInput(input.daemonSpawnWitness, 'daemon');
   // The marker's OWN time evidence (review round 17): when supplied, the
   // daemon→transport hop verifies generation-compatible lifetimes; when
   // absent, the hop is named-unestablished (never bridged).
@@ -1833,6 +3051,7 @@ export function joinAncestryHops(input) {
    * @param {string | null} detail
    * @returns {Omit<AncestryHop, 'hop'>}
    */
+  /** @type {(status: 'established' | 'unestablished', reason: string | null, detail?: string | null) => Omit<AncestryHop, 'hop'>} */
   const hopVerdict = (status, reason, detail) => ({
     status,
     reason,
@@ -1871,9 +3090,10 @@ export function joinAncestryHops(input) {
   // generation's verified lifetime across a pid reuse. Observations without
   // the carried instant (pre-round-28 hand-built facts) keep the
   // whole-observation completion.
+  /** @type {(observation: any) => number | null} */
   const endpointReadEpochMs = (/** @type {any} */ observation) => {
     if (!isPlainObject(observation)) return null;
-    return Number.isSafeInteger(observation.identityReadEpochMs) ? observation.identityReadEpochMs : observation.readEpochMs;
+    return /** @type {number | null} */ (Number.isSafeInteger(observation.identityReadEpochMs) ? observation.identityReadEpochMs : observation.readEpochMs);
   };
   const companionReadEpochMs = endpointReadEpochMs(input.companionObservation);
   const daemonReadEpochMs = endpointReadEpochMs(input.daemonObservation);
@@ -1898,6 +3118,7 @@ export function joinAncestryHops(input) {
   const companionBoundMs = startBoundMs(companionFacts);
   const daemonBoundMs = startBoundMs(daemonFacts);
   // Hop (b of the contract's mapping, first in the chain): Companion → daemon.
+  /** @type {Omit<AncestryHop, 'hop'>} */
   let companionToDaemon;
   if (companionFacts === null || daemonFacts === null) {
     companionToDaemon = hopVerdict('unestablished', 'hop-endpoint-unestablished', null);
@@ -1915,22 +3136,63 @@ export function joinAncestryHops(input) {
     || !Number.isSafeInteger(companionReadEpochMs) || !Number.isSafeInteger(daemonReadEpochMs)
     || lifetimeCompatible(companionFacts.startInstantEpochMs, daemonFacts.startInstantEpochMs,
       /** @type {number} */ (companionReadEpochMs), /** @type {number} */ (daemonReadEpochMs)) !== null) {
-    // Demonstrably violated (or lifetime evidence missing) — refused.
-    companionToDaemon = hopVerdict('unestablished', 'generation-lifetime-unverifiable', null);
-  } else if (daemonFacts.startInstantEpochMs + daemonBoundMs > /** @type {number} */ (companionReadEpochMs)
-    || companionFacts.startInstantEpochMs + companionBoundMs > /** @type {number} */ (daemonReadEpochMs)
-    || companionFacts.startInstantEpochMs + companionBoundMs > daemonFacts.startInstantEpochMs) {
-    // Holds only via the uncertainty window (the true instant could violate
-    // it) — named ambiguity, never credited.
+    // Demonstrably violated (or lifetime evidence missing) — refused. The
+    // Demonstrably-ORDERED refusal is a real contradiction (an OS ordering
+    // that inverts the kernel's own spawn order) and the witness route never
+    // reopens it; the witness route applies only to the BOUND WINDOW below.
     companionToDaemon = hopVerdict('unestablished', 'generation-lifetime-unverifiable', null);
   } else {
-    companionToDaemon = hopVerdict('established', null, null);
+    // Holds only via the uncertainty window (the true instant could violate
+    // it) — named ambiguity, never credited — UNLESS the preregistered
+    // route-(b) witness binds the actual capture-time causality (the §26.6
+    // freeze): the witness must cover BOTH bound-window refusals this branch
+    // would carry, and its orderings stay nameable without relabeling any
+    // OS instant as precise.
+    const boundWindowRefused = daemonFacts.startInstantEpochMs + daemonBoundMs > /** @type {number} */ (companionReadEpochMs)
+      || companionFacts.startInstantEpochMs + companionBoundMs > /** @type {number} */ (daemonReadEpochMs)
+      || companionFacts.startInstantEpochMs + companionBoundMs > daemonFacts.startInstantEpochMs;
+    const witnessOutcome = companionSpawnWitness === undefined || !boundWindowRefused ? null : establishThroughSpawnWitness(companionSpawnWitness, {
+      writerPid: companionFacts.pid,
+      writerStartIdentity: companionFacts.startIdentity,
+      childPid: daemonFacts.pid,
+      childStartIdentity: daemonFacts.startIdentity,
+      childPpid: companionFacts.pid,
+      childNonce: daemonFacts.nonce,
+      writerReadEpochMs: companionReadEpochMs,
+      // (codex round 12) the writer endpoint's COLLECTION bound: the
+      // parent-continuity proof consumes the read-start, never the
+      // completion (the companion-side mirror of the child-side rule).
+      writerReadStartedEpochMs: /** @type {number} */ (input.companionObservation?.readStartedEpochMs),
+      scopeNonce: nonce,
+      expectedRole: 'invocation',
+      childOsStartInstant: daemonFacts.startInstantEpochMs,
+      writerOsStartInstant: companionFacts.startInstantEpochMs,
+      // (codex rounds 9+11) the child endpoint's OWN read collection START:
+      // the child-continuity proof compares the witnessed generation against
+      // the READ-TIME occupant, so the endpoint's identity must be provably
+      // COLLECTED after the boundary capture — the collection START (the
+      // observeLocalProcess read bound), never the completion instant: an
+      // inspection can sample a predecessor before the witness capture and
+      // finish afterward, so completion-after-capture is not proof of
+      // collection-after-capture.
+      childReadStartedEpochMs: /** @type {number} */ (input.daemonObservation?.readStartedEpochMs),
+    });
+    if (boundWindowRefused && witnessOutcome === null) {
+      companionToDaemon = hopVerdict('unestablished', 'generation-lifetime-unverifiable', null);
+    } else if (witnessOutcome !== null && witnessOutcome.status === 'established') {
+      companionToDaemon = { status: 'established', reason: null, witnessClass: /** @type {const} */ ('spawn-boundary-capture') };
+    } else if (witnessOutcome !== null) {
+      companionToDaemon = hopVerdict('unestablished', witnessOutcome.reason, witnessOutcome.detail ?? null);
+    } else {
+      companionToDaemon = hopVerdict('established', null, null);
+    }
   }
   // Hop (a): daemon → transport marker. The DAEMON endpoint's own scope is
   // verified INDEPENDENTLY of hop 1 (class sweep, review round 10): every
   // hop carrying the requested scope label verifies the scope of BOTH its
   // endpoints — a foreign-scope daemon must never host in-scope transport
   // evidence, whatever the Companion endpoint's state.
+  /** @type {Omit<AncestryHop, 'hop'>} */
   let daemonToTransport;
   if (daemonFacts === null) {
     daemonToTransport = hopVerdict('unestablished', 'hop-endpoint-unestablished', null);
@@ -1945,7 +3207,11 @@ export function joinAncestryHops(input) {
     // daemon: the daemon's OS creation must precede the marker time and the
     // marker time must precede the daemon's capture read. Missing or
     // out-of-order time evidence keeps the hop named-unestablished — never
-    // credited by PPID equality alone.
+    // credited by PPID equality alone. The route-(b) daemon-boundary witness
+    // (when supplied) may resolve ONLY the uncertainty-window refusals below
+    // — the coarse violation (the marker predating the daemon's own creation
+    // second) and a MISSING marker epoch stay refused with the daemon
+    // endpoint's establishing read bounding the capture window instead.
     const markerTime = markerEpochMs;
     const daemonStart = daemonFacts.startInstantEpochMs;
     const daemonRead = daemonReadEpochMs;
@@ -1955,11 +3221,67 @@ export function joinAncestryHops(input) {
     const markerDemonstrablyAfterDaemon = markerTimeOk && daemonStart + daemonBoundMs <= markerTime;
     const markerDemonstrablyBeforeRead = markerTimeOk && markerTime <= daemonRead;
     const markerDemonstrablyViolated = markerTimeOk && daemonStart > markerTime;
-    if (!markerTimeOk || markerDemonstrablyViolated) {
+    // (codex round 3) The marker's verified-lifetime UPPER bound is TERMINAL:
+    // a marker timestamp AFTER the daemon's identity read lies outside the
+    // read-bounded window, and the §26.7 frozen witness record carries no
+    // fact that binds a marker's TIMESTAMP to the witnessed generation (it
+    // binds pids/identities/nonce and its own capture window only), so the
+    // witness route must never resolve this contradiction — the original
+    // later-than-read refusal stands (not rounding uncertainty: no captured
+    // fact re-attaches a later marker to the witnessed child generation).
+    // Only the creation-second UNCERTAINTY window (a marker the daemon's
+    // creation lower bound cannot demonstrably precede, still inside the
+    // read window) stays witness-resolvable.
+    const markerDemonstrablyAfterRead = markerTimeOk && !markerDemonstrablyBeforeRead;
+    const boundWindowRefused = markerTimeOk && !markerDemonstrablyAfterRead && !markerDemonstrablyAfterDaemon;
+    const witnessOutcome = daemonSpawnWitness === undefined || !boundWindowRefused ? null : establishThroughSpawnWitness(daemonSpawnWitness, {
+      writerPid: daemonFacts.pid,
+      writerStartIdentity: daemonFacts.startIdentity,
+      childPid: marker.pid,
+      childStartIdentity: null,
+      childPpid: marker.ppid,
+      childNonce: expectedTransportNonce ?? marker.nonce,
+      writerReadEpochMs: daemonRead,
+      // (codex round 12) the writer endpoint's COLLECTION bound: the
+      // parent-continuity proof consumes the read-start, never the
+      // completion (the daemon-side mirror of the child-side rule).
+      writerReadStartedEpochMs: /** @type {number} */ (input.daemonObservation?.readStartedEpochMs),
+      writerOsStartInstant: daemonFacts.startInstantEpochMs,
+      // The marker's own write instant bound to the WITNESSED child
+      // generation (codex round 4): a stale marker predating the witnessed
+      // capture window never upgrades this hop. Reachable only when
+      // markerTimeOk holds, so the instant is a safe integer here.
+      childMarkerEpochMs: markerTime,
+      scopeNonce: nonce,
+      expectedRole: 'broker-daemon',
+    });
+    if (!markerTimeOk || markerDemonstrablyViolated || markerDemonstrablyAfterRead) {
       daemonToTransport = hopVerdict('unestablished', 'generation-lifetime-unverifiable', null);
-    } else if (!markerDemonstrablyAfterDaemon || !markerDemonstrablyBeforeRead) {
+    } else if (boundWindowRefused && witnessOutcome === null) {
       // Holds only via the daemon's btime uncertainty — named ambiguity.
       daemonToTransport = hopVerdict('unestablished', 'generation-lifetime-unverifiable', null);
+    } else if (witnessOutcome !== null && witnessOutcome.status === 'established') {
+      // (codex round 16 — EXPLICIT UNSATISFIABILITY, §28.22) This branch is
+      // UNREACHABLE by construction: the route is entered only when
+      // `markerTime < daemonStart + LINUX_BTIME_UNCERTAINTY_MS` (the bound
+      // window above), while the establishment predicate requires
+      // `markerTime >= childOsStartInstantMs + LINUX_BTIME_UNCERTAINTY_MS`
+      // (the positive marker-to-generation binding) under
+      // `childOsStartInstantMs >= daemonStart` (the creation-order binding)
+      // — jointly `markerTime >= daemonStart + LINUX_BTIME_UNCERTAINTY_MS`,
+      // contradicting the entry condition. With a marker epoch present
+      // (guaranteed on this route), EVERY witness outcome here is one of the
+      // named refusals below; establishment can never occur, and no bound
+      // may be weakened to make it satisfiable (the §26.7 freeze). The
+      // branch is therefore the NAMED unavailable classification — fail-
+      // closed: if a future change ever made it reachable, the hop refuses
+      // with `spawn-witness-route-unsatisfiable` instead of crediting a
+      // witnessClass establishment. The route's sound contributions remain
+      // its REFUSAL evidence (the labels below), and the hop's positives
+      // stay ARITHMETIC-only.
+      daemonToTransport = hopVerdict('unestablished', 'spawn-witness-route-unsatisfiable', null);
+    } else if (witnessOutcome !== null) {
+      daemonToTransport = hopVerdict('unestablished', witnessOutcome.reason, witnessOutcome.detail ?? null);
     } else {
       daemonToTransport = hopVerdict('established', null, null);
     }
@@ -1992,6 +3314,8 @@ export function joinAncestryHops(input) {
  *   transportMarker?: { pid: number, ppid: number, nonce: string } | null,
  *   expectedTransportNonce?: string,
  *   markerEpochMs?: number,
+ *   companionSpawnWitness?: SpawnAncestryWitnessVerdict,
+ *   daemonSpawnWitness?: SpawnAncestryWitnessVerdict,
  * }} input
  * @returns {Record<string, any>}
  */

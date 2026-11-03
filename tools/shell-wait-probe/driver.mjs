@@ -5884,6 +5884,12 @@ function joinRecordLocalProcessDuties(block, interrupt, captureDeclaration) {
           if (queried === null || typeof queried !== 'object'
             || queried.pid !== boundIdentity.pid || queried.nonceSha256 !== boundIdentity.nonceSha256) continue;
           if (read?.status !== 'established') continue;
+          // (codex round 26 — the OBSERVED-PID gate, mirroring the runtime's
+          // established-read gate) a read about a DIFFERENT process (the
+          // observed pid differing from the bound process's pid) is never
+          // presence evidence for the bound process — the start-identity
+          // string matching by coincidence does not make it so.
+          if ((read?.observation ?? null)?.pid !== boundIdentity.pid) continue;
           if ((read?.observation ?? null)?.startIdentity !== boundIdentity.startIdentity) continue;
           // (Review round 13, Finding 2) the carried identity instant is
           // evidence only INSIDE the read's validated collection interval —
@@ -6024,7 +6030,152 @@ function joinRecordLocalProcessDuties(block, interrupt, captureDeclaration) {
             break;
           }
           const carried = carriedInstant(read);
-          if (!Number.isSafeInteger(carried) || carried < presenceHorizon) continue;
+          // (codex round 25 — the ORDERED HORIZON MIRROR) the carried
+          // interval classifies against the horizon AS IT STOOD at the
+          // carried evidence's own decision instant — the runtime's
+          // adjudicator advances its presence horizon with every
+          // same-generation established read it processes in decision
+          // order, so a read sorting after a refresh classifies against the
+          // REFRESHED horizon, never against the initial baseline forever.
+          // The mirror scans the SAME horizon sources the replay's own walk
+          // consumes (the persisted reads + the refreshed companion
+          // endpoint, same-scope same-generation established, identity
+          // instant contained) and takes the latest presence whose decision
+          // instant does not follow the carried evidence's.
+          let mirrorEnd = presenceHorizon;
+          let mirrorStart = Number.isSafeInteger(presenceVerdict?.readStartedEpochMs)
+            ? presenceVerdict.readStartedEpochMs
+            : null;
+          if (replacementDetected) {
+            const decisionInstant = Number.isSafeInteger(read?.observedIdentityReadEpochMs)
+              ? read.observedIdentityReadEpochMs
+              : read?.status === 'absent' && Number.isSafeInteger(read?.readEpochMs)
+                ? read.readEpochMs
+                : Number.isSafeInteger(read?.identityReadEpochMs) ? read.identityReadEpochMs : read?.readEpochMs;
+            // (the mirror scans the SAME horizon sources in the SAME order
+            // the runtime inserts them — the selected Companion refresh
+            // BEFORE the phase reads, the runtime's insertion order — so
+            // TIED presence instants select the same window on both sides;
+            // the strict `>` advance keeps the first-inserted source's
+            // window, exactly the runtime's stable-order selection)
+            const mirrorSources = [];
+            const mirrorRefreshedCompanion = typeof block === 'object' && block !== null
+              ? block.ancestryEndpoints?.companion ?? null : null;
+            if (mirrorRefreshedCompanion !== null && typeof mirrorRefreshedCompanion === 'object'
+              && mirrorRefreshedCompanion.status === 'established'
+              && mirrorRefreshedCompanion.observation?.startIdentity === boundIdentity.startIdentity) {
+              mirrorSources.push(mirrorRefreshedCompanion);
+            }
+            mirrorSources.push(...reads);
+            for (const presenceRead of mirrorSources) {
+              const presenceQueried = presenceRead?.queried;
+              if (presenceQueried === null || typeof presenceQueried !== 'object'
+                || presenceQueried.pid !== boundIdentity.pid || presenceQueried.nonceSha256 !== boundIdentity.nonceSha256) continue;
+              if (presenceRead?.status !== 'established') continue;
+              // (codex round 26) the OBSERVED-PID gate — a read about a
+              // different process never advances the bound process's horizon.
+              if ((presenceRead?.observation ?? null)?.pid !== boundIdentity.pid) continue;
+              if ((presenceRead?.observation ?? null)?.startIdentity !== boundIdentity.startIdentity) continue;
+              const presenceInstant = Number.isSafeInteger(presenceRead?.identityReadEpochMs)
+                ? presenceRead.identityReadEpochMs
+                : presenceRead?.readEpochMs;
+              const contained = !Number.isSafeInteger(presenceRead?.identityReadEpochMs)
+                || (Number.isSafeInteger(presenceRead.readStartedEpochMs) && presenceInstant >= presenceRead.readStartedEpochMs && presenceInstant <= presenceRead.readEpochMs);
+              if (!contained || !Number.isSafeInteger(presenceInstant)) continue;
+              if (!Number.isSafeInteger(decisionInstant) || presenceInstant > decisionInstant) continue;
+              // (codex round 27 — the TIE RANK, the last dimension of the
+              // runtime's COMPLETE ordering key) adjudicateLocalExit orders
+              // ABSENT reads (rank 0) BEFORE established reads (rank 1) on
+              // decision-instant ties — so a tied ESTABLISHED presence does
+              // NOT pre-empt an identity-bearing ABSENT replacement's
+              // classification: the replacement is classified against the
+              // horizon as it stood BEFORE the presence advanced it. The
+              // horizon source advances only when it precedes the carried
+              // evidence in the complete key (a strictly earlier instant, or
+              // a tie with the carried read ordered AFTER it — the
+              // unestablished rank 2).
+              if (presenceInstant === decisionInstant) {
+                const carriedRank = read?.status === 'established' ? 1 : read?.status === 'absent' ? 0 : 2;
+                if (carriedRank <= 1) continue;
+              }
+              if (presenceInstant > mirrorEnd) {
+                mirrorEnd = presenceInstant;
+                if (Number.isSafeInteger(presenceRead?.readStartedEpochMs)) mirrorStart = presenceRead.readStartedEpochMs;
+              }
+            }
+          }
+          // (codex round 23 — THREE-STATE BOUND RESOLUTION, the replay side
+          // of the runtime classifier's resolution) a SUPPLIED-INVALID bound
+          // (present but not a positive safe integer — a string, a float,
+          // NaN, a non-positive value) is MALFORMED EVIDENCE refusing
+          // exit-reuse-interval-inconsistent — never silently downgraded to
+          // the absent legacy shape, never stale-discarded, never settled.
+          // ABSENT bounds keep the legacy stale skip; SUPPLIED VALID bounds
+          // keep the round-19 interval classification (identical resolution
+          // on both sides — the frozen replay-agreement clause).
+          const completedBound = read?.observedIdentityCompletedEpochMs;
+          const readBound = read?.observedIdentityReadEpochMs;
+          const boundAbsent = (/** @type {any} */ v) => v === undefined || v === null;
+          const boundSuppliedValid = (/** @type {any} */ v) => Number.isSafeInteger(v) && /** @type {number} */ (v) > 0;
+          if (replacementDetected
+            && ((!boundAbsent(completedBound) && !boundSuppliedValid(completedBound))
+              || (!boundAbsent(readBound) && !boundSuppliedValid(readBound)))) {
+            refusals.push('exit-reuse-interval-inconsistent');
+            break;
+          }
+          // (codex round 21 — ORDERED VALIDATION, the replay-side mirror of
+          // the round-20 runtime rule) an INVERTED carried interval (the
+          // taken instant following its completion — a backwards-moving or
+          // garbage clock) is INCONSISTENT evidence: the classification and
+          // the stale skip below are both FORBIDDEN for malformed input —
+          // the summary refuses by name (`exit-reuse-interval-inconsistent`,
+          // the exit-reuse family mirror of the runtime's
+          // pid-start-identity-interval-inconsistent), never stale-skipped
+          // into settlement credit, never latched. Well-formed intervals
+          // classify exactly as the round-19 rules already do.
+          // (codex round 22 — the RESOLVED bound) the ordered validation
+          // consumes the RESOLVED carried lower bound (the fallback chain:
+          // observedIdentityReadEpochMs, else identityReadEpochMs, else
+          // readEpochMs — the SAME resolution the runtime classifier's
+          // carriedIdentityEpochMs performs), so a PARTIALLY torn record
+          // (the explicit observed field omitted, the fallback lower bound
+          // inverted against the carried upper) cannot bypass the
+          // consistency check.
+          if (replacementDetected
+            && Number.isSafeInteger(carried)
+            && Number.isSafeInteger(read?.observedIdentityCompletedEpochMs)
+            && carried > read.observedIdentityCompletedEpochMs) {
+            refusals.push('exit-reuse-interval-inconsistent');
+            break;
+          }
+          // (codex round 19 — REPLAY AGREEMENT, §28.25) the carried-identity
+          // staleness comparison is INTERVAL-TO-INTERVAL, mirroring
+          // adjudicateLocalExit's classifier (the round-14→17 rule): a
+          // replacement whose collection interval OVERLAPS the presence's
+          // own collection window [readStartedEpochMs, identityReadEpochMs]
+          // is AMBIGUOUS evidence — the runtime on this schedule returns
+          // pid-start-identity-ambiguous, and runtime ambiguity must
+          // survive persistence, never downgraded to a settled
+          // disappearance. Only a collection completing STRICTLY before the
+          // presence's dispatch is definitively stale (skipped below); a
+          // collection starting at/after the horizon latches (the carried
+          // check covers it, tie-inclusive). The interval bounds ride the
+          // EXISTING persisted verdict fields
+          // (observedIdentityReadEpochMs + observedIdentityCompletedEpochMs,
+          // the round-14 carried interval) — no persisted-shape change.
+          if (replacementDetected
+            && Number.isSafeInteger(read?.observedIdentityCompletedEpochMs)
+            && Number.isSafeInteger(mirrorStart)) {
+            const replacementUpper = /** @type {number} */ (read.observedIdentityCompletedEpochMs);
+            // (codex round 25) the classification consumes the MIRRORED
+            // horizon [mirrorStart, mirrorEnd] — the horizon as it stood at
+            // the carried evidence's own decision instant.
+            if (!(replacementUpper < mirrorStart) && !(carried >= mirrorEnd)) {
+              refusals.push('exit-reuse-interval-ambiguous');
+              break;
+            }
+          }
+          if (!Number.isSafeInteger(carried) || carried < mirrorEnd) continue;
           if (replacementDetected) {
             refusals.push('exit-reuse-latched');
             break;
@@ -6045,6 +6196,9 @@ function joinRecordLocalProcessDuties(block, interrupt, captureDeclaration) {
       && block.ancestryEndpoints?.companion?.observation?.startIdentity === boundIdentity.startIdentity)
       ? [block.ancestryEndpoints.companion] : [])];
     for (const read of supersessionSources) {
+      // (codex round 26) the OBSERVED-PID gate — a read about a different
+      // process never supersedes the bound process's absence.
+      if ((read?.observation ?? null)?.pid !== boundIdentity.pid) continue;
       // (Review round 19, Finding 2) the comparison uses the read's
       // IDENTITY-READ instant — the verified presence the horizon walk
       // consumes — falling back to the completion only when the identity
