@@ -371,12 +371,14 @@ test('the complete negative family still aborts the REAL scan fail-closed with t
     ['unknown property tail', 'const result = await tools.exec_command({cmd:"node launcher"}); text(result.status);\n'],
     ['unknown String tail', 'const result = await tools.exec_command({cmd:"node launcher"}); text(String(result));\n'],
     ['stringify tail under the anchored family', 'const result = await tools.exec_command({cmd:"node launcher"}); text(JSON.stringify(result));\n'],
-    ['let declaration', 'let result = await tools.exec_command({cmd:"node launcher"}); text(result);\n'],
+    // Report §27 (evidence-completion Task 2): four §24.11-era negative rows
+    // JOINED the admitted union and moved to the coverage-completion
+    // differential below — the `let`/`var` declaration class, a mid-name `$`
+    // (the mechanical ECMA identifier class), ONE framing-validated directive
+    // line, and the ONE-break layout. They are registered admissions, not
+    // regressions; every other negative stays frozen here.
     ['over-64-char binding name', `const ${'a'.repeat(65)} = await tools.exec_command({cmd:"node launcher"}); text(${'a'.repeat(65)});\n`],
-    ['dollar character in the name', 'const re$sult = await tools.exec_command({cmd:"node launcher"}); text(re$sult);\n'],
     ['leading digit in the name', 'const 1result = await tools.exec_command({cmd:"node launcher"}); text(1result);\n'],
-    ['valid directive still not in the family', '// @exec: {"yield_time_ms": 3600000}\nconst result = await tools.exec_command({cmd:"node launcher"}); text(result);\n'],
-    ['interior newline (same-line rule)', 'const result = await tools.exec_command({cmd:"node launcher"});\ntext(result);\n'],
     ['trailing blank line', 'const result = await tools.exec_command({cmd:"node launcher"}); text(result);\n\n'],
     ['over-limit argument', `const result = await tools.exec_command({cmd:"${'x'.repeat(4090)}"}); text(result);\n`],
     ['truncated emission', 'const result = await tools.exec_command({cmd:"node launcher"}); text(result\n'],
@@ -388,6 +390,125 @@ test('the complete negative family still aborts the REAL scan fail-closed with t
     assert.equal(evidence.status, 'inconclusive', `${label}: must stay fail-closed`);
     assert.equal(evidence.inconclusive.reason, 'unsupported-call-shape', label);
     assert.equal(JSON.stringify(evidence.inconclusive.excerpt).includes('node launcher'), false, `${label}: the body content stays withheld`);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Coverage-completion Task 2 (report §27, the §26.4 successor registration):
+// the admitted UNION WIDENED with registered whole-body statement families.
+// Each §26.4 form that joined the union runs through the REAL whole-case scan
+// and the REAL pipeline — extractor → mapper → serializer → reload → join →
+// oracle — reaching the IDENTICAL native marker settlement as the pinned `r`
+// control, with the launch/poll handles (call ids, outputs, stamps) untouched,
+// so the differential isolates the registered spelling (the spelling is never
+// a verdict input). One unclassified cell beside the acknowledged forms still
+// withholds the complete-scan-dependent native settlement (fail-closed by the
+// scan, never credit). Bodies are SYNTHETIC and content-free (the launcher
+// harness text); the historical F/I/N/V bodies are not claimed and their
+// digests remain the only historical link.
+// ---------------------------------------------------------------------------
+const coverageCompletionInterruptBlock = (interruptBlock) => {
+  const clone = structuredClone(interruptBlock);
+  if (clone.partialFacts && typeof clone.partialFacts === 'object') delete clone.partialFacts.sourceRolloutsSha256;
+  return clone;
+};
+/** The §27-registered raw statement spellings, one per joined §26.4 form;
+ * every binding stays inside the registered name class (≤64 chars). */
+const coverageCompletionFormBody = {
+  'let declaration': (name, tool, valueJson) => `let ${name} = await tools.${tool}(${valueJson}); text(${name});\n`,
+  'var declaration': (name, tool, valueJson) => `var ${name} = await tools.${tool}(${valueJson}); text(${name});\n`,
+  '$-led binding': (name, tool, valueJson) => `const ${name} = await tools.${tool}(${valueJson}); text(${name});\n`,
+  'mid-name dollar binding': (name, tool, valueJson) => `const ${name} = await tools.${tool}(${valueJson}); text(${name});\n`,
+  'non-ASCII binding': (name, tool, valueJson) => `const ${name} = await tools.${tool}(${valueJson}); text(${name});\n`,
+  'astral binding': (name, tool, valueJson) => `const ${name} = await tools.${tool}(${valueJson}); text(${name});\n`,
+  'registered head-junction runs': (name, tool, valueJson) => `let  ${name}  =  await  tools.${tool}(${valueJson}); text(${name});\n`,
+  'one-break layout': (name, tool, valueJson) => `const ${name} = await tools.${tool}(${valueJson});\ntext(${name});\n`,
+  'directive-led raw anchor': (name, tool, valueJson) => `// @exec: {"yield_time_ms":60000}\nconst ${name} = await tools.${tool}(${valueJson}); text(${name});\n`,
+};
+const coverageCompletionFormName = {
+  'let declaration': 'result', 'var declaration': 'result', '$-led binding': '$result7',
+  'mid-name dollar binding': 're$result7', 'non-ASCII binding': 'résultat7', 'astral binding': '𝕏3',
+  'registered head-junction runs': 'result', 'one-break layout': 'result', 'directive-led raw anchor': 'result',
+};
+/** wrapperCausalRollouts with BOTH wrapper cells (the launch exec_command
+ * cell and the pending-poll write_stdin cell) carried by the given §27 form;
+ * call ids, outputs, timestamps and the spawn-acknowledgement identity join
+ * stay byte-identical to the causal shape. */
+const coverageCompletionRollouts = (form) => {
+  const rollouts = wrapperCausalRollouts('r');
+  const recell = (callId, tool, valueJson) => {
+    const index = rollouts[1].findIndex((event) => /** @type {any} */ (event)?.payload?.call_id === callId && event.payload.type === 'custom_tool_call');
+    rollouts[1][index] = {
+      type: 'response_item',
+      payload: { type: 'custom_tool_call', name: 'exec', call_id: callId, input: coverageCompletionFormBody[form](coverageCompletionFormName[form], tool, valueJson) },
+    };
+  };
+  recell('launch-1', 'exec_command', '{cmd:"node launcher"}');
+  recell('poll-1', 'write_stdin', '{session_id:5,chars:"",yield_time_ms:60000}');
+  return rollouts;
+};
+
+test('coverage-completion §27 differential: every newly admitted form settles the causal trial IDENTICALLY to the pinned r control through the real pipeline (the launch/poll handles unchanged)', async (t) => {
+  // The falsifiability control stays GREEN: the §27 union never alters the
+  // pinned families' accepted sets or verdicts — each form below is judged
+  // against the IDENTICAL persisted interrupt block the r control reaches.
+  const control = await adjudicate(t, wrapperCausalRollouts('r'), scanWrapperCausal('r'));
+  assert.equal(control.facts.interrupt.settled, true, 'the r control control leg');
+  // Self-review fix round (report §27.8): the ORACLE verdict itself is now
+  // part of the differential. The offline fixture's records carry NO
+  // localProcess block by design, so every verdict here refuses the
+  // §25.10 local-duty conjunct BY NAME (never a pass) while the interrupt
+  // legs settle — and each §27 form must reach the IDENTICAL verdict as the
+  // pinned r control (the spelling is never a verdict input).
+  assert.ok(control.verdict.reasons.includes('local-process-observation-unadjudicated'),
+    JSON.stringify(control.verdict.reasons));
+  for (const form of Object.keys(coverageCompletionFormBody)) {
+    const rollouts = coverageCompletionRollouts(form);
+    const evidence = scanRollouts(rollouts);
+    assert.equal(evidence.status, 'supported', `${form}: the §27 union classifies the whole case`);
+    assert.equal(JSON.stringify(evidence.inconclusive?.excerpt ?? '').includes('node launcher'), false, `${form}: no withheld-body content rides`);
+    const { facts, record, verdict } = await adjudicate(t, rollouts, evidence);
+    assert.equal(facts.interrupt.settled, true, `${form}: the actual native marker settlement`);
+    assert.equal(facts.interrupt.settledBasis, 'native-cancellation-settlement-after-delivery', form);
+    assert.equal(facts.interrupt.deliveryToSettlementMs, 5000, form);
+    assert.equal(record.interrupt.hostDelivery.acknowledgementAtResolution, 'at', form);
+    assert.ok(verdict.reasons.includes('local-process-observation-unadjudicated'),
+      `${form}: the local-duty conjunct refuses by name on the offline fixture (never a silent pass)`);
+    assert.deepEqual(verdict, control.verdict,
+      `${form}: the persisted record's offline oracle verdict is IDENTICAL to the pinned r control's (spelling never a verdict input)`
+    );
+    assert.deepEqual(coverageCompletionInterruptBlock(record.interrupt), coverageCompletionInterruptBlock(control.record.interrupt),
+      `${form}: the persisted interrupt block is IDENTICAL to the r control's (apart from the rollout-bytes digest)`);
+  }
+});
+
+test('coverage-completion withhold: one unclassified cell beside the newly admitted §27 forms still withholds the complete-scan-dependent native settlement (never credit)', () => {
+  // Exactly-one delivery requires the COMPLETE scan: any ONE unclassified
+  // cell — even with every §27 form recognized in its earlier slots — keeps
+  // the admission refused, the settlement withheld and the survival-side
+  // complete-scan credit unestablished.
+  for (const form of ['let declaration', 'one-break layout', 'directive-led raw anchor']) {
+    const rollouts = coverageCompletionRollouts(form);
+    rollouts[1].push({
+      type: 'response_item',
+      payload: { type: 'custom_tool_call', name: 'exec', call_id: 'unknown-1', input: 'console.log("synthetic-unknown-cell");\n' },
+    });
+    const evidence = scanRollouts(rollouts);
+    assert.equal(evidence.status, 'inconclusive', `${form}: the unclassified cell still aborts the scan`);
+    assert.equal(evidence.inconclusive.reason, 'unsupported-call-shape', form);
+    assert.equal(JSON.stringify(evidence.inconclusive.excerpt).includes('synthetic-unknown-cell'), false, `${form}: the withheld body stays withheld`);
+    const facts = mapCausal(rollouts, evidence);
+    assert.equal(facts.interrupt.attempted, true, `${form}: the recognized call facts survive the aborted scan`);
+    assert.equal(facts.interrupt.hostDelivery.admitted, false, form);
+    assert.ok(facts.interrupt.hostDelivery.reasons.includes('host-activity-call-scan-incomplete'), JSON.stringify(facts.interrupt.hostDelivery.reasons));
+    assert.equal(facts.interrupt.settledBasis, 'ambiguous-cell-scan-incomplete-not-attributed', form);
+    assert.equal(facts.interrupt.settled, null, form);
+    // §27.4 withhold clause, survival side asserted explicitly: the fixture
+    // wires survivalControlSelector null, so NO survival-control verdict is
+    // invented while the scan is incomplete — the survival-side
+    // complete-scan-dependent facts stay unestablished (absent), exactly as
+    // §26.3 records the withheld state (`survivalControl: null`).
+    assert.ok(!('survivalControl' in facts), `${form}: no survival-control verdict is invented while the scan is incomplete`);
   }
 });
 
@@ -784,7 +905,7 @@ test('already-dead-tolerance-not-a-resolution: the tolerated ThreadNotFound/Inte
 test('the wired choreography is versioned: join v6 (the §25.10 local-duty contract) and oracle v5 (the local-duty conjunct) over the unchanged family stamp', async () => {
   const { NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, MEASUREMENT_CUTOFF_ENABLED_CASES } = await import('../tools/shell-wait-probe/driver.mjs');
   const { NATIVE_INTERRUPTION_ORACLE_VERSION, RELEASE_QUALIFICATION_VERSION } = await import('../tools/shell-wait-probe/release-qualification.mjs');
-  assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 37, 'join v37 (2026-10-30 local-settlement Task 3 review round 37): a pre-request baseline witness owes the §25.7 completion fence (provesPreFenceCompletion — a post-fence or unprovable-completion witness is no witness, the runtime postFence naming honored);  a pre-request baseline witness must postdate the admitted generation record start (the admission-observation-stale lower bound — a carried instant before the process existed is temporally impossible cached evidence and is no witness);  a pre-request baseline witness must carry the invocation own OS-observed identity (the observed pid and nonce digest must match the admitted invocation — a query addressed to the invocation never witnesses it, the round-20 queried-binding rule mirrored on the observed side);  the pre-interruption baseline owes a VERIFIED presence witness collected before the admitted request (at least one interval-valid same-generation presence instant strictly earlier than the request — an earlier process start alone never settles; the same conservative-strict ordering refuses companion-baseline-unestablished);  the refreshed ancestry endpoint creation instant must AGREE with its admission-backed observation (a conflicting instant refuses ancestry-endpoint-instant-foreign) and the preflight requires PRIVATE capture-directory permissions (exactly 0700 on POSIX — the record readers reject every startup record otherwise);  the retained invocation presence reads validate like the transport replay (the round-24/25 pattern — a torn interval or unprovable timestamps refuse by name before the horizon and supersession walks) and the preflight requires a usable capture directory;  the observed Companion generation must demonstrably predate the interrupt request (the admitted request timestamp/bounds bind the baseline — ordering that cannot be established refuses companion-baseline-unestablished) and the NODE_OPTIONS tokenizer rejects unfinished quoting states (an unterminated double-quote or a dangling escape refuses by name — the host would exit before loading the observer);  the fence echoes compare symmetrically (a missing-versus-present mismatch refuses cleanup-boundary-echo-mismatch / cutoff-echo-mismatch in both directions — cleanup-time evidence never credits across a missing echo) and the NODE_OPTIONS tokenizer matches Node exactly (apostrophes are ordinary characters, backslash escapes only inside double quotes — the inherited-apostrophe run passes, the apostrophe-quoted path refuses); v29 (round 27): a replacement-claiming retained invocation read owes a valid completion timestamp (a missing or malformed one refuses exit-reuse-read-instant-unprovable instead of being silently discarded by the recency filter), and the NODE_OPTIONS preflight parses the string into shell-ish option tokens (a --require fragment inside another option value never counts as loading the declared preload); v28 (round 26): the retained transport reads validate their completion stamps (a missing or nonnumeric completion refuses observation-instant-unprovable — torn evidence is never silently excluded from the presence horizon) and the transport exit validates its supplied carried identity instants (in-interval + safe integer, else transport-exit-carried-instant-outside-interval — the invocation-absence pattern);  a retained transport retry read with an INVALID collection interval refuses explicitly (a true inversion is observation-interval-inverted, a missing start when credit depends on it is observation-start-unprovable) — torn evidence cannot turn an otherwise contradictory replay into a credited local-process layer;  the retained transport retry reads validate their identity instants (the duty-observation/ancestry-endpoint pattern — malformed instants refuse by name, supplied instants must sit inside the validated collection interval) and the captured transport start identity persists with the marker (schema-additive) binding the replayed transport observation — a successor generation cannot settle the original transport duty;  a supplied carried identity instant is validated against its read collection interval BEFORE the reuse latch recency filtering — an out-of-interval or malformed carried instant is torn replacement evidence refusing by name (exit-reuse-carried-instant-outside-interval), never old evidence;  every credited observation binds its queried pid/scope digest to the observed identity (the duty echoes and the ancestry endpoints) and a present-but-malformed identity-read instant refuses by name instead of falling back to the completion;  the persisted transport retry sequence latches replacement evidence (any generation-bound read carrying a different start identity) and absence timestamps must be safe integers before crediting (nonnumeric instants refuse by name);  a live same-generation transport retry advances the presence horizon and persists the full presence sequence for replay, and the exit supersession compares the identity-read instant (an async completion never re-wins);  the correlated absence validates its collection interval (inverted intervals are torn evidence), the SELECTED daemon endpoint re-verifies its parentage against the presence/record rule and a tied transport absence keeps the retry loop sampling; v20 (round 16) = the duty-observation identity-read containment, the contradictory invocation-absence shape refusal and the runtime latest-same-generation-presence tie continuation; v19 (round 15) = the declared-scope binding, the identity-bearing absence reuse latch and the walked presence horizon; v18 (round 14) = the tied-absence collection continuation, the transport-exit recency/carried-identity re-adjudication and the incomplete-interval start refusals; v17 (round 13) = the identity-read containment check, the FROZEN argv selector enforced over mere persisted agreement, and the persisted block-version gate; v16 (round 12) = the collection-interval validity for every fence-crediting read + the consistent materialization-unavailable provenance fallback; v15 (round 11): the invocation-absence strict tie against the walked presence horizon, the contradictory-duplicate-duty-slot refusal and the selected-endpoint parentage rule covering a failed refresh; v14 (round 10) = the transport PID-reuse latch + the strict transport-absence tie rule; v13 (round 9) = the transport-exit recency/carried-identity re-adjudication; v12 (round 8) = the generation-bound PRE-FENCE transport-exit conjunct, the refreshed-presence horizon/supersession and the admitted-record capture-time parentage; v11 (round 7) = the persisted ancestry-refresh evidence joining the offline reuse latch; v10 (round 6) = the admission entry-digest/argv-selector binding against the persisted capture declarations and the unsupported-duty-slot refusal; v9 (round 5) = the declared-scope binding (the startup-backed duties + the ancestry endpoints), the identity-bearing ABSENCE reuse latch and the walked presence horizon; v8 (round 4) = the persisted-admission generation re-adjudication + the ancestry endpoint pre-fence/lifetime/marker-epoch re-verification; v7 (round 3) = the admissions/named-hops/ppid-chain/generation-change replay; v6 = the local-duty input contract with the §25.7 offline credit fences (Task 3); v5 = the preserved pre-cutoff snapshot grounding the winner (§24.11); v4 = the §24.8 cutoff fence and the relocated window inputs');
+  assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 38, 'join v38 (2026-10-30 local-settlement Task 3 review round 37): a pre-request baseline witness owes the §25.7 completion fence (provesPreFenceCompletion — a post-fence or unprovable-completion witness is no witness, the runtime postFence naming honored);  a pre-request baseline witness must postdate the admitted generation record start (the admission-observation-stale lower bound — a carried instant before the process existed is temporally impossible cached evidence and is no witness);  a pre-request baseline witness must carry the invocation own OS-observed identity (the observed pid and nonce digest must match the admitted invocation — a query addressed to the invocation never witnesses it, the round-20 queried-binding rule mirrored on the observed side);  the pre-interruption baseline owes a VERIFIED presence witness collected before the admitted request (at least one interval-valid same-generation presence instant strictly earlier than the request — an earlier process start alone never settles; the same conservative-strict ordering refuses companion-baseline-unestablished);  the refreshed ancestry endpoint creation instant must AGREE with its admission-backed observation (a conflicting instant refuses ancestry-endpoint-instant-foreign) and the preflight requires PRIVATE capture-directory permissions (exactly 0700 on POSIX — the record readers reject every startup record otherwise);  the retained invocation presence reads validate like the transport replay (the round-24/25 pattern — a torn interval or unprovable timestamps refuse by name before the horizon and supersession walks) and the preflight requires a usable capture directory;  the observed Companion generation must demonstrably predate the interrupt request (the admitted request timestamp/bounds bind the baseline — ordering that cannot be established refuses companion-baseline-unestablished) and the NODE_OPTIONS tokenizer rejects unfinished quoting states (an unterminated double-quote or a dangling escape refuses by name — the host would exit before loading the observer);  the fence echoes compare symmetrically (a missing-versus-present mismatch refuses cleanup-boundary-echo-mismatch / cutoff-echo-mismatch in both directions — cleanup-time evidence never credits across a missing echo) and the NODE_OPTIONS tokenizer matches Node exactly (apostrophes are ordinary characters, backslash escapes only inside double quotes — the inherited-apostrophe run passes, the apostrophe-quoted path refuses); v29 (round 27): a replacement-claiming retained invocation read owes a valid completion timestamp (a missing or malformed one refuses exit-reuse-read-instant-unprovable instead of being silently discarded by the recency filter), and the NODE_OPTIONS preflight parses the string into shell-ish option tokens (a --require fragment inside another option value never counts as loading the declared preload); v28 (round 26): the retained transport reads validate their completion stamps (a missing or nonnumeric completion refuses observation-instant-unprovable — torn evidence is never silently excluded from the presence horizon) and the transport exit validates its supplied carried identity instants (in-interval + safe integer, else transport-exit-carried-instant-outside-interval — the invocation-absence pattern);  a retained transport retry read with an INVALID collection interval refuses explicitly (a true inversion is observation-interval-inverted, a missing start when credit depends on it is observation-start-unprovable) — torn evidence cannot turn an otherwise contradictory replay into a credited local-process layer;  the retained transport retry reads validate their identity instants (the duty-observation/ancestry-endpoint pattern — malformed instants refuse by name, supplied instants must sit inside the validated collection interval) and the captured transport start identity persists with the marker (schema-additive) binding the replayed transport observation — a successor generation cannot settle the original transport duty;  a supplied carried identity instant is validated against its read collection interval BEFORE the reuse latch recency filtering — an out-of-interval or malformed carried instant is torn replacement evidence refusing by name (exit-reuse-carried-instant-outside-interval), never old evidence;  every credited observation binds its queried pid/scope digest to the observed identity (the duty echoes and the ancestry endpoints) and a present-but-malformed identity-read instant refuses by name instead of falling back to the completion;  the persisted transport retry sequence latches replacement evidence (any generation-bound read carrying a different start identity) and absence timestamps must be safe integers before crediting (nonnumeric instants refuse by name);  a live same-generation transport retry advances the presence horizon and persists the full presence sequence for replay, and the exit supersession compares the identity-read instant (an async completion never re-wins);  the correlated absence validates its collection interval (inverted intervals are torn evidence), the SELECTED daemon endpoint re-verifies its parentage against the presence/record rule and a tied transport absence keeps the retry loop sampling; v20 (round 16) = the duty-observation identity-read containment, the contradictory invocation-absence shape refusal and the runtime latest-same-generation-presence tie continuation; v19 (round 15) = the declared-scope binding, the identity-bearing absence reuse latch and the walked presence horizon; v18 (round 14) = the tied-absence collection continuation, the transport-exit recency/carried-identity re-adjudication and the incomplete-interval start refusals; v17 (round 13) = the identity-read containment check, the FROZEN argv selector enforced over mere persisted agreement, and the persisted block-version gate; v16 (round 12) = the collection-interval validity for every fence-crediting read + the consistent materialization-unavailable provenance fallback; v15 (round 11): the invocation-absence strict tie against the walked presence horizon, the contradictory-duplicate-duty-slot refusal and the selected-endpoint parentage rule covering a failed refresh; v14 (round 10) = the transport PID-reuse latch + the strict transport-absence tie rule; v13 (round 9) = the transport-exit recency/carried-identity re-adjudication; v12 (round 8) = the generation-bound PRE-FENCE transport-exit conjunct, the refreshed-presence horizon/supersession and the admitted-record capture-time parentage; v11 (round 7) = the persisted ancestry-refresh evidence joining the offline reuse latch; v10 (round 6) = the admission entry-digest/argv-selector binding against the persisted capture declarations and the unsupported-duty-slot refusal; v9 (round 5) = the declared-scope binding (the startup-backed duties + the ancestry endpoints), the identity-bearing ABSENCE reuse latch and the walked presence horizon; v8 (round 4) = the persisted-admission generation re-adjudication + the ancestry endpoint pre-fence/lifetime/marker-epoch re-verification; v7 (round 3) = the admissions/named-hops/ppid-chain/generation-change replay; v6 = the local-duty input contract with the §25.7 offline credit fences (Task 3); v5 = the preserved pre-cutoff snapshot grounding the winner (§24.11); v4 = the §24.8 cutoff fence and the relocated window inputs; v38 (2026-11-04 evidence-completion Task 4): the offline join consumes the persisted digest-only spawn-witness projections (block.spawnWitnesses — schema-additive): a hop-1 witnessClass claim re-verifies from its own fields (the frozen establishThroughSpawnWitness conjunct family mirrored on the persisted shapes, nonce bindings digest-wise) and an omitted/stale/contradictory witness refuses by the named route family (spawn-witness-absent/-unadmitted/-nonce-mismatch/-child-nonce-foreign/-role-mismatch/-writer-foreign/-child-foreign/-parent-foreign/-capture-unbounded/-capture-before-writer/-creation-order-inverted/-parent-generation-ambiguous/-child-generation-ambiguous/-post-fence/-shape-invalid/observation-interval-inverted); a persisted daemon-to-transport witnessClass claim is the §28.22 UNSATISFIABLE classification (spawn-witness-route-unsatisfiable — the bound-window entry contradicts the positive marker-to-generation binding, so establishment can never occur and the hop’s positives stay arithmetic-only); the lifetime conjuncts split per hop so a witness-resolved hop 1 never relaxes hop 2’s arithmetic');
   assert.equal(NATIVE_INTERRUPTION_ORACLE_VERSION, 5, 'oracle v5 (2026-10-30 local-settlement Task 3, report §25.10): the local-duty conjunct composes the §25.5 applicable local duties into the final acceptance — a legacy input without the block fails closed by its own named reason');
   assert.equal(RELEASE_QUALIFICATION_VERSION, 1, 'the shared exact-terminal/layer family stamp stays unchanged');
   // The Task-3 schedule arms for the registered case(s) through the closed
@@ -1169,7 +1290,7 @@ test('the §24.8 measurement cutoff fences the offline join: pre-cutoff samples 
     survivalControl: null,
   };
   const input = pipeline.nativeInterruptionGateDInput(record);
-  assert.equal(pipeline.NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 37, 'the local-duty replay re-verification is the join v18 input-contract growth (2026-10-30 local-settlement Task 3 review round 13, report §25.10) = the identity-read containment check, the frozen-selector enforcement and the persisted block-version gate; v16 (round 12) = the collection-interval validity + the materialization-unavailable provenance fallback; v15 (round 11) = the invocation-absence strict tie + the duplicate-slot refusal + the selected-endpoint parentage rule; v14 (round 10) = the transport PID-reuse latch + the strict transport-absence tie rule; v13 (round 9) = the transport-exit recency/carried-identity re-adjudication; v12 (round 8) = the transport-exit conjunct + the refreshed-presence horizon + the record-based capture parentage; v11 (round 7) = the refresh-evidence latch; v10 (round 6) = the entry-digest/argv-selector binding + the unsupported-duty-slot refusal; v9 (round 5) = the declared-scope binding + the absence latch + the walked horizon; v8 (round 4) = the admission-generation re-adjudication + the endpoint pre-fence/lifetime/marker-epoch re-verification; v7 (round 3) = the admissions/named-hops/ppid-chain/generation-change replay; v6 = the local-duty composition (Task 3); v5 preserved the pre-cutoff snapshot (winner + own owner binding + layer evidence)');
+  assert.equal(pipeline.NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 38, 'the local-duty replay re-verification is the join v18 input-contract growth (2026-10-30 local-settlement Task 3 review round 13, report §25.10) = the identity-read containment check, the frozen-selector enforcement and the persisted block-version gate; v16 (round 12) = the collection-interval validity + the materialization-unavailable provenance fallback; v15 (round 11) = the invocation-absence strict tie + the duplicate-slot refusal + the selected-endpoint parentage rule; v14 (round 10) = the transport PID-reuse latch + the strict transport-absence tie rule; v13 (round 9) = the transport-exit recency/carried-identity re-adjudication; v12 (round 8) = the transport-exit conjunct + the refreshed-presence horizon + the record-based capture parentage; v11 (round 7) = the refresh-evidence latch; v10 (round 6) = the entry-digest/argv-selector binding + the unsupported-duty-slot refusal; v9 (round 5) = the declared-scope binding + the absence latch + the walked horizon; v8 (round 4) = the admission-generation re-adjudication + the endpoint pre-fence/lifetime/marker-epoch re-verification; v7 (round 3) = the admissions/named-hops/ppid-chain/generation-change replay; v6 = the local-duty composition (Task 3); v5 preserved the pre-cutoff snapshot (winner + own owner binding + layer evidence)');
   assert.equal(input.measurementCutoffAtMs, 20_000);
   assert.equal(input.durableReadPostCleanupBoundary, true, 'the final read completed at/after the cutoff — credit withheld');
   assert.equal(input.durableReadBoundaryBasis, 'durable-read-at-or-after-measurement-cutoff', 'the named cutoff basis rides');
@@ -5354,4 +5475,94 @@ test('the DEFAULT natural-exit watcher returning absence after the planned endpo
   assert.equal(held.budgetExpired, false);
   assert.equal(held.postRelease?.naturalExit, 'natural-exit-unobserved-at-planned-observation-end',
     `the natural-exit missing-exit fact rides the SUCCESSFUL done branch whenever the watcher's own completion instant is at/after the endpoint (postRelease: ${JSON.stringify(held.postRelease ?? null)})`);
+});
+
+// ---------------------------------------------------------------------------
+// Evidence-completion Task 4 (report §29): the FINAL all-duty gate consumes
+// BOTH proof chains — Task 2's call-coverage admission (the §19.4
+// host-activity admission over the complete scan) AND Task 3's ancestry
+// witness/join (the localProcessDuties composition). Neither chain alone
+// qualifies; helper verdicts that are not the final gate's own input never
+// qualify anything.
+// ---------------------------------------------------------------------------
+test('integration-completion final gate: the all-duty oracle consumes BOTH proof chains — the call-coverage admission alone and the local ancestry/witness chain alone never qualify, and the composed shape keeps every negative refusal named', async () => {
+  const { evaluateNativeInterruptionSettlement } = await import('../tools/shell-wait-probe/release-qualification.mjs');
+  /** The Task-2 chain alone: the fully-admitted delivery block beside a
+   * null local-duty composition (the ancestry/witness chain unestablished). */
+  const callCoverageOnly = evaluateNativeInterruptionSettlement({
+    delivery: {
+      delivered: true, exactTargetMatch: true, aliasResolved: true, terminalBeforeInterrupt: false,
+      deliverySent: true, previousStatusOnly: false, unreadableContinuation: false,
+      pendingWindowConfirmed: true, hostActivityAdmitted: true,
+    },
+    turnSettled: true, deliveryToSettlementMs: 5_000,
+    companionOutcome: 'ceased', durableObligations: 'settled', cleanupKill: false,
+    survivalControl: { noCollateralQualified: true },
+    terminalWinner: 'succeeded', naturalCompletionObserved: false,
+    localProcessDuties: null,
+  });
+  assert.equal(callCoverageOnly.qualified, false, 'the call-coverage admission alone never qualifies');
+  assert.ok(callCoverageOnly.reasons.includes('local-process-observation-unadjudicated'), JSON.stringify(callCoverageOnly.reasons));
+
+  /** The Task-3 chain alone: the settled local-duty composition beside an
+   * unadmitted host-activity admission (the call-coverage chain unestablished). */
+  const ancestryOnly = evaluateNativeInterruptionSettlement({
+    delivery: {
+      delivered: true, exactTargetMatch: true, aliasResolved: true, terminalBeforeInterrupt: false,
+      deliverySent: true, previousStatusOnly: false, unreadableContinuation: false,
+      pendingWindowConfirmed: true, hostActivityAdmitted: false,
+    },
+    turnSettled: true, deliveryToSettlementMs: 5_000,
+    companionOutcome: 'ceased', durableObligations: 'settled', cleanupKill: false,
+    survivalControl: { noCollateralQualified: true },
+    terminalWinner: 'succeeded', naturalCompletionObserved: false,
+    localProcessDuties: { contractVersion: 1, settled: true, duties: [], exit: { status: 'disappeared' }, fence: { operativeAtMs: 20_000, kind: 'measurement-cutoff' }, refusals: [] },
+  });
+  assert.equal(ancestryOnly.qualified, false, 'the ancestry/witness chain alone never qualifies');
+  assert.ok(ancestryOnly.reasons.includes('host-activity-unadmitted'), JSON.stringify(ancestryOnly.reasons));
+
+  /** BOTH chains composed: the fully-admitted delivery AND the settled
+   * local-duty composition qualify together — the same two chains the §27
+   * differential and the §29 junction exercise end to end. */
+  const composedInput = {
+    delivery: {
+      delivered: true, exactTargetMatch: true, aliasResolved: true, terminalBeforeInterrupt: false,
+      deliverySent: true, previousStatusOnly: false, unreadableContinuation: false,
+      pendingWindowConfirmed: true, hostActivityAdmitted: true,
+    },
+    turnSettled: true, deliveryToSettlementMs: 5_000,
+    companionOutcome: 'ceased', durableObligations: 'settled', cleanupKill: false,
+    survivalControl: { noCollateralQualified: true },
+    terminalWinner: 'succeeded', naturalCompletionObserved: false,
+    localProcessDuties: { contractVersion: 1, settled: true, duties: [], exit: { status: 'disappeared' }, fence: { operativeAtMs: 20_000, kind: 'measurement-cutoff' }, refusals: [] },
+  };
+  const composed = evaluateNativeInterruptionSettlement(composedInput);
+  assert.equal(composed.qualified, true, JSON.stringify(composed.reasons));
+  assert.equal(composed.layers.delivery, true);
+  assert.equal(composed.layers.localProcess, true);
+
+  /** The composed shape keeps every negative refusal named: the local
+   * chain's own refusals ride THROUGH the final gate (a settled-looking
+   * aggregate is never accepted over its own refusal array). */
+  const contradictory = evaluateNativeInterruptionSettlement({
+    ...composedInput,
+    localProcessDuties: { contractVersion: 1, settled: false, duties: [], exit: { status: 'disappeared' }, fence: { operativeAtMs: 20_000, kind: 'measurement-cutoff' }, refusals: ['spawn-witness-route-unsatisfiable'] },
+  });
+  assert.equal(contradictory.qualified, false);
+  assert.ok(contradictory.reasons.includes('local-process-duty-unsettled'), JSON.stringify(contradictory.reasons));
+});
+
+test('integration-completion native negative: an unknown contract version is an input error, never a reinterpretation (the local-process layer has no legacy fallback)', async () => {
+  const { evaluateNativeInterruptionSettlement } = await import('../tools/shell-wait-probe/release-qualification.mjs');
+  assert.throws(
+    () => evaluateNativeInterruptionSettlement({
+      delivery: { delivered: true, exactTargetMatch: true, aliasResolved: true, terminalBeforeInterrupt: false, deliverySent: true, previousStatusOnly: false, unreadableContinuation: false, pendingWindowConfirmed: true, hostActivityAdmitted: true },
+      turnSettled: true, deliveryToSettlementMs: 5_000,
+      companionOutcome: 'ceased', durableObligations: 'settled', cleanupKill: false,
+      survivalControl: { noCollateralQualified: true },
+      terminalWinner: 'succeeded', naturalCompletionObserved: false,
+      localProcessDuties: { contractVersion: 999, settled: true, duties: [], refusals: [] },
+    }),
+    /unknown contract version/u,
+  );
 });

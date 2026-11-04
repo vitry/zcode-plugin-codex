@@ -27,7 +27,9 @@ const localProcessEntry = 'tests/shell-wait-local-process.test.mjs';
 // whose every top-level test registers, and the local-process observation
 // file, whose every top-level test registers. The spawned-suite totals
 // pinned below are that marker (1) plus the native file's registered test
-// count (96 at the native-acceptance spec-review registration — the §24.10
+// count (98 after the evidence-completion Task 2 registration — the §27
+// registered admit-union differential and withhold tests joining the
+// native-acceptance spec-review registration's 96 — the §24.10
 // grammar amendment's four pipeline tests — including the pre-review 92: the
 // two §24.8 sampler-fence tests of the self-review P3 fix, the four
 // codex-gate P2 regression tests, the three round-2 fix-A/B/C regression
@@ -114,11 +116,23 @@ const localProcessEntry = 'tests/shell-wait-local-process.test.mjs';
 // pre-request baseline witness being the invocation's own OS-observed
 // identity; 292 after the codex review round 36: a pre-request witness
 // postdating the admitted generation record start; 294 after the codex
-// review round 37: a pre-request witness owing the §25.7 completion fence),
-// so a wrong
+// review round 37: a pre-request witness owing the §25.7 completion fence;
+// the local and this-file counts are UNCHANGED by the §27 admit-union
+// registration — the spawned-suite total rose 391 → 393 through the
+// native entry's two registered differential/withhold tests, and the
+// spawned suite runs the three entries under the guard env, so its total
+// is local + native + the guarded single probe test: Task-2-era
+// 294 + 98 + 1 = 393; Task 3's 27 review rounds grew the local entry
+// 294 → 369 WITHOUT re-running the full probe battery, so the pin rode
+// STALE (actual 468 = 369 + 98 + 1) at the Task-4 base; Task 4's
+// registrations grow local 369 → 386 (17: 12 join + 1 junction +
+// 4 preflight/launch-spy) and native 98 → 100 (the final both-chains
+// gate + the unknown-contract negative), and the MEASURED spawned total
+// (the direct runner spawn on the converged bytes) is 393 + 100 + 1 =
+// 494 after gate rounds 1–2 (487 = 386 + 100 + 1 at the pre-round bytes; 491 after round 1's four join-invariant tests) — so a wrong
 // selection (an extra or missing entry) or a silently
 // skipped contract test still breaks them.
-const shellSuiteSpawnedTestTotal = 391;
+const shellSuiteSpawnedTestTotal = 497;
 /** @param {number} count */
 const suiteCountPattern = (count) => new RegExp(`ℹ tests ${count}\\r?\\n`);
 /** @param {number} count */
@@ -4703,17 +4717,22 @@ if (process.env[selfTestGuard] === '1') {
       assert.equal(inspectCallShape(genuine).statements[0].tool, 'exec_command');
     });
 
-    test('emission tokens separated from their parenthesis by trivia still bind', () => {
+    test('emission tokens separated from their parenthesis by trivia still bind, and the mirror now diagnoses the pinned exhibit admission (report §27)', () => {
       // `text (r)` is an ordinary binding emission: the tail fact describes
-      // the syntax relation, while parserStage stays the mechanical mirror of
-      // the existing parser, which rejects the noncanonical spacing.
+      // the syntax relation. The §23.2 pinned emission-junction exhibit ALREADY
+      // admitted the `text (r)` spacing at HEAD while the whole-body mirror
+      // omitted it (a pre-§27 divergence diagnosed that admitted body as the
+      // 'output' refusal stage); the §27 registered whole-body stage mirrors
+      // the admitted union — whose accepted set contains that exhibit's — so
+      // an ADMITTED body now diagnoses parse-accepted (Report §27), and a
+      // refused body keeps its refusal diagnosis below.
       const spaced = 'const r = await tools.exec_command({cmd:"x"}); text (r);';
       const facts = inspectCallShape(spaced);
       assert.equal(facts.statements[0].tail, 'text-binding');
       assert.equal(facts.tail, 'text-binding');
       assert.equal(facts.bindingEquality, 'equal');
       assert.equal(facts.coverage, 'complete');
-      assert.equal(facts.parserStage, 'output', 'the existing grammar mechanically rejects the noncanonical spacing');
+      assert.equal(facts.parserStage, 'parse-accepted', 'the mirror now matches the pinned exhibit\'s admission (report §27 correction)');
       const commented = 'const r = await tools.exec_command({cmd:"x"}); text /* c */ (r);';
       const commentedFacts = inspectCallShape(commented);
       assert.equal(commentedFacts.statements[0].tail, 'text-binding', 'masked comments are trivia');
@@ -26055,10 +26074,18 @@ describe('cleanup-boundary attribution for exit-code settlements (round-9 review
       rejected(`${launchBody()} text${eight}(${nine}r${eight});`, 'mixed runs with one over bound');
     });
 
-    test('the same-line rule and the trailing artifacts keep their existing semantics', () => {
-      // The emission shares the declaration's line: a two-line split stays
-      // rejected (the existing per-line grammar rejects each fragment).
-      rejected(`${launchBody()}\ntext (r);`, 'declaration and emission on separate lines');
+    test('the tail artifacts keep their existing semantics; the one-break split joined the §27 registered family', () => {
+      // Report §27 (evidence-completion Task 2, the §26.4 D4 successor
+      // registration): the ONE-break declaration→emission layout joined the
+      // registered whole-body family over the RAW input, so the §23.2-era
+      // CELL-level refusal of this exact split is superseded at this row —
+      // the registered family reaches the IDENTICAL call value while the
+      // pinned WRAPPER/EMISSION_JUNCTION patterns' own accepted sets stay
+      // byte-identical (the union admits more beside them; it retreats
+      // nothing). The registered two-break separators stay refused.
+      assert.deepEqual(parseCallStatements(event(`${launchBody()}\ntext (r);`)), [
+        { kind: 'exec_command', value: { cmd: CANARY_CMD }, directive: null, wrapped: true },
+      ]);
       // The trailing-newline artifact (the retained record's second physical
       // line) is admitted; a real trailing BLANK line stays rejected.
       assert.deepEqual(parseCallStatements(event(`${launchBody()} text (r);\n`)), [
@@ -26082,12 +26109,30 @@ describe('cleanup-boundary attribution for exit-code settlements (round-9 review
       assert.deepEqual(crlf, parseCallStatements(event(`${launchBody()} text (r);\n`)),
         'the CRLF-terminated frozen cell reaches the same existing call-value validation as the LF form');
       assert.deepEqual(crlf, [{ kind: 'exec_command', value: { cmd: CANARY_CMD }, directive: null, wrapped: true }]);
-      rejected(`${launchBody()}\r\ntext (r);\r\n`, 'interior CRLF split stays rejected');
+      // Report §27 (the §26.4 D4 successor registration): the ONE-break
+      // layout joined the registered family, so the §23.2-era interior-CRLF
+      // cell-level refusal is superseded at this row with the identical call
+      // value; the pinned CRLF-terminated single-line admission above is
+      // byte-unchanged and the two-break blank separator stays refused.
+      assert.deepEqual(parseCallStatements(event(`${launchBody()}\r\ntext (r);\r\n`)), [
+        { kind: 'exec_command', value: { cmd: CANARY_CMD }, directive: null, wrapped: true },
+      ]);
     });
 
-    test('head/argument junctions keep zero tolerance and the declaration-to-text junction keeps the existing tolerance', () => {
-      rejected(`const  r = await tools.exec_command({cmd:"x"}); text (r);`, 'head binding spacing');
-      rejected(`const r= await tools.exec_command({cmd:"x"}); text (r);`, 'head assignment spacing');
+    test('head/argument junctions: the §27 registered head runs supersede the pinned-head zero-tolerance rows; the other junctions keep zero tolerance', () => {
+      // Report §27 (evidence-completion Task 2, the §26.4 D3 successor
+      // registration): the head-junction runs are REGISTERED finite bounds
+      // (1–8 at the keyword→name and await→tools junctions, 0–8 around the
+      // `=`, matched on the raw bytes — never normalize-then-match), so the
+      // §23.2-era CELL-level zero-tolerance refusals of these two spellings
+      // are superseded at these rows with the identical call value; the
+      // pinned patterns' accepted sets stay byte-identical beside them.
+      assert.deepEqual(parseCallStatements(event(`const  r = await tools.exec_command({cmd:"${CANARY_CMD}"}); text (r);`)), [
+        { kind: 'exec_command', value: { cmd: CANARY_CMD }, directive: null, wrapped: true },
+      ], 'the 2-run keyword junction joins the registered family');
+      assert.deepEqual(parseCallStatements(event(`const r= await tools.exec_command({cmd:"${CANARY_CMD}"}); text (r);`)), [
+        { kind: 'exec_command', value: { cmd: CANARY_CMD }, directive: null, wrapped: true },
+      ], 'the 0-run assignment junction joins the registered family');
       rejected(`const r = await tools .exec_command({cmd:"x"}); text (r);`, 'member-access spacing');
       rejected(`const r = await tools.exec_command ({cmd:"x"}); text (r);`, 'call-paren spacing');
       rejected(`const r = await tools.exec_command( {cmd:"x"} ); text (r);`, 'argument-object junction spacing');
@@ -26111,7 +26156,7 @@ describe('cleanup-boundary attribution for exit-code settlements (round-9 review
       rejected(`${launchBody()} text( JSON.stringify(r) );`, 'stringify tail is not relaxed (inner)');
     });
 
-    test('the equality tail and declaration keyword stay pinned; bounded non-r names are admitted by the frozen anchored family with the identical call value', () => {
+    test('the equality tail stays pinned; the §27 union joins let/var declarations and the mechanical identifier class beside the frozen anchored family with the identical call value', () => {
       // NATIVE-ACCEPTANCE REVIEW ROUND (report §24.11 amendment): the frozen
       // bounded-name family admits canonical bounded non-`r` bindings with
       // EXACTLY the §23.2 junction tolerances and the SAME call-value parse —
@@ -26129,15 +26174,23 @@ describe('cleanup-boundary attribution for exit-code settlements (round-9 review
       // family, and everything that was refused stays refused.
       assert.equal(admittedKind(`${launchBody()} text (r);`), 'exec_command', 'the pinned r family is unchanged');
       rejected(`${launchBody()} text (q);`, 'mismatched emission binding');
-      rejected(`let result = await tools.exec_command({cmd:"x"}); text (result);`, 'let declaration');
-      rejected(`var r = await tools.exec_command({cmd:"x"}); text (r);`, 'var declaration');
+      // §27 (report §27, the §26.4 successor registration): the admit UNION
+      // widened — the declaration class {const,let,var} and the mechanical
+      // ECMA identifier class join the registered whole-body family, reaching
+      // the IDENTICAL call value as the pinned r control. The §23.2/§24.11-era
+      // refusals of exactly these spellings are superseded at these rows; the
+      // pinned families' own accepted sets stay byte-identical (the union
+      // admits more; it retreats nothing). Every changed/non-reference tail
+      // stays refused.
+      assert.deepEqual(parseCallStatements(event(`let result = await tools.exec_command({cmd:"x"}); text (result);`)), canonicalR, '§27 union: the let declaration joins with the identical call value');
+      assert.deepEqual(parseCallStatements(event(`var r = await tools.exec_command({cmd:"x"}); text (r);`)), canonicalR, '§27 union: the var declaration joins with the identical call value');
       rejected(`const result = await tools.exec_command({cmd:"x"}); text (result.status);`, 'computed field access tail');
       rejected(`const result = await tools.exec_command({cmd:"x"}); text (String(result));`, 'String() tail');
       rejected(`const result = await tools.exec_command({cmd:"x"}); text (JSON.stringify(result));`, 'stringify tail under the anchored family');
       rejected(`const result = await tools.exec_command({cmd:"x"}); text (${'a'.repeat(65)});`, 'over-bound binding name');
       rejected(`const 1result = await tools.exec_command({cmd:"x"}); text (1result);`, 'leading digit in the name');
-      rejected(`const re$sult = await tools.exec_command({cmd:"x"}); text (re$sult);`, 'dollar character outside the bounded name grammar');
-      rejected(`const résultat = await tools.exec_command({cmd:"x"}); text (résultat);`, 'non-ASCII character outside the bounded name grammar');
+      assert.deepEqual(parseCallStatements(event(`const re$sult = await tools.exec_command({cmd:"x"}); text (re$sult);`)), canonicalR, '§27 union: the mechanical identifier class carries a mid-name $ with the identical call value');
+      assert.deepEqual(parseCallStatements(event(`const résultat = await tools.exec_command({cmd:"x"}); text (résultat);`)), canonicalR, '§27 union: the mechanical identifier class carries non-ASCII ID_Start entries with the identical call value');
     });
 
     test('non-literal, dynamic and multi-statement cell bodies stay rejected (per-statement ownership preserved)', () => {
@@ -26179,9 +26232,21 @@ describe('cleanup-boundary attribution for exit-code settlements (round-9 review
       rejected(`${launchBody('exec_command', `{cmd:"${'x'.repeat(4089)}"}`)} text (r);`, 'argument over the bound');
     });
 
-    test('directives keep their existing rules: the frozen family registers with directive absent', () => {
+    test('directives keep their existing framing rules: the §27 registered family joins ONE valid directive over the raw anchor', () => {
+      // The INVALID directive never strips into acceptance (fail-closed, unchanged).
       rejected(`// @exec: not-json\n${launchBody()} text (r);`, 'raw invalid directive');
-      rejected(`// @exec: {"yield_time_ms": 3600000}\n${launchBody()} text (r);`, 'a valid directive does not join the frozen family');
+      // Report §27 (evidence-completion Task 2, the §26.4 D6 successor
+      // registration): ONE framing-validated directive line joined the
+      // registered whole-body family over the RAW anchored input, so the
+      // §23.2-era cell-level refusal of this exact spelling is superseded at
+      // this row — the directive attaches exactly like the per-line machinery
+      // attaches it, while the pinned EMISSION_JUNCTION family itself still
+      // registers with directive ABSENT (its accepted set is byte-identical;
+      // the union admits more beside it) and the private preparation keeps
+      // its own unchanged path.
+      assert.deepEqual(parseCallStatements(event(`// @exec: {"yield_time_ms": 3600000}\n${launchBody()} text (r);`)), [
+        { kind: 'exec_command', value: { cmd: CANARY_CMD }, directive: { yield_time_ms: 3_600_000 }, wrapped: true },
+      ], 'the valid directive joins the registered family with the unchanged attach');
       // Directive-led canonical cells keep their existing admission.
       assert.equal(admittedKind(`// @exec: {"yield_time_ms": 3600000}\n${launchBody()} text(r);`), 'exec_command');
       // The sanctioned private preparation frame keeps its own recognized
@@ -26323,6 +26388,8 @@ describe('cleanup-boundary attribution for exit-code settlements (round-9 review
     const event = (input) => ({ payload: { type: 'custom_tool_call', name: 'exec', call_id: 'cell-1', input } });
     const anchoredBody = (name, tool = 'exec_command', argument = '{cmd:"x"}', emission = null) =>
       `const ${name} = await tools.${tool}(${argument}); text${emission === null ? `(${name})` : emission.replace(/NAME/gu, name)};`;
+    /** The expected call value of every canonical anchored admission. */
+    const canonicalValue = [{ kind: 'exec_command', value: { cmd: 'x' }, directive: null, wrapped: true }];
     /** @param {string} input @returns {string} the admitted single call's kind */
     const admittedKind = (input) => {
       const calls = parseCallStatements(event(input));
@@ -26345,14 +26412,19 @@ describe('cleanup-boundary attribution for exit-code settlements (round-9 review
       rejected('const result = await tools.wait({cell_id:"c"}); text(result);', 'tool outside the frozen anchored set');
     });
 
-    test('the name rule: bounded identifier grammar 1-64 chars, letters/digits/underscore, r stays exclusively on the pinned family', () => {
+    test('the name rule: bounded identifier grammar 1-64 chars with the §27 mechanical-class join, r stays on the pinned family', () => {
       assert.equal(admittedKind(anchoredBody('x')), 'exec_command', 'a 1-char non-r name');
       assert.equal(admittedKind(anchoredBody('_private1')), 'exec_command', 'underscore-led digit-carrying name');
       assert.equal(admittedKind(anchoredBody('a'.repeat(64))), 'exec_command', 'the 64-char upper bound admitted');
       rejected(anchoredBody('a'.repeat(65)), 'a 65-char name over the bound');
       rejected(anchoredBody('1result'), 'leading digit');
       rejected(anchoredBody('re-sult'), 'hyphen outside the grammar');
-      rejected(anchoredBody('réultat'), 'non-ASCII outside the grammar');
+      // Report §27 (evidence-completion Task 2, the §26.4 successor
+      // registration): the mechanical ECMA identifier class joins the
+      // registered whole-body family — the §24.11-era ASCII-only refusal of a
+      // non-ASCII name is superseded at this row (the pinned families stand
+      // byte-identical; the union admits more).
+      assert.deepEqual(parseCallStatements(event(anchoredBody('réultat'))), canonicalValue, '§27 union: the non-ASCII ID_Start binding joins with the identical call value');
       // The pinned `r` spelling stays admitted through the UNCHANGED pinned
       // family (EMISSION_JUNCTION / WRAPPER), never through the anchored one.
       assert.equal(admittedKind('const r = await tools.exec_command({cmd:"x"}); text (r);'), 'exec_command');
@@ -26366,8 +26438,14 @@ describe('cleanup-boundary attribution for exit-code settlements (round-9 review
       rejected(`const result = await tools.exec_command({cmd:"x"}); text${nine}(result);`, 'ws1 length 9');
       rejected(`const result = await tools.exec_command({cmd:"x"}); text(${nine}result);`, 'ws2 length 9');
       rejected(`const result = await tools.exec_command({cmd:"x"}); text(result${nine});`, 'ws3 length 9');
-      rejected(`const  result = await tools.exec_command({cmd:"x"}); text(result);`, 'head binding spacing (zero tolerance)');
-      rejected(`const result= await tools.exec_command({cmd:"x"}); text(result);`, 'head assignment spacing (zero tolerance)');
+      // Report §27 (evidence-completion Task 2): the REGISTERED head-junction
+      // runs join — 1–8 at the keyword→name and await→tools junctions, 0–8
+      // around the `=`, all on the raw bytes (never normalize-then-match);
+      // the zero-width glue and the 9-run stay refused.
+      assert.deepEqual(parseCallStatements(event(`const  result = await tools.exec_command({cmd:"x"}); text(result);`)), canonicalValue, '§27 union: a 2-run keyword junction admits with the identical call value');
+      assert.deepEqual(parseCallStatements(event(`const result= await tools.exec_command({cmd:"x"}); text(result);`)), canonicalValue, '§27 union: the 0–8 assignment junction admits');
+      rejected(`constresult = await tools.exec_command({cmd:"x"}); text(result);`, 'the keyword glues to the name (the zero-width junction refuses)');
+      rejected(`const result${' '.repeat(9)}= await tools.exec_command({cmd:"x"}); text(result);`, 'a 9-run assignment junction stays over the bound');
       rejected(`const result = await tools .exec_command({cmd:"x"}); text(result);`, 'member-access spacing (zero tolerance)');
       rejected(`const result = await tools.exec_command ({cmd:"x"}); text(result);`, 'call-paren spacing (zero tolerance)');
       rejected(`const result = await tools.exec_command( {cmd:"x"} ); text(result);`, 'argument-object junction spacing (zero tolerance)');
@@ -26376,7 +26454,12 @@ describe('cleanup-boundary attribution for exit-code settlements (round-9 review
     });
 
     test('the same-line rule, trailing artifacts, decode fall-through and multi-statement bodies keep their existing semantics', () => {
-      rejected(`const result = await tools.exec_command({cmd:"x"});\ntext(result);`, 'declaration and emission on separate lines');
+      // Report §27 (evidence-completion Task 2): ONE break at the
+      // declaration→emission junction joins the registered statement family
+      // with the identical call value; a blank separator line (a second
+      // break) stays refused — never a per-line partial admission.
+      assert.deepEqual(parseCallStatements(event(`const result = await tools.exec_command({cmd:"x"});\ntext(result);`)), canonicalValue, '§27 union: the one-break layout joins with the identical call value');
+      rejected('const result = await tools.exec_command({cmd:"x"});\n\ntext(result);', 'a blank separator line (a second break) stays refused');
       assert.deepEqual(parseCallStatements(event(`const result = await tools.exec_command({cmd:"x"}); text(result);\n`)),
         parseCallStatements(event('const result = await tools.exec_command({cmd:"x"}); text(result);')),
         'the trailing-newline artifact is admitted');
@@ -26395,8 +26478,13 @@ describe('cleanup-boundary attribution for exit-code settlements (round-9 review
       const preparation = 'text(await tools.write_stdin({session_id:5,chars:JSON.stringify({version:5})+"\\n"}));';
       assert.equal(parseCallStatements(event(preparation))?.[0]?.kind, 'write_stdin', 'the preparation path is unchanged');
       rejected('// @exec: not-json\nconst result = await tools.exec_command({cmd:"x"}); text(result);', 'raw invalid directive');
-      rejected('// @exec: {"yield_time_ms": 3600000}\nconst result = await tools.exec_command({cmd:"x"}); text(result);',
-        'a valid directive does not join the anchored family');
+      // Report §27 (evidence-completion Task 2): ONE framing-validated
+      // directive line joins the registered family over the RAW anchored
+      // input — an invalid directive is NEVER stripped into acceptance (the
+      // row above), and a valid one attaches exactly like the per-line
+      // machinery attaches it.
+      assert.deepEqual(parseCallStatements(event('// @exec: {"yield_time_ms": 3600000}\nconst result = await tools.exec_command({cmd:"x"}); text(result);')),
+        [{ kind: 'exec_command', value: { cmd: 'x' }, directive: { yield_time_ms: 3_600_000 }, wrapped: true }], '§27 union: the valid directive joins with the unchanged attach');
     });
 
     test('the shape-diagnostic mirror agrees with the widened parser: parse-accepted for canonical anchored bodies, the closed facts unchanged', () => {
@@ -27925,7 +28013,7 @@ describe('cleanup-boundary attribution for exit-code settlements (round-9 review
     }
 
     test('the join carries its own versioned identity (the §19.9 v1/v2 precedent mechanism)', () => {
-      assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 37, 'join v37 (2026-10-30 local-settlement Task 3 review round 37): a pre-request baseline witness owes the §25.7 completion fence (provesPreFenceCompletion — a post-fence or unprovable-completion witness is no witness, the runtime postFence naming honored);  a pre-request baseline witness must postdate the admitted generation record start (the admission-observation-stale lower bound — a carried instant before the process existed is temporally impossible cached evidence and is no witness);  (the observed pid and nonce digest must match the admitted invocation — a query addressed to the invocation never witnesses it, the round-20 queried-binding rule mirrored on the observed side);  the pre-interruption baseline owes a VERIFIED presence witness collected before the admitted request (at least one interval-valid same-generation presence instant strictly earlier than the request — an earlier process start alone never settles; the same conservative-strict ordering refuses companion-baseline-unestablished);  the refreshed ancestry endpoint creation instant must AGREE with its admission-backed observation (a conflicting instant refuses ancestry-endpoint-instant-foreign) and the preflight requires PRIVATE capture-directory permissions (exactly 0700 on POSIX — the record readers reject every startup record otherwise);  the retained invocation presence reads validate like the transport replay (the round-24/25 pattern — a torn interval or unprovable timestamps refuse by name before the horizon and supersession walks) and the preflight requires a usable capture directory;  the observed Companion generation must demonstrably predate the interrupt request (the admitted request timestamp/bounds bind the baseline — ordering that cannot be established refuses companion-baseline-unestablished) and the NODE_OPTIONS tokenizer rejects unfinished quoting states (an unterminated double-quote or a dangling escape refuses by name — the host would exit before loading the observer);  the fence echoes compare symmetrically (a missing-versus-present mismatch refuses cleanup-boundary-echo-mismatch / cutoff-echo-mismatch in both directions — cleanup-time evidence never credits across a missing echo) and the NODE_OPTIONS tokenizer matches Node exactly (apostrophes are ordinary characters, backslash escapes only inside double quotes — the inherited-apostrophe run passes, the apostrophe-quoted path refuses); v29 (round 27): a replacement-claiming retained invocation read owes a valid completion timestamp (a missing or malformed one refuses exit-reuse-read-instant-unprovable instead of being silently discarded by the recency filter), and the NODE_OPTIONS preflight parses the string into shell-ish option tokens (a --require fragment inside another option value never counts as loading the declared preload); v28 (round 26): the retained transport reads validate their completion stamps (a missing or nonnumeric completion refuses observation-instant-unprovable — torn evidence is never silently excluded from the presence horizon) and the transport exit validates its supplied carried identity instants (in-interval + safe integer, else transport-exit-carried-instant-outside-interval — the invocation-absence pattern);  a retained transport retry read with an INVALID collection interval refuses explicitly (a true inversion is observation-interval-inverted, a missing start when credit depends on it is observation-start-unprovable) — torn evidence cannot turn an otherwise contradictory replay into a credited local-process layer;  the retained transport retry reads validate their identity instants (the duty-observation/ancestry-endpoint pattern — malformed instants refuse by name, supplied instants must sit inside the validated collection interval) and the captured transport start identity persists with the marker (schema-additive) binding the replayed transport observation — a successor generation cannot settle the original transport duty;  a supplied carried identity instant is validated against its read collection interval BEFORE the reuse latch recency filtering — an out-of-interval or malformed carried instant is torn replacement evidence refusing by name (exit-reuse-carried-instant-outside-interval), never old evidence;  every credited observation binds its queried pid/scope digest to the observed identity (the duty echoes and the ancestry endpoints) and a present-but-malformed identity-read instant refuses by name instead of falling back to the completion;  the persisted transport retry sequence latches replacement evidence (any generation-bound read carrying a different start identity) and absence timestamps must be safe integers before crediting (nonnumeric instants refuse by name);  a live same-generation transport retry advances the presence horizon and persists the full presence sequence for replay, and the exit supersession compares the identity-read instant (an async completion never re-wins);  the correlated absence validates its collection interval (inverted intervals are torn evidence), the SELECTED daemon endpoint re-verifies its parentage against the presence/record rule and a tied transport absence keeps the retry loop sampling; v20 (round 16) = the duty-observation identity-read containment, the contradictory invocation-absence shape refusal and the runtime latest-same-generation-presence tie continuation; v19 (round 15) = the declared-scope binding, the identity-bearing absence reuse latch and the walked presence horizon; v18 (round 14) = the tied-absence collection continuation, the transport-exit recency/carried-identity re-adjudication and the incomplete-interval start refusals; v17 (round 13) = the identity-read containment check, the FROZEN argv selector enforced over mere persisted agreement, and the persisted block-version gate; v16 (round 12) = the collection-interval validity for every fence-crediting read + the consistent materialization-unavailable provenance fallback; v15 (round 11) = the invocation-absence strict tie, the contradictory-duplicate-duty-slot refusal and the selected-endpoint parentage rule covering a failed refresh; v14 (round 10) = the transport PID-reuse latch + the strict transport-absence tie rule; v13 (round 9) = the transport-exit recency/carried-identity re-adjudication; v12 (round 8) = the generation-bound PRE-FENCE transport-exit conjunct, the refreshed-presence horizon/supersession and the admitted-record capture-time parentage');
+      assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 38, 'join v38 (2026-10-30 local-settlement Task 3 review round 37): a pre-request baseline witness owes the §25.7 completion fence (provesPreFenceCompletion — a post-fence or unprovable-completion witness is no witness, the runtime postFence naming honored);  a pre-request baseline witness must postdate the admitted generation record start (the admission-observation-stale lower bound — a carried instant before the process existed is temporally impossible cached evidence and is no witness);  (the observed pid and nonce digest must match the admitted invocation — a query addressed to the invocation never witnesses it, the round-20 queried-binding rule mirrored on the observed side);  the pre-interruption baseline owes a VERIFIED presence witness collected before the admitted request (at least one interval-valid same-generation presence instant strictly earlier than the request — an earlier process start alone never settles; the same conservative-strict ordering refuses companion-baseline-unestablished);  the refreshed ancestry endpoint creation instant must AGREE with its admission-backed observation (a conflicting instant refuses ancestry-endpoint-instant-foreign) and the preflight requires PRIVATE capture-directory permissions (exactly 0700 on POSIX — the record readers reject every startup record otherwise);  the retained invocation presence reads validate like the transport replay (the round-24/25 pattern — a torn interval or unprovable timestamps refuse by name before the horizon and supersession walks) and the preflight requires a usable capture directory;  the observed Companion generation must demonstrably predate the interrupt request (the admitted request timestamp/bounds bind the baseline — ordering that cannot be established refuses companion-baseline-unestablished) and the NODE_OPTIONS tokenizer rejects unfinished quoting states (an unterminated double-quote or a dangling escape refuses by name — the host would exit before loading the observer);  the fence echoes compare symmetrically (a missing-versus-present mismatch refuses cleanup-boundary-echo-mismatch / cutoff-echo-mismatch in both directions — cleanup-time evidence never credits across a missing echo) and the NODE_OPTIONS tokenizer matches Node exactly (apostrophes are ordinary characters, backslash escapes only inside double quotes — the inherited-apostrophe run passes, the apostrophe-quoted path refuses); v29 (round 27): a replacement-claiming retained invocation read owes a valid completion timestamp (a missing or malformed one refuses exit-reuse-read-instant-unprovable instead of being silently discarded by the recency filter), and the NODE_OPTIONS preflight parses the string into shell-ish option tokens (a --require fragment inside another option value never counts as loading the declared preload); v28 (round 26): the retained transport reads validate their completion stamps (a missing or nonnumeric completion refuses observation-instant-unprovable — torn evidence is never silently excluded from the presence horizon) and the transport exit validates its supplied carried identity instants (in-interval + safe integer, else transport-exit-carried-instant-outside-interval — the invocation-absence pattern);  a retained transport retry read with an INVALID collection interval refuses explicitly (a true inversion is observation-interval-inverted, a missing start when credit depends on it is observation-start-unprovable) — torn evidence cannot turn an otherwise contradictory replay into a credited local-process layer;  the retained transport retry reads validate their identity instants (the duty-observation/ancestry-endpoint pattern — malformed instants refuse by name, supplied instants must sit inside the validated collection interval) and the captured transport start identity persists with the marker (schema-additive) binding the replayed transport observation — a successor generation cannot settle the original transport duty;  a supplied carried identity instant is validated against its read collection interval BEFORE the reuse latch recency filtering — an out-of-interval or malformed carried instant is torn replacement evidence refusing by name (exit-reuse-carried-instant-outside-interval), never old evidence;  every credited observation binds its queried pid/scope digest to the observed identity (the duty echoes and the ancestry endpoints) and a present-but-malformed identity-read instant refuses by name instead of falling back to the completion;  the persisted transport retry sequence latches replacement evidence (any generation-bound read carrying a different start identity) and absence timestamps must be safe integers before crediting (nonnumeric instants refuse by name);  a live same-generation transport retry advances the presence horizon and persists the full presence sequence for replay, and the exit supersession compares the identity-read instant (an async completion never re-wins);  the correlated absence validates its collection interval (inverted intervals are torn evidence), the SELECTED daemon endpoint re-verifies its parentage against the presence/record rule and a tied transport absence keeps the retry loop sampling; v20 (round 16) = the duty-observation identity-read containment, the contradictory invocation-absence shape refusal and the runtime latest-same-generation-presence tie continuation; v19 (round 15) = the declared-scope binding, the identity-bearing absence reuse latch and the walked presence horizon; v18 (round 14) = the tied-absence collection continuation, the transport-exit recency/carried-identity re-adjudication and the incomplete-interval start refusals; v17 (round 13) = the identity-read containment check, the FROZEN argv selector enforced over mere persisted agreement, and the persisted block-version gate; v16 (round 12) = the collection-interval validity for every fence-crediting read + the consistent materialization-unavailable provenance fallback; v15 (round 11) = the invocation-absence strict tie, the contradictory-duplicate-duty-slot refusal and the selected-endpoint parentage rule covering a failed refresh; v14 (round 10) = the transport PID-reuse latch + the strict transport-absence tie rule; v13 (round 9) = the transport-exit recency/carried-identity re-adjudication; v12 (round 8) = the generation-bound PRE-FENCE transport-exit conjunct, the refreshed-presence horizon/supersession and the admitted-record capture-time parentage; v38 (2026-11-04 evidence-completion Task 4, report §29): the offline join consumes the persisted digest-only spawn-witness projections (block.spawnWitnesses — schema-additive; the §28.25 replay-agreement clause): a hop-1 witnessClass claim re-verifies from its own fields and an omitted/stale/contradictory witness refuses by the named route family; a persisted daemon-to-transport witnessClass claim refuses spawn-witness-route-unsatisfiable (§28.22 — the route is UNSATISFIABLE, the hop’s positives stay arithmetic-only)');
       assert.equal(NATIVE_INTERRUPTION_ORACLE_VERSION, 5, 'oracle v5 (2026-10-30 local-settlement Task 3, report §25.10) = the local-duty conjunct composes the §25.5 applicable local duties into the final acceptance (legacy shapes fail closed by name)');
       const joined = nativeInterruptionGateDInput(fix2Record());
       assert.equal(joined.gateDJoinVersion, NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 'the join output marks its own version');
@@ -28060,7 +28148,7 @@ describe('cleanup-boundary attribution for exit-code settlements (round-9 review
       const withoutSamples = nativeInterruptionGateDInput(fix2Record((record) => {
         delete record.child.durableSamples;
       }));
-      assert.equal(withoutSamples.gateDJoinVersion, 37, 'the output is marked as the new join version — never re-stamped as the old one (the §25.10 local-duty join)');
+      assert.equal(withoutSamples.gateDJoinVersion, NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 'the output is marked as the current join version — never re-stamped as an older one (the §25.10 local-duty join; the literal rides the v38 bump in this task’s registration)');
       assert.deepEqual(withoutSamples.durableSamplesJoin, {
         considered: false,
         boundaryRecorded: true,
@@ -28800,6 +28888,414 @@ describe('cleanup-boundary attribution for exit-code settlements (round-9 review
       assert.ok(facts.interrupt.hostDelivery.reasons.includes('host-activity-call-scan-incomplete'), JSON.stringify(facts.interrupt.hostDelivery.reasons));
       assert.equal(facts.interrupt.settled, null);
       assert.equal(facts.interrupt.settledBasis, 'ambiguous-cell-scan-incomplete-not-attributed');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Evidence-completion Task 2 (plan §Task 2; preregistration report §26.4,
+  // the §26.7 successor registration): the SELECTED prospective syntax
+  // families, one RED→GREEN TDD cycle per family, at the real
+  // `parseCallStatements` public seam feeding the whole-case scan. Every body
+  // is SYNTHETIC and fixture-controlled, built on ONE identical known
+  // skeleton (`const r = await tools.exec_command({cmd:"x"}); text(r);` — the
+  // equal-skeleton falsifiability control asserted beside every family) and
+  // varies exactly one registered dimension per trial. A fixture not
+  // corresponding to a selected contract is a designed NEGATIVE, never a bug
+  // claim by definition. No eval, no generic JS interpreter, no substring
+  // tool search, no schema-free argv/config bag: every admitted argument is
+  // the unchanged literal decoder's product.
+  // -------------------------------------------------------------------------
+
+  describe('coverage-completion: the §26.4 admit union and diagnostics (evidence-completion task 2)', async () => {
+    const { parseCallStatements } = await import('../tools/shell-wait-probe/evidence.mjs');
+    const { inspectCallShape, SHAPE_DIAGNOSTIC_SCHEMA_VERSION } = await import('../tools/shell-wait-probe/shape-diagnostic.mjs');
+
+    const event = (input) => ({ payload: { type: 'custom_tool_call', name: 'exec', call_id: 'cell-1', input } });
+    // The identical known skeleton for every trial (the pinned control).
+    const CONTROL_BODY = 'const r = await tools.exec_command({cmd:"x"}); text(r);\n';
+    const CONTROL_CALL = [{ kind: 'exec_command', value: { cmd: 'x' }, directive: null, wrapped: true }];
+
+    /** @param {string} input @param {string} [label] */
+    const admittedCalls = (input, label = input) => {
+      const calls = parseCallStatements(event(input));
+      assert.notEqual(calls, null, `the registered family must admit this body: ${label.replace(/\n/gu, '⏎').slice(0, 96)}`);
+      return calls;
+    };
+    /** @param {string} input @param {string} [label] */
+    const rejected = (input, label = input) => {
+      assert.equal(parseCallStatements(event(input)), null, `unsupported form must stay fail-closed: ${label.replace(/\n/gu, '⏎').slice(0, 96)}`);
+    };
+    /** The v1 classifier facts of every admitted equal-sink single-line wrapper statement. */
+    const canonicalShape = (overrides = {}) => ({
+      version: 1,
+      coverage: 'complete',
+      statements: [{ head: 'bound-await', tool: 'exec_command', argument: 'literal-object', lexical: 'complete', tail: 'text-binding' }],
+      statementCount: 1,
+      tool: 'exec_command',
+      head: 'bound-await',
+      tail: 'text-binding',
+      bindingEquality: 'equal',
+      parserStage: 'parse-accepted',
+      directive: 'absent',
+      wholeInputConsumed: true,
+      ...overrides,
+    });
+
+    test('coverage-completion trial control: the equal-skeleton r control and the bounded non-r canonical family stay admitted before and after every widened dimension', () => {
+      assert.deepEqual(parseCallStatements(event(CONTROL_BODY)), CONTROL_CALL, 'the equal-skeleton r control (the pinned family)');
+      assert.deepEqual(parseCallStatements(event('const result = await tools.exec_command({cmd:"x"}); text(result);\n')),
+        [{ kind: 'exec_command', value: { cmd: 'x' }, directive: null, wrapped: true }], 'the archived bounded-name family control');
+    });
+
+    test('coverage-completion declaration dimension: let and var wrapper statements admit the IDENTICAL single call as the const control (with the r control beside the trial); tool bounds carry', () => {
+      const trial = (decl) => `${decl} result = await tools.exec_command({cmd:"x"}); text(result);\n`;
+      assert.deepEqual(admittedCalls(trial('let'), trial('let')), CONTROL_CALL, 'let joins the admitted declaration class');
+      assert.deepEqual(admittedCalls(trial('var'), trial('var')), CONTROL_CALL, 'var joins the admitted declaration class');
+      assert.deepEqual(parseCallStatements(event(CONTROL_BODY)), CONTROL_CALL, 'the r control beside the declaration trial stays accepted');
+      // write_stdin stays in the frozen tool set under the widened declaration.
+      assert.equal(admittedCalls('let poll = await tools.write_stdin({session_id:5,chars:"",yield_time_ms:60000}); text(poll);\n')[0].kind, 'write_stdin');
+      // The keyword does not widen anything else: the tool set stays frozen,
+      // the classifier lexes all three keywords as the bound-await head.
+      rejected('let result = await tools.wait({cell_id:"c"}); text(result);', 'tool outside the frozen family under let');
+      rejected('var result = await tools.wait({cell_id:"c"}); text(result);', 'tool outside the frozen family under var');
+      for (const decl of ['const', 'let', 'var']) {
+        const facts = inspectCallShape(`${decl} result = await tools.exec_command({cmd:"x"}); text(result);`);
+        assert.deepEqual(facts, canonicalShape(), `${decl} classifies identically (bound-await head, parserStage parse-accepted after admission)`);
+      }
+    });
+
+    test('coverage-completion identifier dimension: $-led and non-ASCII bindings admit at the classifier mechanical ECMA class bounded 1–64; digit-led, 65-char and identifier-escapes stay refused', () => {
+      const trial = (name) => `const ${name} = await tools.exec_command({cmd:"x"}); text(${name});\n`;
+      assert.deepEqual(admittedCalls(trial('$result7'), '$-led binding'), CONTROL_CALL, 'the $-led class admits');
+      assert.deepEqual(admittedCalls(trial('résultat'), 'non-ASCII ID_Start binding'), CONTROL_CALL, 'a non-ASCII binding admits');
+      assert.deepEqual(admittedCalls(trial('𝕏3'), 'astral ID_Start binding'), CONTROL_CALL, 'an astral binding admits');
+      assert.deepEqual(admittedCalls(trial('re‍sult'), 'ZWNJ ID_Continue binding'), CONTROL_CALL, 'a combining-class binding admits');
+      assert.deepEqual(parseCallStatements(event(CONTROL_BODY)), CONTROL_CALL, 'the r control beside the identifier trial stays accepted');
+      assert.deepEqual(admittedCalls(trial('$'.concat('π'.repeat(63))), 'a 64-char $-led astral name admits'), CONTROL_CALL, 'the 64-char bound admits under the widened class');
+      rejected(trial('$'.concat('π'.repeat(64))), 'a 65-char name stays over the bound');
+      rejected(trial('1result'), 'a leading digit stays refused');
+      rejected('const re\\u0061sult = await tools.exec_command({cmd:"x"}); text(result);', 'an identifier escape makes every spelling undecidable — refused');
+      rejected('const result = awa\\u0069t tools.exec_command({cmd:"x"}); text(result);', 'an identifier-boundary homoglyph escape of the await keyword refuses (the D2 counterexample family)');
+      for (const name of ['$result7', 'résultat', '𝕏3']) {
+        assert.deepEqual(inspectCallShape(trial(name), 'custom-tool-cell'), canonicalShape(), 'the classifier and the widened parser agree (parse-accepted, equal, complete)');
+      }
+      rejected(trial(`x${'y'.repeat(64)}`), 'a 65-char ASCII name stays over the 64-char bound');
+    });
+
+    test('coverage-completion junction dimension: horizontal runs admit to 8 at the keyword/name and await/tools junctions (0–8 around the equals) and refuse at 9; gluing refuses; the member/argument/semicolon junctions keep zero tolerance', () => {
+      const eight = ' '.repeat(8);
+      const nine = ' '.repeat(9);
+      assert.deepEqual(admittedCalls(`const result${eight}=${eight}await tools.exec_command({cmd:"x"}); text(result);\n`, '8-run at the two equals junctions'), CONTROL_CALL, 'the registered equals-junction bound admits 0–8');
+      assert.deepEqual(admittedCalls(`let${eight}result = await tools.exec_command({cmd:"x"}); text(result);\n`, '8-run after the keyword'), CONTROL_CALL, 'the keyword→name junction admits 1–8');
+      assert.deepEqual(admittedCalls(`const result = await${eight}tools.exec_command({cmd:"x"}); text(result);\n`, '8-run after await'), CONTROL_CALL, 'the await→tools junction admits 1–8');
+      assert.deepEqual(admittedCalls('const\tresult\t=\tawait\ttools.exec_command({cmd:"x"}); text(result);\n', 'tab runs'), CONTROL_CALL, 'tabs are horizontal whitespace within the bound');
+      assert.deepEqual(parseCallStatements(event(CONTROL_BODY)), CONTROL_CALL, 'the r control beside the junction trial stays accepted');
+      rejected(`const result${nine}= await tools.exec_command({cmd:"x"}); text(result);`, 'a 9-run around the assignment refuses');
+      rejected(`const result =${nine}await tools.exec_command({cmd:"x"}); text(result);`, 'a 9-run before await refuses');
+      rejected(`let${nine}result = await tools.exec_command({cmd:"x"}); text(result);`, 'a 9-run after the keyword refuses');
+      rejected(`const result = await${nine}tools.exec_command({cmd:"x"}); text(result);`, 'a 9-run after await refuses');
+      rejected('constresult = await tools.exec_command({cmd:"x"}); text(result);', 'the keyword and identifier glue — zero-width junction refuses');
+      rejected('const result = awaittools.exec_command({cmd:"x"}); text(result);', 'await and tools glue — zero-width junction refuses');
+      // Zero remains admitted at the equals junctions (the canonical spellings below).
+      assert.deepEqual(admittedCalls('const result=await tools.exec_command({cmd:"x"}); text(result);\n', 'unpadded equals'), CONTROL_CALL);
+      // The junctions OUTSIDE the registered head dimension stay zero-tolerance.
+      rejected(`const result = await tools .exec_command({cmd:"x"}); text(result);`, 'member-access spacing refuses');
+      rejected(`const result = await tools.exec_command ({cmd:"x"}); text(result);`, 'call-paren spacing refuses');
+      rejected(`const result = await tools.exec_command({cmd:"x"}) ; text(result);`, 'declaration-semicolon spacing refuses');
+      rejected(`const result = await tools.exec_command( {cmd:"x"} ); text(result);`, 'argument-object junction spacing refuses');
+    });
+
+    test('coverage-completion newline-layout dimension: exactly ONE break at the declaration→emission junction admits (LF and CRLF, with surrounding horizontal whitespace); blank separators, spanning objects and split emissions refuse', () => {
+      assert.deepEqual(admittedCalls('const result = await tools.exec_command({cmd:"x"});\ntext(result);\n', 'LF layout'), CONTROL_CALL, 'the one-break layout admits');
+      assert.deepEqual(admittedCalls('const result = await tools.exec_command({cmd:"x"});\r\ntext(result);\n', 'CRLF layout'), CONTROL_CALL, 'the one-break layout admits with the CRLF artifact');
+      assert.deepEqual(admittedCalls('const result = await tools.exec_command({cmd:"x"}); \n text(result);\n', 'whitespace around the break'), CONTROL_CALL, 'surrounding horizontal whitespace around the single break admits');
+      assert.deepEqual(admittedCalls('const result = await tools.exec_command({cmd:"x"});\ntext(result)', 'no terminal artifacts'), CONTROL_CALL, 'the emission trailing-semicolon artifact stays optional');
+      assert.deepEqual(parseCallStatements(event(CONTROL_BODY)), CONTROL_CALL, 'the r control beside the layout trial stays accepted');
+      rejected('const result = await tools.exec_command({cmd:"x"});\n\ntext(result);', 'a blank separator line between the statements refuses');
+      rejected('const result = await tools.exec_command({\ncmd:"x"\n});\ntext(result);', 'an interior newline inside the argument object refuses');
+      rejected('const result = await tools.exec_command({cmd:"x"});\ntext(\nresult);', 'an interior newline inside the emission junction refuses');
+      rejected('const result = await tools.exec_command({cmd:"x"});\ntext(result);\n\n', 'a real trailing blank line refuses (artifact on both layouts)');
+      // The §26.4 two-line RED obligation (measured, pre-registered): the
+      // classifier cell values for the legalized two-line wrapper.
+      assert.deepEqual(inspectCallShape('const result = await tools.exec_command({cmd:"x"});\ntext(result);'), canonicalShape({
+        statements: [
+          { head: 'bound-await', tool: 'exec_command', argument: 'literal-object', lexical: 'complete', tail: 'none' },
+          { head: 'emission', tool: 'no-call', argument: 'none', lexical: 'complete', tail: 'text-binding' },
+        ],
+        statementCount: 2,
+        tail: 'text-binding',
+      }), 'the measured two-line classifier model with the parser accepting it (stage parse-accepted)');
+    });
+
+    test('coverage-completion directive dimension: ONE valid directive line joins the registered family over the RAW anchored input; an invalid directive is never stripped into acceptance', () => {
+      const withDirective = '// @exec: {"yield_time_ms":60000}\nlet result8 = await tools.exec_command({cmd:"x"}); text(result8);\n';
+      assert.deepEqual(admittedCalls(withDirective, 'valid directive on a widened body'),
+        [{ kind: 'exec_command', value: { cmd: 'x' }, directive: { yield_time_ms: 60_000 }, wrapped: true }],
+        'the validated directive attaches exactly like the per-line machinery');
+      assert.deepEqual(admittedCalls('// @exec: {"yield_time_ms":60000}\nconst result = await tools.exec_command({cmd:"x"});\ntext(result);\n', 'directive plus the one-break layout'),
+        [{ kind: 'exec_command', value: { cmd: 'x' }, directive: { yield_time_ms: 60_000 }, wrapped: true }],
+        'the directive composes with the registered layout');
+      assert.deepEqual(parseCallStatements(event(CONTROL_BODY)), CONTROL_CALL, 'the r control beside the directive trial stays accepted');
+      // Parity: the pinned per-line attach of the SAME raw prefix is identical.
+      assert.deepEqual(parseCallStatements(event('// @exec: {"yield_time_ms":60000}\nconst r2 = await tools.exec_command({cmd:"x"}); text(r2);\n')),
+        [{ kind: 'exec_command', value: { cmd: 'x' }, directive: { yield_time_ms: 60_000 }, wrapped: true }],
+        'the r-parity directive-led body admits through the same raw anchor with the same attach');
+      // An INVALID directive never strips into acceptance.
+      rejected('// @exec: not-json\nlet result8 = await tools.exec_command({cmd:"x"}); text(result8);', 'invalid directive on a widened body');
+      rejected('// @exec: {broken\nconst r = await tools.exec_command({cmd:"x"}); text(r);', 'invalid directive on the pinned body');
+      // The 512-char capture bound; a 513-char capture falls out of the
+      // registered framing and refuses with the body intact.
+      const valid512 = '// @exec: ' + `{"a":"${'v'.repeat(504)}"}` + '\nconst result9 = await tools.exec_command({cmd:"x"}); text(result9);\n';
+      assert.equal(admittedCalls(valid512, 'exactly-512 directive capture')[0].directive.a, 'v'.repeat(504), 'a 512-char valid capture admits with its decoded directive');
+      rejected('// @exec: ' + 'x'.repeat(513) + '\nconst result9 = await tools.exec_command({cmd:"x"}); text(result9);', 'a 513-char directive capture is outside the frozen framing');
+      rejected('// @exec: {"a":1}\n// @exec: {"b":2}\nconst result9 = await tools.exec_command({cmd:"x"}); text(result9);', 'a second directive line is never a captured prefix');
+    });
+
+    test('coverage-completion D6 classification pin: the directive-led admitted body diagnoses parse-accepted with directive valid, never a downstream misdiagnosis (self-review fix)', () => {
+      // §27.5 (self-review fix round 2026-11-03): §27.5 bullet 2's claim — any
+      // form the parser ADMITS now diagnoses parse-accepted — holds for the
+      // D6 directive-led form TOO. The §27.4 differential admits this body
+      // through the real framing probe; the frozen mirror must classify it
+      // IDENTICALLY to the pinned-r control's facts plus directive:'valid'
+      // (wholeInputConsumed, coverage complete, bound-await head, equal tail,
+      // parserStage parse-accepted), never a downstream-stage misdiagnosis.
+      assert.deepEqual(parseCallStatements(event('// @exec: {"yield_time_ms":60000}\nlet y8 = await tools.exec_command({cmd:"x"}); text(y8);\n')),
+        [{ kind: 'exec_command', value: { cmd: 'x' }, directive: { yield_time_ms: 60_000 }, wrapped: true }], 'the D6 admitted body stays admitted (the differential form)');
+      assert.deepEqual(inspectCallShape('// @exec: {"yield_time_ms":60000}\nlet y8 = await tools.exec_command({cmd:"x"}); text(y8);\n'),
+        canonicalShape({ directive: 'valid' }), 'the D6 admitted-body classification pin (mirror correction: the framing verdict reads the bare capture, not the framed string)');
+      assert.deepEqual(parseCallStatements(event(CONTROL_BODY)), CONTROL_CALL, 'the r control beside the D6 classification pin stays accepted');
+    });
+
+    test('coverage-completion framing-mirror fidelity: a BLANK line after the directive never diagnoses parse-accepted (codex-review fix; the parser refuses the unframed prefix today)', () => {
+      // Codex-review fix (report §27.8): the parser's registered framing probe
+      // reconstructs `// @exec: <capture>\n` exactly and REJECTS a capture
+      // that absorbed an extra newline — the probe leaves the blank line
+      // before the statement, so `parseCallStatements` refuses the same
+      // `(a)` bytes BELOW (measured refusal — the anti-widening control). The
+      // mirror must validate the SAME framed prefix, never merely
+      // JSON-decode the capture.
+      const blankLine = '// @exec: {"yield_time_ms":60000}\n\nlet result = await tools.exec_command({cmd:"x"}); text(result);\n';
+      rejected(blankLine, 'the parser refuses the blank-line-after-directive body (measured; no widening)');
+      const facts = inspectCallShape(blankLine);
+      // §27.8 item 8 (adversarial-review parity supersession): this row
+      // originally pinned the let spelling's `output` — itself an instance
+      // of the collapsed-stage defect item 8 fixes. The PINNED-const
+      // equivalent of the same body has always diagnosed `unknown`, so the
+      // parity facts are the const control's (deepEqual below), never a
+      // spelling-dependent stage.
+      const parityControl = inspectCallShape('// @exec: {"yield_time_ms":60000}\n\nconst result = await tools.exec_command({cmd:"x"}); text(result);\n');
+      assert.equal(parityControl.parserStage, 'unknown', 'the pinned-const blank-line body has always diagnosed unknown (holds before and after)');
+      assert.deepEqual(facts, parityControl, 'the blank-line body classifies the SAME facts on every spelling (never parse-accepted, never a false-sink output)');
+      assert.equal(facts.directive, 'valid', 'the capture itself JSON-decodes; the FRAMING is what fails');
+      assert.equal(facts.bindingEquality, 'equal', 'the shape facts stay the mechanically lexed class');
+    });
+
+    test('coverage-completion framing-mirror fidelity: a MULTILINE JSON directive never diagnoses parse-accepted (codex-review fix; the parser refuses the multiline capture today)', () => {
+      // Codex-review fix (report §27.8): a directive capture spanning lines
+      // JSON-decodes fine, but the parser's line-bound framing strip
+      // (`[^\n]` capture) JSON-validates only the FIRST line (`{`) and
+      // refuses; the mirror must reproduce exactly that verdict for the same
+      // `(b)` bytes BELOW (measured refusal — the anti-widening control).
+      const multiline = '// @exec: {\n"yield_time_ms":60000\n}\nlet result = await tools.exec_command({cmd:"x"}); text(result);\n';
+      rejected(multiline, 'the parser refuses the multiline-JSON-directive body (measured; no widening)');
+      const facts = inspectCallShape(multiline);
+      assert.equal(facts.parserStage, 'wrapper', 'the unframed directive JSON itself is not a sayable statement (mirror fidelity, never parse-accepted)');
+      assert.equal(facts.directive, 'invalid', 'the line-bound framing reads the first line only');
+    });
+
+    test('coverage-completion argument-stage fidelity: a decoder-refused argument on a WIDENED spelling classifies as the ARGUMENT stage exactly like the pinned spelling (codex-review fix; the refusal itself is registered)', () => {
+      // Codex-review fix (report §27.8): for the registered-family spellings
+      // the literal decoder is STILL the only accepting path — the parser
+      // refuses an escape-homoglyph argument body BELOW
+      // today (measured refusal, both before and after; no widening), and the
+      // diagnostic must report the ARGUMENT-stage facts the pinned `const`
+      // spelling gets, never a collapsed sink/output stage. The lexer lexes
+      // both spellings' arguments identically (the escape token is lexable);
+      // the DECODER is what refuses, so the classification equivalence across
+      // spellings must hold.
+      const trial = 'let result = await tools.exec_command({cmd:"\\x41"}); text(result);\n';
+      const control = 'const result = await tools.exec_command({cmd:"\\x41"}); text(result);\n';
+      rejected(trial, 'the registered family refuses the escape-homoglyph argument (measured; argument-stage refusal)');
+      assert.deepEqual(parseCallStatements(event(control)), null, 'the pinned spelling refuses the same argument (the anti-change control)');
+      const trialFacts = inspectCallShape(trial);
+      const controlFacts = inspectCallShape(control);
+      assert.equal(controlFacts.parserStage, 'arguments', 'the pinned spelling classifies the decoder refusal at the argument stage (holds before and after)');
+      assert.deepEqual(trialFacts, controlFacts, 'the widened spelling reaches the IDENTICAL argument-stage facts (never a misleading output/sink stage)');
+    });
+
+    test('coverage-completion argument-stage fidelity: a raw-control-character argument on a WIDENED spelling classifies as the ARGUMENT stage exactly like the pinned spelling (codex-review fix; second spelling family)', () => {
+      // Second registered spelling × second §27-registered decoder-refused
+      // argument encoding (the docstring-named raw-control-character class):
+      // the SAME equivalence and the same measured refusals.
+      const trial = 'var result = await tools.exec_command({cmd:"a' + String.fromCharCode(9) + 'b"}); text(result);\n';
+      const control = 'const result = await tools.exec_command({cmd:"a' + String.fromCharCode(9) + 'b"}); text(result);\n';
+      rejected(trial, 'the registered family refuses the raw-control-character argument (measured; argument-stage refusal)');
+      assert.deepEqual(parseCallStatements(event(control)), null, 'the pinned spelling refuses the same argument (the anti-change control)');
+      const trialFacts = inspectCallShape(trial);
+      const controlFacts = inspectCallShape(control);
+      assert.equal(controlFacts.parserStage, 'arguments', 'the pinned spelling classifies the decoder refusal at the argument stage (holds before and after)');
+      assert.deepEqual(trialFacts, controlFacts, 'the widened spelling reaches the IDENTICAL argument-stage facts (never a misleading output/sink stage)');
+    });
+
+    test('coverage-completion stage-parity: an INVALID directive classifies at the DIRECTIVE stage for every registered spelling, exactly like the pinned spelling (codex adversarial-review fix)', () => {
+      // Codex adversarial-review fix (report §27.8): the widened spellings
+      // must classify framing-stage failures EXACTLY like the pinned
+      // spelling — the skeleton recognizer omitted the registered family, so
+      // the output-stage check intercepted these BEFORE the directive check
+      // (let/var reported a false-sink 'output' beside the const 'directive').
+      // Anti-panic: the parser REFUSES all three spellings (framing-stage
+      // refusal, measured; unchanged before and after); the round-4 argument
+      // bodies stay at the argument stage; the D6 admitted body still
+      // deepEquals its pinned classification.
+      const badDirective = (decl) => `// @exec: broken\n${decl} result = await tools.exec_command({cmd:"x"}); text(result);\n`;
+      for (const spelling of ['const', 'let', 'var']) {
+        rejected(badDirective(spelling), `the parser refuses the invalid-directive body under ${spelling} (measured; unchanged)`);
+      }
+      const round4Trial = 'let result = await tools.exec_command({cmd:"\\x41"}); text(result);\n';
+      const round4Control = 'const result = await tools.exec_command({cmd:"\\x41"}); text(result);\n';
+      assert.equal(inspectCallShape(round4Control).parserStage, 'arguments', 'round-4 control stays at the argument stage');
+      assert.equal(inspectCallShape(round4Trial).parserStage, 'arguments', 'round-4 trial stays at the argument stage');
+      assert.deepEqual(inspectCallShape('// @exec: {"yield_time_ms":60000}\nlet y8 = await tools.exec_command({cmd:"x"}); text(y8);\n'),
+        canonicalShape({ directive: 'valid' }), 'the D6 admitted body keeps its pinned classification');
+      // The parity pin: const ← let ← var deepEqual to the SAME facts.
+      const controlFacts = inspectCallShape(badDirective('const'));
+      assert.equal(controlFacts.parserStage, 'directive', 'the pinned spelling classifies the invalid directive at the directive stage (holds before and after)');
+      assert.deepEqual(inspectCallShape(badDirective('let')), controlFacts, 'let reaches the IDENTICAL directive-stage facts (never a false-sink output stage)');
+      assert.deepEqual(inspectCallShape(badDirective('var')), controlFacts, 'var reaches the IDENTICAL directive-stage facts (never a false-sink output stage)');
+    });
+
+    test('coverage-completion stage-parity: trailing RESIDUAL classifies at the residual stage for every registered spelling, exactly like the pinned spelling (codex adversarial-review fix)', () => {
+      // The empty-line-after-last-content refusal class: the framing
+      // probe/pattern stops at ONE trailing artifact, so appended extra
+      // newlines leave residual content the parser refuses (measured, all
+      // spellings, unchanged) — the diagnostic must blame the residual stage
+      // on every spelling, never a false-sink 'output'.
+      const residual = (decl) => `${decl} result = await tools.exec_command({cmd:"x"}); text(result);\n\n`;
+      for (const spelling of ['const', 'let', 'var']) {
+        rejected(residual(spelling), `the parser refuses the trailing-residual body under ${spelling} (measured; unchanged)`);
+      }
+      const round4Trial = 'let result = await tools.exec_command({cmd:"\\x41"}); text(result);\n';
+      assert.equal(inspectCallShape(round4Trial).parserStage, 'arguments', 'round-4 trial stays at the argument stage');
+      assert.deepEqual(inspectCallShape('// @exec: {"yield_time_ms":60000}\nlet y8 = await tools.exec_command({cmd:"x"}); text(y8);\n'),
+        canonicalShape({ directive: 'valid' }), 'the D6 admitted body keeps its pinned classification');
+      const controlFacts = inspectCallShape(residual('const'));
+      assert.equal(controlFacts.parserStage, 'residual', 'the pinned spelling classifies the appended newlines at the residual stage (holds before and after)');
+      assert.deepEqual(inspectCallShape(residual('let')), controlFacts, 'let reaches the IDENTICAL residual-stage facts (never a false-sink output stage)');
+      assert.deepEqual(inspectCallShape(residual('var')), controlFacts, 'var reaches the IDENTICAL residual-stage facts (never a false-sink output stage)');
+    });
+
+    test('coverage-completion argument dimension: the ORIGINAL literal decoder owns every admitted argument within the 4096 bound; over-limit and undecodable fall through unchanged (never truncated)', () => {
+      const padded = 'const result = await tools.exec_command({cmd:"x",pad:"' + 'p'.repeat(4080) + '"}); text(result);\n';
+      const calls = admittedCalls(padded, 'the 4096-char object bound');
+      assert.equal(calls[0].value.pad, 'p'.repeat(4080), 'the decoder produces the full literal value inside the bound');
+      assert.deepEqual(parseCallStatements(event(CONTROL_BODY)), CONTROL_CALL, 'the r control beside the argument trial stays accepted');
+      assert.deepEqual(admittedCalls("const result = await tools.write_stdin({session_id:5,chars:'',yield_time_ms:60000}); text(result);\n", 'single-quote literal fallback'),
+        [{ kind: 'write_stdin', value: { session_id: 5, chars: '', yield_time_ms: 60_000 }, directive: null, wrapped: true }],
+        'the registered string-aware literal fallback carries');
+      rejected('const result = await tools.exec_command({cmd:"x",pad:"' + 'p'.repeat(4081) + '"}); text(result);', 'a 4097-char object stays over the bound');
+      rejected('const result = await tools.exec_command({cmd:`x`}); text(result);', 'an undecodable argument falls through fail-closed');
+      // The non-literal argument exercise rows (plan Task-2 bullet; §26.4 D7):
+      // NOTHING but the unchanged literal decoder's product is ever admitted,
+      // so the dynamic/call/spread spellings stay undecodable and refuse for
+      // the SAME fall-through reason — under the widened union too.
+      rejected('const result = await tools.exec_command({cmd:x}); text(result);', 'a bare identifier argument is not a literal — the decoder alone decides');
+      rejected('const result = await tools.exec_command({cmd:s("x")}); text(result);', 'a call-form argument is not a literal — no substring tool search');
+      rejected('const result = await tools.exec_command({...spread}); text(result);', 'a spread argument is not a literal — no schema-free config bag');
+      rejected(`const result = await tools.exec_command({cmd:"${'x'.repeat(4090)}"}); text(result);`, 'the over-limit object falls through to the unchanged per-line verdict');
+      // The named diagnostic states (never decoded, never truncated).
+      assert.equal(inspectCallShape(`const result = await tools.exec_command({cmd:"${'x'.repeat(4090)}"}); text(result);`).statements[0].argument, 'over-limit');
+    });
+
+    test('coverage-completion sink dimension: the equal text-binding sink stays EQUAL-ONLY — the changed/stringify/property tails refuse by registration, while the pinned r stringify parity admits', () => {
+      rejected('const result = await tools.exec_command({cmd:"x"}); text(other);', 'a changed sink binding refuses (the registered default: equal-only)');
+      rejected('let result = await tools.exec_command({cmd:"x"}); text(other);', 'a changed sink under any declaration class refuses');
+      rejected('const result = await tools.exec_command({cmd:"x"}); text(JSON.stringify(result));', 'the stringify sink stays exclusive to the pinned r spelling');
+      rejected('const result = await tools.exec_command({cmd:"x"}); text(result.status);', 'a property tail refuses');
+      rejected('const result = await tools.exec_command({cmd:"x"}); text(String(result));', 'a String() tail refuses');
+      rejected('const r = await tools.exec_command({cmd:"x"}) ; text(JSON.stringify(r));', 'the pinned stringify parity keeps zero-tolerance head junctions (unrelaxed)');
+      assert.deepEqual(parseCallStatements(event('const r = await tools.exec_command({cmd:"x"}); text(JSON.stringify(r));\n')),
+        [{ kind: 'exec_command', value: { cmd: 'x' }, directive: null, wrapped: true }], 'the pinned r stringify parity stays admitted through the unchanged per-line family');
+      assert.deepEqual(parseCallStatements(event(CONTROL_BODY)), CONTROL_CALL, 'the r control beside the sink trial stays accepted');
+      // The registered classifier refusal shapes (deliberate, named).
+      const mismatched = inspectCallShape('const result = await tools.exec_command({cmd:"x"}); text(other);');
+      assert.equal(mismatched.bindingEquality, 'not-equal');
+      assert.equal(mismatched.parserStage, 'output');
+    });
+
+    test('coverage-completion negative family: every frozen negative and the one-step-beyond bounds stay fail-closed with their registered diagnostics', () => {
+      const negatives = [
+        ['extra leading statement', 'text (x); let result = await tools.exec_command({cmd:"x"}); text(result);'],
+        ['hidden trailing statement', 'const result = await tools.exec_command({cmd:"x"}); text(result); console.log("x");'],
+        ['hidden second awaited call', 'const result = await tools.exec_command({cmd:"x"}); text(result); const poll2 = await tools.write_stdin({session_id:5,chars:""}); text(poll2);'],
+        ['comment-only separator line', '// unrelated comment\nlet result = await tools.exec_command({cmd:"x"}); text(result);'],
+        ['comment inside a junction', 'let result = await tools.exec_command({cmd:"x"}); /* c */ text(result);'],
+        ['tool outside the frozen set', 'const result = await tools.spawn_agent({task_name:"x"}); text(result);'],
+        ['interior newline two-line under invalid directive', '// @exec: bad\nconst result = await tools.exec_command({cmd:"x"});\ntext(result);'],
+        ['over-8 nine-run head junction with valid parts elsewhere', 'const result  =  await  tools.exec_command({cmd:"x"}); text(result);\n'.replaceAll('  ', '         ')],
+        ['r plus stringify under a head run', 'const r  =  await tools.exec_command({cmd:"x"}); text(JSON.stringify(r));'],
+        ['two-line plus mismatched sink', 'const result = await tools.exec_command({cmd:"x"});\ntext(other);'],
+        ['two-line plus over-64 name', `const ${'a'.repeat(65)} = await tools.exec_command({cmd:"x"});\ntext(${'a'.repeat(65)});`],
+        ['loop-carried awaited call', 'for (const task of ["a"]) { await tools.exec_command({cmd:"x"}); } text(x);'],
+        ['callback-wrapped awaited call', 'await (async () => { await tools.exec_command({cmd:"x"}); })();'],
+      ];
+      for (const [label, body] of negatives) {
+        rejected(body, label);
+      }
+      assert.deepEqual(parseCallStatements(event(CONTROL_BODY)), CONTROL_CALL, 'the r control beside the negative trial stays accepted');
+      // The named current classifier shapes of the negative family (measured);
+      // refusals keep distinguishing their dimension, never degrade to one cell.
+      const digit = inspectCallShape('const 1result = await tools.exec_command({cmd:"x"}); text(1result);');
+      assert.equal(digit.head, 'unknown');
+      assert.equal(digit.coverage, 'partial');
+      const twoLineMismatch = inspectCallShape('const result = await tools.exec_command({cmd:"x"});\ntext(other);');
+      assert.equal(twoLineMismatch.bindingEquality, 'not-equal');
+      assert.equal(twoLineMismatch.parserStage, 'output');
+    });
+
+    test('coverage-completion union validation: every admitted spelling yields the identical call under unchanged guards — decode fall-through, directive framing and multi-statement ownership compose', () => {
+      // (a) Spelling equivalence: the widened families and the pinned families
+      // admit to the SAME call value per body (the spelling is never a verdict
+      // input and never shifts ownership). A directive-led spelling carries the
+      // framing-validated directive; the private string content of any
+      // argument stays ONE decoded value with no syntax fact (the record 6 semantics).
+      const spellings = [
+        [CONTROL_BODY, CONTROL_CALL],
+        ['let result = await tools.exec_command({cmd:"x"}); text(result);\n', CONTROL_CALL],
+        ['var result = await tools.exec_command({cmd:"x"}); text(result);\n', CONTROL_CALL],
+        ['const\t$π_result9\t=\tawait\ttools.exec_command({cmd:"x"}); text($π_result9);\n', CONTROL_CALL],
+        ['const result = await tools.exec_command({cmd:"x"});\ntext(result);\n', CONTROL_CALL],
+        ['// @exec: {"yield_time_ms":1}\nconst result = await tools.exec_command({cmd:"x"}); text(result);\n',
+          [{ kind: 'exec_command', value: { cmd: 'x' }, directive: { yield_time_ms: 1 }, wrapped: true }]],
+        ['let x = await tools.exec_command({a:"});text(zzz);"}); text(x);\n',
+          [{ kind: 'exec_command', value: { a: '});text(zzz);' }, directive: null, wrapped: true }]],
+      ];
+      for (const [body, expected] of spellings) {
+        assert.deepEqual(parseCallStatements(event(body)), expected, `the whole union admits to the expected single call: ${body.slice(0, 48)}`);
+      }
+      // (b) The fallback paths never bypass bounds or directive guards: a
+      // whole-body match failing its decode keeps the exact unchanged per-line
+      // verdict for the SAME bytes (refusal), and an invalid directive never
+      // strips into acceptance on ANY admitted-family spelling.
+      rejected('let result = await tools.exec_command({cmd:"x",pad:"' + 'p'.repeat(4081) + '"}); text(result);', 'decode fall-through on the widened spelling');
+      rejected('// @exec: broken\nvar result = await tools.exec_command({cmd:"x"});\ntext(result);', 'invalid directive plus widened layout');
+      // (c) Registered per-statement ownership: every admitted wrapper form is
+      // its cell's ONLY statement (whole-body, exactly-one-statement) — a
+      // named/let layout statement composing with a second statement on the
+      // next line refuses (the named family never had per-line composition and
+      // the widening registers none), while the pinned per-line families keep
+      // their own composition untouched.
+      rejected('let result = await tools.exec_command({cmd:"x"});\ntext(result)\nlet r2 = await tools.write_stdin({session_id:5,chars:"",yield_time_ms:60000}); text(r2)\n',
+        'a registered layout statement stays its cell only statement');
+      rejected('const result = await tools.exec_command({cmd:"x"}); text(result);\nlet r2 = await tools.write_stdin({session_id:5,chars:"",yield_time_ms:60000}); text(r2)\n',
+        'a named single-line statement composing a second statement refuses (unchanged)');
+      assert.deepEqual(parseCallStatements(event('const r = await tools.exec_command({cmd:"x"}); text(r)\nconst r = await tools.write_stdin({session_id:5,chars:"",yield_time_ms:60000}); text(r)\n')), [
+        { kind: 'exec_command', value: { cmd: 'x' }, directive: null, wrapped: true },
+        { kind: 'write_stdin', value: { session_id: 5, chars: '', yield_time_ms: 60_000 }, directive: null, wrapped: true },
+      ], 'the pinned per-line composition machinery is untouched by the widening');
+      const seventeen = Array.from({ length: 18 }, (_, index) => `text(await tools.wait({cell_id:"c${index}"}));`).join('\n');
+      rejected(seventeen, 'a 17-statement cell stays over the per-cell statement bound');
+      assert.equal(inspectCallShape(seventeen).coverage, 'over-scope', 'the classifier names the over-scope state');
+      assert.equal(SHAPE_DIAGNOSTIC_SCHEMA_VERSION, 1, 'the diagnostic contract stays the additive v1 baseline (no semantic reassignment)');
     });
   });
 

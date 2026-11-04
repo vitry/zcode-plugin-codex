@@ -16,7 +16,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { chmod, lstat, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, test } from 'node:test';
 
 import {
@@ -279,7 +279,8 @@ describe('local-process observation: startup identity record admission (task 2, 
   test('a real gated run admits an established startup identity bound to nonce, entry, argv and the child PID', async (t) => {
     const scope = await scopeWithRecord(t);
     const admission = await admitStartupIdentityRecord({ captureDirectory: scope.captureDirectory, nonce: scope.nonce });
-    assert.equal(admission.localProcessObservationVersion, 1);
+    assert.equal(admission.localProcessObservationVersion, 3,
+      'the admission verdict rides the v3 observer contract (the codex-round-5 capture-and-bind registration; the task-3 v2 registration was superseded by the additive childOsStartInstantMs member)');
     assert.equal(admission.class, 'startup-identity');
     assert.equal(admission.status, 'established');
     assert.equal(admission.reason, null);
@@ -508,7 +509,7 @@ describe('local-process observation: OS-verified live identity and exit/absence 
   test('a live gated child is OS-verified with pid, start identity and the capture nonce while alive', async (t) => {
     const scope = await scopeWithLiveChild(t);
     const verdict = await observeLocalProcess({ pid: scope.child.pid, nonce: scope.nonce, nowEpochMs: undefined });
-    assert.equal(verdict.localProcessObservationVersion, 1);
+    assert.equal(verdict.localProcessObservationVersion, 3);
     assert.equal(verdict.class, 'os-live-observation');
     assert.equal(verdict.status, 'established', 'the double read verifies the live gated child through the real OS');
     assert.equal(verdict.reason, null);
@@ -785,7 +786,7 @@ describe('local-process observation: OS-verified live identity and exit/absence 
         invocationIdentity: { pid: live.observation.pid, startIdentity: live.observation.startIdentity, nonce: scope.nonce },
       },
     });
-    assert.equal(exit.localProcessObservationVersion, 1);
+    assert.equal(exit.localProcessObservationVersion, 3);
     assert.equal(exit.class, 'exit-absence');
     assert.equal(exit.status, 'disappeared', 'verified presence earlier + verified absence of the SAME identity later');
     assert.equal(exit.reason, null);
@@ -2136,10 +2137,16 @@ describe('local-process observation: broker-daemon hop and the bounded local-dut
     const { inspectVerifiedProcessIdentity, observeLocalProcess, adjudicateLocalExit } = await import('../tools/shell-wait-probe/local-process-observation.mjs');
     // The real double-read over injected OS seams: the first ps read reports
     // ppid 4000, the marker read says present, the second ps read reports
-    // ppid 1 (reparented) — start identity IDENTICAL.
+    // ppid 1 (reparented) — start identity IDENTICAL (the SAME generation:
+    // the codex-round-5 uniform ride carries that consistent identity on the
+    // ppid-changed error, and an identity CONSISTENT with the bound
+    // generation stays the non-deciding generic torn class — the physical
+    // reparenting shape; a carried identity demonstrably DIFFERENT from the
+    // bound generation is positive replacement evidence by the carried
+    // identity rule below, whatever the failure class).
     const psReads = [
-      { pid: 4_194_303, ppid: 4000, lstart: 'Thu Jan  1 00:00:00 2026' },
-      { pid: 4_194_303, ppid: 1, lstart: 'Thu Jan  1 00:00:00 2026' },
+      { pid: 4_194_303, ppid: 4000, lstart: 'S1' },
+      { pid: 4_194_303, ppid: 1, lstart: 'S1' },
     ];
     let read = 0;
     const inspectWith = (osSeams) => () => inspectVerifiedProcessIdentity(4_194_303, 'b'.repeat(64), 'ZCODE_SHELL_WAIT_CAPTURE_NONCE', osSeams);
@@ -2155,6 +2162,29 @@ describe('local-process observation: broker-daemon hop and the bounded local-dut
     assert.equal(reparented.status, 'unestablished', 'the reparented mid-read state is unestablished');
     assert.equal(reparented.reason, 'liveness-read-failed',
       'REparenting alone stays in the generic torn class — never the reuse class');
+    // (codex round 5 polarity pin) the SAME ppid-only change whose observed
+    // identity demonstrably DIFFERS from the bound generation latches the
+    // reuse class: the uniform ride preserves the first-read identity on the
+    // reparenting error too, and the carried-identity rule (round-27/30/31,
+    // class-independent) consumes it — a reparented REPLACEMENT is never
+    // credited to the bound generation.
+    const replacementPsReads = [
+      { pid: 4_194_303, ppid: 4000, lstart: 'S2' },
+      { pid: 4_194_303, ppid: 1, lstart: 'S2' },
+    ];
+    let replacementRead = 0;
+    const replacementSeams = {
+      platform: 'darwin',
+      ps: async () => (replacementRead++ === 0 ? replacementPsReads[0] : replacementPsReads[1]),
+      environ: 'present',
+    };
+    const reparentedReplacement = await observeLocalProcess({
+      pid: 4_194_303, nonce: 'b'.repeat(64), nowEpochMs: 2500, expectedStartIdentity: 'S1',
+      inspect: inspectWith(replacementSeams),
+    });
+    assert.equal(reparentedReplacement.status, 'unestablished');
+    assert.equal(reparentedReplacement.reason, 'start-identity-generation-changed',
+      'a reparenting whose observed identity differs from the bound generation is the reuse class (the carried identity rides every post-read failure)');
     // The reparented observation followed by a CONFIRMED absence adjudicates
     // the absence normally — never latched into pid-start-identity-reused.
     const live = await observeLocalProcess({
@@ -2185,6 +2215,888 @@ describe('local-process observation: broker-daemon hop and the bounded local-dut
     assert.equal(latched.status, 'unestablished');
     assert.equal(latched.reason, 'pid-start-identity-reused', 'the start-identity reuse still latches');
     assert.equal(latched.firstVerifiedAbsenceEpochMs, null);
+  });
+
+  test('same-second-completion regression: a STALE error-carried identity is dated at its OBSERVATION instant, never at the failure completion — a delayed failure cannot turn pre-baseline evidence into replacement (codex round 13)', async () => {
+    // The codex-round-13 reviewer schedule, reproduced through the REAL
+    // inspection seam: the predecessor is OBSERVED and COLLECTED at
+    // 1000-class instants — definitively BEFORE the current generation's
+    // presence baseline — and the ordinary I/O failure COMPLETING at
+    // 3000-class instants carries that stale identity (the round-6/8
+    // uniform ride). Dating the carried identity at the FAILURE COMPLETION
+    // made it post-baseline replacement evidence and latched terminal PID
+    // reuse; the lawful verdict is `disappeared`: the carried identity's
+    // collection window completed before the bound generation's presence,
+    // and the later confirmed absence is the bound generation's own. The
+    // error must carry the identity's observation timing as a unit
+    // ({observedStartIdentity, observedIdentityTakenEpochMs}), and the
+    // observation verdict must date the evidence at the carried instant.
+    // (codex round 14 refinement) the identity's collection must be
+    // DEFINITIVELY pre-baseline for this outcome: a collection window that
+    // merely overlaps the baseline is the ambiguous fact instead (pinned by
+    // the round-14 overlap regression).
+    const nonce = 'b'.repeat(64);
+    const stalePid = 4_194_304;
+    const { inspectVerifiedProcessIdentity, observeLocalProcess, adjudicateLocalExit } = await import('../tools/shell-wait-probe/local-process-observation.mjs');
+    const predecessorRow = { pid: stalePid, ppid: 1, lstart: 'S-PRE' };
+    let staleReadCalls = 0;
+    const staleSeam = {
+      platform: 'darwin',
+      ps: async () => {
+        staleReadCalls += 1;
+        if (staleReadCalls === 1) {
+          // The predecessor's snapshot is TAKEN and COLLECTED here —
+          // definitively before the presence baseline that follows.
+          return { ...predecessorRow };
+        }
+        // The FAILURE completes one full delay later — long after the
+        // observation, so the carried identity would be misdated at the
+        // failure completion without the carried observation instant.
+        await new Promise((resolve) => { setTimeout(resolve, 100); });
+        throw new Error('ps: ordinary I/O failure on the second identity read');
+      },
+      environ: 'present',
+    };
+    const staleReadPromise = observeLocalProcess({
+      pid: stalePid, nonce,
+      inspect: (observedPid, observedNonce) => inspectVerifiedProcessIdentity(observedPid, observedNonce, 'ZCODE_SHELL_WAIT_CAPTURE_NONCE', staleSeam),
+    });
+    // The current generation's presence baseline lands AFTER the stale
+    // read's collection completed and BEFORE the failure completes (the
+    // codex-round-14 interval rule's definitively-pre-baseline case).
+    await new Promise((resolve) => { setTimeout(resolve, 50); });
+    const baseline = await observeLocalProcess({
+      pid: stalePid, nonce,
+      inspect: async () => ({ pid: stalePid, ppid: 1, startIdentity: 'S-CUR', nonce }),
+    });
+    const staleRead = await staleReadPromise;
+    const absence = await observeLocalProcess({ pid: stalePid, nonce, inspect: async () => undefined });
+    assert.equal(staleRead.status, 'unestablished');
+    assert.equal(staleRead.reason, 'liveness-read-failed', JSON.stringify(staleRead));
+    // The PROVENANCE pin: the carried identity's evidence instant is its
+    // OBSERVATION instant (the first read's taken instant) — strictly before
+    // the presence baseline's identity read — never the failure completion.
+    assert.ok(Number.isSafeInteger(staleRead.observedIdentityReadEpochMs)
+      && staleRead.observedIdentityReadEpochMs <= baseline.identityReadEpochMs,
+      `the carried identity is dated at its observation instant (carried ${staleRead.observedIdentityReadEpochMs}, baseline identity read ${baseline.identityReadEpochMs})`);
+    const exit = await adjudicateLocalExit({ presence: baseline, absenceReads: [staleRead, absence] });
+    assert.equal(exit.status, 'disappeared',
+      `the pre-baseline stale identity is not replacement evidence — the confirmed absence adjudicates the lawful verdict (measured: ${JSON.stringify({ status: exit.status, reason: exit.reason })})`);
+    assert.equal(exit.reason, null);
+  });
+
+  test('same-second-completion regression: a nonce-mismatch identity whose COLLECTION overlaps the presence baseline is AMBIGUOUS — never disappeared, never reused (codex round 14)', async () => {
+    // The codex-round-14 finding-1 schedule, through the REAL inspection
+    // seam: the ps request is DISPATCHED before the presence baseline but
+    // COLLECTS the successor's identity after it (the kernel table read
+    // lands ~150 ms later, showing the nonce-less successor). The base
+    // dated the carried identity at the COMPLETION (post-baseline) and
+    // latched terminal PID reuse; the round-13 patch dated it at the
+    // DISPATCH (pre-baseline) and reported the later absence as the bound
+    // generation's `disappeared`. BOTH readings exceed the facts: the
+    // collection INTERVAL overlaps the baseline, so the occupant generation
+    // at the baseline is not provable — the adjudicator returns the named
+    // ambiguous fact. The positive control: a read DISPATCHED after the
+    // baseline (its whole interval definitively post-baseline) latches the
+    // reuse.
+    const nonce = 'b'.repeat(64);
+    const overlapPid = 4_194_305;
+    const { inspectVerifiedProcessIdentity, observeLocalProcess, adjudicateLocalExit } = await import('../tools/shell-wait-probe/local-process-observation.mjs');
+    const successorRow = { pid: overlapPid, ppid: 1, lstart: 'S-SUCC' };
+    const overlapSeam = {
+      platform: 'darwin',
+      ps: async () => {
+        const row = { ...successorRow };
+        // dispatched now; COLLECTED (the response lands) after the baseline
+        await new Promise((resolve) => { setTimeout(resolve, 150); });
+        return row;
+      },
+      environ: 'mismatch',
+    };
+    const overlapReadPromise = observeLocalProcess({
+      pid: overlapPid, nonce,
+      inspect: (observedPid, observedNonce) => inspectVerifiedProcessIdentity(observedPid, observedNonce, 'ZCODE_SHELL_WAIT_CAPTURE_NONCE', overlapSeam),
+    });
+    await new Promise((resolve) => { setTimeout(resolve, 75); }); // the presence baseline lands INSIDE the collection window
+    const overlapBaseline = await observeLocalProcess({
+      pid: overlapPid, nonce,
+      inspect: async () => ({ pid: overlapPid, ppid: 1, startIdentity: 'S-CUR', nonce }),
+    });
+    const overlapRead = await overlapReadPromise;
+    const overlapAbsence = await observeLocalProcess({ pid: overlapPid, nonce, inspect: async () => undefined });
+    assert.equal(overlapRead.status, 'unestablished');
+    assert.equal(overlapRead.reason, 'liveness-read-failed', JSON.stringify(overlapRead));
+    assert.ok(Number.isSafeInteger(overlapRead.observedIdentityReadEpochMs)
+      && Number.isSafeInteger(overlapRead.observedIdentityCompletedEpochMs)
+      && overlapRead.observedIdentityReadEpochMs < overlapBaseline.identityReadEpochMs
+      && overlapRead.observedIdentityCompletedEpochMs > overlapBaseline.identityReadEpochMs,
+      'the carried identity’s collection interval overlaps the presence baseline (the ambiguous case)');
+    const overlapExit = await adjudicateLocalExit({ presence: overlapBaseline, absenceReads: [overlapRead, overlapAbsence] });
+    assert.equal(overlapExit.status, 'unestablished',
+      `an overlapping collection interval is never resolved into either definitive reading (measured: ${JSON.stringify({ status: overlapExit.status, reason: overlapExit.reason })})`);
+    assert.equal(overlapExit.reason, 'pid-start-identity-ambiguous',
+      'the ambiguous classification — never disappeared, never pid-start-identity-reused');
+    // The POSITIVE control: the read DISPATCHED after the baseline — its
+    // whole interval definitively post-baseline — latches the reuse.
+    const postBaselineSeam = {
+      platform: 'darwin',
+      ps: async () => ({ pid: overlapPid, ppid: 1, lstart: 'S-SUCC' }),
+      environ: 'mismatch',
+    };
+    const postBaselineRead = await observeLocalProcess({
+      pid: overlapPid, nonce,
+      inspect: (observedPid, observedNonce) => inspectVerifiedProcessIdentity(observedPid, observedNonce, 'ZCODE_SHELL_WAIT_CAPTURE_NONCE', postBaselineSeam),
+    });
+    const postBaselineExit = await adjudicateLocalExit({ presence: overlapBaseline, absenceReads: [postBaselineRead, overlapAbsence] });
+    assert.equal(postBaselineExit.status, 'unestablished');
+    assert.equal(postBaselineExit.reason, 'pid-start-identity-reused',
+      'a read whose whole collection interval postdates the baseline is definitive replacement evidence');
+  });
+
+  test('same-second-completion regression: the identity-MISMATCH promotion consumes the carried collection interval — a predecessor sampled before the baseline never becomes replacement evidence by a late failure (codex round 14)', async () => {
+    // The codex-round-14 finding-2 schedule, through the REAL inspection
+    // seam with expectedStartIdentity SUPPLIED: the predecessor is sampled
+    // and collected BEFORE the presence baseline, the ordinary I/O failure
+    // FINISHES afterward, and the promotion into
+    // `start-identity-generation-changed` (dated at the failure completion)
+    // made the adjudicator latch terminal PID reuse — the base's lawful
+    // verdict was `disappeared`. Post-fix the promotion carries the
+    // collection interval: the definitively pre-baseline schedule
+    // adjudicates `disappeared` (the base-lawful outcome) and the
+    // overlapping schedule is the named ambiguous fact.
+    const nonce = 'b'.repeat(64);
+    const promotedPid = 4_194_306;
+    const { inspectVerifiedProcessIdentity, observeLocalProcess, adjudicateLocalExit } = await import('../tools/shell-wait-probe/local-process-observation.mjs');
+    const predecessorRow = { pid: promotedPid, ppid: 1, lstart: 'S-PRE' };
+    let promotionReads = 0;
+    const promotionSeam = {
+      platform: 'darwin',
+      ps: async () => {
+        promotionReads += 1;
+        if (promotionReads === 1) {
+          // collected instantly — definitively before the baseline
+          return { ...predecessorRow };
+        }
+        // the ordinary I/O failure FINISHES afterward
+        await new Promise((resolve) => { setTimeout(resolve, 200); });
+        throw new Error('ps: ordinary I/O failure on the second identity read');
+      },
+      environ: 'present',
+    };
+    const promotionReadPromise = observeLocalProcess({
+      pid: promotedPid, nonce, expectedStartIdentity: 'S-CUR',
+      inspect: (observedPid, observedNonce) => inspectVerifiedProcessIdentity(observedPid, observedNonce, 'ZCODE_SHELL_WAIT_CAPTURE_NONCE', promotionSeam),
+    });
+    await new Promise((resolve) => { setTimeout(resolve, 75); }); // the presence baseline: after the collection, before the failure
+    const promotionBaseline = await observeLocalProcess({
+      pid: promotedPid, nonce,
+      inspect: async () => ({ pid: promotedPid, ppid: 1, startIdentity: 'S-CUR', nonce }),
+    });
+    const promotedRead = await promotionReadPromise;
+    assert.equal(promotedRead.status, 'unestablished');
+    assert.equal(promotedRead.reason, 'start-identity-generation-changed', JSON.stringify(promotedRead));
+    assert.ok(Number.isSafeInteger(promotedRead.observedIdentityReadEpochMs)
+      && promotedRead.observedIdentityReadEpochMs <= promotionBaseline.identityReadEpochMs,
+      'the promoted evidence is dated at its observation instant (definitively pre-baseline)');
+    const promotedAbsence = await observeLocalProcess({ pid: promotedPid, nonce, inspect: async () => undefined });
+    const promotedExit = await adjudicateLocalExit({ presence: promotionBaseline, absenceReads: [promotedRead, promotedAbsence] });
+    assert.equal(promotedExit.status, 'disappeared',
+      `the definitively pre-baseline promoted evidence adjudicates the base-lawful disappeared outcome (measured: ${JSON.stringify({ status: promotedExit.status, reason: promotedExit.reason })})`);
+    // The OVERLAP variant: the mismatch promotion whose collection window
+    // STRADDLES its own concurrent presence baseline is the ambiguous fact —
+    // never disappeared, never reused. (The baseline is observed INSIDE the
+    // overlap read's in-flight window.)
+    let overlapCalls = 0;
+    const overlapSeam = {
+      platform: 'darwin',
+      ps: async () => {
+        overlapCalls += 1;
+        if (overlapCalls === 1) {
+          const row = { pid: promotedPid, ppid: 1, lstart: 'S-PRE' };
+          // dispatched now; COLLECTED (the response lands) after the in-flight baseline
+          await new Promise((resolve) => { setTimeout(resolve, 150); });
+          return row;
+        }
+        // the ordinary I/O failure FINISHES afterward
+        await new Promise((resolve) => { setTimeout(resolve, 200); });
+        throw new Error('ps: ordinary I/O failure on the second identity read');
+      },
+      environ: 'present',
+    };
+    const overlapReadPromise = observeLocalProcess({
+      pid: promotedPid, nonce, expectedStartIdentity: 'S-CUR',
+      inspect: (observedPid, observedNonce) => inspectVerifiedProcessIdentity(observedPid, observedNonce, 'ZCODE_SHELL_WAIT_CAPTURE_NONCE', overlapSeam),
+    });
+    await new Promise((resolve) => { setTimeout(resolve, 75); }); // the concurrent presence baseline lands inside the collection window
+    const overlapBaseline = await observeLocalProcess({
+      pid: promotedPid, nonce,
+      inspect: async () => ({ pid: promotedPid, ppid: 1, startIdentity: 'S-CUR', nonce }),
+    });
+    const overlapRead = await overlapReadPromise;
+    assert.equal(overlapRead.reason, 'start-identity-generation-changed', JSON.stringify(overlapRead));
+    assert.ok(Number.isSafeInteger(overlapRead.observedIdentityReadEpochMs)
+      && Number.isSafeInteger(overlapRead.observedIdentityCompletedEpochMs)
+      && overlapRead.observedIdentityReadEpochMs < overlapBaseline.identityReadEpochMs
+      && overlapRead.observedIdentityCompletedEpochMs > overlapBaseline.identityReadEpochMs,
+      'the promoted evidence’s collection interval overlaps the presence baseline (the ambiguous case)');
+    const overlapExit = await adjudicateLocalExit({ presence: overlapBaseline, absenceReads: [overlapRead, promotedAbsence] });
+    assert.equal(overlapExit.status, 'unestablished',
+      `an overlapping promoted interval is never resolved into either definitive reading (measured: ${JSON.stringify({ status: overlapExit.status, reason: overlapExit.reason })})`);
+    assert.equal(overlapExit.reason, 'pid-start-identity-ambiguous',
+      'the ambiguous classification — never disappeared, never pid-start-identity-reused');
+  });
+
+  test('same-second-completion regression: an identity-bearing ABSENT verdict whose collection spans the presence baseline is AMBIGUOUS — disappearance never establishes on ambiguous generation evidence (codex round 15)', async () => {
+    // The codex-round-15 finding-1 schedule: an observed-then-gone
+    // inspection whose collection SPANS the presence baseline (dispatched
+    // 1000-class, resolved 2500-class) carries a DIFFERENT start identity —
+    // the successor's mid-read absence is not provably the bound
+    // generation's death while the occupant generation at the baseline is
+    // ambiguous. The interval classification must apply to identity-bearing
+    // ABSENT verdicts before any absence establishes disappearance.
+    const nonce = 'b'.repeat(64);
+    const gonePid = 4_194_307;
+    const { inspectVerifiedProcessIdentity, observeLocalProcess, adjudicateLocalExit } = await import('../tools/shell-wait-probe/local-process-observation.mjs');
+    const otherRow = { pid: gonePid, ppid: 1, lstart: 'S-OTHER' };
+    const goneSeam = {
+      platform: 'darwin',
+      ps: async () => {
+        const row = { ...otherRow };
+        // dispatched now; COLLECTED (the response lands) after the baseline
+        await new Promise((resolve) => { setTimeout(resolve, 150); });
+        return row;
+      },
+      environ: 'gone', // the pid vanishes before the marker read — observed-then-gone
+    };
+    const goneReadPromise = observeLocalProcess({
+      pid: gonePid, nonce,
+      inspect: (observedPid, observedNonce) => inspectVerifiedProcessIdentity(observedPid, observedNonce, 'ZCODE_SHELL_WAIT_CAPTURE_NONCE', goneSeam),
+    });
+    await new Promise((resolve) => { setTimeout(resolve, 75); }); // the presence baseline lands INSIDE the collection window
+    const goneBaseline = await observeLocalProcess({
+      pid: gonePid, nonce,
+      inspect: async () => ({ pid: gonePid, ppid: 1, startIdentity: 'S-CUR', nonce }),
+    });
+    const goneRead = await goneReadPromise;
+    assert.equal(goneRead.status, 'absent', JSON.stringify(goneRead));
+    assert.equal(goneRead.observedStartIdentity, 'S-OTHER', JSON.stringify(goneRead));
+    assert.ok(Number.isSafeInteger(goneRead.observedIdentityReadEpochMs)
+      && Number.isSafeInteger(goneRead.observedIdentityCompletedEpochMs)
+      && goneRead.observedIdentityReadEpochMs < goneBaseline.identityReadEpochMs
+      && goneRead.observedIdentityCompletedEpochMs > goneBaseline.identityReadEpochMs,
+      'the carried identity’s collection interval overlaps the presence baseline (the ambiguous case)');
+    const goneAbsence = await observeLocalProcess({ pid: gonePid, nonce, inspect: async () => undefined });
+    const goneExit = await adjudicateLocalExit({ presence: goneBaseline, absenceReads: [goneRead, goneAbsence] });
+    assert.equal(goneExit.status, 'unestablished',
+      `an overlapping identity-bearing absence is never resolved into disappearance (measured: ${JSON.stringify({ status: goneExit.status, reason: goneExit.reason })})`);
+    assert.equal(goneExit.reason, 'pid-start-identity-ambiguous',
+      'the ambiguous classification — disappearance never establishes on ambiguous generation evidence');
+  });
+
+  test('same-second-completion regression: a LEGACY carried identity (no interval upper bound) keeps its recency guard — a stale identity observed before the baseline never latches reuse (codex round 15)', async () => {
+    // The codex-round-15 finding-2 schedule: a failed read carrying a
+    // predecessor identity OBSERVED at 1100 and COMPLETING at 3000 with NO
+    // interval upper bound (the legacy verdict shape). The interval-aware
+    // rewrite made the legacy arm latch replacement UNCONDITIONALLY when
+    // the gate passed — discarding the carried-instant recency guard
+    // (carried ≥ lastPresence). The guard must hold: a carried identity
+    // observed before the baseline is stale evidence — the base-lawful
+    // outcome (ignore it, accept the subsequent confirmed absence)
+    // returns.
+    const nonce = 'b'.repeat(64);
+    const legacyPid = 4_194_308;
+    const { observeLocalProcess, adjudicateLocalExit } = await import('../tools/shell-wait-probe/local-process-observation.mjs');
+    // The presence baseline FIRST (identity read 2000-class).
+    const baseline = await observeLocalProcess({
+      pid: legacyPid, nonce,
+      inspect: async () => ({ pid: legacyPid, ppid: 1, startIdentity: 'S-CUR', nonce }),
+    });
+    assert.ok(baseline.identityReadEpochMs > 0);
+    // The LEGACY carried read: observedIdentityReadEpochMs 1100-class
+    // (BEFORE the baseline's identity read), completing 3000-class, and NO
+    // observedIdentityCompletedEpochMs — the pre-interval verdict shape.
+    const legacyCarriedRead = {
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'unestablished', reason: 'liveness-read-failed',
+      queried: { pid: legacyPid, nonce },
+      readStartedEpochMs: baseline.identityReadEpochMs - 900,
+      observedStartIdentity: 'S-PRE',
+      observedIdentityReadEpochMs: baseline.identityReadEpochMs - 900,
+      readEpochMs: baseline.identityReadEpochMs + 1000,
+      absenceConfirmed: null,
+    };
+    // The confirmed absence completes STRICTLY after the baseline's
+    // identity read (a same-millisecond tie never manufactures
+    // disappearance — the strict recency rule).
+    await new Promise((resolve) => { setTimeout(resolve, 10); });
+    const absence = await observeLocalProcess({ pid: legacyPid, nonce, inspect: async () => undefined });
+    const exit = await adjudicateLocalExit({ presence: baseline, absenceReads: [legacyCarriedRead, absence] });
+    assert.equal(exit.status, 'disappeared',
+      `a stale legacy carried identity never latches reuse — the confirmed absence adjudicates the lawful verdict (measured: ${JSON.stringify({ status: exit.status, reason: exit.reason })})`);
+    assert.equal(exit.reason, null);
+  });
+
+  test('same-second-completion regression: TIE-INCLUSIVE reuse detection — a nonce-failing replacement read whose collection bounds EQUAL the presence baseline latches reuse (codex round 16)', async () => {
+    // The codex-round-16 finding-1 schedule: with expectedStartIdentity
+    // omitted, a nonce-failing read observes a DIFFERENT identity in the
+    // same millisecond as the presence baseline — its collection bounds and
+    // completion can ALL equal the baseline timestamp. The interval
+    // classification must be TIE-INCLUSIVE at the post-baseline edge
+    // (equality belongs to the post-baseline side, exactly as the base's
+    // `carriedIdentityEpochMs >= lastPresenceEpochMs` guard did): an
+    // interval that is not strictly-overlapping and not strictly-stale is
+    // definitively post-baseline and LATCHES reuse — the later recency
+    // filter must never discard it into a `disappeared` verdict.
+    const nonce = 'b'.repeat(64);
+    const tiePid = 4_194_309;
+    const { adjudicateLocalExit } = await import('../tools/shell-wait-probe/local-process-observation.mjs');
+    // The presence baseline: identity read at 2000.
+    const baseline = {
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'established', reason: null,
+      observation: { pid: tiePid, ppid: 1, startIdentity: 'S-CUR', nonce, startInstantEpochMs: 1000, ppidChangedFromCapture: null },
+      queried: { pid: tiePid, nonce },
+      readStartedEpochMs: 2000, identityReadEpochMs: 2000, readEpochMs: 2000, absenceConfirmed: null,
+    };
+    // The nonce-failing replacement read: taken == resolved == completed ==
+    // the baseline's identity-read instant (2000), carrying the DIFFERENT
+    // successor identity (expectedStartIdentity omitted — the
+    // nonce-mismatch ride shape).
+    const tieReplacementRead = {
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'unestablished', reason: 'liveness-read-failed',
+      queried: { pid: tiePid, nonce },
+      readStartedEpochMs: 2000,
+      observedStartIdentity: 'S-SUCC',
+      observedIdentityReadEpochMs: 2000,
+      observedIdentityCompletedEpochMs: 2000,
+      readEpochMs: 2000,
+      absenceConfirmed: null,
+    };
+    // The later confirmed absence (strictly after the baseline).
+    const absence = {
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'absent', reason: 'process-absent',
+      queried: { pid: tiePid, nonce },
+      readStartedEpochMs: 2001, identityReadEpochMs: 4000, readEpochMs: 4000, absenceConfirmed: true,
+    };
+    const exit = await adjudicateLocalExit({ presence: baseline, absenceReads: [tieReplacementRead, absence] });
+    assert.equal(exit.status, 'unestablished',
+      `the tie-inclusive interval classification latches the replacement (measured: ${JSON.stringify({ status: exit.status, reason: exit.reason })})`);
+    assert.equal(exit.reason, 'pid-start-identity-reused',
+      'equality at the interval bounds belongs to the post-baseline side — never discarded into disappearance');
+  });
+
+  test('same-second-completion regression: INTERVAL-TO-INTERVAL staleness — a replacement collected INSIDE the baseline\u2019s collection window is AMBIGUOUS, never discarded as stale (codex round 17)', async () => {
+    // The codex-round-17 reviewer schedule: the baseline query snapshots S0
+    // at 1000-class instants but COMPLETES at 3000-class instants, while a
+    // concurrent nonce-failing query observes replacement S1 at 1500-class
+    // instants (finishing soon after). Dating the baseline at its COMPLETION
+    // made S1's collection interval look definitively stale (it completed
+    // before the baseline's completion) — but completion alone cannot prove
+    // the baseline was collected after S1: the baseline's snapshot may
+    // predate S1 entirely. The comparison is INTERVAL-TO-INTERVAL: S1's
+    // interval overlapping the BASELINE'S collection window [dispatch,
+    // identity-read completion] is the AMBIGUOUS fact — never discarded,
+    // never a disappeared verdict.
+    const nonce = 'b'.repeat(64);
+    const overlapPid = 4_194_310;
+    const { inspectVerifiedProcessIdentity, observeLocalProcess, adjudicateLocalExit } = await import('../tools/shell-wait-probe/local-process-observation.mjs');
+    // The BASELINE: dispatched first, its double read completing ~800 ms
+    // later — the reviewer's snapshot-1000/completes-3000 shape.
+    const baselineSeam = {
+      platform: 'darwin',
+      ps: async () => {
+        const row = { pid: overlapPid, ppid: 1, lstart: 'S-CUR' };
+        await new Promise((resolve) => { setTimeout(resolve, 400); }); // the baseline completes LONG after S1 was collected
+        return row;
+      },
+      environ: 'present',
+    };
+    const baselinePromise = observeLocalProcess({
+      pid: overlapPid, nonce,
+      inspect: (observedPid, observedNonce) => inspectVerifiedProcessIdentity(observedPid, observedNonce, 'ZCODE_SHELL_WAIT_CAPTURE_NONCE', baselineSeam),
+    });
+    // The CONCURRENT replacement read: dispatched ~100 ms into the baseline's
+    // window, S1 collected at ~250 ms (INSIDE the baseline's collection
+    // window), and the nonce failure completing AFTER the baseline's identity
+    // read (the delayed environ query — the reviewer's finish-4000 shape).
+    const overlapSeam = {
+      platform: 'darwin',
+      ps: async () => {
+        const row = { pid: overlapPid, ppid: 1, lstart: 'S-SUCC' };
+        await new Promise((resolve) => { setTimeout(resolve, 150); }); // collected INSIDE the baseline's window
+        return row;
+      },
+      runProcess: async () => {
+        await new Promise((resolve) => { setTimeout(resolve, 700); }); // the failure completes AFTER the baseline's identity read
+        return { code: 0, stdout: 'SOMEOTHERVAR=x', stderr: '' };
+      },
+    };
+    await new Promise((resolve) => { setTimeout(resolve, 100); });
+    const overlapReadPromise = observeLocalProcess({
+      pid: overlapPid, nonce,
+      inspect: (observedPid, observedNonce) => inspectVerifiedProcessIdentity(observedPid, observedNonce, 'ZCODE_SHELL_WAIT_CAPTURE_NONCE', overlapSeam),
+    });
+    const baseline = await baselinePromise;
+    const overlapRead = await overlapReadPromise;
+    const absence = await observeLocalProcess({ pid: overlapPid, nonce, inspect: async () => undefined });
+    assert.ok(Number.isSafeInteger(baseline.readStartedEpochMs)
+      && baseline.identityReadEpochMs > baseline.readStartedEpochMs + 300
+      && Number.isSafeInteger(overlapRead.observedIdentityReadEpochMs)
+      && Number.isSafeInteger(overlapRead.observedIdentityCompletedEpochMs)
+      && overlapRead.observedIdentityCompletedEpochMs > baseline.readStartedEpochMs
+      && overlapRead.observedIdentityReadEpochMs < baseline.identityReadEpochMs
+      && overlapRead.readEpochMs > baseline.identityReadEpochMs,
+      `S1's collection window OVERLAPS the baseline's collection window and the failure completes after it (S1 [${overlapRead.observedIdentityReadEpochMs}, ${overlapRead.observedIdentityCompletedEpochMs}] finishing ${overlapRead.readEpochMs} vs baseline [${baseline.readStartedEpochMs}, ${baseline.identityReadEpochMs}])`);
+    const exit = await adjudicateLocalExit({ presence: baseline, absenceReads: [overlapRead, absence] });
+    assert.equal(exit.status, 'unestablished',
+      `a replacement collected inside the baseline\u2019s collection window is never discarded as stale (measured: ${JSON.stringify({ status: exit.status, reason: exit.reason })})`);
+    assert.equal(exit.reason, 'pid-start-identity-ambiguous',
+      'the ambiguous classification — completion alone never proves the baseline was collected after S1');
+    // BOUNDARY CONTROL (stale): the replacement collected STRICTLY BEFORE the
+    // baseline's dispatch — the baseline provably cannot have seen it — is
+    // definitively stale, and the confirmed absence adjudicates the lawful
+    // disappeared outcome.
+    let earlyCalls = 0;
+    const earlySeam = {
+      platform: 'darwin',
+      ps: async () => {
+        earlyCalls += 1;
+        if (earlyCalls === 1) return { pid: overlapPid, ppid: 1, lstart: 'S-SUCC' };
+        throw new Error('ps: ordinary I/O failure on the second identity read');
+      },
+      environ: 'mismatch',
+    };
+    const earlyRead = await observeLocalProcess({
+      pid: overlapPid, nonce,
+      inspect: (observedPid, observedNonce) => inspectVerifiedProcessIdentity(observedPid, observedNonce, 'ZCODE_SHELL_WAIT_CAPTURE_NONCE', earlySeam),
+    });
+    await new Promise((resolve) => { setTimeout(resolve, 20); });
+    const laterBaseline = await observeLocalProcess({
+      pid: overlapPid, nonce,
+      inspect: async () => ({ pid: overlapPid, ppid: 1, startIdentity: 'S-CUR', nonce }),
+    });
+    assert.ok(earlyRead.observedIdentityCompletedEpochMs < laterBaseline.readStartedEpochMs,
+      'the control\u2019s replacement collection completed STRICTLY before the baseline dispatched');
+    // The confirmed absence completes STRICTLY after the baseline's identity
+    // read (a same-millisecond tie never manufactures disappearance).
+    await new Promise((resolve) => { setTimeout(resolve, 10); });
+    const laterAbsence = await observeLocalProcess({ pid: overlapPid, nonce, inspect: async () => undefined });
+    const earlyExit = await adjudicateLocalExit({ presence: laterBaseline, absenceReads: [earlyRead, laterAbsence] });
+    assert.equal(earlyExit.status, 'disappeared',
+      `a definitively stale replacement (collected strictly before the baseline dispatched) never latches (measured: ${JSON.stringify({ status: earlyExit.status, reason: earlyExit.reason })})`);
+    // BOUNDARY CONTROL (post, tie-inclusive): the replacement DISPATCHED at
+    // or after the baseline's completion — the baseline provably finished
+    // before the replacement was observed — latches the reuse.
+    const tieBaseline = await observeLocalProcess({
+      pid: overlapPid, nonce,
+      inspect: async () => ({ pid: overlapPid, ppid: 1, startIdentity: 'S-CUR', nonce }),
+    });
+    const postRead = await observeLocalProcess({
+      pid: overlapPid, nonce,
+      inspect: (observedPid, observedNonce) => inspectVerifiedProcessIdentity(observedPid, observedNonce, 'ZCODE_SHELL_WAIT_CAPTURE_NONCE', { platform: 'darwin', ps: async () => ({ pid: overlapPid, ppid: 1, lstart: 'S-SUCC' }), environ: 'mismatch' }),
+    });
+    assert.ok(postRead.observedIdentityReadEpochMs >= tieBaseline.identityReadEpochMs,
+      'the control\u2019s replacement collection STARTED at/after the baseline completed (tie-inclusive)');
+    const postAbsence = await observeLocalProcess({ pid: overlapPid, nonce, inspect: async () => undefined });
+    const postExit = await adjudicateLocalExit({ presence: tieBaseline, absenceReads: [postRead, postAbsence] });
+    assert.equal(postExit.status, 'unestablished');
+    assert.equal(postExit.reason, 'pid-start-identity-reused',
+      'a replacement collected at/after the baseline\u2019s completion is definitive replacement evidence (tie-inclusive)');
+  });
+
+  test('same-second-completion regression: CLASSIFY-FIRST — an overlapping replacement interval classifies by interval even when its failure completes BEFORE the presence horizon (codex round 18)', async () => {
+    // The codex-round-18 reviewer schedule: baseline [1000, 3000]; a
+    // different identity collected during [1500, 1600]; its failing query
+    // COMPLETES at 2000 — before the horizon. The outer completion-time
+    // guard (identityEvidenceEpochMs = the failure completion 2000 < 3000)
+    // skips the interval classifier and the recency filter discards the
+    // carried evidence, producing `disappeared` although the collection
+    // intervals OVERLAP. Query latency must never determine the verdict:
+    // the interval classification runs FIRST, and a carried-evidence
+    // failure's completion instant is metadata about the ERROR, never a
+    // filter on the identity's collection interval.
+    const nonce = 'b'.repeat(64);
+    const pid = 4_194_311;
+    const { adjudicateLocalExit } = await import('../tools/shell-wait-probe/local-process-observation.mjs');
+    const baseline = {
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'established', reason: null,
+      observation: { pid, ppid: 1, startIdentity: 'S0', nonce, startInstantEpochMs: 1000, ppidChangedFromCapture: null },
+      queried: { pid, nonce },
+      readStartedEpochMs: 1000, identityReadEpochMs: 3000, readEpochMs: 3000, absenceConfirmed: null,
+    };
+    const carriedFailure = {
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'unestablished', reason: 'liveness-read-failed',
+      queried: { pid, nonce },
+      readStartedEpochMs: 1500,
+      observedStartIdentity: 'S1',
+      observedIdentityReadEpochMs: 1500,
+      observedIdentityCompletedEpochMs: 1600,
+      readEpochMs: 2000,
+      absenceConfirmed: null,
+    };
+    const absence = {
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'absent', reason: 'process-absent',
+      queried: { pid, nonce },
+      readStartedEpochMs: 3100, identityReadEpochMs: 4000, readEpochMs: 4000, absenceConfirmed: true,
+    };
+    const exit = await adjudicateLocalExit({ presence: baseline, absenceReads: [carriedFailure, absence] });
+    assert.equal(exit.status, 'unestablished',
+      `the overlapping interval classifies by interval regardless of the failure completion (measured: ${JSON.stringify({ status: exit.status, reason: exit.reason })})`);
+    assert.equal(exit.reason, 'pid-start-identity-ambiguous',
+      'the ambiguous classification — the failure completion never pre-empts the interval classification');
+  });
+
+  test('same-second-completion regression: CLASSIFY-FIRST (concurrent failure finishing BEFORE the baseline completion) — the same overlap still classifies ambiguous, never by completion latency (codex round 18)', async () => {
+    // The reviewer's named second regression: the SAME schedule family with
+    // the concurrent failure finishing BEFORE the baseline completion
+    // (failure 2500 < baseline identity-read 3000; the intervals still
+    // overlap). The completion-based gate and recency filter would discard
+    // the carried evidence; the interval classification must run first and
+    // return the ambiguous fact. Query latency still must not determine
+    // whether disappearance is credited.
+    const nonce = 'b'.repeat(64);
+    const pid = 4_194_312;
+    const { adjudicateLocalExit } = await import('../tools/shell-wait-probe/local-process-observation.mjs');
+    const baseline = {
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'established', reason: null,
+      observation: { pid, ppid: 1, startIdentity: 'S0', nonce, startInstantEpochMs: 1000, ppidChangedFromCapture: null },
+      queried: { pid, nonce },
+      readStartedEpochMs: 1000, identityReadEpochMs: 3000, readEpochMs: 3000, absenceConfirmed: null,
+    };
+    const carriedFailure = {
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'unestablished', reason: 'liveness-read-failed',
+      queried: { pid, nonce },
+      readStartedEpochMs: 1500,
+      observedStartIdentity: 'S1',
+      observedIdentityReadEpochMs: 1500,
+      observedIdentityCompletedEpochMs: 1600,
+      readEpochMs: 2500,
+      absenceConfirmed: null,
+    };
+    const absence = {
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'absent', reason: 'process-absent',
+      queried: { pid, nonce },
+      readStartedEpochMs: 3100, identityReadEpochMs: 4000, readEpochMs: 4000, absenceConfirmed: true,
+    };
+    const exit = await adjudicateLocalExit({ presence: baseline, absenceReads: [carriedFailure, absence] });
+    assert.equal(exit.status, 'unestablished',
+      `the failure finishing before the baseline completion still classifies by interval (measured: ${JSON.stringify({ status: exit.status, reason: exit.reason })})`);
+    assert.equal(exit.reason, 'pid-start-identity-ambiguous',
+      'the ambiguous classification — never disappeared, never determined by completion latency');
+  });
+
+  test('same-second-completion control: a replacement collected STRICTLY before the baseline dispatch classifies stale through the classify-first path — the lawful disappeared holds (codex round 18)', async () => {
+    // The disjoint control for the classify-first reordering: the failing
+    // query's replacement was collected [500, 900] — strictly before the
+    // baseline's dispatch (1000) — and the failure completes at 2000. The
+    // classify-first path classifies it STALE (the baseline provably cannot
+    // have seen it), the evidence is non-deciding, and the confirmed
+    // absence adjudicates the lawful disappeared outcome — unchanged.
+    const nonce = 'b'.repeat(64);
+    const pid = 4_194_313;
+    const { adjudicateLocalExit } = await import('../tools/shell-wait-probe/local-process-observation.mjs');
+    const baseline = {
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'established', reason: null,
+      observation: { pid, ppid: 1, startIdentity: 'S0', nonce, startInstantEpochMs: 1000, ppidChangedFromCapture: null },
+      queried: { pid, nonce },
+      readStartedEpochMs: 1000, identityReadEpochMs: 3000, readEpochMs: 3000, absenceConfirmed: null,
+    };
+    const staleCarriedFailure = {
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'unestablished', reason: 'liveness-read-failed',
+      queried: { pid, nonce },
+      readStartedEpochMs: 500,
+      observedStartIdentity: 'S1',
+      observedIdentityReadEpochMs: 500,
+      observedIdentityCompletedEpochMs: 900,
+      readEpochMs: 2000,
+      absenceConfirmed: null,
+    };
+    const absence = {
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'absent', reason: 'process-absent',
+      queried: { pid, nonce },
+      readStartedEpochMs: 3100, identityReadEpochMs: 4000, readEpochMs: 4000, absenceConfirmed: true,
+    };
+    const exit = await adjudicateLocalExit({ presence: baseline, absenceReads: [staleCarriedFailure, absence] });
+    assert.equal(exit.status, 'disappeared',
+      `a truly disjoint replacement classifies stale and the lawful disappeared holds (measured: ${JSON.stringify({ status: exit.status, reason: exit.reason })})`);
+    assert.equal(exit.reason, null);
+  });
+
+  test('same-second-completion regression: an INVERTED carried interval is inconsistent evidence — never classified stale, never disappeared (codex round 20)', async () => {
+    // The codex-round-20 reviewer schedule: presence [1000, 3000]; a
+    // different identity carrying the INVERTED collection interval
+    // [3500, 500]; absence confirmed 5000. The classifier treated the
+    // malformed interval as definitively stale (its completion 500 precedes
+    // the presence's dispatch) and discarded the replacement — producing
+    // `disappeared` from inconsistent evidence. The classifier must
+    // validate its INPUT before any discard: an interval that is not
+    // ORDERED (start <= completion) or not PLAUSIBLE relative to the
+    // observation that carried it (contained in the verdict's own window
+    // [readStartedEpochMs, readEpochMs]) is inconsistent evidence — refused
+    // by name, never stale, never disappeared, never reused.
+    const nonce = 'b'.repeat(64);
+    const pid = 4_194_314;
+    const { adjudicateLocalExit } = await import('../tools/shell-wait-probe/local-process-observation.mjs');
+    const baseline = {
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'established', reason: null,
+      observation: { pid, ppid: 1, startIdentity: 'S0', nonce, startInstantEpochMs: 1000, ppidChangedFromCapture: null },
+      queried: { pid, nonce },
+      readStartedEpochMs: 1000, identityReadEpochMs: 3000, readEpochMs: 3000, absenceConfirmed: null,
+    };
+    const invertedRead = {
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'unestablished', reason: 'liveness-read-failed',
+      queried: { pid, nonce },
+      readStartedEpochMs: 1000,
+      observedStartIdentity: 'S1',
+      observedIdentityReadEpochMs: 3500,
+      observedIdentityCompletedEpochMs: 500,
+      readEpochMs: 5000,
+      absenceConfirmed: null,
+    };
+    const absence = {
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'absent', reason: 'process-absent',
+      queried: { pid, nonce },
+      readStartedEpochMs: 3100, identityReadEpochMs: 5000, readEpochMs: 5000, absenceConfirmed: true,
+    };
+    const exit = await adjudicateLocalExit({ presence: baseline, absenceReads: [invertedRead, absence] });
+    assert.equal(exit.status, 'unestablished',
+      `an inverted carried interval is inconsistent evidence — never classified stale (measured: ${JSON.stringify({ status: exit.status, reason: exit.reason })})`);
+    assert.equal(exit.reason, 'pid-start-identity-interval-inconsistent',
+      'the dedicated named inconsistency refusal — malformed input never discards replacement evidence');
+    // (codex round 20 adjudication) the PLAUSIBLE containment variant — an
+    // ordered interval whose completion exceeds the carrying observation's
+    // readEpochMs — is NOT classified inconsistent: the inspector's
+    // taken/resolved instants ride the inspector's own real clock while the
+    // verdict's read stamps can ride a synthetic clock, so a cross-domain
+    // containment comparison is an implicit clock join (§26.7 item 4) and
+    // was REJECTED (it falsely condemned the standing synthetic-clock
+    // pins). The ordered interval classifies by the standing rules —
+    // definitively post-baseline (3500 >= the presence completion 3000),
+    // latch.
+    // The BASE-EQUIVALENCE pin (the reviewer's stated base behavior): the
+    // SAME replacement WITHOUT the upper bound (the legacy instant 3500
+    // only) still LATCHES pid-start-identity-reused — the validation never
+    // changes legacy classification.
+    const legacyRead = {
+      ...invertedRead,
+      observedIdentityReadEpochMs: 3500,
+    };
+    delete legacyRead.observedIdentityCompletedEpochMs;
+    const legacyExit = await adjudicateLocalExit({ presence: baseline, absenceReads: [legacyRead, absence] });
+    assert.equal(legacyExit.status, 'unestablished');
+    assert.equal(legacyExit.reason, 'pid-start-identity-reused',
+      'the legacy instant-only shape keeps its carried-instant recency latch — the validation never changes legacy classification');
+    // The WELL-FORMED control: an ordered, contained interval [3500, 3600]
+    // inside the observation window [1000, 5000] classifies exactly as the
+    // round-17 rules already do — definitively post-baseline, latch.
+    const wellFormedRead = {
+      ...invertedRead,
+      observedIdentityReadEpochMs: 3500,
+      observedIdentityCompletedEpochMs: 3600,
+    };
+    const wellFormedExit = await adjudicateLocalExit({ presence: baseline, absenceReads: [wellFormedRead, absence] });
+    assert.equal(wellFormedExit.status, 'unestablished');
+    assert.equal(wellFormedExit.reason, 'pid-start-identity-reused',
+      'a well-formed interval classifies exactly as the standing rules — definitively post-baseline, latch');
+  });
+
+  test('same-second-completion regression: a SUPPLIED-INVALID upper bound (string/float) is malformed evidence on BOTH sides — never legacy-discarded, never settled (codex round 23)', async () => {
+    // The codex-round-23 finding: a replacement read supplying a
+    // NON-INTEGER observedIdentityCompletedEpochMs (the string "2200")
+    // failed the safe-integer guards, so the classifier treated the bound
+    // as ABSENT (the legacy shape) and DISCARDED the replacement as stale
+    // (its dispatch 1800 precedes the presence horizon 2100) — producing
+    // `disappeared` where the numeric bound 2200 correctly classifies
+    // ambiguous. The bound resolution distinguishes THREE states: ABSENT
+    // (undefined/null — the genuine legacy shape, the instant rules apply
+    // unchanged), SUPPLIED VALID (a positive safe integer — the interval
+    // classification applies), and SUPPLIED INVALID (present but garbage —
+    // string, float, non-positive — malformed evidence refusing
+    // pid-start-identity-interval-inconsistent on the runtime and
+    // exit-reuse-interval-inconsistent on the replay).
+    const nonce = 'b'.repeat(64);
+    const pid = 4_194_315;
+    const { adjudicateLocalExit } = await import('../tools/shell-wait-probe/local-process-observation.mjs');
+    const baseline = {
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'established', reason: null,
+      observation: { pid, ppid: 1, startIdentity: 'S0', nonce, startInstantEpochMs: 1000, ppidChangedFromCapture: null },
+      queried: { pid, nonce },
+      readStartedEpochMs: 1900, identityReadEpochMs: 2100, readEpochMs: 2100, absenceConfirmed: null,
+    };
+    const absence = {
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'absent', reason: 'process-absent',
+      queried: { pid, nonce },
+      readStartedEpochMs: 2200, identityReadEpochMs: 4000, readEpochMs: 4000, absenceConfirmed: true,
+    };
+    const carriedShape = (upper) => ({
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'unestablished', reason: 'liveness-read-failed',
+      queried: { pid, nonce },
+      readStartedEpochMs: 1800,
+      observedStartIdentity: 'S1',
+      observedIdentityReadEpochMs: 1800,
+      ...(upper === undefined ? {} : { observedIdentityCompletedEpochMs: upper }),
+      readEpochMs: 2400, absenceConfirmed: null,
+    });
+    // SUPPLIED INVALID (string "2200"): malformed evidence — refuse.
+    const stringExit = await adjudicateLocalExit({ presence: baseline, absenceReads: [carriedShape('2200'), absence] });
+    assert.equal(stringExit.status, 'unestablished',
+      `a string upper bound is malformed evidence — never legacy-discarded (measured: ${JSON.stringify({ status: stringExit.status, reason: stringExit.reason })})`);
+    assert.equal(stringExit.reason, 'pid-start-identity-interval-inconsistent',
+      'the runtime inconsistent refusal for the supplied-invalid bound');
+    // SUPPLIED INVALID (float 2200.5): the same malformed fact.
+    const floatExit = await adjudicateLocalExit({ presence: baseline, absenceReads: [carriedShape(2200.5), absence] });
+    assert.equal(floatExit.reason, 'pid-start-identity-interval-inconsistent',
+      'a float upper bound is the same supplied-invalid malformed evidence');
+    // SUPPLIED INVALID (negative): an epoch-ms collection instant is
+    // positive by definition — a non-positive bound is garbage evidence.
+    const negativeExit = await adjudicateLocalExit({ presence: baseline, absenceReads: [carriedShape(-2200), absence] });
+    assert.equal(negativeExit.reason, 'pid-start-identity-interval-inconsistent',
+      'a non-positive upper bound is the same supplied-invalid malformed evidence');
+    // CONTROL — ABSENT (no upper bound at all): the genuine legacy shape,
+    // the round-15/16 instant rules apply UNCHANGED (the dispatch 1800
+    // precedes the horizon 2100 — old evidence, the absence adjudicates
+    // the lawful disappeared).
+    const absentExit = await adjudicateLocalExit({ presence: baseline, absenceReads: [carriedShape(undefined), absence] });
+    assert.equal(absentExit.status, 'disappeared',
+      'the ABSENT legacy shape keeps its instant classification (unchanged)');
+    assert.equal(absentExit.reason, null);
+    // CONTROL — SUPPLIED VALID (numeric 2200): the interval classification
+    // applies UNCHANGED (the overlap with [1900, 2100] is the ambiguous fact).
+    const validExit = await adjudicateLocalExit({ presence: baseline, absenceReads: [carriedShape(2200), absence] });
+    assert.equal(validExit.status, 'unestablished');
+    assert.equal(validExit.reason, 'pid-start-identity-ambiguous',
+      'the SUPPLIED-VALID shape keeps the interval classification (unchanged)');
+  });
+
+  test('same-second-completion regression: VALIDATE-FIRST — a supplied-invalid upper bound refuses BEFORE the recency filter, even when the failure completes before the horizon (codex round 24)', async () => {
+    // The codex-round-24 finding: with the replacement\u2019s FAILURE
+    // completing at 2000 (BEFORE the presence horizon 2100), the
+    // completion-time gate (identityEvidenceEpochMs = the failure
+    // completion) skipped the three-state validator and the recency filter
+    // discarded the malformed carried evidence \u2014 producing
+    // `disappeared` where the NUMERIC upper bound 2000 correctly classifies
+    // ambiguous. Query latency must never decide: the three-state bound
+    // resolution runs FIRST (the round-18 classify-first discipline
+    // extended to the validator) \u2014 supplied-invalid refuses by name
+    // before any completion guard or recency filter.
+    const nonce = 'b'.repeat(64);
+    const pid = 4_194_316;
+    const { adjudicateLocalExit } = await import('../tools/shell-wait-probe/local-process-observation.mjs');
+    const baseline = {
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'established', reason: null,
+      observation: { pid, ppid: 1, startIdentity: 'S0', nonce, startInstantEpochMs: 1000, ppidChangedFromCapture: null },
+      queried: { pid, nonce },
+      readStartedEpochMs: 1900, identityReadEpochMs: 2100, readEpochMs: 2100, absenceConfirmed: null,
+    };
+    const absence = {
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'absent', reason: 'process-absent',
+      queried: { pid, nonce },
+      readStartedEpochMs: 2200, identityReadEpochMs: 4000, readEpochMs: 4000, absenceConfirmed: true,
+    };
+    const carriedShape = (upper) => ({
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'unestablished', reason: 'liveness-read-failed',
+      queried: { pid, nonce },
+      readStartedEpochMs: 1800,
+      observedStartIdentity: 'S1',
+      observedIdentityReadEpochMs: 1800,
+      ...(upper === undefined ? {} : { observedIdentityCompletedEpochMs: upper }),
+      readEpochMs: 2000, absenceConfirmed: null,
+    });
+    // SUPPLIED INVALID (string "2000") with the failure completing BEFORE
+    // the horizon: the inconsistent refusal fires FIRST.
+    const stringExit = await adjudicateLocalExit({ presence: baseline, absenceReads: [carriedShape('2000'), absence] });
+    assert.equal(stringExit.status, 'unestablished',
+      `a supplied-invalid bound refuses before the recency filter regardless of the failure completion (measured: ${JSON.stringify({ status: stringExit.status, reason: stringExit.reason })})`);
+    assert.equal(stringExit.reason, 'pid-start-identity-interval-inconsistent',
+      'the inconsistent refusal — never disappeared, never determined by query latency');
+    // CONTROL — SUPPLIED VALID (numeric 2000): the same schedule classifies
+    // the overlap AMBIGUOUS (unchanged).
+    const validExit = await adjudicateLocalExit({ presence: baseline, absenceReads: [carriedShape(2000), absence] });
+    assert.equal(validExit.status, 'unestablished');
+    assert.equal(validExit.reason, 'pid-start-identity-ambiguous',
+      'the numeric bound keeps the interval classification (unchanged)');
+    // CONTROL — ABSENT: the legacy instant rules apply UNCHANGED (the
+    // dispatch 1800 precedes the horizon 2100 \u2014 old evidence, the
+    // lawful disappeared).
+    const absentExit = await adjudicateLocalExit({ presence: baseline, absenceReads: [carriedShape(undefined), absence] });
+    assert.equal(absentExit.status, 'disappeared');
+    assert.equal(absentExit.reason, null);
+    // CONTROL — DEFINITIVELY STALE (well-formed [500, 900], strictly before
+    // the presence dispatch): the lawful disappeared holds (unchanged).
+    const staleShape = carriedShape(900);
+    staleShape.readStartedEpochMs = 500;
+    staleShape.observedIdentityReadEpochMs = 500;
+    staleShape.readEpochMs = 2000;
+    const staleExit = await adjudicateLocalExit({ presence: baseline, absenceReads: [staleShape, absence] });
+    assert.equal(staleExit.status, 'disappeared',
+      'a definitively stale well-formed replacement keeps the lawful disappeared (unchanged)');
+    assert.equal(staleExit.reason, null);
+  });
+
+  test('same-second-completion negative: the daemon\u2192transport witness route is REFUSAL-ONLY — every admitted witness outcome on the bound-window route refuses with its own label and establishment is the named unsatisfiable classification (codex round 16)', async () => {
+    // The codex-round-16 finding-2 adjudication (option b: the route is
+    // explicitly classified UNSATISFIABLE, not qualified): the route is
+    // entered only when markerTime < daemonStart + 1000, while its
+    // establishment requires markerTime >= childOsStartInstantMs + 1000
+    // under childOsStartInstantMs >= daemonStart — jointly
+    // markerTime >= daemonStart + 1000, contradicting the entry condition.
+    // No bound may be weakened (the \u00a726.7 freeze), so the route is
+    // REFUSAL-ONLY: every witness quality refuses with its own named label
+    // (the \u00a728.9-\u00a728.12 refusal evidence kept intact \u2014 never folded),
+    // no established verdict can carry a witnessClass on this hop, and the
+    // hop's positives stay ARITHMETIC-only.
+    const endpoint = (pid, ppid, startIdentity, startInstantEpochMs, read, readStarted) => ({
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'established', reason: null,
+      observation: { pid, ppid, startIdentity, nonce: NONCE, startInstantEpochMs, ppidChangedFromCapture: null },
+      queried: { pid, nonce: NONCE },
+      readStartedEpochMs: readStarted ?? read - 50, identityReadEpochMs: read, readEpochMs: read, absenceConfirmed: null,
+    });
+    const brokerWitness = (childOsStartInstantMs, boundaryEpochMs, recordVersion = 2) => ({
+      localProcessObservationVersion: 3, class: 'spawn-ancestry-witness', status: 'established', reason: null,
+      identity: recordVersion === 2
+        ? { version: 2, class: 'spawn-ancestry-witness', role: 'broker-daemon', nonce: NONCE, writerPid: daemon.pid, writerStartIdentity: daemon.startIdentity, childPid: 5300, childPpid: daemon.pid, childStartIdentity: 'S-TRANSPORT', childNonce: NONCE, boundaryEpochMs, firstWriteEpochMs: boundaryEpochMs + 10, startOriginMs: null, firstWritePreciseMs: null, childOsStartInstantMs }
+        : { version: 1, class: 'spawn-ancestry-witness', role: 'broker-daemon', nonce: NONCE, writerPid: daemon.pid, writerStartIdentity: daemon.startIdentity, childPid: 5300, childPpid: daemon.pid, childStartIdentity: 'S-TRANSPORT', childNonce: NONCE, boundaryEpochMs, firstWriteEpochMs: boundaryEpochMs + 10, startOriginMs: null, firstWritePreciseMs: null },
+      readStartedEpochMs: boundaryEpochMs, readEpochMs: boundaryEpochMs + 10,
+    });
+    // The daemon's floor is 1800; every schedule below keeps the marker
+    // INSIDE the bound window (marker < daemonStart + 1000 = 2800) so the
+    // witness route is consulted, and the writer bounds hold (the daemon's
+    // own witness write 2510 postdates its floor + 1000, its collection
+    // bound 2520 postdates the write \u2014 the round-7/12 parent bindings).
+    const run = (markerEpochMs, witness) => joinAncestryHops({
+      nonce: NONCE,
+      companionObservation: null,
+      daemonObservation: endpoint(daemon.pid, daemon.ppid, daemon.startIdentity, 1800, 2700, 2520),
+      transportMarker: { pid: 5300, ppid: daemon.pid, nonce: NONCE },
+      expectedTransportNonce: NONCE,
+      markerEpochMs,
+      daemonSpawnWitness: witness,
+    });
+    // (a) marker inside the witnessed child's first second \u2192 ambiguous.
+    const ambiguous = run(2500, brokerWitness(1800, 2500));
+    assert.deepEqual([ambiguous.hops[1].status, ambiguous.hops[1].reason], ['unestablished', 'spawn-witness-marker-generation-ambiguous'], JSON.stringify(ambiguous.hops[1]));
+    // (b) marker BELOW the witnessed child's floor \u2192 demonstrably unbound.
+    const unbound = run(1900, brokerWitness(2000, 2500));
+    assert.deepEqual([unbound.hops[1].status, unbound.hops[1].reason], ['unestablished', 'spawn-witness-marker-generation-unbound'], JSON.stringify(unbound.hops[1]));
+    // (c) a v1 replay record (no numeric instant) \u2192 unbound.
+    const v1 = run(2500, brokerWitness(undefined, 2500, 1));
+    assert.deepEqual([v1.hops[1].status, v1.hops[1].reason], ['unestablished', 'spawn-witness-marker-generation-unbound'], JSON.stringify(v1.hops[1]));
+    for (const verdict of [ambiguous, unbound, v1]) {
+      assert.equal(verdict.hops[1].witnessClass, undefined,
+        'no witness outcome on the bound-window route ever carries a witnessClass \u2014 establishment is unsatisfiable');
+      assert.equal(verdict.companionToTransportAttributed, false);
+    }
+    // The SOURCE-LEVEL classification: the establishment arm on this hop is
+    // the named unavailable classification (fail-closed \u2014 never a credited
+    // witnessClass establishment).
+    const { readFileSync } = await import('node:fs');
+    const observerModulePath = fileURLToPath(new URL('../tools/shell-wait-probe/local-process-observation.mjs', import.meta.url));
+    const source = readFileSync(observerModulePath, 'utf8');
+    const daemonHopStart = source.indexOf('EXPLICIT UNSATISFIABILITY');
+    assert.ok(daemonHopStart > 0, 'the daemon witness establishment arm carries the named unsatisfiable classification');
+    const armSlice = source.slice(daemonHopStart, source.indexOf('} else if (witnessOutcome !== null) {', daemonHopStart));
+    assert.ok(armSlice.includes("hopVerdict('unestablished', 'spawn-witness-route-unsatisfiable', null)"),
+      'the unreachable establishment is fail-closed with the named label \u2014 never a credited witnessClass establishment');
+    assert.ok(armSlice.includes("status: 'established'") === false && armSlice.includes('witnessClass:') === false,
+      'the classification arm never composes an established witnessClass verdict');
   });
 
   test('an environment-NONCE mismatch is a named non-reuse fact — the confirmed absence still adjudicates', async () => {
@@ -3539,12 +4451,17 @@ describe('local-process observation: non-interference proof (task 2, plan §2)',
       'LINUX_PROC_RESOLUTION_MS',
       'LOCAL_OBSERVER_DIGEST_TAG',
       'LOCAL_PROCESS_OBSERVATION_VERSION',
+      'SPAWN_ANCESTRY_WITNESS_MAX_BYTES',
+      'SPAWN_ANCESTRY_WITNESS_SUFFIXES',
+      'SPAWN_ANCESTRY_WITNESS_VERSION',
       'adjudicateLocalDuties',
       'adjudicateLocalExit',
+      'admitSpawnAncestryWitness',
       'admitStartupIdentityRecord',
       'captureVerifiedProcessIdentity',
       'composeAncestryJoinForRuntime',
       'confirmProcessAbsenceWithOs',
+      'emitSpawnAncestryWitness',
       'inspectVerifiedProcessIdentity',
       'joinAncestryHops',
       'localProcessObserverProvenance',
@@ -3560,13 +4477,18 @@ describe('local-process observation: non-interference proof (task 2, plan §2)',
     const source = readFileSync(observerModulePath, 'utf8');
     assert.ok(!source.includes('node:child_process'), 'the observer spawns no child process');
     assert.ok(!source.includes('setInterval('), 'the observer keeps no interval timer');
-    // The only permitted delay is the BOUNDED termination deadline poll (a
-    // Date.now()-bounded loop inside the awaited terminateVerifiedProcess);
-    // nothing keeps the event loop alive past its awaited work.
+    // The only permitted delays are BOUNDED polls (a Date.now()-bounded loop
+    // inside the awaited terminateVerifiedProcess plus the evidence-completion
+    // Task 3 spawn-visibility poll inside the awaited emitSpawnAncestryWitness
+    // — the kernel's fork/exposure window never uses an unbounded timer;
+    // the visibility poll's timer is INTENTIONALLY ref'd so an otherwise-idle
+    // writer loop cannot drain mid-poll and leave the caller's await
+    // unsettled); nothing keeps the event loop alive past its awaited work.
     const setTimeoutUses = source.split('setTimeout(').length - 1;
-    assert.ok(setTimeoutUses <= 1, 'the observer uses no unbounded or extra timers');
-    if (setTimeoutUses === 1) {
-      assert.ok(/setTimeout\(resolve, 50\)/u.test(source), 'the single delay is the bounded termination deadline poll');
+    assert.ok(setTimeoutUses <= 2, 'the observer uses no unbounded or extra timers');
+    if (setTimeoutUses === 2) {
+      assert.ok(/setTimeout\(resolve, 50\)/u.test(source), 'one delay is the bounded termination deadline poll');
+      assert.ok(/setTimeout\(resolve, 100\)\)/u.test(source), 'the other delay is the bounded spawn-visibility poll');
     }
     assert.ok(!/process\.on\(/u.test(source), 'the observer registers no signal or exit handler');
   });
@@ -4766,6 +5688,197 @@ describe('local-settlement task 3: the COMPLETE armed path through the real fixt
       'no local-process refusal rides the verdict: the local layer was positively established pre-fence');
     assert.ok(junctionDecision.reasons.includes('delivery-not-established'), JSON.stringify(junctionDecision.reasons));
   });
+
+
+  test('integration-completion junction: the runtime admits the capture-side boundary witnesses, forwards them into the ancestry composition and persists the digest-only projections (the same-second chain attributes hop 1 with its named witnessClass; hop 2 stays arithmetic-refused per the unsatisfiable route)', async (t) => {
+    const { runHeldHostTurn, mapShellWaitLiveFacts, runShellWaitCase, evaluateLiveLaunchPreflight, localObservationDeclarationFor, nativeInterruptionGateDInput } = driver;
+    const { readdir, readFile, mkdir, writeFile, rm, mkdtemp } = await import('node:fs/promises');
+    const { IDENTITY_RECORD_VERSION } = await import('../tools/shell-wait-probe/closure-preload.mjs');
+    const root = await mkdtemp(join(tmpdir(), 'local-process-witness-junction-'));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const junctionOutput = join(root, 'output');
+    await mkdir(junctionOutput, { mode: 0o700 });
+    const junctionFixture = await createShellWaitFixture({
+      sourceRoot: repositoryRoot, sourceSha: repositorySha, codexBinary: process.execPath,
+      output: junctionOutput, variant: 'candidate', capMs: null, stdoutCapture: true,
+    }, seamInjectedDependencies());
+    t.after(() => junctionFixture.dispose());
+    const junctionPreflight = await evaluateLiveLaunchPreflight({ case: 'rescue-interrupt', survivalControlSelector: null, fixture: junctionFixture });
+    assert.deepEqual(junctionPreflight, { ok: true, reason: null }, `the real armed fixture passes its own preflight (${junctionPreflight.reason ?? ''})`);
+    const junctionDeclaration = localObservationDeclarationFor(junctionFixture, 'rescue-interrupt');
+    assert.ok(junctionDeclaration, 'the runtime arms on the fixture declaration');
+    // The SAME-SECOND chain (the carried refusal shape): every generation's
+    // OS start lives inside ONE whole-second — the arithmetic alone refuses
+    // both hops, and the capture-side witness resolves ONLY hop 1 (the
+    // daemon-hop route is UNSATISFIABLE, report §28.22).
+    const junctionStartSecond = Date.parse('2026-10-01T00:00:01Z');
+    const junctionLstart = 'Thu Oct  1 00:00:01 2026';
+    const junctionCaptureNonce = junctionDeclaration.nonce;
+    const junctionTransportNonce = 'f'.repeat(64);
+    const junctionInvocationRecord = {
+      version: IDENTITY_RECORD_VERSION, role: 'invocation', nonce: junctionCaptureNonce,
+      entryRealpath: junctionDeclaration.entryRealpath, argv: ['invoke-prepared', 'rescue'],
+      pid: 60100, ppid: 600,
+      firstWriteEpochMs: junctionStartSecond + 20, startOriginMs: junctionStartSecond + 0.5, firstWritePreciseMs: junctionStartSecond + 20.5,
+    };
+    const junctionBrokerRecord = {
+      version: IDENTITY_RECORD_VERSION, role: 'broker-daemon', nonce: junctionCaptureNonce,
+      entryRealpath: junctionDeclaration.brokerEntryRealpath,
+      configRealpathSha256: createHash('sha256').update(join(junctionFixture.installedRoot, 'scripts', 'lib', 'broker-config.toml')).digest('hex'),
+      pid: 60200, ppid: 60100,
+      firstWriteEpochMs: junctionStartSecond + 722, startOriginMs: junctionStartSecond + 702.5, firstWritePreciseMs: junctionStartSecond + 722.5,
+    };
+    await writeFile(join(junctionDeclaration.captureDirectory, `${junctionCaptureNonce}.identity.json`), JSON.stringify(junctionInvocationRecord), { mode: 0o600 });
+    await writeFile(join(junctionDeclaration.captureDirectory, `${junctionCaptureNonce}.identity-broker.json`), JSON.stringify(junctionBrokerRecord), { mode: 0o600 });
+    // The CAPTURE-SIDE boundary witness artifacts (the same files the
+    // fixture-owned parent emitters write at their real spawn boundaries; the
+    // identity-record stand-in pattern): writer/child pids, the OS-verified
+    // start identities, the capture-time kernel parent link, the child's own
+    // verified nonce, the boundary/write instants and the witnessed child's
+    // OS start instant (v2). Real wall-clock instants anchor the capture
+    // window (the writes precede the runtime's endpoint reads).
+    const junctionSetupBoundaryMs = Date.now();
+    const junctionInvocationWitness = {
+      version: 2, class: 'spawn-ancestry-witness', role: 'invocation', nonce: junctionCaptureNonce,
+      writerPid: 60100, writerStartIdentity: junctionLstart,
+      childPid: 60200, childPpid: 60100, childStartIdentity: junctionLstart, childNonce: junctionCaptureNonce,
+      boundaryEpochMs: junctionSetupBoundaryMs, firstWriteEpochMs: junctionSetupBoundaryMs + 10,
+      startOriginMs: junctionStartSecond + 0.5, firstWritePreciseMs: junctionSetupBoundaryMs + 10.5,
+      childOsStartInstantMs: junctionStartSecond,
+    };
+    const junctionBrokerWitness = {
+      version: 2, class: 'spawn-ancestry-witness', role: 'broker-daemon', nonce: junctionCaptureNonce,
+      writerPid: 60200, writerStartIdentity: junctionLstart,
+      childPid: 60300, childPpid: 60200, childStartIdentity: junctionLstart, childNonce: junctionTransportNonce,
+      boundaryEpochMs: junctionSetupBoundaryMs + 5, firstWriteEpochMs: junctionSetupBoundaryMs + 15,
+      startOriginMs: junctionStartSecond + 702.5, firstWritePreciseMs: junctionSetupBoundaryMs + 15.5,
+      childOsStartInstantMs: junctionStartSecond,
+    };
+    await writeFile(join(junctionDeclaration.captureDirectory, `${junctionCaptureNonce}.spawn-witness.json`), JSON.stringify(junctionInvocationWitness), { mode: 0o600 });
+    await writeFile(join(junctionDeclaration.captureDirectory, `${junctionCaptureNonce}.spawn-witness-broker.json`), JSON.stringify(junctionBrokerWitness), { mode: 0o600 });
+
+    /** @type {Map<number, number>} */
+    const junctionPidCalls = new Map([[60100, 0], [60200, 0], [60300, 0]]);
+    let junctionPhaseThree = false;
+    let junctionPhaseFourAbsence = false;
+    const junctionRow = (pid) => ({
+      pid,
+      ppid: pid === 60100 ? 600 : pid === 60200 ? 60100 : 60200,
+      lstart: junctionLstart,
+    });
+    const junctionPsSeam = async (queriedPid) => {
+      const pid = typeof queriedPid === 'number' ? queriedPid : (typeof queriedPid === 'object' && queriedPid !== null ? queriedPid.pid : 0);
+      const calls = (junctionPidCalls.get(pid) ?? 0) + 1;
+      junctionPidCalls.set(pid, calls);
+      if (pid === 60100) {
+        if (calls <= 2) return junctionRow(60100);
+        if (calls <= 4) return junctionRow(60100);
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        return undefined;
+      }
+      if (pid === 60200) {
+        // The broker-daemon's first observation pair is delayed ~50 ms so the
+        // phase-3/refresh endpoint reads START after the witness boundary
+        // writes (the capture window rides inside the parent's verified
+        // presence interval — the writer's establishing read postdates the
+        // witness write; the round-12 collection-bound conjunct).
+        if (calls <= 2) await new Promise((resolve) => setTimeout(resolve, 50));
+        return junctionRow(60200);
+      }
+      if (pid === 60300) {
+        if (calls <= 2) { if (calls === 2) junctionPhaseThree = true; return junctionRow(60300); }
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        return undefined;
+      }
+      return undefined;
+    };
+    const held = await runHeldHostTurn({
+      gatePath: 'unused-gate',
+      holdMs: 300_000,
+      budgetMs: 10_000_000_000,
+      measurementCutoffSchedule: true,
+      launch: async () => ({
+        result: new Promise((resolve) => {
+          const anchor = setInterval(() => {
+            if (junctionPhaseFourAbsence) { clearInterval(anchor); resolve({ code: 0, stdout: '', stderr: '' }); }
+          }, 5);
+          anchor.unref?.();
+          setTimeout(() => { clearInterval(anchor); resolve({ code: 0, stdout: '', stderr: '' }); }, 10_000).unref?.();
+        }),
+        terminate: async () => {},
+      }),
+      waitForGate: async () => {},
+      captureProcessIdentity: async () => ({ pid: 60300, ppid: 60200, nonce: junctionTransportNonce, startIdentity: junctionLstart, markerEpochMs: junctionStartSecond + 450 }),
+      readProcessIdentity: async () => undefined,
+      terminateProcessIdentity: async () => ({ attempted: true, signalled: 'SIGTERM', exited: true, failure: null }),
+      waitForProcessExit: async () => {},
+      releaseGate: async () => {},
+      localObservation: junctionDeclaration,
+      localObservationObserverOptions: {
+        osSeams: { platform: 'darwin', ps: junctionPsSeam, environ: 'present' },
+        absenceConfirmation: async () => {
+          junctionPhaseFourAbsence = true;
+          return 'absent';
+        },
+      },
+      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, Math.min(ms, 5))),
+      now: (() => { let value = 0; let gated = false; return () => {
+        if (!gated) { if (junctionPhaseThree) gated = true; else return 0; }
+        value += 500;
+        return value;
+      }; })(),
+      processNonce: junctionTransportNonce,
+    });
+    const junctionBlock = held.cleanup.localObservation;
+    assert.ok(junctionBlock, 'the block persisted on the held record');
+    assert.equal(junctionBlock.admission.status, 'established', `the inline record admission ran (actual ${junctionBlock.admission?.status} ${junctionBlock.admission?.reason ?? ''})`);
+    // The runtime ADMITTED both capture-side boundary witnesses and persists
+    // their digest-only projections.
+    assert.ok(junctionBlock.spawnWitnesses, 'the runtime block carries the spawn-witness projections');
+    assert.equal(junctionBlock.spawnWitnesses.companion?.status, 'established', JSON.stringify(junctionBlock.spawnWitnesses.companion ?? null));
+    assert.equal(junctionBlock.spawnWitnesses.daemon?.status, 'established', JSON.stringify(junctionBlock.spawnWitnesses.daemon ?? null));
+    const witnessIdentity = junctionBlock.spawnWitnesses.companion?.identity;
+    assert.equal(witnessIdentity?.writerPid, 60100, 'the writer pid rides verbatim');
+    assert.equal(witnessIdentity?.childPid, 60200, 'the child pid rides verbatim');
+    assert.equal(witnessIdentity?.nonceSha256, createHash('sha256').update(junctionCaptureNonce).digest('hex'), 'the raw scope nonce NEVER rides the projection (digest only)');
+    assert.equal(JSON.stringify(junctionBlock.spawnWitnesses).includes(junctionCaptureNonce), false, 'the raw capture nonce never enters the persisted projections');
+    assert.equal(JSON.stringify(junctionBlock.spawnWitnesses).includes(junctionTransportNonce), false, 'the raw transport nonce never enters the persisted projections');
+    // The runtime ancestry composition consumed the witnesses: hop 1
+    // establishes with its named witnessClass; hop 2 stays refused (the
+    // unsatisfiable route / the same-second marker arithmetic) — the
+    // one-hop proof never bridges the other.
+    const junctionAncestry = junctionBlock.ancestry;
+    assert.ok(junctionAncestry, 'the ancestry verdict persisted');
+    const junctionHop1 = junctionAncestry.hops.find((hop) => hop.hop === 'companion-to-daemon');
+    const junctionHop2 = junctionAncestry.hops.find((hop) => hop.hop === 'daemon-to-transport');
+    assert.equal(junctionHop1?.status, 'established', JSON.stringify(junctionAncestry));
+    assert.equal(junctionHop1?.witnessClass, 'spawn-boundary-capture', 'the additive witnessClass member rides the established hop');
+    assert.equal(junctionHop2?.status, 'unestablished', JSON.stringify(junctionHop2));
+    assert.equal(junctionAncestry.companionToTransportAttributed, false, 'one witnessed hop never bridges the other');
+    // The projections survive serialize -> reload and the offline join
+    // re-verifies the establishment from the record's own fields: no
+    // spawn-witness refusal rides the replay for hop 1.
+    const junctionLiveFacts = mapShellWaitLiveFacts(
+      { case: 'rescue-interrupt', pollMs: 3_600_000, waitPolicy: null, interruptBaselineSelector: null, survivalControlSelector: null },
+      held, { status: 'inconclusive', inconclusive: { reason: 'the offline path never runs the evidence scan' }, facts: null },
+      null, null, junctionFixture, [], [],
+    );
+    const junctionRecord = await runShellWaitCase(
+      { case: 'rescue-interrupt', codexBinary: process.execPath, sourceSha: repositorySha, workerDurationMs: 420_000, capMs: 3_600_000, pollMs: 3_600_000, budgetMs: 1_200_000, output: junctionOutput },
+      { createFixture: async () => junctionFixture, executeLiveCase: async () => junctionLiveFacts },
+    );
+    assert.equal(junctionRecord.status, 'executed');
+    const junctionRecordName = (await readdir(junctionOutput)).find((name) => name.endsWith('.record.json'));
+    const junctionReload = JSON.parse(await readFile(join(junctionOutput, junctionRecordName), 'utf8'));
+    assert.ok(junctionReload.localProcess?.spawnWitnesses, 'the witness projections SURVIVE serialize reload');
+    const junctionJoined = nativeInterruptionGateDInput(junctionReload);
+    assert.ok(junctionJoined.localProcessDuties, 'the armed block composes the local-duty input');
+    const replayRefusals = junctionJoined.localProcessDuties.refusals;
+    assert.equal(replayRefusals.some((reason) => reason.startsWith('spawn-witness-')), false,
+      `no spawn-witness refusal rides the replay for the re-verified hop 1 (actual ${JSON.stringify(replayRefusals)})`);
+    assert.ok(replayRefusals.includes('ancestry-hops-unattributed'), 'the unbridged hop 2 keeps the local layer honestly unsettled');
+    assert.equal(junctionJoined.localProcessDuties.settled, false, 'the local layer never settles on one witnessed hop');
+  });
 });
 
 describe('local-settlement task 3: the offline Gate-D join composes the local-duty contract with the §25.7 credit fences (join v6; the §25.10 persisted block is the ONLY local evidence source)', async () => {
@@ -4836,7 +5949,7 @@ describe('local-settlement task 3: the offline Gate-D join composes the local-du
   });
 
   test('the join maps the armed block to a settled local-duty contract under the operative fence', () => {
-    assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 37, 'the join version registers the local-duty input contract');
+    assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 38, 'the join version registers the local-duty input contract');
     const input = nativeInterruptionGateDInput(record());
     assert.ok(input.localProcessDuties, 'the armed block composes the local-duty input');
     assert.equal(input.localProcessDuties.contractVersion, 1);
@@ -6022,7 +7135,72 @@ describe('local-settlement task 3 review round 3 (one P1 + four P2): the transpo
     assert.equal(block.ancestry.companionToTransportAttributed, true, JSON.stringify(block.ancestry.hops));
     assert.equal(block.duties?.settled, true, 'the duties settle on the refreshed-endpoint ancestry');
   });
+
 });
+
+  test('overall-review RED (runtime): a witness whose childOsStartInstantMs CONTRADICTS the child endpoint’s numeric start instant refuses establishment — same captured start identity, same-source numerics must agree (overall review)', async () => {
+    const { joinAncestryHops } = await import('../tools/shell-wait-probe/local-process-observation.mjs');
+    // The overall-review finding: the witness record’s childOsStartInstantMs
+    // and the child endpoint’s numeric start instant describe the SAME
+    // captured start identity (the identity-string equality binds the
+    // generations), and BOTH derive from the same source (the same captured
+    // start identity text — the darwin lstart parse or the Linux proc-ticks
+    // arithmetic). Their NUMERIC instants must therefore AGREE: the
+    // reviewer’s schedule (the witness start 1950, the endpoint numeric 0,
+    // the boundary 2000, the identity strings equal) previously ESTABLISHED
+    // with witnessClass. Same-domain same-source numerics require equality
+    // — no tolerance.
+    const nonce = 'c'.repeat(64);
+    const mkEndpoint = (pid, ppid, startIdentity, startInstantEpochMs, readStarted, identityRead, readEpoch) => ({
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'established', reason: null,
+      observation: { pid, ppid, startIdentity, nonce, startInstantEpochMs, ppidChangedFromCapture: null },
+      queried: { pid, nonce },
+      readStartedEpochMs: readStarted, identityReadEpochMs: identityRead, readEpochMs: readEpoch, absenceConfirmed: null,
+    });
+    const companion = mkEndpoint(5100, 4000, 'S-COMPANION', 0, 2050, 2100, 2100);
+    const daemon = mkEndpoint(5200, 5100, 'S-DAEMON', 0, 2000, 2500, 2500);
+    const witness = {
+      localProcessObservationVersion: 3, class: 'spawn-ancestry-witness', status: 'established', reason: null,
+      identity: { version: 2, class: 'spawn-ancestry-witness', role: 'invocation', nonce, writerPid: 5100, writerStartIdentity: 'S-COMPANION', childPid: 5200, childPpid: 5100, childStartIdentity: 'S-DAEMON', childNonce: nonce, boundaryEpochMs: 2000, firstWriteEpochMs: 2010, startOriginMs: null, firstWritePreciseMs: null, childOsStartInstantMs: 1950 },
+      readStartedEpochMs: 2000, readEpochMs: 2010,
+    };
+    const verdict = joinAncestryHops({
+      nonce, companionObservation: companion, daemonObservation: daemon,
+      transportMarker: { pid: 5300, ppid: 5200, nonce }, expectedTransportNonce: nonce,
+      companionSpawnWitness: witness,
+    });
+    assert.deepEqual([verdict.hops[0].status, verdict.hops[0].reason], ['unestablished', 'spawn-witness-child-start-contradicted'],
+      `the contradictory record refuses establishment (measured: ${JSON.stringify(verdict.hops[0])})`);
+    assert.equal(verdict.companionToTransportAttributed, false);
+    // CONTROL — EQUALITY: a record whose witness instant EQUALS the
+    // endpoint’s numeric instant keeps establishing (the endpoint numeric
+    // moves inside the continuity window and the record instant matches it
+    // — the equal pair).
+    const agreeingWitness = {
+      ...witness,
+      identity: { ...witness.identity, childOsStartInstantMs: 500 },
+    };
+    const agreeingDaemon = mkEndpoint(5200, 5100, 'S-DAEMON', 500, 2000, 2500, 2500);
+    const agreeing = joinAncestryHops({
+      nonce, companionObservation: companion, daemonObservation: agreeingDaemon,
+      transportMarker: { pid: 5300, ppid: 5200, nonce }, expectedTransportNonce: nonce,
+      companionSpawnWitness: agreeingWitness,
+    });
+    assert.deepEqual([agreeing.hops[0].status, agreeing.hops[0].reason], ['established', null],
+      'an agreeing record keeps the witness establishment (unchanged)');
+    assert.equal(agreeing.hops[0].witnessClass, 'spawn-boundary-capture');
+    // CONTROL — ABSENT endpoint numeric: unknown, never credited as
+    // agreement — the record’s instant alone keeps the existing
+    // classification (the creation-order/continuity rules, unchanged).
+    const daemonNoNumeric = { ...daemon, observation: { ...daemon.observation, startInstantEpochMs: undefined } };
+    const absentNumeric = joinAncestryHops({
+      nonce, companionObservation: companion, daemonObservation: daemonNoNumeric,
+      transportMarker: { pid: 5300, ppid: 5200, nonce }, expectedTransportNonce: nonce,
+      companionSpawnWitness: witness,
+    });
+    assert.equal(absentNumeric.hops[0].status, 'unestablished',
+      'the absent endpoint numeric keeps the existing classification (the record instant alone governs the creation-order/continuity rules)');
+  });
 
 describe('local-settlement task 3 review round 3 (four P2): the offline join re-verifies the persisted ADMISSIONS, the NAMED ancestry hops + ppid chain and the generation-change reads', async () => {
   const { nativeInterruptionGateDInput } = await import('../tools/shell-wait-probe/driver.mjs');
@@ -6184,6 +7362,605 @@ describe('local-settlement task 3 review round 3 (four P2): the offline join re-
     assert.equal(consolidated.settled, false);
     assert.ok(consolidated.refusals.includes('exit-reuse-latched'), JSON.stringify(consolidated.refusals));
   });
+
+  test('F6 (P2) RED → a replacement whose collection INTERVAL OVERLAPS the presence baseline never settles as disappeared — the persisted replay applies the same interval classification as the runtime (codex round 19)', async () => {
+    // The codex-round-19 schedule: presence [1900, 2100]; the replacement's
+    // collection spans [1800, 2200] (the nonce failure completing 2400). The
+    // runtime adjudication classifies the overlap AMBIGUOUS
+    // (pid-start-identity-ambiguous); the persisted replay must apply the
+    // SAME interval-to-interval classification — dating the replacement at
+    // its dispatch alone made it look stale (1800 < the horizon 2100), the
+    // latch skipped it, and a summary claiming disappeared received
+    // settlement credit. Runtime ambiguity must survive persistence — never
+    // downgraded to a settled disappearance.
+    const g = armReplay();
+    const overlapped = cleanCopy(g.record());
+    overlapped.localProcess.reads.push({
+      localProcessObservationVersion: 1, class: 'os-live-observation', status: 'unestablished', reason: 'nonce-mismatch-observed-then-gone',
+      observedStartIdentity: 'S-REUSE',
+      observedIdentityReadEpochMs: 1800,
+      observedIdentityCompletedEpochMs: 2200,
+      observation: null, queried: { pid: 60100, nonceSha256: sha(g.scopeNonce) },
+      readStartedEpochMs: 1800, readEpochMs: 2400, absenceConfirmed: null,
+    });
+    // RUNTIME/OFFLINE AGREEMENT (the frozen clause): the runtime on the SAME
+    // schedule returns the ambiguous verdict.
+    const runtime = await import('../tools/shell-wait-probe/local-process-observation.mjs');
+    const runtimeBaseline = {
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'established', reason: null,
+      observation: { pid: 60100, ppid: 600, startIdentity: 'S-COMPANION', nonce: g.scopeNonce, startInstantEpochMs: 1000, ppidChangedFromCapture: null },
+      queried: { pid: 60100, nonce: g.scopeNonce },
+      readStartedEpochMs: 1900, identityReadEpochMs: 2100, readEpochMs: 2300, absenceConfirmed: null,
+    };
+    const runtimeCarried = {
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'unestablished', reason: 'liveness-read-failed',
+      queried: { pid: 60100, nonce: g.scopeNonce },
+      readStartedEpochMs: 1800,
+      observedStartIdentity: 'S-REUSE',
+      observedIdentityReadEpochMs: 1800,
+      observedIdentityCompletedEpochMs: 2200,
+      readEpochMs: 2400, absenceConfirmed: null,
+    };
+    const runtimeAbsence = {
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'absent', reason: 'process-absent',
+      queried: { pid: 60100, nonce: g.scopeNonce },
+      readStartedEpochMs: 2500, identityReadEpochMs: 4000, readEpochMs: 4000, absenceConfirmed: true,
+    };
+    const runtimeExit = await runtime.adjudicateLocalExit({ presence: runtimeBaseline, absenceReads: [runtimeCarried, runtimeAbsence] });
+    assert.equal(runtimeExit.status, 'unestablished');
+    assert.equal(runtimeExit.reason, 'pid-start-identity-ambiguous',
+      'the runtime classifies the overlapping replacement AMBIGUOUS — the persisted replay must agree');
+    const consolidated = nativeInterruptionGateDInput(cleanCopy(overlapped)).localProcessDuties;
+    assert.equal(consolidated.settled, false,
+      `a summary whose intervals the runtime classifies AMBIGUOUS never receives settlement credit (measured: ${JSON.stringify({ settled: consolidated.settled, refusals: consolidated.refusals })})`);
+    assert.ok(consolidated.refusals.includes('exit-reuse-interval-ambiguous'), JSON.stringify(consolidated.refusals));
+    // The DEFINITELY-STALE control: the replacement collected strictly
+    // before the presence's dispatch — the baseline provably cannot have
+    // seen it — is old evidence and never blocks the summary (unchanged).
+    const staleReplaced = cleanCopy(g.record());
+    staleReplaced.localProcess.reads.push({
+      localProcessObservationVersion: 1, class: 'os-live-observation', status: 'unestablished', reason: 'nonce-mismatch-observed-then-gone',
+      observedStartIdentity: 'S-REUSE',
+      observedIdentityReadEpochMs: 1500,
+      observedIdentityCompletedEpochMs: 1850,
+      observation: null, queried: { pid: 60100, nonceSha256: sha(g.scopeNonce) },
+      readStartedEpochMs: 1500, readEpochMs: 2400, absenceConfirmed: null,
+    });
+    const staleConsolidated = nativeInterruptionGateDInput(cleanCopy(staleReplaced)).localProcessDuties;
+    assert.equal(staleConsolidated.settled, true,
+      'a definitively stale replacement (collected strictly before the presence dispatched) is old evidence — the lawful settlement holds');
+  });
+
+  test('F7 (P2) RED → a replacement carrying an INVERTED collection interval is inconsistent evidence — the replay refuses settlement with the mirrored ordered-validation (codex round 21)', async () => {
+    // The codex-round-21 schedule (the replay-side mirror of the round-20
+    // runtime validation): presence [1900, 2100]; the replacement carries
+    // the INVERTED collection interval [1500, 1400] (its taken instant
+    // follows its completion — a backwards-moving or garbage clock). The
+    // round-19 replay comparison dated the replacement at its dispatch
+    // (1500 < the horizon 2100) and SKIPPED the malformed evidence into
+    // settlement credit, while the runtime classifier on the same evidence
+    // returns pid-start-identity-interval-inconsistent. The replay must
+    // validate ORDERED before classifying or skipping: an inverted interval
+    // is inconsistent evidence — settlement refused with the mirrored
+    // label, never stale-skipped, never credited.
+    const g = armReplay();
+    const inverted = cleanCopy(g.record());
+    inverted.localProcess.reads.push({
+      localProcessObservationVersion: 1, class: 'os-live-observation', status: 'unestablished', reason: 'nonce-mismatch-observed-then-gone',
+      observedStartIdentity: 'S-REUSE',
+      observedIdentityReadEpochMs: 1500,
+      observedIdentityCompletedEpochMs: 1400,
+      observation: null, queried: { pid: 60100, nonceSha256: sha(g.scopeNonce) },
+      readStartedEpochMs: 1500, readEpochMs: 2400, absenceConfirmed: null,
+    });
+    // RUNTIME/OFFLINE AGREEMENT (the frozen clause): the runtime classifier
+    // on the SAME evidence returns the inconsistent verdict.
+    const runtime = await import('../tools/shell-wait-probe/local-process-observation.mjs');
+    const runtimeBaseline = {
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'established', reason: null,
+      observation: { pid: 60100, ppid: 600, startIdentity: 'S-COMPANION', nonce: g.scopeNonce, startInstantEpochMs: 1000, ppidChangedFromCapture: null },
+      queried: { pid: 60100, nonce: g.scopeNonce },
+      readStartedEpochMs: 1900, identityReadEpochMs: 2100, readEpochMs: 2300, absenceConfirmed: null,
+    };
+    const runtimeInverted = {
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'unestablished', reason: 'liveness-read-failed',
+      queried: { pid: 60100, nonce: g.scopeNonce },
+      readStartedEpochMs: 1500,
+      observedStartIdentity: 'S-REUSE',
+      observedIdentityReadEpochMs: 1500,
+      observedIdentityCompletedEpochMs: 1400,
+      readEpochMs: 2400, absenceConfirmed: null,
+    };
+    const runtimeAbsence = {
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'absent', reason: 'process-absent',
+      queried: { pid: 60100, nonce: g.scopeNonce },
+      readStartedEpochMs: 2500, identityReadEpochMs: 4000, readEpochMs: 4000, absenceConfirmed: true,
+    };
+    const runtimeExit = await runtime.adjudicateLocalExit({ presence: runtimeBaseline, absenceReads: [runtimeInverted, runtimeAbsence] });
+    assert.equal(runtimeExit.status, 'unestablished');
+    assert.equal(runtimeExit.reason, 'pid-start-identity-interval-inconsistent',
+      'the runtime classifies the inverted interval INCONSISTENT — the persisted replay must agree');
+    const consolidated = nativeInterruptionGateDInput(cleanCopy(inverted)).localProcessDuties;
+    assert.equal(consolidated.settled, false,
+      `a summary carrying inconsistent evidence never receives settlement credit (measured: ${JSON.stringify({ settled: consolidated.settled, refusals: consolidated.refusals })})`);
+    assert.ok(consolidated.refusals.includes('exit-reuse-interval-inconsistent'), JSON.stringify(consolidated.refusals));
+    // The WELL-FORMED replay controls (round-19 pins, carried): an ordered
+    // OVERLAPPING interval keeps the ambiguous refusal and an ordered
+    // DEFINITIVELY-STALE interval keeps the lawful settlement.
+    const wellFormedOverlap = cleanCopy(g.record());
+    wellFormedOverlap.localProcess.reads.push({
+      localProcessObservationVersion: 1, class: 'os-live-observation', status: 'unestablished', reason: 'nonce-mismatch-observed-then-gone',
+      observedStartIdentity: 'S-REUSE',
+      observedIdentityReadEpochMs: 1800,
+      observedIdentityCompletedEpochMs: 2200,
+      observation: null, queried: { pid: 60100, nonceSha256: sha(g.scopeNonce) },
+      readStartedEpochMs: 1800, readEpochMs: 2400, absenceConfirmed: null,
+    });
+    const overlapConsolidated = nativeInterruptionGateDInput(cleanCopy(wellFormedOverlap)).localProcessDuties;
+    assert.equal(overlapConsolidated.settled, false);
+    assert.ok(overlapConsolidated.refusals.includes('exit-reuse-interval-ambiguous'), JSON.stringify(overlapConsolidated.refusals));
+    const wellFormedStale = cleanCopy(g.record());
+    wellFormedStale.localProcess.reads.push({
+      localProcessObservationVersion: 1, class: 'os-live-observation', status: 'unestablished', reason: 'nonce-mismatch-observed-then-gone',
+      observedStartIdentity: 'S-REUSE',
+      observedIdentityReadEpochMs: 1500,
+      observedIdentityCompletedEpochMs: 1850,
+      observation: null, queried: { pid: 60100, nonceSha256: sha(g.scopeNonce) },
+      readStartedEpochMs: 1500, readEpochMs: 2400, absenceConfirmed: null,
+    });
+    const staleConsolidated = nativeInterruptionGateDInput(cleanCopy(wellFormedStale)).localProcessDuties;
+    assert.equal(staleConsolidated.settled, true,
+      'an ordered definitively-stale interval keeps the lawful settlement (unchanged)');
+  });
+
+  test('F8 (P2) RED → a PARTIALLY TORN record (observedIdentityReadEpochMs omitted, the fallback lower bound inverted against the upper) refuses settlement — the resolved bound is validated (codex round 22)', async () => {
+    // The codex-round-22 schedule: the replacement read OMITS
+    // observedIdentityReadEpochMs, so the carried lower bound falls back to
+    // its identityReadEpochMs (1500) — which EXCEEDS the carried upper
+    // (observedIdentityCompletedEpochMs 1400). The round-21 check required
+    // the explicit observed field and SKIPPED this partially torn shape:
+    // the replay stale-skipped the replacement (fallback lower 1500 < the
+    // horizon 2100) and the coherent-looking summary received settlement
+    // credit, while the runtime classifier resolves the SAME fallback and
+    // returns pid-start-identity-interval-inconsistent. The replay must
+    // validate the RESOLVED carried lower bound — the torn record is
+    // inconsistent evidence, settlement refused.
+    const g = armReplay();
+    const torn = cleanCopy(g.record());
+    torn.localProcess.reads.push({
+      localProcessObservationVersion: 1, class: 'os-live-observation', status: 'unestablished', reason: 'nonce-mismatch-observed-then-gone',
+      observedStartIdentity: 'S-REUSE',
+      observedIdentityCompletedEpochMs: 1400,
+      observation: null, queried: { pid: 60100, nonceSha256: sha(g.scopeNonce) },
+      readStartedEpochMs: 1500, identityReadEpochMs: 1500, readEpochMs: 2400, absenceConfirmed: null,
+    });
+    // RUNTIME/REPLAY AGREEMENT (the frozen clause): the runtime classifier
+    // resolves the SAME fallback and returns the inconsistent verdict.
+    const runtime = await import('../tools/shell-wait-probe/local-process-observation.mjs');
+    const runtimeBaseline = {
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'established', reason: null,
+      observation: { pid: 60100, ppid: 600, startIdentity: 'S-COMPANION', nonce: g.scopeNonce, startInstantEpochMs: 1000, ppidChangedFromCapture: null },
+      queried: { pid: 60100, nonce: g.scopeNonce },
+      readStartedEpochMs: 1900, identityReadEpochMs: 2100, readEpochMs: 2300, absenceConfirmed: null,
+    };
+    const runtimeTorn = {
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'unestablished', reason: 'liveness-read-failed',
+      queried: { pid: 60100, nonce: g.scopeNonce },
+      readStartedEpochMs: 1500,
+      observedStartIdentity: 'S-REUSE',
+      observedIdentityCompletedEpochMs: 1400,
+      identityReadEpochMs: 1500,
+      readEpochMs: 2400, absenceConfirmed: null,
+    };
+    const runtimeAbsence = {
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'absent', reason: 'process-absent',
+      queried: { pid: 60100, nonce: g.scopeNonce },
+      readStartedEpochMs: 2500, identityReadEpochMs: 4000, readEpochMs: 4000, absenceConfirmed: true,
+    };
+    const runtimeExit = await runtime.adjudicateLocalExit({ presence: runtimeBaseline, absenceReads: [runtimeTorn, runtimeAbsence] });
+    assert.equal(runtimeExit.status, 'unestablished');
+    assert.equal(runtimeExit.reason, 'pid-start-identity-interval-inconsistent',
+      'the runtime resolves the fallback lower bound and classifies the torn interval INCONSISTENT — the persisted replay must agree');
+    const consolidated = nativeInterruptionGateDInput(cleanCopy(torn)).localProcessDuties;
+    assert.equal(consolidated.settled, false,
+      `a partially torn record never receives settlement credit (measured: ${JSON.stringify({ settled: consolidated.settled, refusals: consolidated.refusals })})`);
+    assert.ok(consolidated.refusals.includes('exit-reuse-interval-inconsistent'), JSON.stringify(consolidated.refusals));
+    // The CONTROL: a torn record whose RESOLVED interval is WELL-FORMED
+    // (fallback lower 1800, upper 2200) classifies by the NORMAL interval
+    // rules — overlap with the presence window keeps the ambiguous refusal
+    // (unchanged).
+    const wellFormedResolved = cleanCopy(g.record());
+    wellFormedResolved.localProcess.reads.push({
+      localProcessObservationVersion: 1, class: 'os-live-observation', status: 'unestablished', reason: 'nonce-mismatch-observed-then-gone',
+      observedStartIdentity: 'S-REUSE',
+      observedIdentityCompletedEpochMs: 2200,
+      observation: null, queried: { pid: 60100, nonceSha256: sha(g.scopeNonce) },
+      readStartedEpochMs: 1800, identityReadEpochMs: 1800, readEpochMs: 2400, absenceConfirmed: null,
+    });
+    const wellFormedConsolidated = nativeInterruptionGateDInput(cleanCopy(wellFormedResolved)).localProcessDuties;
+    assert.equal(wellFormedConsolidated.settled, false);
+    assert.ok(wellFormedConsolidated.refusals.includes('exit-reuse-interval-ambiguous'), JSON.stringify(wellFormedConsolidated.refusals));
+  });
+
+  test('F9 (P2) RED → a replay replacement read with a SUPPLIED-INVALID upper bound refuses settlement — malformed bounds are never legacy-discarded (codex round 23)', () => {
+    // The codex-round-23 replay side: the armed fixture's replacement read
+    // supplying the STRING upper bound "2200" bypassed the safe-integer
+    // guards (treated as the absent legacy shape), the stale skip swallowed
+    // the replacement, and the summary received settlement credit — while
+    // the numeric 2200 correctly refuses as ambiguous. The replay applies
+    // the same three-state bound resolution: supplied-invalid bounds refuse
+    // exit-reuse-interval-inconsistent.
+    const g = armReplay();
+    const stringUpper = cleanCopy(g.record());
+    stringUpper.localProcess.reads.push({
+      localProcessObservationVersion: 1, class: 'os-live-observation', status: 'unestablished', reason: 'nonce-mismatch-observed-then-gone',
+      observedStartIdentity: 'S-REUSE',
+      observedIdentityReadEpochMs: 1800,
+      observedIdentityCompletedEpochMs: '2200',
+      observation: null, queried: { pid: 60100, nonceSha256: sha(g.scopeNonce) },
+      readStartedEpochMs: 1800, readEpochMs: 2400, absenceConfirmed: null,
+    });
+    const consolidated = nativeInterruptionGateDInput(cleanCopy(stringUpper)).localProcessDuties;
+    assert.equal(consolidated.settled, false,
+      `a supplied-invalid upper bound never receives settlement credit (measured: ${JSON.stringify({ settled: consolidated.settled, refusals: consolidated.refusals })})`);
+    assert.ok(consolidated.refusals.includes('exit-reuse-interval-inconsistent'), JSON.stringify(consolidated.refusals));
+    // The FLOAT variant: the same supplied-invalid malformed fact.
+    const floatUpper = cleanCopy(g.record());
+    floatUpper.localProcess.reads.push({
+      localProcessObservationVersion: 1, class: 'os-live-observation', status: 'unestablished', reason: 'nonce-mismatch-observed-then-gone',
+      observedStartIdentity: 'S-REUSE',
+      observedIdentityReadEpochMs: 1800,
+      observedIdentityCompletedEpochMs: 2200.5,
+      observation: null, queried: { pid: 60100, nonceSha256: sha(g.scopeNonce) },
+      readStartedEpochMs: 1800, readEpochMs: 2400, absenceConfirmed: null,
+    });
+    const floatConsolidated = nativeInterruptionGateDInput(cleanCopy(floatUpper)).localProcessDuties;
+    assert.equal(floatConsolidated.settled, false);
+    assert.ok(floatConsolidated.refusals.includes('exit-reuse-interval-inconsistent'), JSON.stringify(floatConsolidated.refusals));
+    // The ABSENT control: no upper bound at all — the legacy stale skip
+    // applies UNCHANGED (the lawful settlement holds).
+    const absentUpper = cleanCopy(g.record());
+    absentUpper.localProcess.reads.push({
+      localProcessObservationVersion: 1, class: 'os-live-observation', status: 'unestablished', reason: 'nonce-mismatch-observed-then-gone',
+      observedStartIdentity: 'S-REUSE',
+      observedIdentityReadEpochMs: 1800,
+      observation: null, queried: { pid: 60100, nonceSha256: sha(g.scopeNonce) },
+      readStartedEpochMs: 1800, readEpochMs: 2400, absenceConfirmed: null,
+    });
+    const absentConsolidated = nativeInterruptionGateDInput(cleanCopy(absentUpper)).localProcessDuties;
+    assert.equal(absentConsolidated.settled, true,
+      'the ABSENT legacy shape keeps its stale skip and lawful settlement (unchanged)');
+    // The SUPPLIED-VALID control: numeric 2200 keeps the ambiguous refusal
+    // (unchanged).
+    const validUpper = cleanCopy(g.record());
+    validUpper.localProcess.reads.push({
+      localProcessObservationVersion: 1, class: 'os-live-observation', status: 'unestablished', reason: 'nonce-mismatch-observed-then-gone',
+      observedStartIdentity: 'S-REUSE',
+      observedIdentityReadEpochMs: 1800,
+      observedIdentityCompletedEpochMs: 2200,
+      observation: null, queried: { pid: 60100, nonceSha256: sha(g.scopeNonce) },
+      readStartedEpochMs: 1800, readEpochMs: 2400, absenceConfirmed: null,
+    });
+    const validConsolidated = nativeInterruptionGateDInput(cleanCopy(validUpper)).localProcessDuties;
+    assert.equal(validConsolidated.settled, false);
+    assert.ok(validConsolidated.refusals.includes('exit-reuse-interval-ambiguous'), JSON.stringify(validConsolidated.refusals));
+    // (codex round 24 site-audit pin) the replay's validation ALREADY
+    // precedes every completion guard and the stale skip (the round-23
+    // block sits at the top of the latch loop; the only preceding guards
+    // are refuse-by-name, never discard) — a supplied-invalid upper bound
+    // whose failure completes BEFORE the horizon still refuses.
+    const earlyFailureStringUpper = cleanCopy(g.record());
+    earlyFailureStringUpper.localProcess.reads.push({
+      localProcessObservationVersion: 1, class: 'os-live-observation', status: 'unestablished', reason: 'nonce-mismatch-observed-then-gone',
+      observedStartIdentity: 'S-REUSE',
+      observedIdentityReadEpochMs: 1800,
+      observedIdentityCompletedEpochMs: '2000',
+      observation: null, queried: { pid: 60100, nonceSha256: sha(g.scopeNonce) },
+      readStartedEpochMs: 1800, readEpochMs: 2000, absenceConfirmed: null,
+    });
+    const earlyFailureConsolidated = nativeInterruptionGateDInput(cleanCopy(earlyFailureStringUpper)).localProcessDuties;
+    assert.equal(earlyFailureConsolidated.settled, false,
+      `the replay validation precedes the completion guards — a failing-before-horizon malformed bound still refuses (measured: ${JSON.stringify({ settled: earlyFailureConsolidated.settled, refusals: earlyFailureConsolidated.refusals })})`);
+    assert.ok(earlyFailureConsolidated.refusals.includes('exit-reuse-interval-inconsistent'), JSON.stringify(earlyFailureConsolidated.refusals));
+  });
+
+  test('F10 (P2) RED → the replay mirrors the runtime\u2019s ORDERED horizon walk — an identity-bearing absence collected inside the ORIGINAL baseline but classified after the refresh is STALE, and the lawful disappearance settlement stands (codex round 25)', async () => {
+    // The codex-round-25 schedule: baseline presence [1900, 2100]; a
+    // REFRESHED same-generation presence [4600, 4650] (the recorded order);
+    // an identity-bearing ABSENT read whose collection spans [1800, 2200]
+    // (the fallback lower via identityReadEpochMs) and whose confirmation
+    // completes at 5100. The RUNTIME processes the refresh first (the
+    // absent read\u2019s decision instant is its confirmation completion
+    // 5100, which sorts after the refresh) and classifies the carried
+    // interval against the REFRESHED horizon [4600, 4650]: the interval
+    // completed strictly before the horizon\u2019s collection start —
+    // definitively STALE, discarded, and the confirmed absence adjudicates
+    // the lawful disappearance. The replay compared the interval against
+    // the INITIAL baseline forever and returned
+    // exit-reuse-interval-ambiguous — rejecting the runtime-established
+    // disappearance. The replay must mirror the ordered horizon updates.
+    const g = armReplay();
+    const mirrored = cleanCopy(g.record());
+    mirrored.localProcess.reads.push({
+      localProcessObservationVersion: 1, class: 'os-live-observation', status: 'absent', reason: 'process-absent',
+      observedStartIdentity: 'S-REUSE',
+      observedIdentityCompletedEpochMs: 2200,
+      observation: null, queried: { pid: 60100, nonceSha256: sha(g.scopeNonce) },
+      readStartedEpochMs: 1800, identityReadEpochMs: 1800, readEpochMs: 5100, absenceConfirmed: true,
+    });
+    // RUNTIME/REPLAY AGREEMENT (the frozen clause): the runtime on the SAME
+    // persisted sequence returns the lawful disappeared verdict.
+    const runtime = await import('../tools/shell-wait-probe/local-process-observation.mjs');
+    const runtimeBaseline = {
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'established', reason: null,
+      observation: { pid: 60100, ppid: 600, startIdentity: 'S-COMPANION', nonce: g.scopeNonce, startInstantEpochMs: 1000, ppidChangedFromCapture: null },
+      queried: { pid: 60100, nonce: g.scopeNonce },
+      readStartedEpochMs: 1900, identityReadEpochMs: 2100, readEpochMs: 2100, absenceConfirmed: null,
+    };
+    const runtimeRefresh = {
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'established', reason: null,
+      observation: { pid: 60100, ppid: 600, startIdentity: 'S-COMPANION', nonce: g.scopeNonce, startInstantEpochMs: 1000, ppidChangedFromCapture: null },
+      queried: { pid: 60100, nonce: g.scopeNonce },
+      readStartedEpochMs: 4600, identityReadEpochMs: 4650, readEpochMs: 4700, absenceConfirmed: null,
+    };
+    const runtimeCarried = {
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'absent', reason: 'process-absent',
+      queried: { pid: 60100, nonce: g.scopeNonce },
+      readStartedEpochMs: 1800,
+      observedStartIdentity: 'S-REUSE',
+      observedIdentityCompletedEpochMs: 2200,
+      identityReadEpochMs: 1800, readEpochMs: 5100, absenceConfirmed: true,
+    };
+    // The SAME persisted sequence the replay consumes: the armed record's
+    // base confirmed absence [4900, 5100] rides beside the injected read.
+    const runtimeBaseAbsence = {
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'absent', reason: 'process-absent',
+      queried: { pid: 60100, nonce: g.scopeNonce },
+      readStartedEpochMs: 4900, identityReadEpochMs: 5100, readEpochMs: 5100, absenceConfirmed: true,
+    };
+    const runtimeExit = await runtime.adjudicateLocalExit({ presence: runtimeBaseline, absenceReads: [runtimeRefresh, runtimeCarried, runtimeBaseAbsence] });
+    assert.equal(runtimeExit.status, 'disappeared',
+      `the runtime classifies the carried interval STALE against the REFRESHED horizon and the base absence credits the lawful disappearance (measured: ${JSON.stringify({ status: runtimeExit.status, reason: runtimeExit.reason })})`);
+    const consolidated = nativeInterruptionGateDInput(cleanCopy(mirrored)).localProcessDuties;
+    assert.equal(consolidated.settled, true,
+      `the replay reaches the runtime\u2019s verdict — the carried interval is stale (non-deciding) and the lawful disappearance settlement stands (measured: ${JSON.stringify({ settled: consolidated.settled, refusals: consolidated.refusals })})`);
+    assert.ok(!consolidated.refusals.includes('exit-reuse-interval-ambiguous'),
+      'the initial-baseline ambiguity is gone — the interval classified against the REFRESHED horizon (stale)');
+    assert.ok(!consolidated.refusals.includes('exit-reuse-latched'), JSON.stringify(consolidated.refusals));
+    // The ORDERING control: a carried interval whose decision instant sorts
+    // AFTER the refresh (collected [4700, 4800]) classifies against the
+    // REFRESHED horizon exactly as the runtime does — definitively
+    // post-baseline, the reuse latch.
+    const postRefresh = cleanCopy(g.record());
+    postRefresh.localProcess.reads.push({
+      localProcessObservationVersion: 1, class: 'os-live-observation', status: 'unestablished', reason: 'nonce-mismatch-observed-then-gone',
+      observedStartIdentity: 'S-REUSE',
+      observedIdentityReadEpochMs: 4700,
+      observedIdentityCompletedEpochMs: 4800,
+      observation: null, queried: { pid: 60100, nonceSha256: sha(g.scopeNonce) },
+      readStartedEpochMs: 4700, readEpochMs: 5000, absenceConfirmed: null,
+    });
+    const postRefreshConsolidated = nativeInterruptionGateDInput(cleanCopy(postRefresh)).localProcessDuties;
+    assert.equal(postRefreshConsolidated.settled, false);
+    assert.ok(postRefreshConsolidated.refusals.includes('exit-reuse-latched'), JSON.stringify(postRefreshConsolidated.refusals));
+  });
+
+  test('F11 (P2) RED → a WRONG-PID presence read (queried matching, observed differing, start identity coincidentally matching) never walks the horizon — the base absence credits the lawful disappearance exactly as the runtime does (codex round 26)', async () => {
+    // The codex-round-26 finding: the horizon walk (and the round-25 mirror)
+    // gated presence reads by the QUERIED pid and the START-IDENTITY string
+    // but never by the OBSERVED pid — a read about a DIFFERENT process
+    // (observed pid 60999, queried 60100, start identity coincidentally
+    // 'S-COMPANION') walked the horizon to 5100, which uncredited the base
+    // confirmed absence [4900, 5100] (its collection 4900 < 5100) and
+    // settled the summary FALSE, while the runtime IGNORES the wrong-PID
+    // read (observation.pid !== bound.pid) and credits the lawful
+    // disappearance. Presence evidence requires the OBSERVED pid to match.
+    const g = armReplay();
+    const wrongPid = cleanCopy(g.record());
+    wrongPid.localProcess.reads.push({
+      localProcessObservationVersion: 1, class: 'os-live-observation', status: 'established', reason: null,
+      observation: { pid: 60999, ppid: 600, startIdentity: 'S-COMPANION', startInstantEpochMs: 1000, ppidChangedFromCapture: null, nonceSha256: sha(g.scopeNonce) },
+      queried: { pid: 60100, nonceSha256: sha(g.scopeNonce) },
+      readStartedEpochMs: 5000, identityReadEpochMs: 5100, readEpochMs: 5600, absenceConfirmed: null,
+    });
+    // RUNTIME/REPLAY AGREEMENT (the frozen clause): the runtime IGNORES the
+    // wrong-PID read and credits the lawful disappearance.
+    const runtime = await import('../tools/shell-wait-probe/local-process-observation.mjs');
+    const runtimeBaseline = {
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'established', reason: null,
+      observation: { pid: 60100, ppid: 600, startIdentity: 'S-COMPANION', nonce: g.scopeNonce, startInstantEpochMs: 1000, ppidChangedFromCapture: null },
+      queried: { pid: 60100, nonce: g.scopeNonce },
+      readStartedEpochMs: 1900, identityReadEpochMs: 2100, readEpochMs: 2100, absenceConfirmed: null,
+    };
+    const runtimeWrongPid = {
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'established', reason: null,
+      observation: { pid: 60999, ppid: 600, startIdentity: 'S-COMPANION', nonce: g.scopeNonce, startInstantEpochMs: 1000, ppidChangedFromCapture: null },
+      queried: { pid: 60100, nonce: g.scopeNonce },
+      readStartedEpochMs: 5000, identityReadEpochMs: 5100, readEpochMs: 5600, absenceConfirmed: null,
+    };
+    const runtimeAbsence = {
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'absent', reason: 'process-absent',
+      queried: { pid: 60100, nonce: g.scopeNonce },
+      readStartedEpochMs: 4900, identityReadEpochMs: 5100, readEpochMs: 5100, absenceConfirmed: true,
+    };
+    const runtimeExit = await runtime.adjudicateLocalExit({ presence: runtimeBaseline, absenceReads: [runtimeWrongPid, runtimeAbsence] });
+    assert.equal(runtimeExit.status, 'disappeared',
+      `the runtime ignores the wrong-PID presence and credits the lawful disappearance (measured: ${JSON.stringify({ status: runtimeExit.status, reason: runtimeExit.reason })})`);
+    const consolidated = nativeInterruptionGateDInput(cleanCopy(wrongPid)).localProcessDuties;
+    assert.equal(consolidated.settled, true,
+      `the replay ignores the wrong-PID presence too — the base absence credits the lawful disappearance settlement (measured: ${JSON.stringify({ settled: consolidated.settled, refusals: consolidated.refusals })})`);
+    assert.ok(!consolidated.refusals.includes('exit-absence-overlaps-presence'), JSON.stringify(consolidated.refusals));
+  });
+
+  test('F12 (P2) RED → TIED presence instants select the runtime\u2019s horizon window — a narrower phase window never discards replacement evidence the runtime classifies ambiguous (codex round 26)', async () => {
+    // The codex-round-26 finding: the mirror appended the selected Companion
+    // refresh AFTER the phase reads, so a TIED presence instant (the phase
+    // presence [4650, 4650] vs the refresh [4600, 4650]) never replaced the
+    // first-selected window (the strict `>` advance) and the NARROWER phase
+    // window was selected — discarding a replacement the runtime classifies
+    // AMBIGUOUS against the refresh-first window [4600, 4650]. The mirror
+    // must consume the sources in the RUNTIME\u2019S insertion order
+    // (refresh before phase reads), so tied instants select the same
+    // window on both sides.
+    const g = armReplay();
+    const tied = cleanCopy(g.record());
+    // The phase presence [4650, 4650] (the TIED instant with the selected
+    // refresh's identity instant) and the carried identity-bearing absent
+    // read on the identityReadEpochMs FALLBACK (collected [4590, 4640],
+    // its decision instant = its confirmation completion 5000 — sorting
+    // AFTER the phase and the refresh).
+    tied.localProcess.reads.push({
+      localProcessObservationVersion: 1, class: 'os-live-observation', status: 'established', reason: null,
+      observation: { pid: 60100, ppid: 600, startIdentity: 'S-COMPANION', startInstantEpochMs: 1000, ppidChangedFromCapture: null, nonceSha256: sha(g.scopeNonce) },
+      queried: { pid: 60100, nonceSha256: sha(g.scopeNonce) },
+      readStartedEpochMs: 4650, identityReadEpochMs: 4650, readEpochMs: 4650, absenceConfirmed: null,
+    });
+    tied.localProcess.reads.push({
+      localProcessObservationVersion: 1, class: 'os-live-observation', status: 'absent', reason: 'process-absent',
+      observedStartIdentity: 'S-REUSE',
+      observedIdentityCompletedEpochMs: 4640,
+      observation: null, queried: { pid: 60100, nonceSha256: sha(g.scopeNonce) },
+      readStartedEpochMs: 4590, identityReadEpochMs: 4590, readEpochMs: 5000, absenceConfirmed: true,
+    });
+    // RUNTIME/REPLAY AGREEMENT: the runtime's canonical read insertion
+    // places the selected Companion refresh BEFORE the phase reads (the
+    // reviewer's named order), so the runtime's horizon at the carried
+    // interval's classification is the refresh-first window [4600, 4650]
+    // and the carried interval [4590, 4640] OVERLAPS it — AMBIGUOUS (the
+    // empirical verdict in the canonical order, verified below).
+    const runtime = await import('../tools/shell-wait-probe/local-process-observation.mjs');
+    const runtimeBaseline = {
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'established', reason: null,
+      observation: { pid: 60100, ppid: 600, startIdentity: 'S-COMPANION', nonce: g.scopeNonce, startInstantEpochMs: 1000, ppidChangedFromCapture: null },
+      queried: { pid: 60100, nonce: g.scopeNonce },
+      readStartedEpochMs: 1900, identityReadEpochMs: 2100, readEpochMs: 2100, absenceConfirmed: null,
+    };
+    const runtimePhase = {
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'established', reason: null,
+      observation: { pid: 60100, ppid: 600, startIdentity: 'S-COMPANION', nonce: g.scopeNonce, startInstantEpochMs: 1000, ppidChangedFromCapture: null },
+      queried: { pid: 60100, nonce: g.scopeNonce },
+      readStartedEpochMs: 4650, identityReadEpochMs: 4650, readEpochMs: 4650, absenceConfirmed: null,
+    };
+    const runtimeRefresh = {
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'established', reason: null,
+      observation: { pid: 60100, ppid: 600, startIdentity: 'S-COMPANION', nonce: g.scopeNonce, startInstantEpochMs: 1000, ppidChangedFromCapture: null },
+      queried: { pid: 60100, nonce: g.scopeNonce },
+      readStartedEpochMs: 4600, identityReadEpochMs: 4650, readEpochMs: 4700, absenceConfirmed: null,
+    };
+    const runtimeCarried = {
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'absent', reason: 'process-absent',
+      queried: { pid: 60100, nonce: g.scopeNonce },
+      readStartedEpochMs: 4590,
+      observedStartIdentity: 'S-REUSE',
+      observedIdentityCompletedEpochMs: 4640,
+      identityReadEpochMs: 4590, readEpochMs: 5000, absenceConfirmed: true,
+    };
+    // (the canonical insertion order: the refresh BEFORE the phase reads)
+    const runtimeExit = await runtime.adjudicateLocalExit({ presence: runtimeBaseline, absenceReads: [runtimeRefresh, runtimePhase, runtimeCarried] });
+    assert.equal(runtimeExit.status, 'unestablished');
+    assert.equal(runtimeExit.reason, 'pid-start-identity-ambiguous',
+      'the runtime classifies the tied-schedule overlap AMBIGUOUS against the refresh-first window');
+    const consolidated = nativeInterruptionGateDInput(cleanCopy(tied)).localProcessDuties;
+    assert.equal(consolidated.settled, false,
+      `the replay selects the same refresh-first window and refuses settlement (measured: ${JSON.stringify({ settled: consolidated.settled, refusals: consolidated.refusals })})`);
+    assert.ok(consolidated.refusals.includes('exit-reuse-interval-ambiguous'), JSON.stringify(consolidated.refusals));
+    // The CONTROL: a genuinely-ordered (non-tied) refresh/phase sequence
+    // keeps the round-25 mirror behavior — the refreshed horizon classifies
+    // a post-refresh replacement as the reuse latch (unchanged).
+    const postRefresh = cleanCopy(g.record());
+    postRefresh.localProcess.reads.push({
+      localProcessObservationVersion: 1, class: 'os-live-observation', status: 'unestablished', reason: 'nonce-mismatch-observed-then-gone',
+      observedStartIdentity: 'S-REUSE',
+      observedIdentityReadEpochMs: 4700,
+      observedIdentityCompletedEpochMs: 4800,
+      observation: null, queried: { pid: 60100, nonceSha256: sha(g.scopeNonce) },
+      readStartedEpochMs: 4700, readEpochMs: 5000, absenceConfirmed: null,
+    });
+    const postRefreshConsolidated = nativeInterruptionGateDInput(cleanCopy(postRefresh)).localProcessDuties;
+    assert.equal(postRefreshConsolidated.settled, false);
+    assert.ok(postRefreshConsolidated.refusals.includes('exit-reuse-latched'), JSON.stringify(postRefreshConsolidated.refusals));
+  });
+
+  test('F13 (P2) RED → the mirror carries the runtime’s COMPLETE ordering key — an identity-bearing ABSENT replacement whose completion TIES a presence’s identity instant sorts FIRST (absence-before-established) and LATCHES, never stale-discarded (codex round 27)', async () => {
+    // The codex-round-27 schedule: the identity-bearing ABSENT replacement
+    // reads on the identityReadEpochMs FALLBACK (the lower 2200) with its
+    // completion (readEpochMs 4650) TIEING the refreshed presence’s
+    // identity instant (4650). The runtime’s ordering key is COMPLETE:
+    // the absent read’s ordering instant IS its completion, and the tie
+    // rank (ABSENT reads sort BEFORE established reads) processes the
+    // replacement FIRST — against the horizon as it stood (the baseline
+    // [1900, 2100]): the replacement [2200, 2300] is definitively
+    // post-baseline and LATCHES pid-start-identity-reused. The mirror’s
+    // incomplete key included the tied presence (its identity instant 4650
+    // is not after the fallback decision instant) and advanced the horizon
+    // to [4600, 4650] BEFORE the classification — the replacement
+    // stale-discarded and the summary settled TRUE, disagreeing with the
+    // runtime. The mirror must carry the COMPLETE ordering key: the
+    // decision-instant source AND the tie rank.
+    const g = armReplay();
+    const tied = cleanCopy(g.record());
+    tied.localProcess.reads.push({
+      localProcessObservationVersion: 1, class: 'os-live-observation', status: 'absent', reason: 'process-absent',
+      observedStartIdentity: 'S-REUSE',
+      observedIdentityCompletedEpochMs: 2300,
+      observation: null, queried: { pid: 60100, nonceSha256: sha(g.scopeNonce) },
+      readStartedEpochMs: 2200, identityReadEpochMs: 2200, readEpochMs: 4650, absenceConfirmed: true,
+    });
+    // RUNTIME/REPLAY AGREEMENT (the frozen clause): the runtime’s tie
+    // rank processes the replacement FIRST and LATCHES.
+    const runtime = await import('../tools/shell-wait-probe/local-process-observation.mjs');
+    const runtimeBaseline = {
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'established', reason: null,
+      observation: { pid: 60100, ppid: 600, startIdentity: 'S-COMPANION', nonce: g.scopeNonce, startInstantEpochMs: 1000, ppidChangedFromCapture: null },
+      queried: { pid: 60100, nonce: g.scopeNonce },
+      readStartedEpochMs: 1900, identityReadEpochMs: 2100, readEpochMs: 2100, absenceConfirmed: null,
+    };
+    const runtimeRefresh = {
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'established', reason: null,
+      observation: { pid: 60100, ppid: 600, startIdentity: 'S-COMPANION', nonce: g.scopeNonce, startInstantEpochMs: 1000, ppidChangedFromCapture: null },
+      queried: { pid: 60100, nonce: g.scopeNonce },
+      readStartedEpochMs: 4600, identityReadEpochMs: 4650, readEpochMs: 4700, absenceConfirmed: null,
+    };
+    const runtimeReplacement = {
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'absent', reason: 'process-absent',
+      queried: { pid: 60100, nonce: g.scopeNonce },
+      readStartedEpochMs: 2200,
+      observedStartIdentity: 'S-REUSE',
+      observedIdentityCompletedEpochMs: 2300,
+      identityReadEpochMs: 2200, readEpochMs: 4650, absenceConfirmed: true,
+    };
+    const runtimeAbsence = {
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'absent', reason: 'process-absent',
+      queried: { pid: 60100, nonce: g.scopeNonce },
+      readStartedEpochMs: 4900, identityReadEpochMs: 5100, readEpochMs: 5100, absenceConfirmed: true,
+    };
+    const runtimeExit = await runtime.adjudicateLocalExit({ presence: runtimeBaseline, absenceReads: [runtimeRefresh, runtimeReplacement, runtimeAbsence] });
+    assert.equal(runtimeExit.status, 'unestablished');
+    assert.equal(runtimeExit.reason, 'pid-start-identity-reused',
+      `the runtime’s tie rank processes the replacement FIRST — it latches against the pre-advancement horizon (measured: ${JSON.stringify({ status: runtimeExit.status, reason: runtimeExit.reason })})`);
+    const consolidated = nativeInterruptionGateDInput(cleanCopy(tied)).localProcessDuties;
+    assert.equal(consolidated.settled, false,
+      `the replay agrees with the runtime — the replacement latches, settlement refused (measured: ${JSON.stringify({ settled: consolidated.settled, refusals: consolidated.refusals })})`);
+    assert.ok(consolidated.refusals.includes('exit-reuse-latched'), JSON.stringify(consolidated.refusals));
+    // The CONTROL: the same schedule with the replacement’s EXPLICIT
+    // lower bound present (observedIdentityReadEpochMs 2200) and its
+    // completion NOT tieing (readEpochMs 5000 — sorting after the refresh):
+    // no tie-rank involvement, the classification is the plain
+    // definitively-post-baseline latch on both sides (unchanged).
+    const explicitNonTied = cleanCopy(g.record());
+    explicitNonTied.localProcess.reads.push({
+      localProcessObservationVersion: 1, class: 'os-live-observation', status: 'unestablished', reason: 'nonce-mismatch-observed-then-gone',
+      observedStartIdentity: 'S-REUSE',
+      observedIdentityReadEpochMs: 2200,
+      observedIdentityCompletedEpochMs: 2300,
+      observation: null, queried: { pid: 60100, nonceSha256: sha(g.scopeNonce) },
+      readStartedEpochMs: 2200, readEpochMs: 5000, absenceConfirmed: null,
+    });
+    const explicitConsolidated = nativeInterruptionGateDInput(cleanCopy(explicitNonTied)).localProcessDuties;
+    assert.equal(explicitConsolidated.settled, false);
+    assert.ok(explicitConsolidated.refusals.includes('exit-reuse-latched'), JSON.stringify(explicitConsolidated.refusals));
+  });
+
 });
 
 describe('local-settlement task 3 review round 4 (four P2): the replay re-adjudicates the admission generations and the ancestry endpoint lifetimes; the runtime bounds in-flight operations by the shared abort; the persisted endpoints are the selected ones', async () => {
@@ -6581,7 +8358,7 @@ describe('local-settlement task 3 review round 4 (four P2): the replay re-adjudi
   });
 
   test('the join version registers the round-4 replay growth', () => {
-    assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 37, 'join v18 (2026-10-30 local-settlement Task 3 review round 14): the tied-absence collection continuation, the transport-exit recency/carried-identity re-adjudication and the incomplete-interval start refusals; v17 (round 13): the identity-read containment check, the FROZEN argv selector enforced over mere persisted agreement, and the persisted block-version gate; v16 (round 12) = the collection-interval validity; v15 (round 11) = the invocation-absence strict tie against the walked horizon, the contradictory-duplicate-duty-slot refusal and the selected-endpoint parentage rule covering a failed refresh; v14 (round 10): the transport PID-reuse latch + the strict transport-absence tie rule; v13 (round 9): the transport exit is re-adjudicated like the invocation (the recency and carried-identity generation rules); v12 (round 8): the transport exit conjunct + the refreshed-presence horizon + the record-based capture parentage; v11 (round 7): the persisted ancestry-refresh evidence joins the offline reuse latch; v10 (round 6) = the admission entry-digest/argv-selector binding against the persisted capture declarations and the unsupported-duty-slot refusal; v9 (round 5) = the declared-scope binding, the identity-bearing absence reuse latch and the walked presence horizon; v8 (round 4) = the admission-generation re-adjudication + the endpoint lifetime/pre-fence/marker-epoch re-verification; v7 = the round-3 admissions/named-hops/reuse replay; v6 = the local-duty input contract');
+    assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 38, 'join v18 (2026-10-30 local-settlement Task 3 review round 14): the tied-absence collection continuation, the transport-exit recency/carried-identity re-adjudication and the incomplete-interval start refusals; v17 (round 13): the identity-read containment check, the FROZEN argv selector enforced over mere persisted agreement, and the persisted block-version gate; v16 (round 12) = the collection-interval validity; v15 (round 11) = the invocation-absence strict tie against the walked horizon, the contradictory-duplicate-duty-slot refusal and the selected-endpoint parentage rule covering a failed refresh; v14 (round 10): the transport PID-reuse latch + the strict transport-absence tie rule; v13 (round 9): the transport exit is re-adjudicated like the invocation (the recency and carried-identity generation rules); v12 (round 8): the transport exit conjunct + the refreshed-presence horizon + the record-based capture parentage; v11 (round 7): the persisted ancestry-refresh evidence joins the offline reuse latch; v10 (round 6) = the admission entry-digest/argv-selector binding against the persisted capture declarations and the unsupported-duty-slot refusal; v9 (round 5) = the declared-scope binding, the identity-bearing absence reuse latch and the walked presence horizon; v8 (round 4) = the admission-generation re-adjudication + the endpoint lifetime/pre-fence/marker-epoch re-verification; v7 = the round-3 admissions/named-hops/reuse replay; v6 = the local-duty input contract');
   });
 });
 
@@ -6850,7 +8627,7 @@ describe('local-settlement task 3 review round 5 (five P2): the replay binds the
   });
 
   test('the join version registers the round-5 replay growth', () => {
-    assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 37, 'join v18 (2026-10-30 local-settlement Task 3 review round 14): the tied-absence collection continuation, the transport-exit recency/carried-identity re-adjudication and the incomplete-interval start refusals; v17 (round 13): the identity-read containment check, the FROZEN argv selector enforced over mere persisted agreement, and the persisted block-version gate; v16 (round 12) = the collection-interval validity; v15 (round 11) = the invocation-absence strict tie against the walked horizon, the contradictory-duplicate-duty-slot refusal and the selected-endpoint parentage rule covering a failed refresh; v14 (round 10): the transport PID-reuse latch + the strict transport-absence tie rule; v13 (round 9): the transport exit is re-adjudicated like the invocation (the recency and carried-identity generation rules); v12 (round 8): the transport exit conjunct + the refreshed-presence horizon + the record-based capture parentage; v11 (round 7): the persisted ancestry-refresh evidence joins the offline reuse latch; v10 (round 6) = the admission entry-digest/argv-selector binding against the persisted capture declarations and the unsupported-duty-slot refusal; v9 (round 5) = the declared-scope binding (the startup-backed duties + the ancestry endpoints), the identity-bearing ABSENCE reuse latch and the walked presence horizon; v8 (round 4) = the persisted-admission generation re-adjudication + the ancestry endpoint pre-fence/lifetime/marker-epoch re-verification; v7 (round 3) = the admissions/named-hops/ppid-chain/generation-change replay; v6 = the local-duty input contract');
+    assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 38, 'join v18 (2026-10-30 local-settlement Task 3 review round 14): the tied-absence collection continuation, the transport-exit recency/carried-identity re-adjudication and the incomplete-interval start refusals; v17 (round 13): the identity-read containment check, the FROZEN argv selector enforced over mere persisted agreement, and the persisted block-version gate; v16 (round 12) = the collection-interval validity; v15 (round 11) = the invocation-absence strict tie against the walked horizon, the contradictory-duplicate-duty-slot refusal and the selected-endpoint parentage rule covering a failed refresh; v14 (round 10): the transport PID-reuse latch + the strict transport-absence tie rule; v13 (round 9): the transport exit is re-adjudicated like the invocation (the recency and carried-identity generation rules); v12 (round 8): the transport exit conjunct + the refreshed-presence horizon + the record-based capture parentage; v11 (round 7): the persisted ancestry-refresh evidence joins the offline reuse latch; v10 (round 6) = the admission entry-digest/argv-selector binding against the persisted capture declarations and the unsupported-duty-slot refusal; v9 (round 5) = the declared-scope binding (the startup-backed duties + the ancestry endpoints), the identity-bearing ABSENCE reuse latch and the walked presence horizon; v8 (round 4) = the persisted-admission generation re-adjudication + the ancestry endpoint pre-fence/lifetime/marker-epoch re-verification; v7 (round 3) = the admissions/named-hops/ppid-chain/generation-change replay; v6 = the local-duty input contract');
   });
 });
 
@@ -7042,7 +8819,7 @@ describe('local-settlement task 3 review round 6 (four P2): the replay binds the
   });
 
   test('the join version registers the round-6 replay growth', () => {
-    assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 37, 'join v18 (2026-10-30 local-settlement Task 3 review round 14): the tied-absence collection continuation, the transport-exit recency/carried-identity re-adjudication and the incomplete-interval start refusals; v17 (round 13): the identity-read containment check, the FROZEN argv selector enforced over mere persisted agreement, and the persisted block-version gate; v16 (round 12) = the collection-interval validity; v15 (round 11) = the invocation-absence strict tie against the walked horizon, the contradictory-duplicate-duty-slot refusal and the selected-endpoint parentage rule covering a failed refresh; v14 (round 10): the transport PID-reuse latch + the strict transport-absence tie rule; v13 (round 9): the transport exit is re-adjudicated like the invocation (the recency and carried-identity generation rules); v12 (round 8): the transport exit conjunct + the refreshed-presence horizon + the record-based capture parentage; v11 (round 7): the persisted ancestry-refresh evidence joins the offline reuse latch; v10 (round 6) = the admission entry-digest/argv-selector binding against the persisted capture declarations and the unsupported-duty-slot refusal; v9 (round 5) = the declared-scope binding, the identity-bearing absence reuse latch and the walked presence horizon; v8 (round 4) = the persisted-admission generation re-adjudication + the ancestry endpoint pre-fence/lifetime/marker-epoch re-verification; v7 (round 3) = the admissions/named-hops/ppid-chain/generation-change replay; v6 = the local-duty input contract');
+    assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 38, 'join v18 (2026-10-30 local-settlement Task 3 review round 14): the tied-absence collection continuation, the transport-exit recency/carried-identity re-adjudication and the incomplete-interval start refusals; v17 (round 13): the identity-read containment check, the FROZEN argv selector enforced over mere persisted agreement, and the persisted block-version gate; v16 (round 12) = the collection-interval validity; v15 (round 11) = the invocation-absence strict tie against the walked horizon, the contradictory-duplicate-duty-slot refusal and the selected-endpoint parentage rule covering a failed refresh; v14 (round 10): the transport PID-reuse latch + the strict transport-absence tie rule; v13 (round 9): the transport exit is re-adjudicated like the invocation (the recency and carried-identity generation rules); v12 (round 8): the transport exit conjunct + the refreshed-presence horizon + the record-based capture parentage; v11 (round 7): the persisted ancestry-refresh evidence joins the offline reuse latch; v10 (round 6) = the admission entry-digest/argv-selector binding against the persisted capture declarations and the unsupported-duty-slot refusal; v9 (round 5) = the declared-scope binding, the identity-bearing absence reuse latch and the walked presence horizon; v8 (round 4) = the persisted-admission generation re-adjudication + the ancestry endpoint pre-fence/lifetime/marker-epoch re-verification; v7 (round 3) = the admissions/named-hops/ppid-chain/generation-change replay; v6 = the local-duty input contract');
   });
 });
 
@@ -7369,7 +9146,7 @@ describe('local-settlement task 3 review round 7 (two P2): a generation-changing
   });
 
   test('the join version registers the round-7 replay growth', () => {
-    assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 37, 'join v18 (2026-10-30 local-settlement Task 3 review round 14): the tied-absence collection continuation, the transport-exit recency/carried-identity re-adjudication and the incomplete-interval start refusals; v17 (round 13): the identity-read containment check, the FROZEN argv selector enforced over mere persisted agreement, and the persisted block-version gate; v16 (round 12) = the collection-interval validity; v15 (round 11) = the invocation-absence strict tie against the walked horizon, the contradictory-duplicate-duty-slot refusal and the selected-endpoint parentage rule covering a failed refresh; v14 (round 10): the transport PID-reuse latch + the strict transport-absence tie rule; v13 (round 9): the transport exit is re-adjudicated like the invocation (the recency and carried-identity generation rules); v12 (round 8): the transport exit conjunct + the refreshed-presence horizon + the record-based capture parentage; v11 (round 7): the persisted ancestry-refresh evidence joins the offline reuse latch (a generation-changing companion refresh latches exactly like any other same-scope read carrying a generation change); v10 (round 6) = the admission entry-digest/argv-selector binding against the persisted capture declarations and the unsupported-duty-slot refusal; v9 (round 5) = the declared-scope binding, the identity-bearing absence reuse latch and the walked presence horizon; v8 (round 4) = the admission-generation re-adjudication + the endpoint pre-fence/lifetime/marker-epoch re-verification');
+    assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 38, 'join v18 (2026-10-30 local-settlement Task 3 review round 14): the tied-absence collection continuation, the transport-exit recency/carried-identity re-adjudication and the incomplete-interval start refusals; v17 (round 13): the identity-read containment check, the FROZEN argv selector enforced over mere persisted agreement, and the persisted block-version gate; v16 (round 12) = the collection-interval validity; v15 (round 11) = the invocation-absence strict tie against the walked horizon, the contradictory-duplicate-duty-slot refusal and the selected-endpoint parentage rule covering a failed refresh; v14 (round 10): the transport PID-reuse latch + the strict transport-absence tie rule; v13 (round 9): the transport exit is re-adjudicated like the invocation (the recency and carried-identity generation rules); v12 (round 8): the transport exit conjunct + the refreshed-presence horizon + the record-based capture parentage; v11 (round 7): the persisted ancestry-refresh evidence joins the offline reuse latch (a generation-changing companion refresh latches exactly like any other same-scope read carrying a generation change); v10 (round 6) = the admission entry-digest/argv-selector binding against the persisted capture declarations and the unsupported-duty-slot refusal; v9 (round 5) = the declared-scope binding, the identity-bearing absence reuse latch and the walked presence horizon; v8 (round 4) = the admission-generation re-adjudication + the endpoint pre-fence/lifetime/marker-epoch re-verification');
   });
 });
 
@@ -7692,7 +9469,7 @@ describe('local-settlement task 3 review round 8 (runtime): the runtime composes
   });
 
   test('the join version registers the round-8 replay growth', () => {
-    assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 37, 'join v18 (2026-10-30 local-settlement Task 3 review round 14): the tied-absence collection continuation, the transport-exit recency/carried-identity re-adjudication and the incomplete-interval start refusals; v17 (round 13): the identity-read containment check, the FROZEN argv selector enforced over mere persisted agreement, and the persisted block-version gate; v16 (round 12) = the collection-interval validity; v15 (round 11) = the invocation-absence strict tie against the walked horizon, the contradictory-duplicate-duty-slot refusal and the selected-endpoint parentage rule covering a failed refresh; v14 (round 10): the transport PID-reuse latch + the strict transport-absence tie rule; v13 (round 9): the transport exit is re-adjudicated like the invocation (the recency and carried-identity generation rules); v12 (round 8): the transport owes generation-bound PRE-FENCE exit evidence (the composed transport-exit conjunct), the refreshed presence walks the replay horizon/supersession, and the admitted startup record is capture-time parentage; v11 (round 7) = the persisted ancestry-refresh evidence joining the offline reuse latch; v10 (round 6) = the admission entry-digest/argv-selector binding and the unsupported-duty-slot refusal; v9 (round 5) = the declared-scope binding, the identity-bearing absence reuse latch and the walked presence horizon; v8 (round 4) = the admission-generation re-adjudication + the endpoint pre-fence/lifetime/marker-epoch re-verification');
+    assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 38, 'join v18 (2026-10-30 local-settlement Task 3 review round 14): the tied-absence collection continuation, the transport-exit recency/carried-identity re-adjudication and the incomplete-interval start refusals; v17 (round 13): the identity-read containment check, the FROZEN argv selector enforced over mere persisted agreement, and the persisted block-version gate; v16 (round 12) = the collection-interval validity; v15 (round 11) = the invocation-absence strict tie against the walked horizon, the contradictory-duplicate-duty-slot refusal and the selected-endpoint parentage rule covering a failed refresh; v14 (round 10): the transport PID-reuse latch + the strict transport-absence tie rule; v13 (round 9): the transport exit is re-adjudicated like the invocation (the recency and carried-identity generation rules); v12 (round 8): the transport owes generation-bound PRE-FENCE exit evidence (the composed transport-exit conjunct), the refreshed presence walks the replay horizon/supersession, and the admitted startup record is capture-time parentage; v11 (round 7) = the persisted ancestry-refresh evidence joining the offline reuse latch; v10 (round 6) = the admission entry-digest/argv-selector binding and the unsupported-duty-slot refusal; v9 (round 5) = the declared-scope binding, the identity-bearing absence reuse latch and the walked presence horizon; v8 (round 4) = the admission-generation re-adjudication + the endpoint pre-fence/lifetime/marker-epoch re-verification');
   });
 });
 
@@ -7900,7 +9677,7 @@ describe('local-settlement task 3 review round 9 (three P2 + one P3): the transp
   });
 
   test('the join version registers the round-9 replay growth', () => {
-    assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 37, 'join v18 (2026-10-30 local-settlement Task 3 review round 14): the tied-absence collection continuation, the transport-exit recency/carried-identity re-adjudication and the incomplete-interval start refusals; v17 (round 13): the identity-read containment check, the FROZEN argv selector enforced over mere persisted agreement, and the persisted block-version gate; v16 (round 12) = the collection-interval validity; v15 (round 11) = the invocation-absence strict tie against the walked horizon, the contradictory-duplicate-duty-slot refusal and the selected-endpoint parentage rule covering a failed refresh; v14 (round 10): the transport PID-reuse latch + the strict transport-absence tie rule; v13 (round 9): the transport exit is re-adjudicated like the invocation (recency against the transport presence, the carried-identity generation rule); v12 (round 8) = the generation-bound PRE-FENCE transport-exit conjunct, the refreshed-presence horizon/supersession and the admitted-record capture-time parentage; v11 (round 7) = the persisted ancestry-refresh evidence joining the offline reuse latch; v10 (round 6) = the admission entry-digest/argv-selector binding and the unsupported-duty-slot refusal; v9 (round 5) = the declared-scope binding, the identity-bearing absence reuse latch and the walked presence horizon; v8 (round 4) = the admission-generation re-adjudication + the endpoint pre-fence/lifetime/marker-epoch re-verification');
+    assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 38, 'join v18 (2026-10-30 local-settlement Task 3 review round 14): the tied-absence collection continuation, the transport-exit recency/carried-identity re-adjudication and the incomplete-interval start refusals; v17 (round 13): the identity-read containment check, the FROZEN argv selector enforced over mere persisted agreement, and the persisted block-version gate; v16 (round 12) = the collection-interval validity; v15 (round 11) = the invocation-absence strict tie against the walked horizon, the contradictory-duplicate-duty-slot refusal and the selected-endpoint parentage rule covering a failed refresh; v14 (round 10): the transport PID-reuse latch + the strict transport-absence tie rule; v13 (round 9): the transport exit is re-adjudicated like the invocation (recency against the transport presence, the carried-identity generation rule); v12 (round 8) = the generation-bound PRE-FENCE transport-exit conjunct, the refreshed-presence horizon/supersession and the admitted-record capture-time parentage; v11 (round 7) = the persisted ancestry-refresh evidence joining the offline reuse latch; v10 (round 6) = the admission entry-digest/argv-selector binding and the unsupported-duty-slot refusal; v9 (round 5) = the declared-scope binding, the identity-bearing absence reuse latch and the walked presence horizon; v8 (round 4) = the admission-generation re-adjudication + the endpoint pre-fence/lifetime/marker-epoch re-verification');
   });
 });
 
@@ -8097,7 +9874,7 @@ describe('local-settlement task 3 review round 10 (two P2): a transport PID reus
   });
 
   test('the join version registers the round-10 replay growth', () => {
-    assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 37, 'join v18 (2026-10-30 local-settlement Task 3 review round 14): the tied-absence collection continuation, the transport-exit recency/carried-identity re-adjudication and the incomplete-interval start refusals; v17 (round 13): the identity-read containment check, the FROZEN argv selector enforced over mere persisted agreement, and the persisted block-version gate; v16 (round 12) = the collection-interval validity; v15 (round 11) = the invocation-absence strict tie against the walked horizon, the contradictory-duplicate-duty-slot refusal and the selected-endpoint parentage rule covering a failed refresh; v14 (round 10): the transport PID-reuse latch (a generation-changing transport exit retry latches terminally and the persisted latch refuses by name) and the strict transport-absence tie rule; v13 (round 9) = the transport-exit recency/carried-identity re-adjudication; v12 (round 8) = the generation-bound PRE-FENCE transport-exit conjunct, the refreshed-presence horizon/supersession and the admitted-record capture-time parentage; v11 (round 7) = the persisted ancestry-refresh evidence joining the offline reuse latch; v10 (round 6) = the admission entry-digest/argv-selector binding and the unsupported-duty-slot refusal; v9 (round 5) = the declared-scope binding, the identity-bearing absence reuse latch and the walked presence horizon; v8 (round 4) = the admission-generation re-adjudication + the endpoint pre-fence/lifetime/marker-epoch re-verification');
+    assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 38, 'join v18 (2026-10-30 local-settlement Task 3 review round 14): the tied-absence collection continuation, the transport-exit recency/carried-identity re-adjudication and the incomplete-interval start refusals; v17 (round 13): the identity-read containment check, the FROZEN argv selector enforced over mere persisted agreement, and the persisted block-version gate; v16 (round 12) = the collection-interval validity; v15 (round 11) = the invocation-absence strict tie against the walked horizon, the contradictory-duplicate-duty-slot refusal and the selected-endpoint parentage rule covering a failed refresh; v14 (round 10): the transport PID-reuse latch (a generation-changing transport exit retry latches terminally and the persisted latch refuses by name) and the strict transport-absence tie rule; v13 (round 9) = the transport-exit recency/carried-identity re-adjudication; v12 (round 8) = the generation-bound PRE-FENCE transport-exit conjunct, the refreshed-presence horizon/supersession and the admitted-record capture-time parentage; v11 (round 7) = the persisted ancestry-refresh evidence joining the offline reuse latch; v10 (round 6) = the admission entry-digest/argv-selector binding and the unsupported-duty-slot refusal; v9 (round 5) = the declared-scope binding, the identity-bearing absence reuse latch and the walked presence horizon; v8 (round 4) = the admission-generation re-adjudication + the endpoint pre-fence/lifetime/marker-epoch re-verification');
   });
 });
 
@@ -8316,7 +10093,7 @@ describe('local-settlement task 3 review round 11 (three P2): the invocation abs
   });
 
   test('the join version registers the round-11 replay growth', () => {
-    assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 37, 'join v18 (2026-10-30 local-settlement Task 3 review round 14): the tied-absence collection continuation, the transport-exit recency/carried-identity re-adjudication and the incomplete-interval start refusals; v17 (round 13): the identity-read containment check, the FROZEN argv selector enforced over mere persisted agreement, and the persisted block-version gate; v16 (round 12) = the collection-interval validity; v15 (round 11) = the invocation-absence strict tie against the walked horizon, the contradictory-duplicate-duty-slot refusal, and the selected-endpoint parentage rule covering a failed refresh; v14 (round 10) = the transport PID-reuse latch + the strict transport-absence tie rule; v13 (round 9) = the transport-exit recency/carried-identity re-adjudication; v12 (round 8) = the generation-bound PRE-FENCE transport-exit conjunct, the refreshed-presence horizon/supersession and the admitted-record capture-time parentage; v11 (round 7) = the persisted ancestry-refresh evidence joining the offline reuse latch; v10 (round 6) = the admission entry-digest/argv-selector binding and the unsupported-duty-slot refusal; v9 (round 5) = the declared-scope binding, the identity-bearing absence reuse latch and the walked presence horizon; v8 (round 4) = the admission-generation re-adjudication + the endpoint pre-fence/lifetime/marker-epoch re-verification');
+    assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 38, 'join v18 (2026-10-30 local-settlement Task 3 review round 14): the tied-absence collection continuation, the transport-exit recency/carried-identity re-adjudication and the incomplete-interval start refusals; v17 (round 13): the identity-read containment check, the FROZEN argv selector enforced over mere persisted agreement, and the persisted block-version gate; v16 (round 12) = the collection-interval validity; v15 (round 11) = the invocation-absence strict tie against the walked horizon, the contradictory-duplicate-duty-slot refusal, and the selected-endpoint parentage rule covering a failed refresh; v14 (round 10) = the transport PID-reuse latch + the strict transport-absence tie rule; v13 (round 9) = the transport-exit recency/carried-identity re-adjudication; v12 (round 8) = the generation-bound PRE-FENCE transport-exit conjunct, the refreshed-presence horizon/supersession and the admitted-record capture-time parentage; v11 (round 7) = the persisted ancestry-refresh evidence joining the offline reuse latch; v10 (round 6) = the admission entry-digest/argv-selector binding and the unsupported-duty-slot refusal; v9 (round 5) = the declared-scope binding, the identity-bearing absence reuse latch and the walked presence horizon; v8 (round 4) = the admission-generation re-adjudication + the endpoint pre-fence/lifetime/marker-epoch re-verification');
   });
 });
 
@@ -8461,7 +10238,7 @@ describe('local-settlement task 3 review round 12 (two P2): inverted collection 
   });
 
   test('the join version registers the round-12 replay growth', () => {
-    assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 37, 'join v18 (2026-10-30 local-settlement Task 3 review round 14): the tied-absence collection continuation, the transport-exit recency/carried-identity re-adjudication and the incomplete-interval start refusals; v17 (round 13): the identity-read containment check, the FROZEN argv selector enforced over mere persisted agreement, and the persisted block-version gate; v16 (round 12): every fence-crediting read validates its collection interval (inverted intervals refuse by name for the transport exit, the admissions, the observation echoes and the invocation exit) and the executing-helper provenance falls back consistently when the materialization is unavailable; v15 (round 11) = the invocation-absence strict tie, the contradictory-duplicate-duty-slot refusal and the selected-endpoint parentage rule covering a failed refresh; v14 (round 10) = the transport PID-reuse latch + the strict transport-absence tie rule; v13 (round 9) = the transport-exit recency/carried-identity re-adjudication; v12 (round 8) = the generation-bound PRE-FENCE transport-exit conjunct, the refreshed-presence horizon/supersession and the admitted-record capture-time parentage');
+    assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 38, 'join v18 (2026-10-30 local-settlement Task 3 review round 14): the tied-absence collection continuation, the transport-exit recency/carried-identity re-adjudication and the incomplete-interval start refusals; v17 (round 13): the identity-read containment check, the FROZEN argv selector enforced over mere persisted agreement, and the persisted block-version gate; v16 (round 12): every fence-crediting read validates its collection interval (inverted intervals refuse by name for the transport exit, the admissions, the observation echoes and the invocation exit) and the executing-helper provenance falls back consistently when the materialization is unavailable; v15 (round 11) = the invocation-absence strict tie, the contradictory-duplicate-duty-slot refusal and the selected-endpoint parentage rule covering a failed refresh; v14 (round 10) = the transport PID-reuse latch + the strict transport-absence tie rule; v13 (round 9) = the transport-exit recency/carried-identity re-adjudication; v12 (round 8) = the generation-bound PRE-FENCE transport-exit conjunct, the refreshed-presence horizon/supersession and the admitted-record capture-time parentage');
   });
 });
 
@@ -8652,7 +10429,7 @@ describe('local-settlement task 3 review round 13 (four findings): the fence pro
   });
 
   test('the join version registers the round-13 replay growth', () => {
-    assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 37, 'join v18 (2026-10-30 local-settlement Task 3 review round 14): the tied-absence collection continuation, the transport-exit recency/carried-identity re-adjudication and the incomplete-interval start refusals; v17 (round 13): the identity-read containment check, the FROZEN argv selector enforced over mere persisted agreement, and the persisted block-version gate; v16 (round 12) = the collection-interval validity for every fence-crediting read + the consistent materialization-unavailable provenance fallback; v15 (round 11) = the invocation-absence strict tie, the contradictory-duplicate-duty-slot refusal and the selected-endpoint parentage rule covering a failed refresh; v14 (round 10) = the transport PID-reuse latch + the strict transport-absence tie rule; v13 (round 9) = the transport-exit recency/carried-identity re-adjudication; v12 (round 8) = the generation-bound PRE-FENCE transport-exit conjunct, the refreshed-presence horizon/supersession and the admitted-record capture-time parentage');
+    assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 38, 'join v18 (2026-10-30 local-settlement Task 3 review round 14): the tied-absence collection continuation, the transport-exit recency/carried-identity re-adjudication and the incomplete-interval start refusals; v17 (round 13): the identity-read containment check, the FROZEN argv selector enforced over mere persisted agreement, and the persisted block-version gate; v16 (round 12) = the collection-interval validity for every fence-crediting read + the consistent materialization-unavailable provenance fallback; v15 (round 11) = the invocation-absence strict tie, the contradictory-duplicate-duty-slot refusal and the selected-endpoint parentage rule covering a failed refresh; v14 (round 10) = the transport PID-reuse latch + the strict transport-absence tie rule; v13 (round 9) = the transport-exit recency/carried-identity re-adjudication; v12 (round 8) = the generation-bound PRE-FENCE transport-exit conjunct, the refreshed-presence horizon/supersession and the admitted-record capture-time parentage');
   });
 });
 
@@ -9381,7 +11158,7 @@ describe('local-settlement task 3 review round 18 (three P2): the correlated abs
 
 
   test('the join version registers the round-18 replay growth', () => {
-    assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 37, 'join v21 (2026-10-30 local-settlement Task 3 review rounds 17-18): the correlated absence validates its collection interval (inverted intervals are torn evidence), the SELECTED daemon endpoint re-verifies its parentage against the presence/record rule and a tied transport absence keeps the retry loop sampling; v20 (round 16) = the duty-observation identity-read containment, the contradictory invocation-absence shape refusal and the runtime latest-same-generation-presence tie continuation; v19 (round 15) = the declared-scope binding, the identity-bearing absence reuse latch and the walked presence horizon; v18 (round 14) = the tied-absence collection continuation, the transport-exit recency/carried-identity re-adjudication and the incomplete-interval start refusals; v17 (round 13) = the identity-read containment check, the FROZEN argv selector enforced over mere persisted agreement, and the persisted block-version gate; v16 (round 12) = the collection-interval validity for every fence-crediting read + the consistent materialization-unavailable provenance fallback; v15 (round 11) = the invocation-absence strict tie, the contradictory-duplicate-duty-slot refusal and the selected-endpoint parentage rule covering a failed refresh; v14 (round 10) = the transport PID-reuse latch + the strict transport-absence tie rule; v13 (round 9) = the transport-exit recency/carried-identity re-adjudication; v12 (round 8) = the generation-bound PRE-FENCE transport-exit conjunct, the refreshed-presence horizon/supersession and the admitted-record capture-time parentage');
+    assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 38, 'join v21 (2026-10-30 local-settlement Task 3 review rounds 17-18): the correlated absence validates its collection interval (inverted intervals are torn evidence), the SELECTED daemon endpoint re-verifies its parentage against the presence/record rule and a tied transport absence keeps the retry loop sampling; v20 (round 16) = the duty-observation identity-read containment, the contradictory invocation-absence shape refusal and the runtime latest-same-generation-presence tie continuation; v19 (round 15) = the declared-scope binding, the identity-bearing absence reuse latch and the walked presence horizon; v18 (round 14) = the tied-absence collection continuation, the transport-exit recency/carried-identity re-adjudication and the incomplete-interval start refusals; v17 (round 13) = the identity-read containment check, the FROZEN argv selector enforced over mere persisted agreement, and the persisted block-version gate; v16 (round 12) = the collection-interval validity for every fence-crediting read + the consistent materialization-unavailable provenance fallback; v15 (round 11) = the invocation-absence strict tie, the contradictory-duplicate-duty-slot refusal and the selected-endpoint parentage rule covering a failed refresh; v14 (round 10) = the transport PID-reuse latch + the strict transport-absence tie rule; v13 (round 9) = the transport-exit recency/carried-identity re-adjudication; v12 (round 8) = the generation-bound PRE-FENCE transport-exit conjunct, the refreshed-presence horizon/supersession and the admitted-record capture-time parentage');
   });
 });
 
@@ -9594,7 +11371,7 @@ describe('local-settlement task 3 review round 19 (two P2): a live same-generati
   });
 
   test('the join version registers the round-19 replay growth', () => {
-    assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 37, 'join v22 (2026-10-30 local-settlement Task 3 review round 19): a live same-generation transport retry advances the presence horizon and persists the full presence sequence for replay, and the exit supersession compares the identity-read instant (an async completion never re-wins); v21 (rounds 17-18): the correlated absence validates its collection interval (inverted intervals are torn evidence), the SELECTED daemon endpoint re-verifies its parentage against the presence/record rule and a tied transport absence keeps the retry loop sampling; v20 (round 16) = the duty-observation identity-read containment, the contradictory invocation-absence shape refusal and the runtime latest-same-generation-presence tie continuation; v19 (round 15) = the declared-scope binding, the identity-bearing absence reuse latch and the walked presence horizon; v18 (round 14) = the tied-absence collection continuation, the transport-exit recency/carried-identity re-adjudication and the incomplete-interval start refusals; v17 (round 13) = the identity-read containment check, the FROZEN argv selector enforced over mere persisted agreement, and the persisted block-version gate; v16 (round 12) = the collection-interval validity for every fence-crediting read + the consistent materialization-unavailable provenance fallback; v15 (round 11) = the invocation-absence strict tie, the contradictory-duplicate-duty-slot refusal and the selected-endpoint parentage rule covering a failed refresh; v14 (round 10) = the transport PID-reuse latch + the strict transport-absence tie rule; v13 (round 9) = the transport-exit recency/carried-identity re-adjudication; v12 (round 8) = the generation-bound PRE-FENCE transport-exit conjunct, the refreshed-presence horizon/supersession and the admitted-record capture-time parentage');
+    assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 38, 'join v22 (2026-10-30 local-settlement Task 3 review round 19): a live same-generation transport retry advances the presence horizon and persists the full presence sequence for replay, and the exit supersession compares the identity-read instant (an async completion never re-wins); v21 (rounds 17-18): the correlated absence validates its collection interval (inverted intervals are torn evidence), the SELECTED daemon endpoint re-verifies its parentage against the presence/record rule and a tied transport absence keeps the retry loop sampling; v20 (round 16) = the duty-observation identity-read containment, the contradictory invocation-absence shape refusal and the runtime latest-same-generation-presence tie continuation; v19 (round 15) = the declared-scope binding, the identity-bearing absence reuse latch and the walked presence horizon; v18 (round 14) = the tied-absence collection continuation, the transport-exit recency/carried-identity re-adjudication and the incomplete-interval start refusals; v17 (round 13) = the identity-read containment check, the FROZEN argv selector enforced over mere persisted agreement, and the persisted block-version gate; v16 (round 12) = the collection-interval validity for every fence-crediting read + the consistent materialization-unavailable provenance fallback; v15 (round 11) = the invocation-absence strict tie, the contradictory-duplicate-duty-slot refusal and the selected-endpoint parentage rule covering a failed refresh; v14 (round 10) = the transport PID-reuse latch + the strict transport-absence tie rule; v13 (round 9) = the transport-exit recency/carried-identity re-adjudication; v12 (round 8) = the generation-bound PRE-FENCE transport-exit conjunct, the refreshed-presence horizon/supersession and the admitted-record capture-time parentage');
   });
 });
 
@@ -9705,7 +11482,7 @@ describe('local-settlement task 3 review round 20 (two P2): the persisted transp
   });
 
   test('the join version registers the round-20 replay growth', () => {
-    assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 37, 'join v23 (2026-10-30 local-settlement Task 3 review round 20): the persisted transport retry sequence latches replacement evidence (any generation-bound read carrying a different start identity) and absence timestamps must be safe integers before crediting (nonnumeric instants refuse by name); v22 (round 19): a live same-generation transport retry advances the presence horizon and persists the full presence sequence for replay, and the exit supersession compares the identity-read instant (an async completion never re-wins); v21 (rounds 17-18): the correlated absence validates its collection interval (inverted intervals are torn evidence), the SELECTED daemon endpoint re-verifies its parentage against the presence/record rule and a tied transport absence keeps the retry loop sampling; v20 (round 16) = the duty-observation identity-read containment, the contradictory invocation-absence shape refusal and the runtime latest-same-generation-presence tie continuation; v19 (round 15) = the declared-scope binding, the identity-bearing absence reuse latch and the walked presence horizon; v18 (round 14) = the tied-absence collection continuation, the transport-exit recency/carried-identity re-adjudication and the incomplete-interval start refusals; v17 (round 13) = the identity-read containment check, the FROZEN argv selector enforced over mere persisted agreement, and the persisted block-version gate; v16 (round 12) = the collection-interval validity for every fence-crediting read + the consistent materialization-unavailable provenance fallback; v15 (round 11) = the invocation-absence strict tie, the contradictory-duplicate-duty-slot refusal and the selected-endpoint parentage rule covering a failed refresh; v14 (round 10) = the transport PID-reuse latch + the strict transport-absence tie rule; v13 (round 9) = the transport-exit recency/carried-identity re-adjudication; v12 (round 8) = the generation-bound PRE-FENCE transport-exit conjunct, the refreshed-presence horizon/supersession and the admitted-record capture-time parentage');
+    assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 38, 'join v23 (2026-10-30 local-settlement Task 3 review round 20): the persisted transport retry sequence latches replacement evidence (any generation-bound read carrying a different start identity) and absence timestamps must be safe integers before crediting (nonnumeric instants refuse by name); v22 (round 19): a live same-generation transport retry advances the presence horizon and persists the full presence sequence for replay, and the exit supersession compares the identity-read instant (an async completion never re-wins); v21 (rounds 17-18): the correlated absence validates its collection interval (inverted intervals are torn evidence), the SELECTED daemon endpoint re-verifies its parentage against the presence/record rule and a tied transport absence keeps the retry loop sampling; v20 (round 16) = the duty-observation identity-read containment, the contradictory invocation-absence shape refusal and the runtime latest-same-generation-presence tie continuation; v19 (round 15) = the declared-scope binding, the identity-bearing absence reuse latch and the walked presence horizon; v18 (round 14) = the tied-absence collection continuation, the transport-exit recency/carried-identity re-adjudication and the incomplete-interval start refusals; v17 (round 13) = the identity-read containment check, the FROZEN argv selector enforced over mere persisted agreement, and the persisted block-version gate; v16 (round 12) = the collection-interval validity for every fence-crediting read + the consistent materialization-unavailable provenance fallback; v15 (round 11) = the invocation-absence strict tie, the contradictory-duplicate-duty-slot refusal and the selected-endpoint parentage rule covering a failed refresh; v14 (round 10) = the transport PID-reuse latch + the strict transport-absence tie rule; v13 (round 9) = the transport-exit recency/carried-identity re-adjudication; v12 (round 8) = the generation-bound PRE-FENCE transport-exit conjunct, the refreshed-presence horizon/supersession and the admitted-record capture-time parentage');
   });
 });
 
@@ -9841,7 +11618,7 @@ describe('local-settlement task 3 review round 22 (two P2): every credited obser
   });
 
   test('the join version registers the round-22 replay growth', () => {
-    assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 37, 'join v24 (2026-10-30 local-settlement Task 3 review round 22): every credited observation binds its queried pid/scope digest to the observed identity (the duty echoes and the ancestry endpoints) and a present-but-malformed identity-read instant refuses by name instead of falling back to the completion; v23 (round 20): the persisted transport retry sequence latches replacement evidence (any generation-bound read carrying a different start identity) and absence timestamps must be safe integers before crediting (nonnumeric instants refuse by name); v22 (round 19): a live same-generation transport retry advances the presence horizon and persists the full presence sequence for replay, and the exit supersession compares the identity-read instant (an async completion never re-wins); v21 (rounds 17-18): the correlated absence validates its collection interval (inverted intervals are torn evidence), the SELECTED daemon endpoint re-verifies its parentage against the presence/record rule and a tied transport absence keeps the retry loop sampling; v20 (round 16) = the duty-observation identity-read containment, the contradictory invocation-absence shape refusal and the runtime latest-same-generation-presence tie continuation; v19 (round 15) = the declared-scope binding, the identity-bearing absence reuse latch and the walked presence horizon; v18 (round 14) = the tied-absence collection continuation, the transport-exit recency/carried-identity re-adjudication and the incomplete-interval start refusals; v17 (round 13) = the identity-read containment check, the FROZEN argv selector enforced over mere persisted agreement, and the persisted block-version gate; v16 (round 12) = the collection-interval validity for every fence-crediting read + the consistent materialization-unavailable provenance fallback; v15 (round 11) = the invocation-absence strict tie, the contradictory-duplicate-duty-slot refusal and the selected-endpoint parentage rule covering a failed refresh; v14 (round 10) = the transport PID-reuse latch + the strict transport-absence tie rule; v13 (round 9) = the transport-exit recency/carried-identity re-adjudication; v12 (round 8) = the generation-bound PRE-FENCE transport-exit conjunct, the refreshed-presence horizon/supersession and the admitted-record capture-time parentage');
+    assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 38, 'join v24 (2026-10-30 local-settlement Task 3 review round 22): every credited observation binds its queried pid/scope digest to the observed identity (the duty echoes and the ancestry endpoints) and a present-but-malformed identity-read instant refuses by name instead of falling back to the completion; v23 (round 20): the persisted transport retry sequence latches replacement evidence (any generation-bound read carrying a different start identity) and absence timestamps must be safe integers before crediting (nonnumeric instants refuse by name); v22 (round 19): a live same-generation transport retry advances the presence horizon and persists the full presence sequence for replay, and the exit supersession compares the identity-read instant (an async completion never re-wins); v21 (rounds 17-18): the correlated absence validates its collection interval (inverted intervals are torn evidence), the SELECTED daemon endpoint re-verifies its parentage against the presence/record rule and a tied transport absence keeps the retry loop sampling; v20 (round 16) = the duty-observation identity-read containment, the contradictory invocation-absence shape refusal and the runtime latest-same-generation-presence tie continuation; v19 (round 15) = the declared-scope binding, the identity-bearing absence reuse latch and the walked presence horizon; v18 (round 14) = the tied-absence collection continuation, the transport-exit recency/carried-identity re-adjudication and the incomplete-interval start refusals; v17 (round 13) = the identity-read containment check, the FROZEN argv selector enforced over mere persisted agreement, and the persisted block-version gate; v16 (round 12) = the collection-interval validity for every fence-crediting read + the consistent materialization-unavailable provenance fallback; v15 (round 11) = the invocation-absence strict tie, the contradictory-duplicate-duty-slot refusal and the selected-endpoint parentage rule covering a failed refresh; v14 (round 10) = the transport PID-reuse latch + the strict transport-absence tie rule; v13 (round 9) = the transport-exit recency/carried-identity re-adjudication; v12 (round 8) = the generation-bound PRE-FENCE transport-exit conjunct, the refreshed-presence horizon/supersession and the admitted-record capture-time parentage');
   });
 });
 
@@ -9941,7 +11718,7 @@ describe('local-settlement task 3 review round 23 (one P2): a supplied carried i
   });
 
   test('the join version registers the round-23 replay growth', () => {
-    assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 37, 'join v25 (2026-10-30 local-settlement Task 3 review round 23): a supplied carried identity instant is validated against its read collection interval BEFORE the reuse latch recency filtering — an out-of-interval or malformed carried instant is torn replacement evidence refusing by name (exit-reuse-carried-instant-outside-interval), never old evidence; v24 (round 22): every credited observation binds its queried pid/scope digest to the observed identity (the duty echoes and the ancestry endpoints) and a present-but-malformed identity-read instant refuses by name instead of falling back to the completion; v23 (round 20): the persisted transport retry sequence latches replacement evidence (any generation-bound read carrying a different start identity) and absence timestamps must be safe integers before crediting (nonnumeric instants refuse by name); v22 (round 19): a live same-generation transport retry advances the presence horizon and persists the full presence sequence for replay, and the exit supersession compares the identity-read instant (an async completion never re-wins); v21 (rounds 17-18): the correlated absence validates its collection interval (inverted intervals are torn evidence), the SELECTED daemon endpoint re-verifies its parentage against the presence/record rule and a tied transport absence keeps the retry loop sampling; v20 (round 16) = the duty-observation identity-read containment, the contradictory invocation-absence shape refusal and the runtime latest-same-generation-presence tie continuation; v19 (round 15) = the declared-scope binding, the identity-bearing absence reuse latch and the walked presence horizon; v18 (round 14) = the tied-absence collection continuation, the transport-exit recency/carried-identity re-adjudication and the incomplete-interval start refusals; v17 (round 13) = the identity-read containment check, the FROZEN argv selector enforced over mere persisted agreement, and the persisted block-version gate; v16 (round 12) = the collection-interval validity for every fence-crediting read + the consistent materialization-unavailable provenance fallback; v15 (round 11) = the invocation-absence strict tie, the contradictory-duplicate-duty-slot refusal and the selected-endpoint parentage rule covering a failed refresh; v14 (round 10) = the transport PID-reuse latch + the strict transport-absence tie rule; v13 (round 9) = the transport-exit recency/carried-identity re-adjudication; v12 (round 8) = the generation-bound PRE-FENCE transport-exit conjunct, the refreshed-presence horizon/supersession and the admitted-record capture-time parentage');
+    assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 38, 'join v25 (2026-10-30 local-settlement Task 3 review round 23): a supplied carried identity instant is validated against its read collection interval BEFORE the reuse latch recency filtering — an out-of-interval or malformed carried instant is torn replacement evidence refusing by name (exit-reuse-carried-instant-outside-interval), never old evidence; v24 (round 22): every credited observation binds its queried pid/scope digest to the observed identity (the duty echoes and the ancestry endpoints) and a present-but-malformed identity-read instant refuses by name instead of falling back to the completion; v23 (round 20): the persisted transport retry sequence latches replacement evidence (any generation-bound read carrying a different start identity) and absence timestamps must be safe integers before crediting (nonnumeric instants refuse by name); v22 (round 19): a live same-generation transport retry advances the presence horizon and persists the full presence sequence for replay, and the exit supersession compares the identity-read instant (an async completion never re-wins); v21 (rounds 17-18): the correlated absence validates its collection interval (inverted intervals are torn evidence), the SELECTED daemon endpoint re-verifies its parentage against the presence/record rule and a tied transport absence keeps the retry loop sampling; v20 (round 16) = the duty-observation identity-read containment, the contradictory invocation-absence shape refusal and the runtime latest-same-generation-presence tie continuation; v19 (round 15) = the declared-scope binding, the identity-bearing absence reuse latch and the walked presence horizon; v18 (round 14) = the tied-absence collection continuation, the transport-exit recency/carried-identity re-adjudication and the incomplete-interval start refusals; v17 (round 13) = the identity-read containment check, the FROZEN argv selector enforced over mere persisted agreement, and the persisted block-version gate; v16 (round 12) = the collection-interval validity for every fence-crediting read + the consistent materialization-unavailable provenance fallback; v15 (round 11) = the invocation-absence strict tie, the contradictory-duplicate-duty-slot refusal and the selected-endpoint parentage rule covering a failed refresh; v14 (round 10) = the transport PID-reuse latch + the strict transport-absence tie rule; v13 (round 9) = the transport-exit recency/carried-identity re-adjudication; v12 (round 8) = the generation-bound PRE-FENCE transport-exit conjunct, the refreshed-presence horizon/supersession and the admitted-record capture-time parentage');
   });
 });
 
@@ -10068,7 +11845,7 @@ describe('local-settlement task 3 review round 24 (two P2): the retained transpo
   });
 
   test('the join version registers the round-24 replay growth', () => {
-    assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 37, 'join v26 (2026-10-30 local-settlement Task 3 review round 24): the retained transport retry reads validate their identity instants (the duty-observation/ancestry-endpoint pattern — malformed instants refuse by name, supplied instants must sit inside the validated collection interval) and the captured transport start identity persists with the marker (schema-additive) binding the replayed transport observation — a successor generation cannot settle the original transport duty; v25 (round 23): a supplied carried identity instant is validated against its read collection interval BEFORE the reuse latch recency filtering — an out-of-interval or malformed carried instant is torn replacement evidence refusing by name (exit-reuse-carried-instant-outside-interval), never old evidence; v24 (round 22): every credited observation binds its queried pid/scope digest to the observed identity (the duty echoes and the ancestry endpoints) and a present-but-malformed identity-read instant refuses by name instead of falling back to the completion; v23 (round 20): the persisted transport retry sequence latches replacement evidence (any generation-bound read carrying a different start identity) and absence timestamps must be safe integers before crediting (nonnumeric instants refuse by name); v22 (round 19): a live same-generation transport retry advances the presence horizon and persists the full presence sequence for replay, and the exit supersession compares the identity-read instant (an async completion never re-wins); v21 (rounds 17-18): the correlated absence validates its collection interval (inverted intervals are torn evidence), the SELECTED daemon endpoint re-verifies its parentage against the presence/record rule and a tied transport absence keeps the retry loop sampling; v20 (round 16) = the duty-observation identity-read containment, the contradictory invocation-absence shape refusal and the runtime latest-same-generation-presence tie continuation; v19 (round 15) = the declared-scope binding, the identity-bearing absence reuse latch and the walked presence horizon; v18 (round 14) = the tied-absence collection continuation, the transport-exit recency/carried-identity re-adjudication and the incomplete-interval start refusals; v17 (round 13) = the identity-read containment check, the FROZEN argv selector enforced over mere persisted agreement, and the persisted block-version gate; v16 (round 12) = the collection-interval validity for every fence-crediting read + the consistent materialization-unavailable provenance fallback; v15 (round 11) = the invocation-absence strict tie, the contradictory-duplicate-duty-slot refusal and the selected-endpoint parentage rule covering a failed refresh; v14 (round 10) = the transport PID-reuse latch + the strict transport-absence tie rule; v13 (round 9) = the transport-exit recency/carried-identity re-adjudication; v12 (round 8) = the generation-bound PRE-FENCE transport-exit conjunct, the refreshed-presence horizon/supersession and the admitted-record capture-time parentage');
+    assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 38, 'join v26 (2026-10-30 local-settlement Task 3 review round 24): the retained transport retry reads validate their identity instants (the duty-observation/ancestry-endpoint pattern — malformed instants refuse by name, supplied instants must sit inside the validated collection interval) and the captured transport start identity persists with the marker (schema-additive) binding the replayed transport observation — a successor generation cannot settle the original transport duty; v25 (round 23): a supplied carried identity instant is validated against its read collection interval BEFORE the reuse latch recency filtering — an out-of-interval or malformed carried instant is torn replacement evidence refusing by name (exit-reuse-carried-instant-outside-interval), never old evidence; v24 (round 22): every credited observation binds its queried pid/scope digest to the observed identity (the duty echoes and the ancestry endpoints) and a present-but-malformed identity-read instant refuses by name instead of falling back to the completion; v23 (round 20): the persisted transport retry sequence latches replacement evidence (any generation-bound read carrying a different start identity) and absence timestamps must be safe integers before crediting (nonnumeric instants refuse by name); v22 (round 19): a live same-generation transport retry advances the presence horizon and persists the full presence sequence for replay, and the exit supersession compares the identity-read instant (an async completion never re-wins); v21 (rounds 17-18): the correlated absence validates its collection interval (inverted intervals are torn evidence), the SELECTED daemon endpoint re-verifies its parentage against the presence/record rule and a tied transport absence keeps the retry loop sampling; v20 (round 16) = the duty-observation identity-read containment, the contradictory invocation-absence shape refusal and the runtime latest-same-generation-presence tie continuation; v19 (round 15) = the declared-scope binding, the identity-bearing absence reuse latch and the walked presence horizon; v18 (round 14) = the tied-absence collection continuation, the transport-exit recency/carried-identity re-adjudication and the incomplete-interval start refusals; v17 (round 13) = the identity-read containment check, the FROZEN argv selector enforced over mere persisted agreement, and the persisted block-version gate; v16 (round 12) = the collection-interval validity for every fence-crediting read + the consistent materialization-unavailable provenance fallback; v15 (round 11) = the invocation-absence strict tie, the contradictory-duplicate-duty-slot refusal and the selected-endpoint parentage rule covering a failed refresh; v14 (round 10) = the transport PID-reuse latch + the strict transport-absence tie rule; v13 (round 9) = the transport-exit recency/carried-identity re-adjudication; v12 (round 8) = the generation-bound PRE-FENCE transport-exit conjunct, the refreshed-presence horizon/supersession and the admitted-record capture-time parentage');
   });
 });
 
@@ -10166,7 +11943,7 @@ describe('local-settlement task 3 review round 25 (one P2): a retained transport
   });
 
   test('the join version registers the round-25 replay growth', () => {
-    assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 37, 'join v27 (2026-10-30 local-settlement Task 3 review round 25): a retained transport retry read with an INVALID collection interval refuses explicitly (a true inversion is observation-interval-inverted, a missing start when credit depends on it is observation-start-unprovable) — torn evidence cannot turn an otherwise contradictory replay into a credited local-process layer; v26 (round 24): the retained transport retry reads validate their identity instants (the duty-observation/ancestry-endpoint pattern — malformed instants refuse by name, supplied instants must sit inside the validated collection interval) and the captured transport start identity persists with the marker (schema-additive) binding the replayed transport observation — a successor generation cannot settle the original transport duty; v25 (round 23): a supplied carried identity instant is validated against its read collection interval BEFORE the reuse latch recency filtering — an out-of-interval or malformed carried instant is torn replacement evidence refusing by name (exit-reuse-carried-instant-outside-interval), never old evidence; v24 (round 22): every credited observation binds its queried pid/scope digest to the observed identity (the duty echoes and the ancestry endpoints) and a present-but-malformed identity-read instant refuses by name instead of falling back to the completion; v23 (round 20): the persisted transport retry sequence latches replacement evidence (any generation-bound read carrying a different start identity) and absence timestamps must be safe integers before crediting (nonnumeric instants refuse by name); v22 (round 19): a live same-generation transport retry advances the presence horizon and persists the full presence sequence for replay, and the exit supersession compares the identity-read instant (an async completion never re-wins); v21 (rounds 17-18): the correlated absence validates its collection interval (inverted intervals are torn evidence), the SELECTED daemon endpoint re-verifies its parentage against the presence/record rule and a tied transport absence keeps the retry loop sampling; v20 (round 16) = the duty-observation identity-read containment, the contradictory invocation-absence shape refusal and the runtime latest-same-generation-presence tie continuation; v19 (round 15) = the declared-scope binding, the identity-bearing absence reuse latch and the walked presence horizon; v18 (round 14) = the tied-absence collection continuation, the transport-exit recency/carried-identity re-adjudication and the incomplete-interval start refusals; v17 (round 13) = the identity-read containment check, the FROZEN argv selector enforced over mere persisted agreement, and the persisted block-version gate; v16 (round 12) = the collection-interval validity for every fence-crediting read + the consistent materialization-unavailable provenance fallback; v15 (round 11) = the invocation-absence strict tie, the contradictory-duplicate-duty-slot refusal and the selected-endpoint parentage rule covering a failed refresh; v14 (round 10) = the transport PID-reuse latch + the strict transport-absence tie rule; v13 (round 9) = the transport-exit recency/carried-identity re-adjudication; v12 (round 8) = the generation-bound PRE-FENCE transport-exit conjunct, the refreshed-presence horizon/supersession and the admitted-record capture-time parentage');
+    assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 38, 'join v27 (2026-10-30 local-settlement Task 3 review round 25): a retained transport retry read with an INVALID collection interval refuses explicitly (a true inversion is observation-interval-inverted, a missing start when credit depends on it is observation-start-unprovable) — torn evidence cannot turn an otherwise contradictory replay into a credited local-process layer; v26 (round 24): the retained transport retry reads validate their identity instants (the duty-observation/ancestry-endpoint pattern — malformed instants refuse by name, supplied instants must sit inside the validated collection interval) and the captured transport start identity persists with the marker (schema-additive) binding the replayed transport observation — a successor generation cannot settle the original transport duty; v25 (round 23): a supplied carried identity instant is validated against its read collection interval BEFORE the reuse latch recency filtering — an out-of-interval or malformed carried instant is torn replacement evidence refusing by name (exit-reuse-carried-instant-outside-interval), never old evidence; v24 (round 22): every credited observation binds its queried pid/scope digest to the observed identity (the duty echoes and the ancestry endpoints) and a present-but-malformed identity-read instant refuses by name instead of falling back to the completion; v23 (round 20): the persisted transport retry sequence latches replacement evidence (any generation-bound read carrying a different start identity) and absence timestamps must be safe integers before crediting (nonnumeric instants refuse by name); v22 (round 19): a live same-generation transport retry advances the presence horizon and persists the full presence sequence for replay, and the exit supersession compares the identity-read instant (an async completion never re-wins); v21 (rounds 17-18): the correlated absence validates its collection interval (inverted intervals are torn evidence), the SELECTED daemon endpoint re-verifies its parentage against the presence/record rule and a tied transport absence keeps the retry loop sampling; v20 (round 16) = the duty-observation identity-read containment, the contradictory invocation-absence shape refusal and the runtime latest-same-generation-presence tie continuation; v19 (round 15) = the declared-scope binding, the identity-bearing absence reuse latch and the walked presence horizon; v18 (round 14) = the tied-absence collection continuation, the transport-exit recency/carried-identity re-adjudication and the incomplete-interval start refusals; v17 (round 13) = the identity-read containment check, the FROZEN argv selector enforced over mere persisted agreement, and the persisted block-version gate; v16 (round 12) = the collection-interval validity for every fence-crediting read + the consistent materialization-unavailable provenance fallback; v15 (round 11) = the invocation-absence strict tie, the contradictory-duplicate-duty-slot refusal and the selected-endpoint parentage rule covering a failed refresh; v14 (round 10) = the transport PID-reuse latch + the strict transport-absence tie rule; v13 (round 9) = the transport-exit recency/carried-identity re-adjudication; v12 (round 8) = the generation-bound PRE-FENCE transport-exit conjunct, the refreshed-presence horizon/supersession and the admitted-record capture-time parentage');
   });
 });
 
@@ -10300,7 +12077,7 @@ describe('local-settlement task 3 review round 26 (two P2): the retained transpo
   });
 
   test('the join version registers the round-26 replay growth', () => {
-    assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 37, 'join v28 (2026-10-30 local-settlement Task 3 review round 26): the retained transport reads validate their completion stamps (a missing or nonnumeric completion refuses observation-instant-unprovable — torn evidence is never silently excluded from the presence horizon) and the transport exit validates its supplied carried identity instants (in-interval + safe integer, else transport-exit-carried-instant-outside-interval — the invocation-absence pattern); v27 (round 25): a retained transport retry read with an INVALID collection interval refuses explicitly (a true inversion is observation-interval-inverted, a missing start when credit depends on it is observation-start-unprovable) — torn evidence cannot turn an otherwise contradictory replay into a credited local-process layer; v26 (round 24): the retained transport retry reads validate their identity instants (the duty-observation/ancestry-endpoint pattern — malformed instants refuse by name, supplied instants must sit inside the validated collection interval) and the captured transport start identity persists with the marker (schema-additive) binding the replayed transport observation — a successor generation cannot settle the original transport duty; v25 (round 23): a supplied carried identity instant is validated against its read collection interval BEFORE the reuse latch recency filtering — an out-of-interval or malformed carried instant is torn replacement evidence refusing by name (exit-reuse-carried-instant-outside-interval), never old evidence; v24 (round 22): every credited observation binds its queried pid/scope digest to the observed identity (the duty echoes and the ancestry endpoints) and a present-but-malformed identity-read instant refuses by name instead of falling back to the completion; v23 (round 20): the persisted transport retry sequence latches replacement evidence (any generation-bound read carrying a different start identity) and absence timestamps must be safe integers before crediting (nonnumeric instants refuse by name); v22 (round 19): a live same-generation transport retry advances the presence horizon and persists the full presence sequence for replay, and the exit supersession compares the identity-read instant (an async completion never re-wins); v21 (rounds 17-18): the correlated absence validates its collection interval (inverted intervals are torn evidence), the SELECTED daemon endpoint re-verifies its parentage against the presence/record rule and a tied transport absence keeps the retry loop sampling; v20 (round 16) = the duty-observation identity-read containment, the contradictory invocation-absence shape refusal and the runtime latest-same-generation-presence tie continuation; v19 (round 15) = the declared-scope binding, the identity-bearing absence reuse latch and the walked presence horizon; v18 (round 14) = the tied-absence collection continuation, the transport-exit recency/carried-identity re-adjudication and the incomplete-interval start refusals; v17 (round 13) = the identity-read containment check, the FROZEN argv selector enforced over mere persisted agreement, and the persisted block-version gate; v16 (round 12) = the collection-interval validity for every fence-crediting read + the consistent materialization-unavailable provenance fallback; v15 (round 11) = the invocation-absence strict tie, the contradictory-duplicate-duty-slot refusal and the selected-endpoint parentage rule covering a failed refresh; v14 (round 10) = the transport PID-reuse latch + the strict transport-absence tie rule; v13 (round 9) = the transport-exit recency/carried-identity re-adjudication; v12 (round 8) = the generation-bound PRE-FENCE transport-exit conjunct, the refreshed-presence horizon/supersession and the admitted-record capture-time parentage');
+    assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 38, 'join v28 (2026-10-30 local-settlement Task 3 review round 26): the retained transport reads validate their completion stamps (a missing or nonnumeric completion refuses observation-instant-unprovable — torn evidence is never silently excluded from the presence horizon) and the transport exit validates its supplied carried identity instants (in-interval + safe integer, else transport-exit-carried-instant-outside-interval — the invocation-absence pattern); v27 (round 25): a retained transport retry read with an INVALID collection interval refuses explicitly (a true inversion is observation-interval-inverted, a missing start when credit depends on it is observation-start-unprovable) — torn evidence cannot turn an otherwise contradictory replay into a credited local-process layer; v26 (round 24): the retained transport retry reads validate their identity instants (the duty-observation/ancestry-endpoint pattern — malformed instants refuse by name, supplied instants must sit inside the validated collection interval) and the captured transport start identity persists with the marker (schema-additive) binding the replayed transport observation — a successor generation cannot settle the original transport duty; v25 (round 23): a supplied carried identity instant is validated against its read collection interval BEFORE the reuse latch recency filtering — an out-of-interval or malformed carried instant is torn replacement evidence refusing by name (exit-reuse-carried-instant-outside-interval), never old evidence; v24 (round 22): every credited observation binds its queried pid/scope digest to the observed identity (the duty echoes and the ancestry endpoints) and a present-but-malformed identity-read instant refuses by name instead of falling back to the completion; v23 (round 20): the persisted transport retry sequence latches replacement evidence (any generation-bound read carrying a different start identity) and absence timestamps must be safe integers before crediting (nonnumeric instants refuse by name); v22 (round 19): a live same-generation transport retry advances the presence horizon and persists the full presence sequence for replay, and the exit supersession compares the identity-read instant (an async completion never re-wins); v21 (rounds 17-18): the correlated absence validates its collection interval (inverted intervals are torn evidence), the SELECTED daemon endpoint re-verifies its parentage against the presence/record rule and a tied transport absence keeps the retry loop sampling; v20 (round 16) = the duty-observation identity-read containment, the contradictory invocation-absence shape refusal and the runtime latest-same-generation-presence tie continuation; v19 (round 15) = the declared-scope binding, the identity-bearing absence reuse latch and the walked presence horizon; v18 (round 14) = the tied-absence collection continuation, the transport-exit recency/carried-identity re-adjudication and the incomplete-interval start refusals; v17 (round 13) = the identity-read containment check, the FROZEN argv selector enforced over mere persisted agreement, and the persisted block-version gate; v16 (round 12) = the collection-interval validity for every fence-crediting read + the consistent materialization-unavailable provenance fallback; v15 (round 11) = the invocation-absence strict tie, the contradictory-duplicate-duty-slot refusal and the selected-endpoint parentage rule covering a failed refresh; v14 (round 10) = the transport PID-reuse latch + the strict transport-absence tie rule; v13 (round 9) = the transport-exit recency/carried-identity re-adjudication; v12 (round 8) = the generation-bound PRE-FENCE transport-exit conjunct, the refreshed-presence horizon/supersession and the admitted-record capture-time parentage');
   });
 });
 
@@ -10471,7 +12248,7 @@ describe('local-settlement task 3 review round 27 (two P2): a replacement-claimi
   });
 
   test('the join version registers the round-27 replay growth', () => {
-    assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 37, 'join v29 (2026-10-30 local-settlement Task 3 review round 27): a replacement-claiming retained invocation read owes a valid completion timestamp (a missing or malformed one refuses exit-reuse-read-instant-unprovable instead of being silently discarded by the recency filter), and the NODE_OPTIONS preflight parses the string into shell-ish option tokens (a --require fragment inside another option\'s value never counts as loading the declared preload); v28 (round 26): the retained transport reads validate their completion stamps (a missing or nonnumeric completion refuses observation-instant-unprovable — torn evidence is never silently excluded from the presence horizon) and the transport exit validates its supplied carried identity instants (in-interval + safe integer, else transport-exit-carried-instant-outside-interval — the invocation-absence pattern); v27 (round 25): a retained transport retry read with an INVALID collection interval refuses explicitly (a true inversion is observation-interval-inverted, a missing start when credit depends on it is observation-start-unprovable) — torn evidence cannot turn an otherwise contradictory replay into a credited local-process layer; v26 (round 24): the retained transport retry reads validate their identity instants (the duty-observation/ancestry-endpoint pattern — malformed instants refuse by name, supplied instants must sit inside the validated collection interval) and the captured transport start identity persists with the marker (schema-additive) binding the replayed transport observation — a successor generation cannot settle the original transport duty; v25 (round 23): a supplied carried identity instant is validated against its read collection interval BEFORE the reuse latch recency filtering — an out-of-interval or malformed carried instant is torn replacement evidence refusing by name (exit-reuse-carried-instant-outside-interval), never old evidence; v24 (round 22): every credited observation binds its queried pid/scope digest to the observed identity (the duty echoes and the ancestry endpoints) and a present-but-malformed identity-read instant refuses by name instead of falling back to the completion; v23 (round 20): the persisted transport retry sequence latches replacement evidence (any generation-bound read carrying a different start identity) and absence timestamps must be safe integers before crediting (nonnumeric instants refuse by name); v22 (round 19): a live same-generation transport retry advances the presence horizon and persists the full presence sequence for replay, and the exit supersession compares the identity-read instant (an async completion never re-wins); v21 (rounds 17-18): the correlated absence validates its collection interval (inverted intervals are torn evidence), the SELECTED daemon endpoint re-verifies its parentage against the presence/record rule and a tied transport absence keeps the retry loop sampling; v20 (round 16) = the duty-observation identity-read containment, the contradictory invocation-absence shape refusal and the runtime latest-same-generation-presence tie continuation; v19 (round 15) = the declared-scope binding, the identity-bearing absence reuse latch and the walked presence horizon; v18 (round 14) = the tied-absence collection continuation, the transport-exit recency/carried-identity re-adjudication and the incomplete-interval start refusals; v17 (round 13) = the identity-read containment check, the FROZEN argv selector enforced over mere persisted agreement, and the persisted block-version gate; v16 (round 12) = the collection-interval validity for every fence-crediting read + the consistent materialization-unavailable provenance fallback; v15 (round 11) = the invocation-absence strict tie, the contradictory-duplicate-duty-slot refusal and the selected-endpoint parentage rule covering a failed refresh; v14 (round 10) = the transport PID-reuse latch + the strict transport-absence tie rule; v13 (round 9) = the transport-exit recency/carried-identity re-adjudication; v12 (round 8) = the generation-bound PRE-FENCE transport-exit conjunct, the refreshed-presence horizon/supersession and the admitted-record capture-time parentage');
+    assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 38, 'join v29 (2026-10-30 local-settlement Task 3 review round 27): a replacement-claiming retained invocation read owes a valid completion timestamp (a missing or malformed one refuses exit-reuse-read-instant-unprovable instead of being silently discarded by the recency filter), and the NODE_OPTIONS preflight parses the string into shell-ish option tokens (a --require fragment inside another option\'s value never counts as loading the declared preload); v28 (round 26): the retained transport reads validate their completion stamps (a missing or nonnumeric completion refuses observation-instant-unprovable — torn evidence is never silently excluded from the presence horizon) and the transport exit validates its supplied carried identity instants (in-interval + safe integer, else transport-exit-carried-instant-outside-interval — the invocation-absence pattern); v27 (round 25): a retained transport retry read with an INVALID collection interval refuses explicitly (a true inversion is observation-interval-inverted, a missing start when credit depends on it is observation-start-unprovable) — torn evidence cannot turn an otherwise contradictory replay into a credited local-process layer; v26 (round 24): the retained transport retry reads validate their identity instants (the duty-observation/ancestry-endpoint pattern — malformed instants refuse by name, supplied instants must sit inside the validated collection interval) and the captured transport start identity persists with the marker (schema-additive) binding the replayed transport observation — a successor generation cannot settle the original transport duty; v25 (round 23): a supplied carried identity instant is validated against its read collection interval BEFORE the reuse latch recency filtering — an out-of-interval or malformed carried instant is torn replacement evidence refusing by name (exit-reuse-carried-instant-outside-interval), never old evidence; v24 (round 22): every credited observation binds its queried pid/scope digest to the observed identity (the duty echoes and the ancestry endpoints) and a present-but-malformed identity-read instant refuses by name instead of falling back to the completion; v23 (round 20): the persisted transport retry sequence latches replacement evidence (any generation-bound read carrying a different start identity) and absence timestamps must be safe integers before crediting (nonnumeric instants refuse by name); v22 (round 19): a live same-generation transport retry advances the presence horizon and persists the full presence sequence for replay, and the exit supersession compares the identity-read instant (an async completion never re-wins); v21 (rounds 17-18): the correlated absence validates its collection interval (inverted intervals are torn evidence), the SELECTED daemon endpoint re-verifies its parentage against the presence/record rule and a tied transport absence keeps the retry loop sampling; v20 (round 16) = the duty-observation identity-read containment, the contradictory invocation-absence shape refusal and the runtime latest-same-generation-presence tie continuation; v19 (round 15) = the declared-scope binding, the identity-bearing absence reuse latch and the walked presence horizon; v18 (round 14) = the tied-absence collection continuation, the transport-exit recency/carried-identity re-adjudication and the incomplete-interval start refusals; v17 (round 13) = the identity-read containment check, the FROZEN argv selector enforced over mere persisted agreement, and the persisted block-version gate; v16 (round 12) = the collection-interval validity for every fence-crediting read + the consistent materialization-unavailable provenance fallback; v15 (round 11) = the invocation-absence strict tie, the contradictory-duplicate-duty-slot refusal and the selected-endpoint parentage rule covering a failed refresh; v14 (round 10) = the transport PID-reuse latch + the strict transport-absence tie rule; v13 (round 9) = the transport-exit recency/carried-identity re-adjudication; v12 (round 8) = the generation-bound PRE-FENCE transport-exit conjunct, the refreshed-presence horizon/supersession and the admitted-record capture-time parentage');
   });
 });
 
@@ -10644,7 +12421,7 @@ describe('local-settlement task 3 review round 28 (two P2): the fence echoes com
   });
 
   test('the join version registers the round-28 replay growth', () => {
-    assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 37, 'join v30 (2026-10-30 local-settlement Task 3 review round 28): the fence echoes compare symmetrically (a missing-versus-present mismatch refuses cleanup-boundary-echo-mismatch / cutoff-echo-mismatch in both directions — cleanup-time evidence never credits across a missing echo) and the NODE_OPTIONS tokenizer matches Node exactly (apostrophes are ordinary characters, backslash escapes only inside double quotes — the it\'s run passes, the apostrophe-quoted path refuses); v29 (round 27): a replacement-claiming retained invocation read owes a valid completion timestamp (a missing or malformed one refuses exit-reuse-read-instant-unprovable instead of being silently discarded by the recency filter), and the NODE_OPTIONS preflight parses the string into shell-ish option tokens (a --require fragment inside another option value never counts as loading the declared preload); v28 (round 26): the retained transport reads validate their completion stamps (a missing or nonnumeric completion refuses observation-instant-unprovable — torn evidence is never silently excluded from the presence horizon) and the transport exit validates its supplied carried identity instants (in-interval + safe integer, else transport-exit-carried-instant-outside-interval — the invocation-absence pattern); v27 (round 25): a retained transport retry read with an INVALID collection interval refuses explicitly (a true inversion is observation-interval-inverted, a missing start when credit depends on it is observation-start-unprovable) — torn evidence cannot turn an otherwise contradictory replay into a credited local-process layer; v26 (round 24): the retained transport retry reads validate their identity instants (the duty-observation/ancestry-endpoint pattern — malformed instants refuse by name, supplied instants must sit inside the validated collection interval) and the captured transport start identity persists with the marker (schema-additive) binding the replayed transport observation — a successor generation cannot settle the original transport duty; v25 (round 23): a supplied carried identity instant is validated against its read collection interval BEFORE the reuse latch recency filtering — an out-of-interval or malformed carried instant is torn replacement evidence refusing by name (exit-reuse-carried-instant-outside-interval), never old evidence; v24 (round 22): every credited observation binds its queried pid/scope digest to the observed identity (the duty echoes and the ancestry endpoints) and a present-but-malformed identity-read instant refuses by name instead of falling back to the completion; v23 (round 20): the persisted transport retry sequence latches replacement evidence (any generation-bound read carrying a different start identity) and absence timestamps must be safe integers before crediting (nonnumeric instants refuse by name); v22 (round 19): a live same-generation transport retry advances the presence horizon and persists the full presence sequence for replay, and the exit supersession compares the identity-read instant (an async completion never re-wins); v21 (rounds 17-18): the correlated absence validates its collection interval (inverted intervals are torn evidence), the SELECTED daemon endpoint re-verifies its parentage against the presence/record rule and a tied transport absence keeps the retry loop sampling; v20 (round 16) = the duty-observation identity-read containment, the contradictory invocation-absence shape refusal and the runtime latest-same-generation-presence tie continuation; v19 (round 15) = the declared-scope binding, the identity-bearing absence reuse latch and the walked presence horizon; v18 (round 14) = the tied-absence collection continuation, the transport-exit recency/carried-identity re-adjudication and the incomplete-interval start refusals; v17 (round 13) = the identity-read containment check, the FROZEN argv selector enforced over mere persisted agreement, and the persisted block-version gate; v16 (round 12) = the collection-interval validity for every fence-crediting read + the consistent materialization-unavailable provenance fallback; v15 (round 11) = the invocation-absence strict tie, the contradictory-duplicate-duty-slot refusal and the selected-endpoint parentage rule covering a failed refresh; v14 (round 10) = the transport PID-reuse latch + the strict transport-absence tie rule; v13 (round 9) = the transport-exit recency/carried-identity re-adjudication; v12 (round 8) = the generation-bound PRE-FENCE transport-exit conjunct, the refreshed-presence horizon/supersession and the admitted-record capture-time parentage');
+    assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 38, 'join v30 (2026-10-30 local-settlement Task 3 review round 28): the fence echoes compare symmetrically (a missing-versus-present mismatch refuses cleanup-boundary-echo-mismatch / cutoff-echo-mismatch in both directions — cleanup-time evidence never credits across a missing echo) and the NODE_OPTIONS tokenizer matches Node exactly (apostrophes are ordinary characters, backslash escapes only inside double quotes — the it\'s run passes, the apostrophe-quoted path refuses); v29 (round 27): a replacement-claiming retained invocation read owes a valid completion timestamp (a missing or malformed one refuses exit-reuse-read-instant-unprovable instead of being silently discarded by the recency filter), and the NODE_OPTIONS preflight parses the string into shell-ish option tokens (a --require fragment inside another option value never counts as loading the declared preload); v28 (round 26): the retained transport reads validate their completion stamps (a missing or nonnumeric completion refuses observation-instant-unprovable — torn evidence is never silently excluded from the presence horizon) and the transport exit validates its supplied carried identity instants (in-interval + safe integer, else transport-exit-carried-instant-outside-interval — the invocation-absence pattern); v27 (round 25): a retained transport retry read with an INVALID collection interval refuses explicitly (a true inversion is observation-interval-inverted, a missing start when credit depends on it is observation-start-unprovable) — torn evidence cannot turn an otherwise contradictory replay into a credited local-process layer; v26 (round 24): the retained transport retry reads validate their identity instants (the duty-observation/ancestry-endpoint pattern — malformed instants refuse by name, supplied instants must sit inside the validated collection interval) and the captured transport start identity persists with the marker (schema-additive) binding the replayed transport observation — a successor generation cannot settle the original transport duty; v25 (round 23): a supplied carried identity instant is validated against its read collection interval BEFORE the reuse latch recency filtering — an out-of-interval or malformed carried instant is torn replacement evidence refusing by name (exit-reuse-carried-instant-outside-interval), never old evidence; v24 (round 22): every credited observation binds its queried pid/scope digest to the observed identity (the duty echoes and the ancestry endpoints) and a present-but-malformed identity-read instant refuses by name instead of falling back to the completion; v23 (round 20): the persisted transport retry sequence latches replacement evidence (any generation-bound read carrying a different start identity) and absence timestamps must be safe integers before crediting (nonnumeric instants refuse by name); v22 (round 19): a live same-generation transport retry advances the presence horizon and persists the full presence sequence for replay, and the exit supersession compares the identity-read instant (an async completion never re-wins); v21 (rounds 17-18): the correlated absence validates its collection interval (inverted intervals are torn evidence), the SELECTED daemon endpoint re-verifies its parentage against the presence/record rule and a tied transport absence keeps the retry loop sampling; v20 (round 16) = the duty-observation identity-read containment, the contradictory invocation-absence shape refusal and the runtime latest-same-generation-presence tie continuation; v19 (round 15) = the declared-scope binding, the identity-bearing absence reuse latch and the walked presence horizon; v18 (round 14) = the tied-absence collection continuation, the transport-exit recency/carried-identity re-adjudication and the incomplete-interval start refusals; v17 (round 13) = the identity-read containment check, the FROZEN argv selector enforced over mere persisted agreement, and the persisted block-version gate; v16 (round 12) = the collection-interval validity for every fence-crediting read + the consistent materialization-unavailable provenance fallback; v15 (round 11) = the invocation-absence strict tie, the contradictory-duplicate-duty-slot refusal and the selected-endpoint parentage rule covering a failed refresh; v14 (round 10) = the transport PID-reuse latch + the strict transport-absence tie rule; v13 (round 9) = the transport-exit recency/carried-identity re-adjudication; v12 (round 8) = the generation-bound PRE-FENCE transport-exit conjunct, the refreshed-presence horizon/supersession and the admitted-record capture-time parentage');
   });
 });
 
@@ -10827,7 +12604,7 @@ describe('local-settlement task 3 review round 29 (two P2): the Companion baseli
   });
 
   test('the join version registers the round-29 replay growth', () => {
-    assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 37, 'join v31 (2026-10-30 local-settlement Task 3 review round 29): the observed Companion generation must demonstrably predate the interrupt request (the admitted request timestamp/bounds bind the baseline — ordering that cannot be established refuses companion-baseline-unestablished) and the NODE_OPTIONS tokenizer rejects unfinished quoting states (an unterminated double-quote or a dangling escape refuses by name — the host would exit before loading the observer); v30 (round 28): the fence echoes compare symmetrically (a missing-versus-present mismatch refuses cleanup-boundary-echo-mismatch / cutoff-echo-mismatch in both directions — cleanup-time evidence never credits across a missing echo) and the NODE_OPTIONS tokenizer matches Node exactly (apostrophes are ordinary characters, backslash escapes only inside double quotes — the inherited-apostrophe run passes, the apostrophe-quoted path refuses); v29 (round 27): a replacement-claiming retained invocation read owes a valid completion timestamp (a missing or malformed one refuses exit-reuse-read-instant-unprovable instead of being silently discarded by the recency filter), and the NODE_OPTIONS preflight parses the string into shell-ish option tokens (a --require fragment inside another option value never counts as loading the declared preload); v28 (round 26): the retained transport reads validate their completion stamps (a missing or nonnumeric completion refuses observation-instant-unprovable — torn evidence is never silently excluded from the presence horizon) and the transport exit validates its supplied carried identity instants (in-interval + safe integer, else transport-exit-carried-instant-outside-interval — the invocation-absence pattern); v27 (round 25): a retained transport retry read with an INVALID collection interval refuses explicitly (a true inversion is observation-interval-inverted, a missing start when credit depends on it is observation-start-unprovable) — torn evidence cannot turn an otherwise contradictory replay into a credited local-process layer; v26 (round 24): the retained transport retry reads validate their identity instants (the duty-observation/ancestry-endpoint pattern — malformed instants refuse by name, supplied instants must sit inside the validated collection interval) and the captured transport start identity persists with the marker (schema-additive) binding the replayed transport observation — a successor generation cannot settle the original transport duty; v25 (round 23): a supplied carried identity instant is validated against its read collection interval BEFORE the reuse latch recency filtering — an out-of-interval or malformed carried instant is torn replacement evidence refusing by name (exit-reuse-carried-instant-outside-interval), never old evidence; v24 (round 22): every credited observation binds its queried pid/scope digest to the observed identity (the duty echoes and the ancestry endpoints) and a present-but-malformed identity-read instant refuses by name instead of falling back to the completion; v23 (round 20): the persisted transport retry sequence latches replacement evidence (any generation-bound read carrying a different start identity) and absence timestamps must be safe integers before crediting (nonnumeric instants refuse by name); v22 (round 19): a live same-generation transport retry advances the presence horizon and persists the full presence sequence for replay, and the exit supersession compares the identity-read instant (an async completion never re-wins); v21 (rounds 17-18): the correlated absence validates its collection interval (inverted intervals are torn evidence), the SELECTED daemon endpoint re-verifies its parentage against the presence/record rule and a tied transport absence keeps the retry loop sampling; v20 (round 16) = the duty-observation identity-read containment, the contradictory invocation-absence shape refusal and the runtime latest-same-generation-presence tie continuation; v19 (round 15) = the declared-scope binding, the identity-bearing absence reuse latch and the walked presence horizon; v18 (round 14) = the tied-absence collection continuation, the transport-exit recency/carried-identity re-adjudication and the incomplete-interval start refusals; v17 (round 13) = the identity-read containment check, the FROZEN argv selector enforced over mere persisted agreement, and the persisted block-version gate; v16 (round 12) = the collection-interval validity for every fence-crediting read + the consistent materialization-unavailable provenance fallback; v15 (round 11) = the invocation-absence strict tie, the contradictory-duplicate-duty-slot refusal and the selected-endpoint parentage rule covering a failed refresh; v14 (round 10) = the transport PID-reuse latch + the strict transport-absence tie rule; v13 (round 9) = the transport-exit recency/carried-identity re-adjudication; v12 (round 8) = the generation-bound PRE-FENCE transport-exit conjunct, the refreshed-presence horizon/supersession and the admitted-record capture-time parentage');
+    assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 38, 'join v31 (2026-10-30 local-settlement Task 3 review round 29): the observed Companion generation must demonstrably predate the interrupt request (the admitted request timestamp/bounds bind the baseline — ordering that cannot be established refuses companion-baseline-unestablished) and the NODE_OPTIONS tokenizer rejects unfinished quoting states (an unterminated double-quote or a dangling escape refuses by name — the host would exit before loading the observer); v30 (round 28): the fence echoes compare symmetrically (a missing-versus-present mismatch refuses cleanup-boundary-echo-mismatch / cutoff-echo-mismatch in both directions — cleanup-time evidence never credits across a missing echo) and the NODE_OPTIONS tokenizer matches Node exactly (apostrophes are ordinary characters, backslash escapes only inside double quotes — the inherited-apostrophe run passes, the apostrophe-quoted path refuses); v29 (round 27): a replacement-claiming retained invocation read owes a valid completion timestamp (a missing or malformed one refuses exit-reuse-read-instant-unprovable instead of being silently discarded by the recency filter), and the NODE_OPTIONS preflight parses the string into shell-ish option tokens (a --require fragment inside another option value never counts as loading the declared preload); v28 (round 26): the retained transport reads validate their completion stamps (a missing or nonnumeric completion refuses observation-instant-unprovable — torn evidence is never silently excluded from the presence horizon) and the transport exit validates its supplied carried identity instants (in-interval + safe integer, else transport-exit-carried-instant-outside-interval — the invocation-absence pattern); v27 (round 25): a retained transport retry read with an INVALID collection interval refuses explicitly (a true inversion is observation-interval-inverted, a missing start when credit depends on it is observation-start-unprovable) — torn evidence cannot turn an otherwise contradictory replay into a credited local-process layer; v26 (round 24): the retained transport retry reads validate their identity instants (the duty-observation/ancestry-endpoint pattern — malformed instants refuse by name, supplied instants must sit inside the validated collection interval) and the captured transport start identity persists with the marker (schema-additive) binding the replayed transport observation — a successor generation cannot settle the original transport duty; v25 (round 23): a supplied carried identity instant is validated against its read collection interval BEFORE the reuse latch recency filtering — an out-of-interval or malformed carried instant is torn replacement evidence refusing by name (exit-reuse-carried-instant-outside-interval), never old evidence; v24 (round 22): every credited observation binds its queried pid/scope digest to the observed identity (the duty echoes and the ancestry endpoints) and a present-but-malformed identity-read instant refuses by name instead of falling back to the completion; v23 (round 20): the persisted transport retry sequence latches replacement evidence (any generation-bound read carrying a different start identity) and absence timestamps must be safe integers before crediting (nonnumeric instants refuse by name); v22 (round 19): a live same-generation transport retry advances the presence horizon and persists the full presence sequence for replay, and the exit supersession compares the identity-read instant (an async completion never re-wins); v21 (rounds 17-18): the correlated absence validates its collection interval (inverted intervals are torn evidence), the SELECTED daemon endpoint re-verifies its parentage against the presence/record rule and a tied transport absence keeps the retry loop sampling; v20 (round 16) = the duty-observation identity-read containment, the contradictory invocation-absence shape refusal and the runtime latest-same-generation-presence tie continuation; v19 (round 15) = the declared-scope binding, the identity-bearing absence reuse latch and the walked presence horizon; v18 (round 14) = the tied-absence collection continuation, the transport-exit recency/carried-identity re-adjudication and the incomplete-interval start refusals; v17 (round 13) = the identity-read containment check, the FROZEN argv selector enforced over mere persisted agreement, and the persisted block-version gate; v16 (round 12) = the collection-interval validity for every fence-crediting read + the consistent materialization-unavailable provenance fallback; v15 (round 11) = the invocation-absence strict tie, the contradictory-duplicate-duty-slot refusal and the selected-endpoint parentage rule covering a failed refresh; v14 (round 10) = the transport PID-reuse latch + the strict transport-absence tie rule; v13 (round 9) = the transport-exit recency/carried-identity re-adjudication; v12 (round 8) = the generation-bound PRE-FENCE transport-exit conjunct, the refreshed-presence horizon/supersession and the admitted-record capture-time parentage');
   });
 });
 
@@ -11465,7 +13242,7 @@ describe('local-settlement task 3 review round 34 (one P2): the pre-interruption
   });
 
   test('the join version registers the round-34 replay growth', () => {
-    assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 37, 'join v34 (2026-10-30 local-settlement Task 3 review round 34): the pre-interruption baseline owes a VERIFIED presence witness collected before the admitted request (at least one interval-valid same-generation presence instant strictly earlier than the request — an earlier process start alone never settles; the same conservative-strict ordering refuses companion-baseline-unestablished); v33 (round 33): the refreshed ancestry endpoint creation instant must AGREE with its admission-backed observation (a conflicting instant refuses ancestry-endpoint-instant-foreign) and the preflight requires PRIVATE capture-directory permissions (exactly 0700 on POSIX — the record readers reject every startup record otherwise); v32 (round 32): the retained invocation presence reads validate like the transport replay (the round-24/25 pattern — a torn interval or unprovable timestamps refuse by name before the horizon and supersession walks) and the preflight requires a usable capture directory; v31 (round 29): the observed Companion generation must demonstrably predate the interrupt request (the admitted request timestamp/bounds bind the baseline — ordering that cannot be established refuses companion-baseline-unestablished) and the NODE_OPTIONS tokenizer rejects unfinished quoting states (an unterminated double-quote or a dangling escape refuses by name — the host would exit before loading the observer); v30 (round 28): the fence echoes compare symmetrically (a missing-versus-present mismatch refuses cleanup-boundary-echo-mismatch / cutoff-echo-mismatch in both directions — cleanup-time evidence never credits across a missing echo) and the NODE_OPTIONS tokenizer matches Node exactly (apostrophes are ordinary characters, backslash escapes only inside double quotes — the inherited-apostrophe run passes, the apostrophe-quoted path refuses); v29 (round 27): a replacement-claiming retained invocation read owes a valid completion timestamp (a missing or malformed one refuses exit-reuse-read-instant-unprovable instead of being silently discarded by the recency filter), and the NODE_OPTIONS preflight parses the string into shell-ish option tokens (a --require fragment inside another option value never counts as loading the declared preload); v28 (round 26): the retained transport reads validate their completion stamps (a missing or nonnumeric completion refuses observation-instant-unprovable — torn evidence is never silently excluded from the presence horizon) and the transport exit validates its supplied carried identity instants (in-interval + safe integer, else transport-exit-carried-instant-outside-interval — the invocation-absence pattern); v27 (round 25): a retained transport retry read with an INVALID collection interval refuses explicitly (a true inversion is observation-interval-inverted, a missing start when credit depends on it is observation-start-unprovable) — torn evidence cannot turn an otherwise contradictory replay into a credited local-process layer; v26 (round 24): the retained transport retry reads validate their identity instants (the duty-observation/ancestry-endpoint pattern — malformed instants refuse by name, supplied instants must sit inside the validated collection interval) and the captured transport start identity persists with the marker (schema-additive) binding the replayed transport observation — a successor generation cannot settle the original transport duty; v25 (round 23): a supplied carried identity instant is validated against its read collection interval BEFORE the reuse latch recency filtering — an out-of-interval or malformed carried instant is torn replacement evidence refusing by name (exit-reuse-carried-instant-outside-interval), never old evidence; v24 (round 22): every credited observation binds its queried pid/scope digest to the observed identity (the duty echoes and the ancestry endpoints) and a present-but-malformed identity-read instant refuses by name instead of falling back to the completion; v23 (round 20): the persisted transport retry sequence latches replacement evidence (any generation-bound read carrying a different start identity) and absence timestamps must be safe integers before crediting (nonnumeric instants refuse by name); v22 (round 19): a live same-generation transport retry advances the presence horizon and persists the full presence sequence for replay, and the exit supersession compares the identity-read instant (an async completion never re-wins); v21 (rounds 17-18): the correlated absence validates its collection interval (inverted intervals are torn evidence), the SELECTED daemon endpoint re-verifies its parentage against the presence/record rule and a tied transport absence keeps the retry loop sampling; v20 (round 16) = the duty-observation identity-read containment, the contradictory invocation-absence shape refusal and the runtime latest-same-generation-presence tie continuation; v19 (round 15) = the declared-scope binding, the identity-bearing absence reuse latch and the walked presence horizon; v18 (round 14) = the tied-absence collection continuation, the transport-exit recency/carried-identity re-adjudication and the incomplete-interval start refusals; v17 (round 13) = the identity-read containment check, the FROZEN argv selector enforced over mere persisted agreement, and the persisted block-version gate; v16 (round 12) = the collection-interval validity for every fence-crediting read + the consistent materialization-unavailable provenance fallback; v15 (round 11) = the invocation-absence strict tie, the contradictory-duplicate-duty-slot refusal and the selected-endpoint parentage rule covering a failed refresh; v14 (round 10) = the transport PID-reuse latch + the strict transport-absence tie rule; v13 (round 9) = the transport-exit recency/carried-identity re-adjudication; v12 (round 8) = the generation-bound PRE-FENCE transport-exit conjunct, the refreshed-presence horizon/supersession and the admitted-record capture-time parentage');
+    assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 38, 'join v34 (2026-10-30 local-settlement Task 3 review round 34): the pre-interruption baseline owes a VERIFIED presence witness collected before the admitted request (at least one interval-valid same-generation presence instant strictly earlier than the request — an earlier process start alone never settles; the same conservative-strict ordering refuses companion-baseline-unestablished); v33 (round 33): the refreshed ancestry endpoint creation instant must AGREE with its admission-backed observation (a conflicting instant refuses ancestry-endpoint-instant-foreign) and the preflight requires PRIVATE capture-directory permissions (exactly 0700 on POSIX — the record readers reject every startup record otherwise); v32 (round 32): the retained invocation presence reads validate like the transport replay (the round-24/25 pattern — a torn interval or unprovable timestamps refuse by name before the horizon and supersession walks) and the preflight requires a usable capture directory; v31 (round 29): the observed Companion generation must demonstrably predate the interrupt request (the admitted request timestamp/bounds bind the baseline — ordering that cannot be established refuses companion-baseline-unestablished) and the NODE_OPTIONS tokenizer rejects unfinished quoting states (an unterminated double-quote or a dangling escape refuses by name — the host would exit before loading the observer); v30 (round 28): the fence echoes compare symmetrically (a missing-versus-present mismatch refuses cleanup-boundary-echo-mismatch / cutoff-echo-mismatch in both directions — cleanup-time evidence never credits across a missing echo) and the NODE_OPTIONS tokenizer matches Node exactly (apostrophes are ordinary characters, backslash escapes only inside double quotes — the inherited-apostrophe run passes, the apostrophe-quoted path refuses); v29 (round 27): a replacement-claiming retained invocation read owes a valid completion timestamp (a missing or malformed one refuses exit-reuse-read-instant-unprovable instead of being silently discarded by the recency filter), and the NODE_OPTIONS preflight parses the string into shell-ish option tokens (a --require fragment inside another option value never counts as loading the declared preload); v28 (round 26): the retained transport reads validate their completion stamps (a missing or nonnumeric completion refuses observation-instant-unprovable — torn evidence is never silently excluded from the presence horizon) and the transport exit validates its supplied carried identity instants (in-interval + safe integer, else transport-exit-carried-instant-outside-interval — the invocation-absence pattern); v27 (round 25): a retained transport retry read with an INVALID collection interval refuses explicitly (a true inversion is observation-interval-inverted, a missing start when credit depends on it is observation-start-unprovable) — torn evidence cannot turn an otherwise contradictory replay into a credited local-process layer; v26 (round 24): the retained transport retry reads validate their identity instants (the duty-observation/ancestry-endpoint pattern — malformed instants refuse by name, supplied instants must sit inside the validated collection interval) and the captured transport start identity persists with the marker (schema-additive) binding the replayed transport observation — a successor generation cannot settle the original transport duty; v25 (round 23): a supplied carried identity instant is validated against its read collection interval BEFORE the reuse latch recency filtering — an out-of-interval or malformed carried instant is torn replacement evidence refusing by name (exit-reuse-carried-instant-outside-interval), never old evidence; v24 (round 22): every credited observation binds its queried pid/scope digest to the observed identity (the duty echoes and the ancestry endpoints) and a present-but-malformed identity-read instant refuses by name instead of falling back to the completion; v23 (round 20): the persisted transport retry sequence latches replacement evidence (any generation-bound read carrying a different start identity) and absence timestamps must be safe integers before crediting (nonnumeric instants refuse by name); v22 (round 19): a live same-generation transport retry advances the presence horizon and persists the full presence sequence for replay, and the exit supersession compares the identity-read instant (an async completion never re-wins); v21 (rounds 17-18): the correlated absence validates its collection interval (inverted intervals are torn evidence), the SELECTED daemon endpoint re-verifies its parentage against the presence/record rule and a tied transport absence keeps the retry loop sampling; v20 (round 16) = the duty-observation identity-read containment, the contradictory invocation-absence shape refusal and the runtime latest-same-generation-presence tie continuation; v19 (round 15) = the declared-scope binding, the identity-bearing absence reuse latch and the walked presence horizon; v18 (round 14) = the tied-absence collection continuation, the transport-exit recency/carried-identity re-adjudication and the incomplete-interval start refusals; v17 (round 13) = the identity-read containment check, the FROZEN argv selector enforced over mere persisted agreement, and the persisted block-version gate; v16 (round 12) = the collection-interval validity for every fence-crediting read + the consistent materialization-unavailable provenance fallback; v15 (round 11) = the invocation-absence strict tie, the contradictory-duplicate-duty-slot refusal and the selected-endpoint parentage rule covering a failed refresh; v14 (round 10) = the transport PID-reuse latch + the strict transport-absence tie rule; v13 (round 9) = the transport-exit recency/carried-identity re-adjudication; v12 (round 8) = the generation-bound PRE-FENCE transport-exit conjunct, the refreshed-presence horizon/supersession and the admitted-record capture-time parentage');
   });
 });
 
@@ -11578,7 +13355,7 @@ describe('local-settlement task 3 review round 35 (one P2): a pre-request witnes
   });
 
   test('the join version registers the round-35 replay growth', () => {
-    assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 37, 'join v35 (2026-10-30 local-settlement Task 3 review round 35): a pre-request baseline witness must be the invocation\'s own OS-observed identity (the observed pid and nonce digest must match the admitted invocation — a query addressed to the invocation never witnesses it, the round-20 queried-binding rule mirrored on the observed side); v34 (round 34): the pre-interruption baseline owes a VERIFIED presence witness collected before the admitted request (at least one interval-valid same-generation presence instant strictly earlier than the request — an earlier process start alone never settles; the same conservative-strict ordering refuses companion-baseline-unestablished); v33 (round 33): the refreshed ancestry endpoint creation instant must AGREE with its admission-backed observation (a conflicting instant refuses ancestry-endpoint-instant-foreign) and the preflight requires PRIVATE capture-directory permissions (exactly 0700 on POSIX — the record readers reject every startup record otherwise); v32 (round 32): the retained invocation presence reads validate like the transport replay (the round-24/25 pattern — a torn interval or unprovable timestamps refuse by name before the horizon and supersession walks) and the preflight requires a usable capture directory; v31 (round 29): the observed Companion generation must demonstrably predate the interrupt request (the admitted request timestamp/bounds bind the baseline — ordering that cannot be established refuses companion-baseline-unestablished) and the NODE_OPTIONS tokenizer rejects unfinished quoting states (an unterminated double-quote or a dangling escape refuses by name — the host would exit before loading the observer); v30 (round 28): the fence echoes compare symmetrically (a missing-versus-present mismatch refuses cleanup-boundary-echo-mismatch / cutoff-echo-mismatch in both directions — cleanup-time evidence never credits across a missing echo) and the NODE_OPTIONS tokenizer matches Node exactly (apostrophes are ordinary characters, backslash escapes only inside double quotes — the inherited-apostrophe run passes, the apostrophe-quoted path refuses); v29 (round 27): a replacement-claiming retained invocation read owes a valid completion timestamp (a missing or malformed one refuses exit-reuse-read-instant-unprovable instead of being silently discarded by the recency filter), and the NODE_OPTIONS preflight parses the string into shell-ish option tokens (a --require fragment inside another option value never counts as loading the declared preload); v28 (round 26): the retained transport reads validate their completion stamps (a missing or nonnumeric completion refuses observation-instant-unprovable — torn evidence is never silently excluded from the presence horizon) and the transport exit validates its supplied carried identity instants (in-interval + safe integer, else transport-exit-carried-instant-outside-interval — the invocation-absence pattern); v27 (round 25): a retained transport retry read with an INVALID collection interval refuses explicitly (a true inversion is observation-interval-inverted, a missing start when credit depends on it is observation-start-unprovable) — torn evidence cannot turn an otherwise contradictory replay into a credited local-process layer; v26 (round 24): the retained transport retry reads validate their identity instants (the duty-observation/ancestry-endpoint pattern — malformed instants refuse by name, supplied instants must sit inside the validated collection interval) and the captured transport start identity persists with the marker (schema-additive) binding the replayed transport observation — a successor generation cannot settle the original transport duty; v25 (round 23): a supplied carried identity instant is validated against its read collection interval BEFORE the reuse latch recency filtering — an out-of-interval or malformed carried instant is torn replacement evidence refusing by name (exit-reuse-carried-instant-outside-interval), never old evidence; v24 (round 22): every credited observation binds its queried pid/scope digest to the observed identity (the duty echoes and the ancestry endpoints) and a present-but-malformed identity-read instant refuses by name instead of falling back to the completion; v23 (round 20): the persisted transport retry sequence latches replacement evidence (any generation-bound read carrying a different start identity) and absence timestamps must be safe integers before crediting (nonnumeric instants refuse by name); v22 (round 19): a live same-generation transport retry advances the presence horizon and persists the full presence sequence for replay, and the exit supersession compares the identity-read instant (an async completion never re-wins); v21 (rounds 17-18): the correlated absence validates its collection interval (inverted intervals are torn evidence), the SELECTED daemon endpoint re-verifies its parentage against the presence/record rule and a tied transport absence keeps the retry loop sampling; v20 (round 16) = the duty-observation identity-read containment, the contradictory invocation-absence shape refusal and the runtime latest-same-generation-presence tie continuation; v19 (round 15) = the declared-scope binding, the identity-bearing absence reuse latch and the walked presence horizon; v18 (round 14) = the tied-absence collection continuation, the transport-exit recency/carried-identity re-adjudication and the incomplete-interval start refusals; v17 (round 13) = the identity-read containment check, the FROZEN argv selector enforced over mere persisted agreement, and the persisted block-version gate; v16 (round 12) = the collection-interval validity for every fence-crediting read + the consistent materialization-unavailable provenance fallback; v15 (round 11) = the invocation-absence strict tie, the contradictory-duplicate-duty-slot refusal and the selected-endpoint parentage rule covering a failed refresh; v14 (round 10) = the transport PID-reuse latch + the strict transport-absence tie rule; v13 (round 9) = the transport-exit recency/carried-identity re-adjudication; v12 (round 8) = the generation-bound PRE-FENCE transport-exit conjunct, the refreshed-presence horizon/supersession and the admitted-record capture-time parentage');
+    assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 38, 'join v35 (2026-10-30 local-settlement Task 3 review round 35): a pre-request baseline witness must be the invocation\'s own OS-observed identity (the observed pid and nonce digest must match the admitted invocation — a query addressed to the invocation never witnesses it, the round-20 queried-binding rule mirrored on the observed side); v34 (round 34): the pre-interruption baseline owes a VERIFIED presence witness collected before the admitted request (at least one interval-valid same-generation presence instant strictly earlier than the request — an earlier process start alone never settles; the same conservative-strict ordering refuses companion-baseline-unestablished); v33 (round 33): the refreshed ancestry endpoint creation instant must AGREE with its admission-backed observation (a conflicting instant refuses ancestry-endpoint-instant-foreign) and the preflight requires PRIVATE capture-directory permissions (exactly 0700 on POSIX — the record readers reject every startup record otherwise); v32 (round 32): the retained invocation presence reads validate like the transport replay (the round-24/25 pattern — a torn interval or unprovable timestamps refuse by name before the horizon and supersession walks) and the preflight requires a usable capture directory; v31 (round 29): the observed Companion generation must demonstrably predate the interrupt request (the admitted request timestamp/bounds bind the baseline — ordering that cannot be established refuses companion-baseline-unestablished) and the NODE_OPTIONS tokenizer rejects unfinished quoting states (an unterminated double-quote or a dangling escape refuses by name — the host would exit before loading the observer); v30 (round 28): the fence echoes compare symmetrically (a missing-versus-present mismatch refuses cleanup-boundary-echo-mismatch / cutoff-echo-mismatch in both directions — cleanup-time evidence never credits across a missing echo) and the NODE_OPTIONS tokenizer matches Node exactly (apostrophes are ordinary characters, backslash escapes only inside double quotes — the inherited-apostrophe run passes, the apostrophe-quoted path refuses); v29 (round 27): a replacement-claiming retained invocation read owes a valid completion timestamp (a missing or malformed one refuses exit-reuse-read-instant-unprovable instead of being silently discarded by the recency filter), and the NODE_OPTIONS preflight parses the string into shell-ish option tokens (a --require fragment inside another option value never counts as loading the declared preload); v28 (round 26): the retained transport reads validate their completion stamps (a missing or nonnumeric completion refuses observation-instant-unprovable — torn evidence is never silently excluded from the presence horizon) and the transport exit validates its supplied carried identity instants (in-interval + safe integer, else transport-exit-carried-instant-outside-interval — the invocation-absence pattern); v27 (round 25): a retained transport retry read with an INVALID collection interval refuses explicitly (a true inversion is observation-interval-inverted, a missing start when credit depends on it is observation-start-unprovable) — torn evidence cannot turn an otherwise contradictory replay into a credited local-process layer; v26 (round 24): the retained transport retry reads validate their identity instants (the duty-observation/ancestry-endpoint pattern — malformed instants refuse by name, supplied instants must sit inside the validated collection interval) and the captured transport start identity persists with the marker (schema-additive) binding the replayed transport observation — a successor generation cannot settle the original transport duty; v25 (round 23): a supplied carried identity instant is validated against its read collection interval BEFORE the reuse latch recency filtering — an out-of-interval or malformed carried instant is torn replacement evidence refusing by name (exit-reuse-carried-instant-outside-interval), never old evidence; v24 (round 22): every credited observation binds its queried pid/scope digest to the observed identity (the duty echoes and the ancestry endpoints) and a present-but-malformed identity-read instant refuses by name instead of falling back to the completion; v23 (round 20): the persisted transport retry sequence latches replacement evidence (any generation-bound read carrying a different start identity) and absence timestamps must be safe integers before crediting (nonnumeric instants refuse by name); v22 (round 19): a live same-generation transport retry advances the presence horizon and persists the full presence sequence for replay, and the exit supersession compares the identity-read instant (an async completion never re-wins); v21 (rounds 17-18): the correlated absence validates its collection interval (inverted intervals are torn evidence), the SELECTED daemon endpoint re-verifies its parentage against the presence/record rule and a tied transport absence keeps the retry loop sampling; v20 (round 16) = the duty-observation identity-read containment, the contradictory invocation-absence shape refusal and the runtime latest-same-generation-presence tie continuation; v19 (round 15) = the declared-scope binding, the identity-bearing absence reuse latch and the walked presence horizon; v18 (round 14) = the tied-absence collection continuation, the transport-exit recency/carried-identity re-adjudication and the incomplete-interval start refusals; v17 (round 13) = the identity-read containment check, the FROZEN argv selector enforced over mere persisted agreement, and the persisted block-version gate; v16 (round 12) = the collection-interval validity for every fence-crediting read + the consistent materialization-unavailable provenance fallback; v15 (round 11) = the invocation-absence strict tie, the contradictory-duplicate-duty-slot refusal and the selected-endpoint parentage rule covering a failed refresh; v14 (round 10) = the transport PID-reuse latch + the strict transport-absence tie rule; v13 (round 9) = the transport-exit recency/carried-identity re-adjudication; v12 (round 8) = the generation-bound PRE-FENCE transport-exit conjunct, the refreshed-presence horizon/supersession and the admitted-record capture-time parentage');
   });
 });
 
@@ -11795,5 +13572,3111 @@ describe('local-settlement task 3 review round 37 (one P2): a pre-request witnes
     const consolidatedUnprovable = nativeInterruptionGateDInput(unprovable).localProcessDuties;
     assert.equal(consolidatedUnprovable.settled, false);
     assert.ok(consolidatedUnprovable.refusals.includes('companion-baseline-unestablished'), JSON.stringify(consolidatedUnprovable.refusals));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Evidence-completion Task 3 (§26.6 route (b), §26.7 freeze): the preregistered
+// same-second ancestry witness family. One fixture-owned spawn-boundary causal
+// witness — a capture-time fact the real parent writes at ITS OWN spawn
+// boundary through the provenance-bound identity machinery — plus the complete
+// negative family. The preregistered prohibitions are carried verbatim: no
+// global enumeration, no fabricated nonce authority, no added launch delay
+// solely to cross a second, no changed startup choreography, and no
+// user-space-timestamp/PPID-equality sufficiency (the round-17 rule).
+// OFFLINE only: every real process here is a harmless local Node control.
+// ---------------------------------------------------------------------------
+describe('evidence-completion task 3: the route (b) spawn-boundary causal witness (§26.6/§26.7; offline qualification)', async () => {
+  const { mkdir } = await import('node:fs/promises');
+  const observation = await import('../tools/shell-wait-probe/local-process-observation.mjs');
+  const { joinAncestryHops, composeAncestryJoinForRuntime, admitSpawnAncestryWitness, emitSpawnAncestryWitness, SPAWN_ANCESTRY_WITNESS_VERSION, adjudicateLocalDuties, observeLocalProcess, FAKE_ZCODE_NONCE_VARIABLE } = observation;
+
+  // The §26.6 same-second family: both endpoints captured in ONE wall-clock
+  // second (the OS start instants are WHOLE-SECOND floors of that second), so
+  // the round-19 uniform +1000-ms bound is arithmetically unsatisfiable in
+  // both directions and the carried refusal is `generation-lifetime-unverifiable`.
+  const NONCE = 'c'.repeat(64);
+  const companion = { pid: 5100, ppid: 4000, startIdentity: 'S-COMPANION', nonce: NONCE, startInstantEpochMs: 1000 };
+  const daemon = { pid: 5200, ppid: 5100, startIdentity: 'S-DAEMON', nonce: NONCE, startInstantEpochMs: 1800 };
+  const sameSecondFacts = () => ({
+    nonce: NONCE,
+    companionObservation: {
+      localProcessObservationVersion: 2, class: 'os-live-observation', status: 'established', reason: null,
+      observation: { ...companion, ppidChangedFromCapture: null },
+      queried: { pid: companion.pid, nonce: NONCE },
+      readStartedEpochMs: 2500, identityReadEpochMs: 2600, readEpochMs: 2600, absenceConfirmed: null,
+    },
+    daemonObservation: {
+      localProcessObservationVersion: 2, class: 'os-live-observation', status: 'established', reason: null,
+      observation: { ...daemon, ppidChangedFromCapture: null },
+      queried: { pid: daemon.pid, nonce: NONCE },
+      readStartedEpochMs: 2650, identityReadEpochMs: 2700, readEpochMs: 2700, absenceConfirmed: null,
+    },
+    transportMarker: { pid: 5300, ppid: 5200, nonce: NONCE },
+  });
+
+  test('same-second-completion ground truth: the same-second Companion→daemon hop keeps its carried generation-lifetime-unverifiable refusal without the preregistered witness', () => {
+    // The carried §26.6 refusal must survive byte-for-byte: the uniform
+    // +1000-ms bound cannot be reordered inside one second, and the new
+    // route applies ONLY to the witness families it was frozen for.
+    const baseline = joinAncestryHops(sameSecondFacts());
+    assert.deepEqual(baseline.hops.map((hop) => [hop.hop, hop.status, hop.reason]), [
+      ['companion-to-daemon', 'unestablished', 'generation-lifetime-unverifiable'],
+      ['daemon-to-transport', 'unestablished', 'generation-lifetime-unverifiable'],
+    ], 'the same-second refusal is the recorded carried behavior (plan §1/§26.6)');
+    assert.equal(baseline.companionToTransportAttributed, false);
+    // The runtime composition of the same facts never reclassifies them
+    // either (the composed runtime verdict is the same refused shape).
+    const composedBaseline = composeAncestryJoinForRuntime(sameSecondFacts());
+    assert.equal(composedBaseline.hops[0].reason, 'generation-lifetime-unverifiable');
+  });
+
+  test('same-second-completion route (b): the Companion→daemon hop is established from a positively captured spawn-boundary causal witness and carries its named witnessClass', () => {
+    // The witness verdict shape the admission composes (SLICE-1 RULE TEST:
+    // the pure join rule; the real capture end-to-end is proven in the
+    // REAL-SPAWN family below). Every binding the §26.7 freeze names rides:
+    // writer identity, child capture identity, capture-time parent link,
+    // child origin nonce, and the capture bounded inside the parent's
+    // verified presence interval. (codex round 8 re-derivation) the
+    // schedule writes the witness at 2850/2860 — OUTSIDE the parent's
+    // first possible second (the round-7 parent-continuity binding) AND
+    // outside the daemon's (the round-8 child-continuity binding: 2850 ≥
+    // daemon floor 1800 + 1000), against reads extended to 3000/3200, so
+    // every continuity conclusion this schedule pins is PROVEN, not
+    // ambiguous.
+    const witness = {
+      localProcessObservationVersion: 2, class: 'spawn-ancestry-witness', status: 'established', reason: null,
+      identity: {
+        version: 1, class: 'spawn-ancestry-witness', role: 'invocation', nonce: NONCE,
+        writerPid: companion.pid, writerStartIdentity: companion.startIdentity,
+        childPid: daemon.pid, childPpid: companion.pid, childStartIdentity: daemon.startIdentity, childNonce: NONCE,
+        boundaryEpochMs: 2850, firstWriteEpochMs: 2860,
+        startOriginMs: 1000.5, firstWritePreciseMs: 1950.25,
+      },
+      readStartedEpochMs: 2850, readEpochMs: 2860,
+    };
+    const lateReadFacts = sameSecondFacts();
+    lateReadFacts.companionObservation = {
+      ...lateReadFacts.companionObservation,
+      // (codex round 12) the Companion's COLLECTION bound must postdate the
+      // witness write (2860): the parent-continuity conjunct consumes the
+      // read-start, never the completion.
+      readStartedEpochMs: 2950, identityReadEpochMs: 3000, readEpochMs: 3000,
+    };
+    lateReadFacts.daemonObservation = {
+      ...lateReadFacts.daemonObservation,
+      // (codex round 11) the daemon's COLLECTION bound must also postdate
+      // the witness boundary (2850): the ordering conjunct consumes the
+      // read-start, never the completion.
+      readStartedEpochMs: 3150, identityReadEpochMs: 3200, readEpochMs: 3200,
+    };
+    const verdict = joinAncestryHops({ ...lateReadFacts, companionSpawnWitness: witness });
+    const hop = verdict.hops.find((entry) => entry.hop === 'companion-to-daemon');
+    assert.equal(hop.status, 'established', JSON.stringify(hop));
+    assert.equal(hop.reason, null);
+    assert.equal(hop.witnessClass, 'spawn-boundary-capture');
+    assert.equal(verdict.companionToTransportAttributed, false,
+      'a proof for ONE hop never bridges the other: the transport hop needs its own evidence');
+  });
+
+  test('same-second-completion route (b) daemon boundary: a SAME-SECOND marker is generation-ambiguous and refuses the witness upgrade; a POST-CREATION-SECOND marker establishes; hop 1 is never bridged (codex round 6)', () => {
+    // The DAEMON hop's own witness (§26.6 route (b): the daemon's protocol
+    // spawn boundary — scripts/zcode-broker.mjs:1012 — observed by the daemon
+    // itself): the marker carries kernel pid/ppid facts but NO start identity,
+    // so the child generation binding rides the daemon's positively captured
+    // ingress observation (the witness record's own childStartIdentity and —
+    // since record v2 — its numeric OS start instant). (codex round 6 root
+    // adjudication) The witness route can NO LONGER upgrade a marker written
+    // inside the witnessed child's first possible second: a same-second
+    // predecessor's marker is indistinguishable from the witnessed child's
+    // own write, the ambiguity refuses, and the marker upgrade honestly
+    // requires a POST-CREATION-SECOND marker. Hop 1 keeps its own refusal in
+    // every schedule (one hop's proof never bridges the other).
+    const witness = {
+      localProcessObservationVersion: 3, class: 'spawn-ancestry-witness', status: 'established', reason: null,
+      identity: {
+        version: 2, class: 'spawn-ancestry-witness', role: 'broker-daemon', nonce: NONCE,
+        writerPid: daemon.pid, writerStartIdentity: daemon.startIdentity,
+        childPid: 5300, childPpid: daemon.pid, childStartIdentity: 'S-TRANSPORT', childNonce: NONCE,
+        boundaryEpochMs: 2400, firstWriteEpochMs: 2410,
+        startOriginMs: null, firstWritePreciseMs: null,
+        childOsStartInstantMs: 1800,
+      },
+      readStartedEpochMs: 2400, readEpochMs: 2410,
+    };
+    // Same-second bound window: the daemon's creation second (floor 1800) plus
+    // the uniform 1000-ms bound exceeds the marker's write instant (2500), so
+    // the carried arithmetic alone is unsatisfiable and the witness route is
+    // consulted; the marker rides INSIDE the daemon's verified read window
+    // (2500 <= its identity read 2700 — the codex-round-3 upper bound holds).
+    // But the marker (2500) lies inside the witnessed transport's FIRST
+    // possible second [1800, 2800): generation-AMBIGUOUS — refuse.
+    const sameSecondVerdict = joinAncestryHops({
+      ...sameSecondFacts(),
+      markerEpochMs: 2500,
+      expectedTransportNonce: NONCE,
+      daemonSpawnWitness: witness,
+    });
+    const sameSecondHop = sameSecondVerdict.hops.find((entry) => entry.hop === 'daemon-to-transport');
+    assert.deepEqual([sameSecondHop.status, sameSecondHop.reason], ['unestablished', 'spawn-witness-marker-generation-ambiguous'], JSON.stringify(sameSecondHop));
+    assert.deepEqual([sameSecondVerdict.hops[0].status, sameSecondVerdict.hops[0].reason], ['unestablished', 'generation-lifetime-unverifiable'],
+      'the daemon-boundary proof never bridges the Companion→daemon hop');
+    assert.equal(sameSecondVerdict.companionToTransportAttributed, false,
+      'an ambiguous marker upgrade is never an end-to-end attribution');
+    // The POST-CREATION-SECOND schedule: the marker (2950) postdates the
+    // witnessed transport's ENTIRE possible creation window (1800 + 1000)
+    // and rides inside the daemon's extended verified read window (3000) —
+    // the generation is positively bound and the hop establishes on the
+    // registered marker-time arithmetic.
+    const laterReadDaemonFacts = sameSecondFacts();
+    laterReadDaemonFacts.daemonObservation = {
+      ...laterReadDaemonFacts.daemonObservation,
+      identityReadEpochMs: 3000, readEpochMs: 3000,
+    };
+    const postSecondVerdict = joinAncestryHops({
+      ...laterReadDaemonFacts,
+      markerEpochMs: 2950,
+      expectedTransportNonce: NONCE,
+      daemonSpawnWitness: witness,
+    });
+    const postSecondHop = postSecondVerdict.hops.find((entry) => entry.hop === 'daemon-to-transport');
+    assert.deepEqual([postSecondHop.status, postSecondHop.reason], ['established', null], JSON.stringify(postSecondHop));
+    assert.deepEqual([postSecondVerdict.hops[0].status, postSecondVerdict.hops[0].reason], ['unestablished', 'generation-lifetime-unverifiable'],
+      'the transport proof still never bridges the Companion→daemon hop');
+    // (codex round 5 version polarity, carried) the same-second schedule
+    // through a retained v1 replay record — which carries NO numeric child
+    // OS start instant under its recorded version — refuses the marker path
+    // with the demonstrable-precedence label (the record cannot bind the
+    // marker's generation at all; new runs never fall back to the permissive
+    // old contract; replay stays refused, the honest outcome).
+    const v1Replay = joinAncestryHops({
+      ...sameSecondFacts(),
+      markerEpochMs: 2500,
+      expectedTransportNonce: NONCE,
+      daemonSpawnWitness: {
+        localProcessObservationVersion: 2, class: 'spawn-ancestry-witness', status: 'established', reason: null,
+        identity: {
+          version: 1, class: 'spawn-ancestry-witness', role: 'broker-daemon', nonce: NONCE,
+          writerPid: daemon.pid, writerStartIdentity: daemon.startIdentity,
+          childPid: 5300, childPpid: daemon.pid, childStartIdentity: 'S-TRANSPORT', childNonce: NONCE,
+          boundaryEpochMs: 2400, firstWriteEpochMs: 2410,
+          startOriginMs: null, firstWritePreciseMs: null,
+        },
+        readStartedEpochMs: 2400, readEpochMs: 2410,
+      },
+    });
+    assert.deepEqual([v1Replay.hops[1].status, v1Replay.hops[1].reason], ['unestablished', 'spawn-witness-marker-generation-unbound'], JSON.stringify(v1Replay.hops[1]));
+  });
+
+  // --- The witness-route NEGATIVE family (§26.6 registered prohibitions and
+  // the §25.10 counterexamples carried): the route never accepts an old
+  // anti-reuse counterexample merely because timestamps are close, never
+  // reopens a refusal it was not frozen for, and never bridges an absent
+  // endpoint. Each refusal keeps its OWN named label (§25.8 no-fold). ---
+
+  test('same-second-completion negative: a foreign-scope witness (cross-scope record) never bridges the join even when admission-shaped', () => {
+    // Defense in depth beyond admission: an admitted witness bound to ANOTHER
+    // scope's nonce (a stale/foreign record copied into reach) is refused by
+    // the join's own scope binding.
+    const witness = {
+      localProcessObservationVersion: 2, class: 'spawn-ancestry-witness', status: 'established', reason: null,
+      identity: { version: 1, class: 'spawn-ancestry-witness', role: 'invocation', nonce: 'd'.repeat(64), writerPid: companion.pid, writerStartIdentity: companion.startIdentity, childPid: daemon.pid, childPpid: companion.pid, childStartIdentity: daemon.startIdentity, childNonce: NONCE, boundaryEpochMs: 2000, firstWriteEpochMs: 2010, startOriginMs: null, firstWritePreciseMs: null },
+      readStartedEpochMs: 2000, readEpochMs: 2010,
+    };
+    const verdict = joinAncestryHops({ ...sameSecondFacts(), companionSpawnWitness: witness });
+    assert.deepEqual([verdict.hops[0].status, verdict.hops[0].reason], ['unestablished', 'spawn-witness-nonce-mismatch']);
+    assert.equal(verdict.companionToTransportAttributed, false);
+  });
+
+  test('same-second-completion negative: an admitted witness in the WRONG boundary role never rides the other hop', () => {
+    // The nonce binds a SCOPE never a role (§26.6 prohibition 2): a
+    // broker-daemon-boundary record can never attest the invocation boundary.
+    const brokerWitnessOnHop1 = {
+      localProcessObservationVersion: 2, class: 'spawn-ancestry-witness', status: 'established', reason: null,
+      identity: { version: 1, class: 'spawn-ancestry-witness', role: 'broker-daemon', nonce: NONCE, writerPid: companion.pid, writerStartIdentity: companion.startIdentity, childPid: daemon.pid, childPpid: companion.pid, childStartIdentity: daemon.startIdentity, childNonce: NONCE, boundaryEpochMs: 2000, firstWriteEpochMs: 2010, startOriginMs: null, firstWritePreciseMs: null },
+      readStartedEpochMs: 2000, readEpochMs: 2010,
+    };
+    const verdict = joinAncestryHops({ ...sameSecondFacts(), companionSpawnWitness: brokerWitnessOnHop1 });
+    assert.deepEqual([verdict.hops[0].status, verdict.hops[0].reason], ['unestablished', 'spawn-witness-role-mismatch']);
+    assert.equal(verdict.companionToTransportAttributed, false);
+  });
+
+  test('same-second-completion negative: a missing/torn/read-denied witness record keeps the carried refusal as a named unadmitted fact', async (t) => {
+    const base = { ...sameSecondFacts() };
+    // Missing capture: the witness route is ABSENT, never inferred true.
+    const missingVerdict = joinAncestryHops({
+      ...base,
+      companionSpawnWitness: { localProcessObservationVersion: 2, class: 'spawn-ancestry-witness', status: 'missing', reason: 'spawn-witness-missing', identity: null },
+    });
+    assert.deepEqual([missingVerdict.hops[0].status, missingVerdict.hops[0].reason], ['unestablished', 'spawn-witness-unadmitted']);
+    assert.equal(missingVerdict.hops[0].detail, 'spawn-witness-missing');
+    // Torn record surfaced through a REAL admission.
+    const tornScope = await witnessScope(t);
+    await writeFile(join(tornScope.captureDirectory, `${R3}.spawn-witness.json`), `${JSON.stringify(spawnWitnessPayload())}\n`.slice(0, 30), { mode: 0o600 });
+    const tornAdmission = await admitSpawnAncestryWitness({ captureDirectory: tornScope.captureDirectory, nonce: R3 });
+    assert.equal(tornAdmission.status, 'invalid');
+    const tornJoin = joinAncestryHops({ ...base, companionSpawnWitness: tornAdmission });
+    assert.deepEqual([tornJoin.hops[0].status, tornJoin.hops[0].reason], ['unestablished', 'spawn-witness-unadmitted']);
+    assert.equal(tornJoin.hops[0].detail, 'spawn-witness-torn');
+    assert.equal(tornJoin.companionToTransportAttributed, false);
+    // Read-denied record (POSIX 0000): a named unreadable fact, never a
+    // fabricated witness.
+    const deniedScope = await witnessScope(t);
+    const deniedPath = join(deniedScope.captureDirectory, `${R3}.spawn-witness.json`);
+    await writeFile(deniedPath, `${JSON.stringify(spawnWitnessPayload())}\n`, { mode: 0o600 });
+    await chmod(deniedPath, 0o000);
+    const deniedAdmission = await admitSpawnAncestryWitness({ captureDirectory: deniedScope.captureDirectory, nonce: R3 });
+    assert.deepEqual({ status: deniedAdmission.status, reason: deniedAdmission.reason, identity: deniedAdmission.identity },
+      { status: 'invalid', reason: 'spawn-witness-unreadable', identity: null });
+  });
+
+  test('same-second-completion negative: same-second PID reuse between the boundary capture and the endpoint read refuses (never credits close timestamps)', () => {
+    // The observed daemon generation's start identity differs from the
+    // witnessed child generation: a same-pid REUSED successor cannot ride the
+    // witness even though every timestamp stays inside the same second.
+    const reusedGenerationWitness = {
+      localProcessObservationVersion: 2, class: 'spawn-ancestry-witness', status: 'established', reason: null,
+      identity: { version: 1, class: 'spawn-ancestry-witness', role: 'invocation', nonce: NONCE, writerPid: companion.pid, writerStartIdentity: companion.startIdentity, childPid: daemon.pid, childPpid: companion.pid, childStartIdentity: 'S-DAEMON-REUSED', childNonce: NONCE, boundaryEpochMs: 2000, firstWriteEpochMs: 2010, startOriginMs: null, firstWritePreciseMs: null },
+      readStartedEpochMs: 2000, readEpochMs: 2010,
+    };
+    const verdict = joinAncestryHops({ ...sameSecondFacts(), companionSpawnWitness: reusedGenerationWitness });
+    assert.deepEqual([verdict.hops[0].status, verdict.hops[0].reason], ['unestablished', 'spawn-witness-child-foreign']);
+    assert.equal(verdict.companionToTransportAttributed, false);
+  });
+
+  test('same-second-completion negative: a witness captured outside the parent presence interval (before its establishing read\u2019s bounds) refuses', () => {
+    // The capture window must ride INSIDE the parent's verified presence: a
+    // boundary or write instant after the parent's establishing read is an
+    // unbounded capture — the post-window fact cannot credit (the fence).
+    const lateCapture = {
+      localProcessObservationVersion: 2, class: 'spawn-ancestry-witness', status: 'established', reason: null,
+      identity: { version: 1, class: 'spawn-ancestry-witness', role: 'invocation', nonce: NONCE, writerPid: companion.pid, writerStartIdentity: companion.startIdentity, childPid: daemon.pid, childPpid: companion.pid, childStartIdentity: daemon.startIdentity, childNonce: NONCE, boundaryEpochMs: 2900, firstWriteEpochMs: 2950, startOriginMs: null, firstWritePreciseMs: null },
+      readStartedEpochMs: 2900, readEpochMs: 2950,
+    };
+    const verdict = joinAncestryHops({ ...sameSecondFacts(), companionSpawnWitness: lateCapture });
+    assert.deepEqual([verdict.hops[0].status, verdict.hops[0].reason], ['unestablished', 'spawn-witness-capture-unbounded']);
+  });
+
+  test('same-second-completion negative: a coarse contradiction (the boundary predating the child\u2019s OS creation second) stays refused — never resolved by arithmetic', () => {
+    // The witness's boundary cannot precede the child's OS creation second
+    // (a coarse contradiction stays coarse — §26.6: OS coarse intervals stay
+    // coarse; precise writes are not relabeled precise birth instants).
+    const timeTravelWitness = {
+      localProcessObservationVersion: 2, class: 'spawn-ancestry-witness', status: 'established', reason: null,
+      identity: { version: 1, class: 'spawn-ancestry-witness', role: 'invocation', nonce: NONCE, writerPid: companion.pid, writerStartIdentity: companion.startIdentity, childPid: daemon.pid, childPpid: companion.pid, childStartIdentity: daemon.startIdentity, childNonce: NONCE, boundaryEpochMs: 1500, firstWriteEpochMs: 1510, startOriginMs: null, firstWritePreciseMs: null },
+      readStartedEpochMs: 1500, readEpochMs: 1510,
+    };
+    const verdict = joinAncestryHops({ ...sameSecondFacts(), companionSpawnWitness: timeTravelWitness });
+    assert.deepEqual([verdict.hops[0].status, verdict.hops[0].reason], ['unestablished', 'spawn-witness-capture-unbounded']);
+  });
+
+  test('same-second-completion negative: a daemon-boundary witness stamped BEFORE ITS WRITER\u2019S OS creation refuses — spawn-witness-capture-before-writer (codex round 2)', () => {
+    // The codex-review counterexample, through the REAL join seam: the daemon
+    // (the writer on the daemon→transport boundary) has OS creation lower
+    // bound 1800, yet this otherwise-valid witness stamps its boundary/write
+    // at 100/110 — before its writer existed. The writer's start lower bound
+    // must bound the capture window from below: a coarse-vs-coarse
+    // contradiction refuses; no new precision claim.
+    const preWriterWitness = {
+      localProcessObservationVersion: 2, class: 'spawn-ancestry-witness', status: 'established', reason: null,
+      identity: { version: 1, class: 'spawn-ancestry-witness', role: 'broker-daemon', nonce: NONCE, writerPid: daemon.pid, writerStartIdentity: daemon.startIdentity, childPid: 5300, childPpid: daemon.pid, childStartIdentity: 'S-TRANSPORT', childNonce: NONCE, boundaryEpochMs: 100, firstWriteEpochMs: 110, startOriginMs: null, firstWritePreciseMs: null },
+      readStartedEpochMs: 100, readEpochMs: 110,
+    };
+    const verdict = joinAncestryHops({
+      ...sameSecondFacts(),
+      // The marker rides INSIDE the daemon's verified read window (2500 <=
+      // 2700) so the witness route is reached at all — a marker after the
+      // read would refuse with the upper-bound label before the writer bound
+      // is consulted (the codex-round-3 ordering).
+      markerEpochMs: 2500,
+      expectedTransportNonce: NONCE,
+      daemonSpawnWitness: preWriterWitness,
+    });
+    assert.deepEqual([verdict.hops[1].status, verdict.hops[1].reason], ['unestablished', 'spawn-witness-capture-before-writer'], JSON.stringify(verdict.hops[1]));
+    assert.equal(verdict.companionToTransportAttributed, false);
+  });
+
+  test('same-second-completion negative: a Companion-boundary witness stamped BEFORE ITS WRITER\u2019S OS creation refuses with the same writer bound', () => {
+    // Symmetric enforcement on hop 1: the writer (the Companion, OS creation
+    // lower bound 1000) cannot have captured at 900. The writer bound is
+    // checked before the child bound, so the refusal carries the WRITER-side
+    // label (the child-side bound separately keeps capture-unbounded).
+    const preWriterCompanionWitness = {
+      localProcessObservationVersion: 2, class: 'spawn-ancestry-witness', status: 'established', reason: null,
+      identity: { version: 1, class: 'spawn-ancestry-witness', role: 'invocation', nonce: NONCE, writerPid: companion.pid, writerStartIdentity: companion.startIdentity, childPid: daemon.pid, childPpid: companion.pid, childStartIdentity: daemon.startIdentity, childNonce: NONCE, boundaryEpochMs: 900, firstWriteEpochMs: 910, startOriginMs: null, firstWritePreciseMs: null },
+      readStartedEpochMs: 900, readEpochMs: 910,
+    };
+    const verdict = joinAncestryHops({ ...sameSecondFacts(), companionSpawnWitness: preWriterCompanionWitness });
+    assert.deepEqual([verdict.hops[0].status, verdict.hops[0].reason], ['unestablished', 'spawn-witness-capture-before-writer'], JSON.stringify(verdict.hops[0]));
+    assert.equal(verdict.companionToTransportAttributed, false);
+  });
+
+  test('same-second-completion negative: the witness route never reopens a demonstrated ordering contradiction, a capture-time parent mismatch or an absent endpoint', () => {
+    const validWitness = {
+      localProcessObservationVersion: 2, class: 'spawn-ancestry-witness', status: 'established', reason: null,
+      identity: { version: 1, class: 'spawn-ancestry-witness', role: 'invocation', nonce: NONCE, writerPid: companion.pid, writerStartIdentity: companion.startIdentity, childPid: daemon.pid, childPpid: companion.pid, childStartIdentity: daemon.startIdentity, childNonce: NONCE, boundaryEpochMs: 2000, firstWriteEpochMs: 2010, startOriginMs: null, firstWritePreciseMs: null },
+      readStartedEpochMs: 2000, readEpochMs: 2010,
+    };
+    // Parent/child ORDER contradiction: the Companion's OS creation second
+    // POSTDATES the daemon's — the kernel's own spawn order is inverted and
+    // no witness may reopen it.
+    const inverted = sameSecondFacts();
+    inverted.companionObservation = {
+      ...inverted.companionObservation,
+      observation: { ...companion, startInstantEpochMs: 3000, ppidChangedFromCapture: null },
+    };
+    const invertedVerdict = joinAncestryHops({ ...inverted, companionSpawnWitness: validWitness });
+    assert.deepEqual([invertedVerdict.hops[0].status, invertedVerdict.hops[0].reason], ['unestablished', 'generation-lifetime-unverifiable']);
+    // Capture-time parent mismatch: the daemon's capture-time parent was NOT
+    // the Companion — the witness route requires the parent link to hold.
+    const foreignParent = sameSecondFacts();
+    foreignParent.daemonObservation = {
+      ...foreignParent.daemonObservation,
+      observation: { ...daemon, ppid: 9999, ppidChangedFromCapture: null },
+    };
+    const foreignVerdict = joinAncestryHops({ ...foreignParent, companionSpawnWitness: validWitness });
+    assert.deepEqual([foreignVerdict.hops[0].status, foreignVerdict.hops[0].reason], ['unestablished', 'daemon-ppid-mismatch-at-capture']);
+    // Absent endpoint: a lost/absent Companion is never resurrected by a
+    // witness (early ancestor loss stays a refusal).
+    const absentVerdict = joinAncestryHops({ ...sameSecondFacts(), companionObservation: null, companionSpawnWitness: validWitness });
+    assert.deepEqual([absentVerdict.hops[0].status, absentVerdict.hops[0].reason], ['unestablished', 'hop-endpoint-unestablished']);
+    assert.equal(absentVerdict.companionToTransportAttributed, false);
+  });
+
+  test('same-second-completion negative: a missing or coarse-contradictory marker epoch keeps the daemon hop refused even with a valid broker witness', () => {
+    const brokerWitness = {
+      localProcessObservationVersion: 2, class: 'spawn-ancestry-witness', status: 'established', reason: null,
+      identity: { version: 1, class: 'spawn-ancestry-witness', role: 'broker-daemon', nonce: NONCE, writerPid: daemon.pid, writerStartIdentity: daemon.startIdentity, childPid: 5300, childPpid: daemon.pid, childStartIdentity: 'S-TRANSPORT', childNonce: NONCE, boundaryEpochMs: 2400, firstWriteEpochMs: 2410, startOriginMs: null, firstWritePreciseMs: null },
+      readStartedEpochMs: 2400, readEpochMs: 2410,
+    };
+    // Missing marker epoch: a missing timestamp stays unknown — never credited.
+    const missingEpoch = joinAncestryHops({ ...sameSecondFacts(), expectedTransportNonce: NONCE, daemonSpawnWitness: brokerWitness });
+    assert.deepEqual([missingEpoch.hops[1].status, missingEpoch.hops[1].reason], ['unestablished', 'generation-lifetime-unverifiable']);
+    // Coarse contradiction: the marker PREDATES the daemon's creation second —
+    // the kernel's own order is violated and the witness never reopens it.
+    const violated = joinAncestryHops({ ...sameSecondFacts(), markerEpochMs: 900, expectedTransportNonce: NONCE, daemonSpawnWitness: brokerWitness });
+    assert.deepEqual([violated.hops[1].status, violated.hops[1].reason], ['unestablished', 'generation-lifetime-unverifiable']);
+  });
+
+  test('same-second-completion negative: a marker timestamp LATER than the daemon\u2019s identity read refuses — the verified-lifetime upper bound is never witness-bypassed (codex round 3)', () => {
+    // The codex-round-3 counterexample, through the REAL join seam: the broker
+    // witness itself is otherwise fully valid (capture 2400/write 2410 rides
+    // inside the daemon's verified presence — above its creation second 1800,
+    // below its identity read 2700) — but the MARKER's own timestamp
+    // (100000000) postdates the daemon's identity read. The marker lies
+    // OUTSIDE the verified lifetime, and its generation is not independently
+    // bound: the §26.7 frozen witness record carries pids/identities/nonce and
+    // its own capture window, never a marker-timestamp binding — so the
+    // witness route must not resolve this contradiction and the original
+    // later-than-read refusal stands (coarse-vs-coarse, no new precision
+    // claim).
+    const validWitness = {
+      localProcessObservationVersion: 2, class: 'spawn-ancestry-witness', status: 'established', reason: null,
+      identity: { version: 1, class: 'spawn-ancestry-witness', role: 'broker-daemon', nonce: NONCE, writerPid: daemon.pid, writerStartIdentity: daemon.startIdentity, childPid: 5300, childPpid: daemon.pid, childStartIdentity: 'S-TRANSPORT', childNonce: NONCE, boundaryEpochMs: 2400, firstWriteEpochMs: 2410, startOriginMs: null, firstWritePreciseMs: null },
+      readStartedEpochMs: 2400, readEpochMs: 2410,
+    };
+    const verdict = joinAncestryHops({
+      ...sameSecondFacts(),
+      markerEpochMs: 100000000,
+      expectedTransportNonce: NONCE,
+      daemonSpawnWitness: validWitness,
+    });
+    assert.deepEqual([verdict.hops[1].status, verdict.hops[1].reason], ['unestablished', 'generation-lifetime-unverifiable'], JSON.stringify(verdict.hops[1]));
+    assert.equal(verdict.companionToTransportAttributed, false);
+  });
+
+  test('same-second-completion negative: a stale marker PREDATING the witnessed child generation never upgrades the transport hop — spawn-witness-marker-generation-unbound (codex round 4)', () => {
+    // The codex-round-4 counterexample, through the REAL join seam: daemon
+    // start/read T/T+3000 (T = 1000), marker write instant T+100, and a
+    // witnessed transport generation whose own boundary capture sits at
+    // T+2200 (write T+2210). EVERY previously checked bound holds — the
+    // writer's OS floor bounds the capture below, the daemon read bounds it
+    // above, the marker ordering rides the daemon uncertainty window the
+    // witness route exists to resolve — yet the marker's write instant
+    // predates the witnessed child's generation: the §26.7 record's only
+    // child-generation time evidence is its capture window, and a marker
+    // more than one uniform uncertainty older than the witnessed capture
+    // demonstrably belongs to a predecessor occupant of the pid. The
+    // upgrade must positively bind the marker to the witnessed generation
+    // and refuse.
+    const endpoint = (pid, ppid, startIdentity, startInstantEpochMs, read) => ({
+      localProcessObservationVersion: 2, class: 'os-live-observation', status: 'established', reason: null,
+      observation: { pid, ppid, startIdentity, nonce: NONCE, startInstantEpochMs, ppidChangedFromCapture: null },
+      queried: { pid, nonce: NONCE },
+      readStartedEpochMs: read - 50, identityReadEpochMs: read, readEpochMs: read, absenceConfirmed: null,
+    });
+    const staleMarkerWitness = {
+      localProcessObservationVersion: 2, class: 'spawn-ancestry-witness', status: 'established', reason: null,
+      identity: { version: 1, class: 'spawn-ancestry-witness', role: 'broker-daemon', nonce: NONCE, writerPid: daemon.pid, writerStartIdentity: daemon.startIdentity, childPid: 5300, childPpid: daemon.pid, childStartIdentity: 'S-TRANSPORT', childNonce: NONCE, boundaryEpochMs: 3200, firstWriteEpochMs: 3210, startOriginMs: null, firstWritePreciseMs: null },
+      readStartedEpochMs: 3200, readEpochMs: 3210,
+    };
+    const staleVerdict = joinAncestryHops({
+      nonce: NONCE,
+      companionObservation: null,
+      daemonObservation: endpoint(daemon.pid, daemon.ppid, daemon.startIdentity, 1000, 4000),
+      transportMarker: { pid: 5300, ppid: daemon.pid, nonce: NONCE },
+      expectedTransportNonce: NONCE,
+      markerEpochMs: 1100,
+      daemonSpawnWitness: staleMarkerWitness,
+    });
+    assert.deepEqual([staleVerdict.hops[1].status, staleVerdict.hops[1].reason], ['unestablished', 'spawn-witness-marker-generation-unbound'], JSON.stringify(staleVerdict.hops[1]));
+    assert.equal(staleVerdict.companionToTransportAttributed, false);
+    // The POSITIVE side of the same binding: a marker riding INSIDE the
+    // witnessed capture window's uncertainty neighborhood (capture 2850,
+    // marker 2850 - 950) still upgrades the hop — the witnessed generation
+    // could lawfully have written it (the real chain's marker write races
+    // the boundary capture by milliseconds).
+    // (codex round 6 re-derivation) The round-5 positive pin is honestly
+    // SUPERSEDED by the root adjudication: a marker INSIDE the witnessed
+    // child's first possible second (1900 ∈ [1000, 2000)) is
+    // generation-AMBIGUOUS — a same-second predecessor's write is
+    // indistinguishable from the witnessed child's own — and refuses even
+    // with the v2 record's numeric instant. The positive side moves to a
+    // POST-CREATION-SECOND marker (2950 ≥ floor 1000 + 1000), which
+    // establishes on the registered marker-time arithmetic.
+    const freshMarkerWitness = {
+      localProcessObservationVersion: 3, class: 'spawn-ancestry-witness', status: 'established', reason: null,
+      identity: { version: 2, class: 'spawn-ancestry-witness', role: 'broker-daemon', nonce: NONCE, writerPid: daemon.pid, writerStartIdentity: daemon.startIdentity, childPid: 5300, childPpid: daemon.pid, childStartIdentity: 'S-TRANSPORT', childNonce: NONCE, boundaryEpochMs: 2850, firstWriteEpochMs: 2860, startOriginMs: null, firstWritePreciseMs: null, childOsStartInstantMs: 1000 },
+      readStartedEpochMs: 2850, readEpochMs: 2860,
+    };
+    const sameSecondFreshVerdict = joinAncestryHops({
+      nonce: NONCE,
+      companionObservation: null,
+      daemonObservation: endpoint(daemon.pid, daemon.ppid, daemon.startIdentity, 1000, 4000),
+      transportMarker: { pid: 5300, ppid: daemon.pid, nonce: NONCE },
+      expectedTransportNonce: NONCE,
+      markerEpochMs: 1900,
+      daemonSpawnWitness: freshMarkerWitness,
+    });
+    assert.deepEqual([sameSecondFreshVerdict.hops[1].status, sameSecondFreshVerdict.hops[1].reason], ['unestablished', 'spawn-witness-marker-generation-ambiguous'], JSON.stringify(sameSecondFreshVerdict.hops[1]));
+    const postSecondFreshVerdict = joinAncestryHops({
+      nonce: NONCE,
+      companionObservation: null,
+      daemonObservation: endpoint(daemon.pid, daemon.ppid, daemon.startIdentity, 1000, 4000),
+      transportMarker: { pid: 5300, ppid: daemon.pid, nonce: NONCE },
+      expectedTransportNonce: NONCE,
+      markerEpochMs: 2950,
+      daemonSpawnWitness: freshMarkerWitness,
+    });
+    assert.deepEqual([postSecondFreshVerdict.hops[1].status, postSecondFreshVerdict.hops[1].reason], ['established', null], JSON.stringify(postSecondFreshVerdict.hops[1]));
+  });
+
+  test('same-second-completion negative: a marker inside the witnessed child\u2019s FIRST possible second is generation-AMBIGUOUS and refuses — only a marker POSTDATING the child\u2019s entire creation window binds (codex round 6)', () => {
+    // The codex-round-6 ROOT adjudication, through the REAL join seam: with a
+    // whole-second creation floor, temporal compatibility (marker ≥ floor)
+    // proves NOTHING about generation identity — when a predecessor and its
+    // same-pid replacements all report the SAME creation floor T, a
+    // predecessor marker anywhere in [T, T+1000) is temporally compatible
+    // with a replacement that did not exist when the marker was written.
+    // The only sound positive binding under the registered coarseness: the
+    // marker must postdate the child's ENTIRE possible creation window —
+    // markerTime ≥ childOsStartInstantMs + LINUX_BTIME_UNCERTAINTY_MS. A
+    // marker inside [floor, floor+1000) is generation-AMBIGUOUS and refuses
+    // the upgrade with its own named label (the §26.7 item-5 fresh-label
+    // discipline); a marker BELOW the floor still refuses the demonstrable
+    // precedence label. Coarse-vs-coarse honest: the ambiguity is refused,
+    // never resolved as true.
+    const endpoint = (pid, ppid, startIdentity, startInstantEpochMs, read) => ({
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'established', reason: null,
+      observation: { pid, ppid, startIdentity, nonce: NONCE, startInstantEpochMs, ppidChangedFromCapture: null },
+      queried: { pid, nonce: NONCE },
+      readStartedEpochMs: read - 50, identityReadEpochMs: read, readEpochMs: read, absenceConfirmed: null,
+    });
+    const replacementWitness = (childOsStartInstantMs, boundaryEpochMs) => ({
+      localProcessObservationVersion: 3, class: 'spawn-ancestry-witness', status: 'established', reason: null,
+      identity: { version: 2, class: 'spawn-ancestry-witness', role: 'broker-daemon', nonce: NONCE, writerPid: daemon.pid, writerStartIdentity: daemon.startIdentity, childPid: 5300, childPpid: daemon.pid, childStartIdentity: 'S-TRANSPORT', childNonce: NONCE, boundaryEpochMs, firstWriteEpochMs: boundaryEpochMs + 10, startOriginMs: null, firstWritePreciseMs: null, childOsStartInstantMs },
+      readStartedEpochMs: boundaryEpochMs, readEpochMs: boundaryEpochMs + 10,
+    });
+    // Schedule A — the reviewer's EXACT counterexample: predecessor marker
+    // T+100 against replacements actually started T+200/T+400, both reporting
+    // creation floor T (1000), witness capture T+500 (1500), parent read
+    // T+700 (1700). Every previously checked bound holds and the proximity
+    // conjunct passes (1500 − 1100 = 400 ≤ 1000), yet NEITHER replacement
+    // existed when the marker was written — the marker lies inside the
+    // child's possible creation window [1000, 2000) and the generations
+    // cannot be distinguished. The upgrade refuses AMBIGUOUS.
+    const ambiguousVerdict = joinAncestryHops({
+      nonce: NONCE,
+      companionObservation: null,
+      daemonObservation: endpoint(daemon.pid, daemon.ppid, daemon.startIdentity, 1000, 1700),
+      transportMarker: { pid: 5300, ppid: daemon.pid, nonce: NONCE },
+      expectedTransportNonce: NONCE,
+      markerEpochMs: 1100,
+      daemonSpawnWitness: replacementWitness(1000, 1500),
+    });
+    assert.deepEqual([ambiguousVerdict.hops[1].status, ambiguousVerdict.hops[1].reason], ['unestablished', 'spawn-witness-marker-generation-ambiguous'], JSON.stringify(ambiguousVerdict.hops[1]));
+    assert.equal(ambiguousVerdict.companionToTransportAttributed, false);
+    // Schedule B — a marker BELOW the witnessed child's floor (1900 < 2000)
+    // keeps the demonstrable-precedence label: that child provably did not
+    // exist when the marker was written (the codex-round-5 pin, carried).
+    const replacedVerdict = joinAncestryHops({
+      nonce: NONCE,
+      companionObservation: null,
+      daemonObservation: endpoint(daemon.pid, daemon.ppid, daemon.startIdentity, 1000, 3000),
+      transportMarker: { pid: 5300, ppid: daemon.pid, nonce: NONCE },
+      expectedTransportNonce: NONCE,
+      markerEpochMs: 1900,
+      daemonSpawnWitness: replacementWitness(2000, 2100),
+    });
+    assert.deepEqual([replacedVerdict.hops[1].status, replacedVerdict.hops[1].reason], ['unestablished', 'spawn-witness-marker-generation-unbound'], JSON.stringify(replacedVerdict.hops[1]));
+    assert.equal(replacedVerdict.companionToTransportAttributed, false);
+    // The SAME ambiguity through a lawful-shaped schedule (the honest
+    // re-derivation of the round-5 positive control): the witnessed child's
+    // floor PRECEDES the marker (the child could lawfully have written it in
+    // its first second) — but that is exactly the AMBIGUOUS band: a
+    // same-second predecessor's marker is indistinguishable from the
+    // witnessed child's own write, and the upgrade refuses (the real chain's
+    // marker is typically written within the child's first second, so the
+    // transport hop's marker upgrade honestly requires POST-CREATION-SECOND
+    // markers).
+    const sameSecondAmbiguousVerdict = joinAncestryHops({
+      nonce: NONCE,
+      companionObservation: null,
+      daemonObservation: endpoint(daemon.pid, daemon.ppid, daemon.startIdentity, 1000, 3000),
+      transportMarker: { pid: 5300, ppid: daemon.pid, nonce: NONCE },
+      expectedTransportNonce: NONCE,
+      markerEpochMs: 1900,
+      daemonSpawnWitness: replacementWitness(1000, 2100),
+    });
+    assert.deepEqual([sameSecondAmbiguousVerdict.hops[1].status, sameSecondAmbiguousVerdict.hops[1].reason], ['unestablished', 'spawn-witness-marker-generation-ambiguous'], JSON.stringify(sameSecondAmbiguousVerdict.hops[1]));
+    // The POSITIVE pin of the binding: a marker that POSTDATES the child's
+    // ENTIRE possible creation window (2850 ≥ floor 1800 + 1000) and rides
+    // inside the daemon's verified lifetime POSITIVELY binds the witnessed
+    // generation. The DAEMON's own witness write (2860) postdates the
+    // daemon's ENTIRE first possible second (1800 + 1000) — the
+    // codex-round-7 parent-continuity binding is satisfied too (a
+    // late-writing daemon chain) — and the witnessed transport's creation
+    // floor EQUALS the daemon's floor (1800 ≥ 1800: the codex-round-10
+    // creation-order conjunct holds — a physically consistent same-second
+    // chain). (codex round 10, the honest closure this conjunct forces) a
+    // marker that passes the child-window binding on a PHYSICALLY
+    // CONSISTENT chain always also postdates the daemon's own window
+    // (child floor ≥ daemon floor ⇒ marker ≥ child floor + 1000 ≥ daemon
+    // floor + 1000), so the hop establishes on the registered marker-time
+    // ARITHMETIC and the witness route's marker upgrade is unreachable for
+    // consistent chains — exactly the round-6 analysis's vacuity, now
+    // enforced: an established hop carries no witness member.
+    const boundVerdict = joinAncestryHops({
+      nonce: NONCE,
+      companionObservation: null,
+      // (codex round 12) the daemon's COLLECTION bound (2910) postdates the
+      // broker witness's write (2860): the parent-continuity conjunct
+      // consumes the read-start, never the completion.
+      daemonObservation: endpoint(daemon.pid, daemon.ppid, daemon.startIdentity, 1800, 2960),
+      transportMarker: { pid: 5300, ppid: daemon.pid, nonce: NONCE },
+      expectedTransportNonce: NONCE,
+      markerEpochMs: 2850,
+      daemonSpawnWitness: replacementWitness(1800, 2850),
+    });
+    assert.equal(boundVerdict.hops[1].status, 'established', JSON.stringify(boundVerdict.hops[1]));
+    assert.equal(boundVerdict.hops[1].witnessClass, undefined,
+      'a physically consistent chain\u2019s post-window marker establishes on the arithmetic — the witness route\u2019s marker upgrade is unreachable (the round-10 closure)');
+    // And the SAME binding on a LAWFUL schedule (child floor 1000 ≥ daemon
+    // floor 1000): the post-creation-second marker establishes the hop on
+    // the registered marker-time arithmetic — no witness needed, no
+    // witnessClass member rides (the §26.7 additive discipline).
+    const lawfulPostSecondVerdict = joinAncestryHops({
+      nonce: NONCE,
+      companionObservation: null,
+      daemonObservation: endpoint(daemon.pid, daemon.ppid, daemon.startIdentity, 1000, 3000),
+      transportMarker: { pid: 5300, ppid: daemon.pid, nonce: NONCE },
+      expectedTransportNonce: NONCE,
+      markerEpochMs: 2900,
+      daemonSpawnWitness: replacementWitness(1000, 2100),
+    });
+    assert.deepEqual([lawfulPostSecondVerdict.hops[1].status, lawfulPostSecondVerdict.hops[1].reason], ['established', null], JSON.stringify(lawfulPostSecondVerdict.hops[1]));
+    assert.equal(lawfulPostSecondVerdict.hops[1].witnessClass, undefined,
+      'an arithmetic-established hop carries no witness member');
+    // Records that cannot supply the binding — a retained v1 replay record
+    // (the member genuinely absent under its recorded version, §26.7 item 2)
+    // or a v2 record whose parse resolved to the named-absent null — never
+    // upgrade the marker path (new runs never fall back to the permissive old
+    // contract; replay stays refused, the honest outcome).
+    const v1ReplayVerdict = joinAncestryHops({
+      nonce: NONCE,
+      companionObservation: null,
+      daemonObservation: endpoint(daemon.pid, daemon.ppid, daemon.startIdentity, 1000, 3000),
+      transportMarker: { pid: 5300, ppid: daemon.pid, nonce: NONCE },
+      expectedTransportNonce: NONCE,
+      markerEpochMs: 1900,
+      daemonSpawnWitness: {
+        localProcessObservationVersion: 2, class: 'spawn-ancestry-witness', status: 'established', reason: null,
+        identity: { version: 1, class: 'spawn-ancestry-witness', role: 'broker-daemon', nonce: NONCE, writerPid: daemon.pid, writerStartIdentity: daemon.startIdentity, childPid: 5300, childPpid: daemon.pid, childStartIdentity: 'S-TRANSPORT', childNonce: NONCE, boundaryEpochMs: 2100, firstWriteEpochMs: 2110, startOriginMs: null, firstWritePreciseMs: null },
+        readStartedEpochMs: 2100, readEpochMs: 2110,
+      },
+    });
+    assert.deepEqual([v1ReplayVerdict.hops[1].status, v1ReplayVerdict.hops[1].reason], ['unestablished', 'spawn-witness-marker-generation-unbound'], JSON.stringify(v1ReplayVerdict.hops[1]));
+    const absentVerdict = joinAncestryHops({
+      nonce: NONCE,
+      companionObservation: null,
+      daemonObservation: endpoint(daemon.pid, daemon.ppid, daemon.startIdentity, 1000, 3000),
+      transportMarker: { pid: 5300, ppid: daemon.pid, nonce: NONCE },
+      expectedTransportNonce: NONCE,
+      markerEpochMs: 1900,
+      daemonSpawnWitness: replacementWitness(null, 2100),
+    });
+    assert.deepEqual([absentVerdict.hops[1].status, absentVerdict.hops[1].reason], ['unestablished', 'spawn-witness-marker-generation-unbound'], JSON.stringify(absentVerdict.hops[1]));
+  });
+
+  test('same-second-completion negative: the reviewer\u2019s exact T+100-marker schedule against T+200/T+400 replacements refuses AMBIGUOUS — temporal compatibility with a shared creation floor never binds generations (codex round 6)', () => {
+    // The codex-round-6 reviewer repro, isolated and by name: predecessor
+    // marker at T+100 (1100); two same-pid replacements ACTUALLY started at
+    // T+200 and T+400 — both report the SAME creation floor T (the darwin
+    // lstart second), so the witness record carries floor 1000 either way;
+    // witness capture T+500 (1500), parent read T+700 (1700). The pre-fix
+    // predicate credited the stale marker against a replacement that did not
+    // EXIST when the marker was written; the root adjudication refuses the
+    // ambiguous band (1100 ∈ [1000, 2000)) — and because both replacements
+    // share the floor, NO witness-side temporal fact could ever separate
+    // them: the ambiguity is the honest terminal state, never resolved.
+    const endpoint = (pid, ppid, startIdentity, startInstantEpochMs, read) => ({
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'established', reason: null,
+      observation: { pid, ppid, startIdentity, nonce: NONCE, startInstantEpochMs, ppidChangedFromCapture: null },
+      queried: { pid, nonce: NONCE },
+      readStartedEpochMs: read - 50, identityReadEpochMs: read, readEpochMs: read, absenceConfirmed: null,
+    });
+    // The replacements' TRUE creations are T+200 (1200) and T+400 (1400);
+    // both report the SAME darwin lstart floor (1000), so the witness record
+    // can only ever carry childOsStartInstantMs 1000 — no witness-side
+    // temporal fact can separate a marker written at 1100 from either
+    // replacement. That is exactly why the whole band refuses.
+    const verdict = joinAncestryHops({
+      nonce: NONCE,
+      companionObservation: null,
+      daemonObservation: endpoint(daemon.pid, daemon.ppid, daemon.startIdentity, 1000, 1700),
+      transportMarker: { pid: 5300, ppid: daemon.pid, nonce: NONCE },
+      expectedTransportNonce: NONCE,
+      markerEpochMs: 1100,
+      daemonSpawnWitness: {
+        localProcessObservationVersion: 3, class: 'spawn-ancestry-witness', status: 'established', reason: null,
+        identity: { version: 2, class: 'spawn-ancestry-witness', role: 'broker-daemon', nonce: NONCE, writerPid: daemon.pid, writerStartIdentity: daemon.startIdentity, childPid: 5300, childPpid: daemon.pid, childStartIdentity: 'S-TRANSPORT', childNonce: NONCE, boundaryEpochMs: 1500, firstWriteEpochMs: 1510, startOriginMs: null, firstWritePreciseMs: null, childOsStartInstantMs: 1000 },
+        readStartedEpochMs: 1500, readEpochMs: 1510,
+      },
+    });
+    assert.deepEqual([verdict.hops[1].status, verdict.hops[1].reason], ['unestablished', 'spawn-witness-marker-generation-ambiguous'], JSON.stringify(verdict.hops[1]));
+    assert.equal(verdict.companionToTransportAttributed, false);
+  });
+
+  test('same-second-completion negative: the reviewer\u2019s P0/P1 reuse schedule refuses AMBIGUOUS — a witness written inside the parent\u2019s FIRST possible second never proves the read-time parent is the writer\u2019s generation (codex round 7)', () => {
+    // The codex-round-7 reviewer repro, through the REAL join seam: P0 (pid
+    // 5100, creation floor T = 1000) spawns D, writes the witness at T+100
+    // (boundary 1100, write 1110), exits, and a same-scope P1 takes the PID
+    // at T+400 — P1 reports the SAME whole-second lstart floor and the SAME
+    // start-identity string, and the endpoint read lands at T+700 (1700)
+    // observing P1. The writer-equality conjunct (pid + start-identity
+    // string) passes for BOTH generations — whole-second equality is
+    // compatible with same-generation AND same-second reuse, i.e.
+    // fundamentally ambiguous under the registered seams (route (c)'s
+    // higher-resolution generation evidence stays NAMED UNAVAILABLE, §28.1).
+    // The disambiguating evidence is the witness write instant against the
+    // read-time parent's ENTIRE possible creation window: a write INSIDE
+    // [floor, floor+1000) leaves a same-floor reuse compatible (it could
+    // have been born after the writer died, still inside the shared second)
+    // and refuses `spawn-witness-parent-generation-ambiguous`; a write
+    // POSTDATING the whole window PROVES continuity (any same-floor reuse
+    // would have to be born after the writer's death — which postdates the
+    // write — and would therefore carry a LATER floor, contradicting the
+    // read). The capture-before-read bounds alone never establish
+    // generation continuity.
+    const endpoint = (pid, ppid, startIdentity, startInstantEpochMs, read) => ({
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'established', reason: null,
+      observation: { pid, ppid, startIdentity, nonce: NONCE, startInstantEpochMs, ppidChangedFromCapture: null },
+      queried: { pid, nonce: NONCE },
+      readStartedEpochMs: read - 50, identityReadEpochMs: read, readEpochMs: read, absenceConfirmed: null,
+    });
+    const p1Witness = {
+      localProcessObservationVersion: 3, class: 'spawn-ancestry-witness', status: 'established', reason: null,
+      identity: { version: 2, class: 'spawn-ancestry-witness', role: 'invocation', nonce: NONCE, writerPid: companion.pid, writerStartIdentity: companion.startIdentity, childPid: daemon.pid, childPpid: companion.pid, childStartIdentity: daemon.startIdentity, childNonce: NONCE, boundaryEpochMs: 1100, firstWriteEpochMs: 1110, startOriginMs: null, firstWritePreciseMs: null, childOsStartInstantMs: 1000 },
+      readStartedEpochMs: 1100, readEpochMs: 1110,
+    };
+    const usurpedVerdict = joinAncestryHops({
+      nonce: NONCE,
+      companionObservation: endpoint(companion.pid, companion.ppid, companion.startIdentity, 1000, 1700),
+      daemonObservation: endpoint(daemon.pid, daemon.ppid, daemon.startIdentity, 1000, 2700),
+      transportMarker: { pid: 5300, ppid: daemon.pid, nonce: NONCE },
+      expectedTransportNonce: NONCE,
+      daemonCaptureParentPid: companion.pid,
+      companionSpawnWitness: p1Witness,
+    });
+    assert.deepEqual([usurpedVerdict.hops[0].status, usurpedVerdict.hops[0].reason], ['unestablished', 'spawn-witness-parent-generation-ambiguous'], JSON.stringify(usurpedVerdict.hops[0]));
+    assert.equal(usurpedVerdict.companionToTransportAttributed, false);
+    // The POSITIVE side of the same binding: the identical schedule with the
+    // witness written OUTSIDE the parent's first possible second (write 2510
+    // ≥ floor 1000 + 1000, inside the extended read window 2700) PROVES the
+    // parent generation's continuity — the hop establishes and rides its
+    // witnessClass. (A late-writing parent chain: the spawn boundary happens
+    // after the parent's whole creation second.)
+    const lateWriteWitness = {
+      localProcessObservationVersion: 3, class: 'spawn-ancestry-witness', status: 'established', reason: null,
+      identity: { version: 2, class: 'spawn-ancestry-witness', role: 'invocation', nonce: NONCE, writerPid: companion.pid, writerStartIdentity: companion.startIdentity, childPid: daemon.pid, childPpid: companion.pid, childStartIdentity: daemon.startIdentity, childNonce: NONCE, boundaryEpochMs: 2500, firstWriteEpochMs: 2510, startOriginMs: null, firstWritePreciseMs: null, childOsStartInstantMs: 1000 },
+      readStartedEpochMs: 2500, readEpochMs: 2510,
+    };
+    const lateWriteVerdict = joinAncestryHops({
+      nonce: NONCE,
+      companionObservation: endpoint(companion.pid, companion.ppid, companion.startIdentity, 1000, 2700),
+      daemonObservation: endpoint(daemon.pid, daemon.ppid, daemon.startIdentity, 1000, 2700),
+      transportMarker: { pid: 5300, ppid: daemon.pid, nonce: NONCE },
+      expectedTransportNonce: NONCE,
+      daemonCaptureParentPid: companion.pid,
+      companionSpawnWitness: lateWriteWitness,
+    });
+    const lateWriteHop = lateWriteVerdict.hops.find((entry) => entry.hop === 'companion-to-daemon');
+    assert.equal(lateWriteHop.status, 'established', JSON.stringify(lateWriteHop));
+    assert.equal(lateWriteHop.witnessClass, 'spawn-boundary-capture');
+  });
+
+  test('same-second-completion negative: the reviewer\u2019s same-second DAEMON-reuse schedule refuses AMBIGUOUS — the read-time child identity equality is not generation evidence, and the scope nonce cannot disambiguate it (codex round 8)', () => {
+    // The codex-round-8 reviewer repro, through the REAL join seam: parent
+    // floor T−2000 (1000), daemon floor T (3000), witness written T+100
+    // (boundary 3100), parent read T+700 (3700), daemon read T+800 (3800),
+    // D's capture-time parent PID supplied. A same-scope replacement reusing
+    // the daemon pid inside the shared lstart second passes the
+    // identity-equality conjunct (same floor string) and — through the
+    // supplied capture-time parent link — preserves the original parent
+    // chain, so the witness upgraded the refused hop although the read-time
+    // occupant may be a different-parent replacement. The nonce is NOT a
+    // sound disambiguator (the §26.6 freeze: the nonce binds a SCOPE, never
+    // a generation — every same-scope replacement carries the same nonce by
+    // construction, so a nonce match proves scope, not generation, and a
+    // mismatch is already refused by the scope bindings). The
+    // disambiguator mirrors the parent fix: the witnessed child is provably
+    // alive at the boundary, so a boundary INSIDE the read-time child's
+    // first possible second (3100 ∈ [3000, 4000)) leaves a same-floor
+    // same-scope reuse compatible and refuses
+    // `spawn-witness-child-generation-ambiguous`; the round-7
+    // parent-continuity binding PASSES on this schedule (the parent wrote
+    // outside its own first second), which is exactly why the child-side
+    // check is required.
+    const endpoint = (pid, ppid, startIdentity, startInstantEpochMs, read) => ({
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'established', reason: null,
+      observation: { pid, ppid, startIdentity, nonce: NONCE, startInstantEpochMs, ppidChangedFromCapture: null },
+      queried: { pid, nonce: NONCE },
+      readStartedEpochMs: read - 50, identityReadEpochMs: read, readEpochMs: read, absenceConfirmed: null,
+    });
+    const usurpingChildWitness = {
+      localProcessObservationVersion: 3, class: 'spawn-ancestry-witness', status: 'established', reason: null,
+      identity: { version: 2, class: 'spawn-ancestry-witness', role: 'invocation', nonce: NONCE, writerPid: companion.pid, writerStartIdentity: companion.startIdentity, childPid: daemon.pid, childPpid: companion.pid, childStartIdentity: daemon.startIdentity, childNonce: NONCE, boundaryEpochMs: 3100, firstWriteEpochMs: 3110, startOriginMs: null, firstWritePreciseMs: null, childOsStartInstantMs: 3000 },
+      readStartedEpochMs: 3100, readEpochMs: 3110,
+    };
+    const usurpedChildVerdict = joinAncestryHops({
+      nonce: NONCE,
+      companionObservation: endpoint(companion.pid, companion.ppid, companion.startIdentity, 1000, 3700),
+      daemonObservation: endpoint(daemon.pid, daemon.ppid, daemon.startIdentity, 3000, 3800),
+      transportMarker: { pid: 5300, ppid: daemon.pid, nonce: NONCE },
+      expectedTransportNonce: NONCE,
+      daemonCaptureParentPid: companion.pid,
+      companionSpawnWitness: usurpingChildWitness,
+    });
+    assert.deepEqual([usurpedChildVerdict.hops[0].status, usurpedChildVerdict.hops[0].reason], ['unestablished', 'spawn-witness-child-generation-ambiguous'], JSON.stringify(usurpedChildVerdict.hops[0]));
+    assert.equal(usurpedChildVerdict.companionToTransportAttributed, false);
+    // The POSITIVE side of the binding: the witnessed daemon born inside the
+    // Companion's first possible second (floor 1500), the boundary capture
+    // POSTDATING the daemon's ENTIRE possible creation window (2600 ≥
+    // 1500 + 1000) — the read-time occupant is provably the witnessed
+    // generation (any same-floor reuse would carry a LATER floor) — and the
+    // hop establishes through the witness route with its witnessClass.
+    const provenChildWitness = {
+      localProcessObservationVersion: 3, class: 'spawn-ancestry-witness', status: 'established', reason: null,
+      identity: { version: 2, class: 'spawn-ancestry-witness', role: 'invocation', nonce: NONCE, writerPid: companion.pid, writerStartIdentity: companion.startIdentity, childPid: daemon.pid, childPpid: companion.pid, childStartIdentity: daemon.startIdentity, childNonce: NONCE, boundaryEpochMs: 2600, firstWriteEpochMs: 2610, startOriginMs: null, firstWritePreciseMs: null, childOsStartInstantMs: 1500 },
+      readStartedEpochMs: 2600, readEpochMs: 2610,
+    };
+    const provenChildVerdict = joinAncestryHops({
+      nonce: NONCE,
+      companionObservation: endpoint(companion.pid, companion.ppid, companion.startIdentity, 1000, 3000),
+      daemonObservation: endpoint(daemon.pid, daemon.ppid, daemon.startIdentity, 1500, 3200),
+      transportMarker: { pid: 5300, ppid: daemon.pid, nonce: NONCE },
+      expectedTransportNonce: NONCE,
+      daemonCaptureParentPid: companion.pid,
+      companionSpawnWitness: provenChildWitness,
+    });
+    const provenChildHop = provenChildVerdict.hops.find((entry) => entry.hop === 'companion-to-daemon');
+    assert.equal(provenChildHop.status, 'established', JSON.stringify(provenChildHop));
+    assert.equal(provenChildHop.witnessClass, 'spawn-boundary-capture');
+  });
+
+  test('same-second-completion negative: an endpoint read PRECEDING the boundary capture proves nothing — the child-continuity proof requires the read to follow the capture (codex round 9)', () => {
+    // The codex-round-9 reviewer repro, through the REAL join seam: the
+    // daemon endpoint is READ at T+100 (1100), the witness captures a
+    // replacement at T+1100 (2100) — same pid, same scope nonce, same
+    // lstart floor T (1000) — and the parent read follows the witness
+    // (2200), so the round-7 parent-continuity binding passes. The
+    // round-8 creation-window conjunct alone (2100 ≥ 1000 + 1000) also
+    // passes, but the comparison is capture-vs-READ-TIME occupant: a read
+    // that PRECEDES the capture may describe a predecessor that died before
+    // the witnessed replacement existed, so it proves nothing about the
+    // witnessed generation's survival. The ordering is a conjunct of the
+    // same continuity conclusion: the child endpoint's read must POSTDATE
+    // the boundary capture.
+    const endpoint = (pid, ppid, startIdentity, startInstantEpochMs, read) => ({
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'established', reason: null,
+      observation: { pid, ppid, startIdentity, nonce: NONCE, startInstantEpochMs, ppidChangedFromCapture: null },
+      queried: { pid, nonce: NONCE },
+      readStartedEpochMs: read - 50, identityReadEpochMs: read, readEpochMs: read, absenceConfirmed: null,
+    });
+    const earlyReadWitness = {
+      localProcessObservationVersion: 3, class: 'spawn-ancestry-witness', status: 'established', reason: null,
+      identity: { version: 2, class: 'spawn-ancestry-witness', role: 'invocation', nonce: NONCE, writerPid: companion.pid, writerStartIdentity: companion.startIdentity, childPid: daemon.pid, childPpid: companion.pid, childStartIdentity: daemon.startIdentity, childNonce: NONCE, boundaryEpochMs: 2100, firstWriteEpochMs: 2110, startOriginMs: null, firstWritePreciseMs: null, childOsStartInstantMs: 1000 },
+      readStartedEpochMs: 2100, readEpochMs: 2110,
+    };
+    const earlyReadVerdict = joinAncestryHops({
+      nonce: NONCE,
+      companionObservation: endpoint(companion.pid, companion.ppid, companion.startIdentity, 1000, 2200),
+      daemonObservation: endpoint(daemon.pid, daemon.ppid, daemon.startIdentity, 1000, 1100),
+      transportMarker: { pid: 5300, ppid: daemon.pid, nonce: NONCE },
+      expectedTransportNonce: NONCE,
+      daemonCaptureParentPid: companion.pid,
+      companionSpawnWitness: earlyReadWitness,
+    });
+    assert.deepEqual([earlyReadVerdict.hops[0].status, earlyReadVerdict.hops[0].reason], ['unestablished', 'spawn-witness-child-generation-ambiguous'], JSON.stringify(earlyReadVerdict.hops[0]));
+    assert.equal(earlyReadVerdict.companionToTransportAttributed, false);
+    // The POSITIVE side of the ordering conjunct: the SAME schedule with the
+    // daemon read FOLLOWING the capture (4200 ≥ 2100) satisfies both
+    // conjuncts — the read-time occupant is provably the witnessed
+    // generation — and the hop establishes through the witness route.
+    const orderedReadVerdict = joinAncestryHops({
+      nonce: NONCE,
+      companionObservation: endpoint(companion.pid, companion.ppid, companion.startIdentity, 1000, 4200),
+      daemonObservation: endpoint(daemon.pid, daemon.ppid, daemon.startIdentity, 1000, 4200),
+      transportMarker: { pid: 5300, ppid: daemon.pid, nonce: NONCE },
+      expectedTransportNonce: NONCE,
+      daemonCaptureParentPid: companion.pid,
+      companionSpawnWitness: earlyReadWitness,
+    });
+    const orderedReadHop = orderedReadVerdict.hops.find((entry) => entry.hop === 'companion-to-daemon');
+    assert.equal(orderedReadHop.status, 'established', JSON.stringify(orderedReadHop));
+    assert.equal(orderedReadHop.witnessClass, 'spawn-boundary-capture');
+  });
+
+  test('same-second-completion negative: an endpoint whose COLLECTION overlaps the witness capture proves nothing — completion after capture is not collection after capture (codex round 11)', () => {
+    // The codex-round-11 finding-2 repro, through the REAL join seam: the
+    // daemon endpoint's inspection is COLLECTED at 1200 (its snapshot shows
+    // the PREDECESSOR) but COMPLETES at 2200 — while a same-pid same-scope
+    // replacement born 1400 with the same coarse start identity is witnessed
+    // at 2100. The completion instant (2200 ≥ boundary 2100) passes the
+    // round-9 ordering conjunct, but completion-after-capture is not
+    // collection-after-capture: the endpoint's collection window OVERLAPS
+    // the capture, so it may describe the predecessor. The ordering conjunct
+    // consumes the endpoint's COLLECTION bound (the observeLocalProcess
+    // read-start): established only when the identity was provably COLLECTED
+    // after the boundary (read-start ≥ boundary); overlapping or unknown
+    // orderings refuse.
+    const endpoint = (pid, ppid, startIdentity, startInstantEpochMs, readStarted, readCompleted) => ({
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'established', reason: null,
+      observation: { pid, ppid, startIdentity, nonce: NONCE, startInstantEpochMs, ppidChangedFromCapture: null },
+      queried: { pid, nonce: NONCE },
+      readStartedEpochMs: readStarted, identityReadEpochMs: readCompleted, readEpochMs: readCompleted, absenceConfirmed: null,
+    });
+    const overlappingWitness = {
+      localProcessObservationVersion: 3, class: 'spawn-ancestry-witness', status: 'established', reason: null,
+      identity: { version: 2, class: 'spawn-ancestry-witness', role: 'invocation', nonce: NONCE, writerPid: companion.pid, writerStartIdentity: companion.startIdentity, childPid: daemon.pid, childPpid: companion.pid, childStartIdentity: daemon.startIdentity, childNonce: NONCE, boundaryEpochMs: 2100, firstWriteEpochMs: 2110, startOriginMs: null, firstWritePreciseMs: null, childOsStartInstantMs: 1000 },
+      readStartedEpochMs: 2100, readEpochMs: 2110,
+    };
+    const overlappingVerdict = joinAncestryHops({
+      nonce: NONCE,
+      companionObservation: endpoint(companion.pid, companion.ppid, companion.startIdentity, 100, 3000, 4000),
+      daemonObservation: endpoint(daemon.pid, daemon.ppid, daemon.startIdentity, 1000, 1200, 2200),
+      transportMarker: { pid: 5300, ppid: daemon.pid, nonce: NONCE },
+      expectedTransportNonce: NONCE,
+      daemonCaptureParentPid: companion.pid,
+      companionSpawnWitness: overlappingWitness,
+    });
+    assert.deepEqual([overlappingVerdict.hops[0].status, overlappingVerdict.hops[0].reason], ['unestablished', 'spawn-witness-child-generation-ambiguous'], JSON.stringify(overlappingVerdict.hops[0]));
+    assert.equal(overlappingVerdict.companionToTransportAttributed, false);
+    // The POSITIVE side of the collection rule: the SAME schedule with the
+    // daemon identity COLLECTED after the witness boundary (read-start 2150
+    // ≥ 2100, completion 2200) is provably about the witnessed generation's
+    // world and establishes through the witness route.
+    const collectedAfterVerdict = joinAncestryHops({
+      nonce: NONCE,
+      companionObservation: endpoint(companion.pid, companion.ppid, companion.startIdentity, 100, 3000, 4000),
+      daemonObservation: endpoint(daemon.pid, daemon.ppid, daemon.startIdentity, 1000, 2150, 2200),
+      transportMarker: { pid: 5300, ppid: daemon.pid, nonce: NONCE },
+      expectedTransportNonce: NONCE,
+      daemonCaptureParentPid: companion.pid,
+      companionSpawnWitness: overlappingWitness,
+    });
+    const collectedAfterHop = collectedAfterVerdict.hops.find((entry) => entry.hop === 'companion-to-daemon');
+    assert.equal(collectedAfterHop.status, 'established', JSON.stringify(collectedAfterHop));
+    assert.equal(collectedAfterHop.witnessClass, 'spawn-boundary-capture');
+    // And an endpoint with UNKNOWN collection bounds (no read-start) never
+    // credits: absent bounds are an unknown ordering.
+    const unknownBoundsVerdict = joinAncestryHops({
+      nonce: NONCE,
+      companionObservation: endpoint(companion.pid, companion.ppid, companion.startIdentity, 100, 3000, 4000),
+      daemonObservation: {
+        localProcessObservationVersion: 3, class: 'os-live-observation', status: 'established', reason: null,
+        observation: { pid: daemon.pid, ppid: daemon.ppid, startIdentity: daemon.startIdentity, nonce: NONCE, startInstantEpochMs: 1000, ppidChangedFromCapture: null },
+        queried: { pid: daemon.pid, nonce: NONCE },
+        identityReadEpochMs: 2200, readEpochMs: 2200, absenceConfirmed: null,
+      },
+      transportMarker: { pid: 5300, ppid: daemon.pid, nonce: NONCE },
+      expectedTransportNonce: NONCE,
+      daemonCaptureParentPid: companion.pid,
+      companionSpawnWitness: overlappingWitness,
+    });
+    assert.deepEqual([unknownBoundsVerdict.hops[0].status, unknownBoundsVerdict.hops[0].reason], ['unestablished', 'spawn-witness-child-generation-ambiguous'], JSON.stringify(unknownBoundsVerdict.hops[0]));
+  });
+
+  test('same-second-completion negative: the WRITER endpoint\u2019s COLLECTION overlaps the witness write and proves nothing — completion after the write is not collection after the write (codex round 12)', () => {
+    // The codex-round-12 reviewer repro (the parent-side mirror of the
+    // round-11 child-side rule), through the REAL join seam: the Companion
+    // endpoint's inspection SAMPLES P0 at 1100 (its snapshot shows P0) but
+    // COMPLETES at 2500; P0 exits at 1200; a same-scope P1 reuses the pid
+    // at 1400 with the SAME coarse start identity (floor 1000) and writes
+    // the witness at 2110 (boundary 2100). The writer-continuity window
+    // conjunct (write 2110 ≥ floor 1000 + 1000) passes and the late
+    // COMPLETION (2500) rode as the parent's presence bound — establishing
+    // the first hop for P1's witness although the endpoint DESCRIBES P0.
+    // The continuity proof consumes the writer endpoint's COLLECTION bound
+    // (the observeLocalProcess read-start): the parent identity must be
+    // provably COLLECTED after the witness write (read-start ≥ 2110); the
+    // overlapping window (1100 < 2110) refuses
+    // `spawn-witness-parent-generation-ambiguous` (the trigger widened, the
+    // label kept).
+    const endpoint = (pid, ppid, startIdentity, startInstantEpochMs, readStarted, readCompleted) => ({
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'established', reason: null,
+      observation: { pid, ppid, startIdentity, nonce: NONCE, startInstantEpochMs, ppidChangedFromCapture: null },
+      queried: { pid, nonce: NONCE },
+      readStartedEpochMs: readStarted, identityReadEpochMs: readCompleted, readEpochMs: readCompleted, absenceConfirmed: null,
+    });
+    const p1UsurpingWitness = {
+      localProcessObservationVersion: 3, class: 'spawn-ancestry-witness', status: 'established', reason: null,
+      identity: { version: 2, class: 'spawn-ancestry-witness', role: 'invocation', nonce: NONCE, writerPid: companion.pid, writerStartIdentity: companion.startIdentity, childPid: daemon.pid, childPpid: companion.pid, childStartIdentity: daemon.startIdentity, childNonce: NONCE, boundaryEpochMs: 2100, firstWriteEpochMs: 2110, startOriginMs: null, firstWritePreciseMs: null, childOsStartInstantMs: 1000 },
+      readStartedEpochMs: 2100, readEpochMs: 2110,
+    };
+    const overlappingWriterVerdict = joinAncestryHops({
+      nonce: NONCE,
+      companionObservation: endpoint(companion.pid, companion.ppid, companion.startIdentity, 1000, 1100, 2500),
+      daemonObservation: endpoint(daemon.pid, daemon.ppid, daemon.startIdentity, 1000, 2150, 2200),
+      transportMarker: { pid: 5300, ppid: daemon.pid, nonce: NONCE },
+      expectedTransportNonce: NONCE,
+      daemonCaptureParentPid: companion.pid,
+      companionSpawnWitness: p1UsurpingWitness,
+    });
+    assert.deepEqual([overlappingWriterVerdict.hops[0].status, overlappingWriterVerdict.hops[0].reason], ['unestablished', 'spawn-witness-parent-generation-ambiguous'], JSON.stringify(overlappingWriterVerdict.hops[0]));
+    assert.equal(overlappingWriterVerdict.companionToTransportAttributed, false);
+    // The POSITIVE control: the SAME schedule with the parent identity
+    // COLLECTED after the witness write (read-start 2150 ≥ write 2110,
+    // completion 2500) is provably about the writer's world and establishes
+    // through the witness route with its witnessClass.
+    const collectedAfterVerdict = joinAncestryHops({
+      nonce: NONCE,
+      companionObservation: endpoint(companion.pid, companion.ppid, companion.startIdentity, 1000, 2150, 2500),
+      daemonObservation: endpoint(daemon.pid, daemon.ppid, daemon.startIdentity, 1000, 2150, 2200),
+      transportMarker: { pid: 5300, ppid: daemon.pid, nonce: NONCE },
+      expectedTransportNonce: NONCE,
+      daemonCaptureParentPid: companion.pid,
+      companionSpawnWitness: p1UsurpingWitness,
+    });
+    const collectedAfterHop = collectedAfterVerdict.hops.find((entry) => entry.hop === 'companion-to-daemon');
+    assert.equal(collectedAfterHop.status, 'established', JSON.stringify(collectedAfterHop));
+    assert.equal(collectedAfterHop.witnessClass, 'spawn-boundary-capture');
+    // And a writer endpoint with UNKNOWN collection bounds (no read-start)
+    // never credits: absent bounds are an unknown ordering.
+    const unknownWriterBoundsVerdict = joinAncestryHops({
+      nonce: NONCE,
+      companionObservation: {
+        localProcessObservationVersion: 3, class: 'os-live-observation', status: 'established', reason: null,
+        observation: { pid: companion.pid, ppid: companion.ppid, startIdentity: companion.startIdentity, nonce: NONCE, startInstantEpochMs: 1000, ppidChangedFromCapture: null },
+        queried: { pid: companion.pid, nonce: NONCE },
+        identityReadEpochMs: 2500, readEpochMs: 2500, absenceConfirmed: null,
+      },
+      daemonObservation: endpoint(daemon.pid, daemon.ppid, daemon.startIdentity, 1000, 2150, 2200),
+      transportMarker: { pid: 5300, ppid: daemon.pid, nonce: NONCE },
+      expectedTransportNonce: NONCE,
+      daemonCaptureParentPid: companion.pid,
+      companionSpawnWitness: p1UsurpingWitness,
+    });
+    assert.deepEqual([unknownWriterBoundsVerdict.hops[0].status, unknownWriterBoundsVerdict.hops[0].reason], ['unestablished', 'spawn-witness-parent-generation-ambiguous'], JSON.stringify(unknownWriterBoundsVerdict.hops[0]));
+  });
+
+  test('same-second-completion scheduling independence: hop 1\u2019s parent-continuity refusal never forces hop 2\u2019s refusal — each hop adjudicates on its OWN registered predicate (codex round 8)', () => {
+    // The codex-round-8 test-side finding, pinned at the join level: hop 1
+    // refusing the parent-continuity conclusion (the invocation witness
+    // written inside the parent's first possible second) does NOT force the
+    // transport hop's refusal. Outcome (a): a transport marker written
+    // AFTER the daemon's ENTIRE first possible second (2600 ≥ 1500 + 1000)
+    // establishes hop 2 on the registered marker-time arithmetic while hop
+    // 1 stays unestablished — the attribution is false SOLELY from hop 1
+    // and hop 2 rides its own establishment. Outcome (b): the same schedule
+    // with a SAME-SECOND marker (1900 < 1500 + 1000) keeps hop 2 refused
+    // (the bound window stays witness-resolvable and no witness upgrades
+    // it). Each hop's verdict is its own predicate's verdict.
+    const endpoint = (pid, ppid, startIdentity, startInstantEpochMs, read) => ({
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'established', reason: null,
+      observation: { pid, ppid, startIdentity, nonce: NONCE, startInstantEpochMs, ppidChangedFromCapture: null },
+      queried: { pid, nonce: NONCE },
+      readStartedEpochMs: read - 50, identityReadEpochMs: read, readEpochMs: read, absenceConfirmed: null,
+    });
+    const earlyParentWitness = {
+      localProcessObservationVersion: 3, class: 'spawn-ancestry-witness', status: 'established', reason: null,
+      identity: { version: 2, class: 'spawn-ancestry-witness', role: 'invocation', nonce: NONCE, writerPid: companion.pid, writerStartIdentity: companion.startIdentity, childPid: daemon.pid, childPpid: companion.pid, childStartIdentity: daemon.startIdentity, childNonce: NONCE, boundaryEpochMs: 1100, firstWriteEpochMs: 1110, startOriginMs: null, firstWritePreciseMs: null, childOsStartInstantMs: 1000 },
+      readStartedEpochMs: 1100, readEpochMs: 1110,
+    };
+    const hop1RefusedHop2Established = joinAncestryHops({
+      nonce: NONCE,
+      companionObservation: endpoint(companion.pid, companion.ppid, companion.startIdentity, 1000, 3000),
+      daemonObservation: endpoint(daemon.pid, daemon.ppid, daemon.startIdentity, 1000, 3000),
+      transportMarker: { pid: 5300, ppid: daemon.pid, nonce: NONCE },
+      expectedTransportNonce: NONCE,
+      markerEpochMs: 2600,
+      daemonCaptureParentPid: companion.pid,
+      companionSpawnWitness: earlyParentWitness,
+    });
+    assert.deepEqual([hop1RefusedHop2Established.hops[0].status, hop1RefusedHop2Established.hops[0].reason], ['unestablished', 'spawn-witness-parent-generation-ambiguous'], JSON.stringify(hop1RefusedHop2Established.hops[0]));
+    assert.deepEqual([hop1RefusedHop2Established.hops[1].status, hop1RefusedHop2Established.hops[1].reason], ['established', null], JSON.stringify(hop1RefusedHop2Established.hops[1]));
+    assert.equal(hop1RefusedHop2Established.companionToTransportAttributed, false,
+      'the attribution is false solely from hop 1 while hop 2 legitimately establishes');
+    const bothRefused = joinAncestryHops({
+      nonce: NONCE,
+      companionObservation: endpoint(companion.pid, companion.ppid, companion.startIdentity, 1000, 3000),
+      daemonObservation: endpoint(daemon.pid, daemon.ppid, daemon.startIdentity, 1000, 3000),
+      transportMarker: { pid: 5300, ppid: daemon.pid, nonce: NONCE },
+      expectedTransportNonce: NONCE,
+      markerEpochMs: 1900,
+      daemonCaptureParentPid: companion.pid,
+      companionSpawnWitness: earlyParentWitness,
+    });
+    assert.deepEqual([bothRefused.hops[0].status, bothRefused.hops[0].reason], ['unestablished', 'spawn-witness-parent-generation-ambiguous'], JSON.stringify(bothRefused.hops[0]));
+    assert.deepEqual([bothRefused.hops[1].status, bothRefused.hops[1].reason], ['unestablished', 'generation-lifetime-unverifiable'], JSON.stringify(bothRefused.hops[1]));
+    assert.equal(bothRefused.companionToTransportAttributed, false);
+  });
+
+  test('same-second-completion negative: the reviewer\u2019s legitimate straddle scheduling — the parent just BEFORE a second boundary, the broker just AFTER it, the witness satisfying PARENT continuity but INSIDE the child\u2019s window — refuses child-ambiguous (codex round 9)', () => {
+    // The codex-round-9 reviewer schedule, named: the parent born just
+    // before its second boundary (floor 1000, true creation ≈ 1900), the
+    // broker born just after it (floor 2000, true creation ≈ 2001). The
+    // witness written at 2050/2060 SATISFIES the parent-continuity binding
+    // (the write 2060 postdates the parent's whole creation window 1000 +
+    // 1000) yet stays INSIDE the broker's first possible second (2050 <
+    // 2000 + 1000): the child-generation continuity is ambiguous and the
+    // hop refuses `spawn-witness-child-generation-ambiguous` — the
+    // real-chain expectations must assert this outcome as legitimate, never
+    // as a failure.
+    const endpoint = (pid, ppid, startIdentity, startInstantEpochMs, read) => ({
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'established', reason: null,
+      observation: { pid, ppid, startIdentity, nonce: NONCE, startInstantEpochMs, ppidChangedFromCapture: null },
+      queried: { pid, nonce: NONCE },
+      readStartedEpochMs: read - 50, identityReadEpochMs: read, readEpochMs: read, absenceConfirmed: null,
+    });
+    const straddleWitness = {
+      localProcessObservationVersion: 3, class: 'spawn-ancestry-witness', status: 'established', reason: null,
+      identity: { version: 2, class: 'spawn-ancestry-witness', role: 'invocation', nonce: NONCE, writerPid: companion.pid, writerStartIdentity: companion.startIdentity, childPid: daemon.pid, childPpid: companion.pid, childStartIdentity: daemon.startIdentity, childNonce: NONCE, boundaryEpochMs: 2050, firstWriteEpochMs: 2060, startOriginMs: null, firstWritePreciseMs: null, childOsStartInstantMs: 2000 },
+      readStartedEpochMs: 2050, readEpochMs: 2060,
+    };
+    const straddleVerdict = joinAncestryHops({
+      nonce: NONCE,
+      companionObservation: endpoint(companion.pid, companion.ppid, companion.startIdentity, 1000, 2950),
+      daemonObservation: endpoint(daemon.pid, daemon.ppid, daemon.startIdentity, 2000, 4200),
+      transportMarker: { pid: 5300, ppid: daemon.pid, nonce: NONCE },
+      expectedTransportNonce: NONCE,
+      daemonCaptureParentPid: companion.pid,
+      companionSpawnWitness: straddleWitness,
+    });
+    assert.deepEqual([straddleVerdict.hops[0].status, straddleVerdict.hops[0].reason], ['unestablished', 'spawn-witness-child-generation-ambiguous'], JSON.stringify(straddleVerdict.hops[0]));
+    assert.equal(straddleVerdict.companionToTransportAttributed, false);
+  });
+
+  test('same-second-completion negative: a witnessed child whose ENTIRE creation window precedes the writer\u2019s OS creation floor refuses — the inverted spawn order is never credited (codex round 10)', () => {
+    // The codex-round-10 reviewer repro, through the REAL join seam: writer
+    // start 3000, child start 2000, marker 3100, boundary/write 4050/4060,
+    // writer read 4100. The broker-boundary path never compared the
+    // witnessed child's OS creation instant with the writer's: the child's
+    // ENTIRE possible creation window [2000, 3000) closes before the
+    // writer's creation floor (3000) — the kernel's own spawn order is
+    // inverted and the writer cannot have spawned that child — yet every
+    // previously checked bound held (the marker postdates the child's
+    // window, the parent continuity holds, the capture rides inside the
+    // writer's read window) and the hop established with its witnessClass.
+    // Without the witness this schedule stays refused; the witness must
+    // never reopen a demonstrated creation-order contradiction.
+    const invertedWitness = {
+      localProcessObservationVersion: 3, class: 'spawn-ancestry-witness', status: 'established', reason: null,
+      identity: { version: 2, class: 'spawn-ancestry-witness', role: 'broker-daemon', nonce: NONCE, writerPid: daemon.pid, writerStartIdentity: daemon.startIdentity, childPid: 5300, childPpid: daemon.pid, childStartIdentity: 'S-TRANSPORT', childNonce: NONCE, boundaryEpochMs: 4050, firstWriteEpochMs: 4060, startOriginMs: null, firstWritePreciseMs: null, childOsStartInstantMs: 2000 },
+      readStartedEpochMs: 4050, readEpochMs: 4060,
+    };
+    const invertedVerdict = joinAncestryHops({
+      nonce: NONCE,
+      companionObservation: null,
+      daemonObservation: {
+        localProcessObservationVersion: 3, class: 'os-live-observation', status: 'established', reason: null,
+        observation: { pid: daemon.pid, ppid: daemon.ppid, startIdentity: daemon.startIdentity, nonce: NONCE, startInstantEpochMs: 3000, ppidChangedFromCapture: null },
+        queried: { pid: daemon.pid, nonce: NONCE },
+        readStartedEpochMs: 4050, identityReadEpochMs: 4100, readEpochMs: 4100, absenceConfirmed: null,
+      },
+      transportMarker: { pid: 5300, ppid: daemon.pid, nonce: NONCE },
+      expectedTransportNonce: NONCE,
+      markerEpochMs: 3100,
+      daemonSpawnWitness: invertedWitness,
+    });
+    assert.deepEqual([invertedVerdict.hops[1].status, invertedVerdict.hops[1].reason], ['unestablished', 'spawn-witness-creation-order-inverted'], JSON.stringify(invertedVerdict.hops[1]));
+    assert.equal(invertedVerdict.companionToTransportAttributed, false);
+    // The POSITIVE control: a physically consistent schedule (child floor
+    // 3100 ≥ writer floor 3000, marker 4150 ≥ child floor + 1000, capture
+    // 4150/4160 inside the writer's read window 4200) still establishes —
+    // the conjunct refuses only the demonstrably inverted orderings.
+    const consistentWitness = {
+      localProcessObservationVersion: 3, class: 'spawn-ancestry-witness', status: 'established', reason: null,
+      identity: { version: 2, class: 'spawn-ancestry-witness', role: 'broker-daemon', nonce: NONCE, writerPid: daemon.pid, writerStartIdentity: daemon.startIdentity, childPid: 5300, childPpid: daemon.pid, childStartIdentity: 'S-TRANSPORT', childNonce: NONCE, boundaryEpochMs: 4150, firstWriteEpochMs: 4160, startOriginMs: null, firstWritePreciseMs: null, childOsStartInstantMs: 3100 },
+      readStartedEpochMs: 4150, readEpochMs: 4160,
+    };
+    const consistentVerdict = joinAncestryHops({
+      nonce: NONCE,
+      companionObservation: null,
+      daemonObservation: {
+        localProcessObservationVersion: 3, class: 'os-live-observation', status: 'established', reason: null,
+        observation: { pid: daemon.pid, ppid: daemon.ppid, startIdentity: daemon.startIdentity, nonce: NONCE, startInstantEpochMs: 3000, ppidChangedFromCapture: null },
+        queried: { pid: daemon.pid, nonce: NONCE },
+        // (codex round 12) the COLLECTION bound (4165) postdates the broker
+        // witness's write (4160): the parent-continuity conjunct consumes
+        // the read-start, never the completion.
+        readStartedEpochMs: 4165, identityReadEpochMs: 4200, readEpochMs: 4200, absenceConfirmed: null,
+      },
+      transportMarker: { pid: 5300, ppid: daemon.pid, nonce: NONCE },
+      expectedTransportNonce: NONCE,
+      markerEpochMs: 4150,
+      daemonSpawnWitness: consistentWitness,
+    });
+    assert.deepEqual([consistentVerdict.hops[1].status, consistentVerdict.hops[1].reason], ['established', null], JSON.stringify(consistentVerdict.hops[1]));
+  });
+
+  test('same-second-completion marker-time predicates (codex round 3): the transport hop is credited by its OWN marker-time rules — a cross-second schedule the endpoint formula would refuse establishes', () => {
+    // The codex-round-3 cited schedule, through the REAL join seam: Companion
+    // start/read 1000/4700, daemon start/read 3000/4800, marker 4500. The
+    // naive endpoint-to-endpoint formula applied to the FLOORED marker
+    // instant (floor(4500) = 4000; 4000 + 1000 > 4800) expects refusal — but
+    // the transport hop's REGISTERED predicate is marker-time arithmetic: the
+    // daemon's creation lower bound (3000 + 1000 = 4000) demonstrably
+    // precedes the marker and the marker demonstrably precedes the daemon's
+    // identity read (4500 <= 4800), so BOTH hops establish with NO witness.
+    // The refusal side of the same predicate is pinned too: a marker inside
+    // the creation uncertainty window (2500: 1800 + 1000 > 2500, not
+    // violated, within the read window) stays refused without a witness.
+    const endpoint = (pid, ppid, startIdentity, startInstantEpochMs, read) => ({
+      localProcessObservationVersion: 2, class: 'os-live-observation', status: 'established', reason: null,
+      observation: { pid, ppid, startIdentity, nonce: NONCE, startInstantEpochMs, ppidChangedFromCapture: null },
+      queried: { pid, nonce: NONCE },
+      readStartedEpochMs: read - 50, identityReadEpochMs: read, readEpochMs: read, absenceConfirmed: null,
+    });
+    const crossSecond = joinAncestryHops({
+      nonce: NONCE,
+      companionObservation: endpoint(companion.pid, companion.ppid, companion.startIdentity, 1000, 4700),
+      daemonObservation: endpoint(daemon.pid, daemon.ppid, daemon.startIdentity, 3000, 4800),
+      transportMarker: { pid: 5300, ppid: daemon.pid, nonce: NONCE },
+      expectedTransportNonce: NONCE,
+      markerEpochMs: 4500,
+    });
+    // The WRONG helper's verdict (kept here as the pinned disagreement): the
+    // endpoint-to-endpoint formula on the floored marker refuses.
+    assert.equal(4000 + 1000 > 4800, true, 'the naive endpoint formula refuses this schedule');
+    assert.deepEqual(crossSecond.hops.map((hop) => [hop.hop, hop.status, hop.reason]), [
+      ['companion-to-daemon', 'established', null],
+      ['daemon-to-transport', 'established', null],
+    ], JSON.stringify(crossSecond.hops));
+    assert.equal(crossSecond.companionToTransportAttributed, true);
+    // Refuse side: the bound-window marker without a witness stays refused.
+    const boundWindow = joinAncestryHops({ ...sameSecondFacts(), markerEpochMs: 2500, expectedTransportNonce: NONCE });
+    assert.deepEqual([boundWindow.hops[1].status, boundWindow.hops[1].reason], ['unestablished', 'generation-lifetime-unverifiable'], JSON.stringify(boundWindow.hops[1]));
+  });
+
+  // --- Join-refusal BRANCH coverage (self-review round: every refusal branch
+  // must be able to FAIL its test). Each test feeds one forged-but-admission-
+  // shaped witness through the real public join seam with exactly ONE binding
+  // violated, pinning the branch's own named label. ---
+  const joinWitnessFor = (over = {}) => ({
+    localProcessObservationVersion: 2, class: 'spawn-ancestry-witness', status: 'established', reason: null,
+    identity: {
+      version: 1, class: 'spawn-ancestry-witness', role: 'invocation', nonce: NONCE,
+      writerPid: companion.pid, writerStartIdentity: companion.startIdentity,
+      childPid: daemon.pid, childPpid: companion.pid, childStartIdentity: daemon.startIdentity, childNonce: NONCE,
+      boundaryEpochMs: 2000, firstWriteEpochMs: 2010,
+      startOriginMs: null, firstWritePreciseMs: null,
+      ...over,
+    },
+    readStartedEpochMs: 2000, readEpochMs: 2010,
+  });
+
+  test('same-second-completion join-refusal branch: a STALE WRITER generation (different start identity, same pid) is refused spawn-witness-writer-foreign', () => {
+    // The witness's creator must BE the established parent generation: a
+    // record written by a previous generation occupying the same pid (or a
+    // forged writer identity) never bridges the hop.
+    const staleWriter = joinAncestryHops({ ...sameSecondFacts(), companionSpawnWitness: joinWitnessFor({ writerStartIdentity: 'S-COMPANION-STALE' }) });
+    assert.deepEqual([staleWriter.hops[0].status, staleWriter.hops[0].reason], ['unestablished', 'spawn-witness-writer-foreign'], JSON.stringify(staleWriter.hops[0]));
+    assert.equal(staleWriter.companionToTransportAttributed, false);
+    const foreignWriterPid = joinAncestryHops({ ...sameSecondFacts(), companionSpawnWitness: joinWitnessFor({ writerPid: 5199 }) });
+    assert.deepEqual([foreignWriterPid.hops[0].status, foreignWriterPid.hops[0].reason], ['unestablished', 'spawn-witness-writer-foreign']);
+  });
+
+  test('same-second-completion join-refusal branch: a witness whose capture-time parent link contradicts the hop is refused spawn-witness-parent-foreign', () => {
+    // The child's OS ppid observed AT the boundary must equal the hop's
+    // capture-time parent link — a witness claiming a different spawn
+    // relationship (reparented child at capture, or forged link) refuses.
+    const foreignParent = joinAncestryHops({ ...sameSecondFacts(), companionSpawnWitness: joinWitnessFor({ childPpid: 9999 }) });
+    assert.deepEqual([foreignParent.hops[0].status, foreignParent.hops[0].reason], ['unestablished', 'spawn-witness-parent-foreign'], JSON.stringify(foreignParent.hops[0]));
+    assert.equal(foreignParent.companionToTransportAttributed, false);
+  });
+
+  test('same-second-completion join-refusal branch: a witness whose child nonce contradicts the hop\u2019s child expectation is refused spawn-witness-nonce-mismatch', () => {
+    // The child's OWN verified nonce (bound by the writer's ingress
+    // observation) must equal the hop's child expectation: an inherited nonce
+    // in a wrong scope/role never bridges at the JOIN, not only at admission.
+    const foreignChildNonce = joinAncestryHops({ ...sameSecondFacts(), companionSpawnWitness: joinWitnessFor({ childNonce: 'd'.repeat(64) }) });
+    assert.deepEqual([foreignChildNonce.hops[0].status, foreignChildNonce.hops[0].reason], ['unestablished', 'spawn-witness-nonce-mismatch'], JSON.stringify(foreignChildNonce.hops[0]));
+    assert.equal(foreignChildNonce.companionToTransportAttributed, false);
+    // And the daemon hop's transport expectation binds the same way (the
+    // marker rides inside the daemon's verified read window — the round-3
+    // upper bound — while the creation-second bound window keeps the witness
+    // route as the hop's only path, so the nonce branch is the one exercised).
+    const brokerWitnessWrongNonce = joinAncestryHops({
+      ...sameSecondFacts(), markerEpochMs: 2500, expectedTransportNonce: NONCE,
+      daemonSpawnWitness: {
+        localProcessObservationVersion: 2, class: 'spawn-ancestry-witness', status: 'established', reason: null,
+        identity: { version: 1, class: 'spawn-ancestry-witness', role: 'broker-daemon', nonce: NONCE, writerPid: daemon.pid, writerStartIdentity: daemon.startIdentity, childPid: 5300, childPpid: daemon.pid, childStartIdentity: 'S-TRANSPORT', childNonce: 'e'.repeat(64), boundaryEpochMs: 2400, firstWriteEpochMs: 2410, startOriginMs: null, firstWritePreciseMs: null },
+        readStartedEpochMs: 2400, readEpochMs: 2410,
+      },
+    });
+    assert.deepEqual([brokerWitnessWrongNonce.hops[1].status, brokerWitnessWrongNonce.hops[1].reason], ['unestablished', 'spawn-witness-nonce-mismatch']);
+  });
+
+  test('same-second-completion emitter negative: a SECOND witness for the same scope and boundary role fails its exclusive creation — spawn-witness-write-failed, never an overwrite', async (t) => {
+    // One witness per scope and boundary role: the wx exclusive flag refuses
+    // a second write with a NAMED fact — an existing record is never
+    // overwritten (two emitters, one real child, one boundary).
+    const probe = await emitProbeScope(t);
+    t.after(() => { for (const writer of writersToDispose.splice(0)) { try { writer.kill('SIGKILL'); } catch { /* gone */ } } });
+    const childVariable = 'WITNESS_TEST_LIVE_NONCE_VAR';
+    const liveChild = spawnDetached(process.execPath, ['-e', 'setTimeout(() => {}, 5000);'], { ...isolatedBaseEnv(), [childVariable]: probe.nonce });
+    t.after(() => { try { liveChild.kill('SIGKILL'); } catch { /* gone */ } });
+    const first = await runEmitProbe(probe, liveChild.pid, probe.nonce, childVariable);
+    assert.equal(first.status, 'established', JSON.stringify(first));
+    const second = await runEmitProbe(probe, liveChild.pid, probe.nonce, childVariable);
+    assert.deepEqual({ status: second.status, reason: second.reason, identity: second.identity },
+      { status: 'unestablished', reason: 'spawn-witness-write-failed', identity: null },
+      'the exclusive creation names the collision instead of overwriting the first record');
+    const witnessPath = join(probe.captureDirectory, `${probe.nonce}.spawn-witness.json`);
+    const stillFirst = JSON.parse(await readFile(witnessPath, 'utf8'));
+    assert.equal(stillFirst.childPid, liveChild.pid, 'the original record is byte-preserved');
+  });
+
+  test('same-second-completion admission negative: a record with an UNKNOWN boundary role is refused spawn-witness-role-invalid (closed role enum)', async (t) => {
+    // The role field is a CLOSED enum (invocation | broker-daemon): a record
+    // claiming any other boundary is a named shape refusal at admission that
+    // exposes no identity — never folded into the generic shape-invalid class.
+    const scope = await witnessScope(t);
+    await writeFile(join(scope.captureDirectory, `${R3}.spawn-witness.json`), `${JSON.stringify(spawnWitnessPayload({ role: 'transport' }))}\n`, { mode: 0o600 });
+    const verdict = await admitSpawnAncestryWitness({ captureDirectory: scope.captureDirectory, nonce: R3 });
+    assert.deepEqual({ status: verdict.status, reason: verdict.reason, identity: verdict.identity },
+      { status: 'invalid', reason: 'spawn-witness-role-invalid', identity: null });
+  });
+
+  test('same-second-completion join input contract: a hand-fabricated join witness (not an admitted verdict) THROWS — the route never silently declines or accepts one', () => {
+    // The §26.6 "a harness cannot play it back by hand-editing an
+    // established boolean" freeze at the JOIN seam: any object that is not a
+    // real admitSpawnAncestryWitness verdict is an input-contract error.
+    const fabricated = { status: 'established', identity: joinWitnessFor().identity };
+    assert.throws(() => joinAncestryHops({ ...sameSecondFacts(), companionSpawnWitness: fabricated }),
+      (error) => error instanceof Error && /the companion spawn witness must be an admitted spawn-ancestry-witness verdict\./u.test(error.message),
+      'a fabricated established boolean is never mistaken for an admitted verdict');
+    const establishedShapeBroken = { localProcessObservationVersion: 2, class: 'spawn-ancestry-witness', status: 'established', reason: null, identity: { ...joinWitnessFor().identity, childStartIdentity: undefined }, readStartedEpochMs: 2000, readEpochMs: 2010 };
+    assert.throws(() => joinAncestryHops({ ...sameSecondFacts(), companionSpawnWitness: establishedShapeBroken }),
+      (error) => error instanceof Error && /the companion spawn witness identity is shape-invalid\./u.test(error.message),
+      'an established verdict whose identity lost a closed field throws at the input contract');
+  });
+
+  test('same-second-completion positive absence of precise instants: a witness whose precise writes are unavailable establishes on the epoch window only — precise instants are never invented or relabeled', () => {
+    // Uncertain clock mapping (§26.7 item 4): the join consumes ONLY the
+    // epoch-clock facts; null precise instants stay null (unknown), the hop
+    // still establishes, and the established verdict carries NO precise
+    // birth-instant claim. (codex round 8 re-derivation) the schedule writes
+    // the witness at 2850/2860 against reads extended to 3000/3200 — outside
+    // the parent's AND the daemon's first possible seconds, so the
+    // continuity conclusions are proven and the epoch-window establishment
+    // is what this schedule pins.
+    const witness = {
+      localProcessObservationVersion: 2, class: 'spawn-ancestry-witness', status: 'established', reason: null,
+      identity: { version: 1, class: 'spawn-ancestry-witness', role: 'invocation', nonce: NONCE, writerPid: companion.pid, writerStartIdentity: companion.startIdentity, childPid: daemon.pid, childPpid: companion.pid, childStartIdentity: daemon.startIdentity, childNonce: NONCE, boundaryEpochMs: 2850, firstWriteEpochMs: 2860, startOriginMs: null, firstWritePreciseMs: null },
+      readStartedEpochMs: 2850, readEpochMs: 2860,
+    };
+    const lateReadFacts = sameSecondFacts();
+    lateReadFacts.companionObservation = {
+      ...lateReadFacts.companionObservation,
+      // (codex round 12) the Companion's COLLECTION bound must postdate the
+      // witness write (2860): the parent-continuity conjunct consumes the
+      // read-start, never the completion.
+      readStartedEpochMs: 2950, identityReadEpochMs: 3000, readEpochMs: 3000,
+    };
+    lateReadFacts.daemonObservation = {
+      ...lateReadFacts.daemonObservation,
+      // (codex round 11) the daemon's COLLECTION bound must also postdate
+      // the witness boundary (2850): the ordering conjunct consumes the
+      // read-start, never the completion.
+      readStartedEpochMs: 3150, identityReadEpochMs: 3200, readEpochMs: 3200,
+    };
+    const verdict = joinAncestryHops({ ...lateReadFacts, companionSpawnWitness: witness });
+    assert.equal(verdict.hops[0].status, 'established', JSON.stringify(verdict.hops[0]));
+    assert.deepEqual(Object.keys(verdict.hops[0]).sort(), ['hop', 'reason', 'status', 'witnessClass']);
+    assert.equal(verdict.hops[0].witnessClass, 'spawn-boundary-capture');
+    assert.equal(JSON.stringify(verdict.hops[0]).includes('firstWritePreciseMs'), false,
+      'no precise birth instant is relabeled or invented anywhere in the established verdict');
+  });
+
+  test('same-second-completion reparenting preserved: a reparented daemon endpoint (changed refreshed ppid) still establishes through its capture-time link and witness — never interpreted as death', () => {
+    // §25.4 two-fact rule carried: the refreshed reparented endpoint provides
+    // the lifetime bound; the CAPTURE-TIME link (daemonCaptureParentPid) and
+    // the witness's boundary observation satisfy the ppid hop. A changed
+    // parent after capture never proves death. (codex round 8
+    // re-derivation) the witness writes at 2850/2860 against reads extended
+    // to 3000/3200 — the continuity conclusions are proven on this schedule
+    // (the reparenting linkage is what it pins).
+    const witness = {
+      localProcessObservationVersion: 2, class: 'spawn-ancestry-witness', status: 'established', reason: null,
+      identity: { version: 1, class: 'spawn-ancestry-witness', role: 'invocation', nonce: NONCE, writerPid: companion.pid, writerStartIdentity: companion.startIdentity, childPid: daemon.pid, childPpid: companion.pid, childStartIdentity: daemon.startIdentity, childNonce: NONCE, boundaryEpochMs: 2850, firstWriteEpochMs: 2860, startOriginMs: null, firstWritePreciseMs: null },
+      readStartedEpochMs: 2850, readEpochMs: 2860,
+    };
+    const reparented = sameSecondFacts();
+    reparented.companionObservation = {
+      ...reparented.companionObservation,
+      // (codex round 12) the Companion's COLLECTION bound must postdate the
+      // witness write (2860): the parent-continuity conjunct consumes the
+      // read-start, never the completion.
+      readStartedEpochMs: 2950, identityReadEpochMs: 3000, readEpochMs: 3000,
+    };
+    reparented.daemonObservation = {
+      ...reparented.daemonObservation,
+      observation: { ...daemon, ppid: 1, ppidChangedFromCapture: true },
+      // (codex round 11) the daemon's COLLECTION bound must also postdate
+      // the witness boundary (2850): the ordering conjunct consumes the
+      // read-start, never the completion.
+      readStartedEpochMs: 3150, identityReadEpochMs: 3200, readEpochMs: 3200,
+    };
+    const verdict = joinAncestryHops({
+      ...reparented,
+      daemonCaptureParentPid: companion.pid,
+      companionSpawnWitness: witness,
+    });
+    assert.equal(verdict.hops[0].status, 'established', JSON.stringify(verdict.hops[0]));
+    assert.equal(verdict.hops[0].witnessClass, 'spawn-boundary-capture');
+  });
+
+  test('same-second-completion byte-stability: verdicts without witness inputs carry no new member (old contracts replay byte-identically)', () => {
+    // §26.7 item 2: additive registration — old verdicts byte-stable. A
+    // cross-second pair established on the carried arithmetic carries exactly
+    // the pre-delta hop keys (no witnessClass member).
+    const crossSecond = sameSecondFacts();
+    crossSecond.companionObservation = {
+      ...crossSecond.companionObservation,
+      observation: { ...companion, startInstantEpochMs: 1000, ppidChangedFromCapture: null },
+      identityReadEpochMs: 15000, readEpochMs: 15000,
+    };
+    crossSecond.daemonObservation = {
+      ...crossSecond.daemonObservation,
+      observation: { ...daemon, startInstantEpochMs: 5000, ppidChangedFromCapture: null },
+      identityReadEpochMs: 15500, readEpochMs: 15500,
+    };
+    const verdict = joinAncestryHops({ ...crossSecond, markerEpochMs: 6000 });
+    assert.deepEqual(verdict.hops.map((hop) => [hop.status, Object.keys(hop).sort()]), [
+      ['established', ['hop', 'reason', 'status']],
+      ['established', ['hop', 'reason', 'status']],
+    ], 'an arithmetic-established hop carries NO witness member (the witness route only ever applies when a witness admission rides the join input)');
+    assert.equal(verdict.companionToTransportAttributed, true);
+    // And the composed runtime consumer of the SAME witnessless facts keeps
+    // the identical shape.
+    const composed = composeAncestryJoinForRuntime({ ...crossSecond, markerEpochMs: 6000 });
+    assert.deepEqual(composed.hops.map((hop) => [hop.status, Object.keys(hop).sort()]), [
+      ['established', ['hop', 'reason', 'status']],
+      ['established', ['hop', 'reason', 'status']],
+    ]);
+  });
+
+  // The spawn-witness RECORD family: the closed shape the emit producer
+  // writes; each admission negative proves the named refusal that exposes
+  // no identity (the §26.7 item 5 no-fold discipline).
+  const R3 = 'c'.repeat(64);
+  const spawnWitnessPayload = (over = {}) => ({
+    version: 1, class: 'spawn-ancestry-witness', role: 'invocation', nonce: R3,
+    writerPid: 5100, writerStartIdentity: 'S-COMPANION',
+    childPid: 5200, childPpid: 5100, childStartIdentity: 'S-DAEMON', childNonce: R3,
+    boundaryEpochMs: 2000, firstWriteEpochMs: 2010,
+    startOriginMs: 1000.5, firstWritePreciseMs: 1950.25,
+    ...over,
+  });
+  /** A v2 payload with an explicit child OS start instant and boundary (the
+   * round-25 self-consistency shapes). */
+  const spawnPayloadWithChildStart = (childOsStartInstantMs, boundaryEpochMs) => spawnWitnessPayload({
+    version: 2, boundaryEpochMs, firstWriteEpochMs: boundaryEpochMs + 10,
+    startOriginMs: null, firstWritePreciseMs: null,
+    childOsStartInstantMs,
+  });
+  const witnessScope = async (t, { captureDirectory } = {}) => {
+    const root = await mkdtemp(join(tmpdir(), 'shell-wait-local-process-witness-'));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const dir = captureDirectory ?? join(root, 'stdout-capture');
+    await mkdir(dir, { recursive: true, mode: 0o700 });
+    return { root, captureDirectory: dir, nonce: R3 };
+  };
+
+  test('same-second-completion witness admission: a real witness record admits established with its closed identity and role-selected suffix', async (t) => {
+    const scope = await witnessScope(t);
+    const recordPath = join(scope.captureDirectory, `${R3}.spawn-witness.json`);
+    // The CURRENT (v2) record: the closed shape plus the numeric child OS
+    // start instant (number or named-absent null — codex round 5), with the
+    // boundary AFTER the child's creation (the round-25 self-consistency
+    // convention).
+    await writeFile(recordPath, `${JSON.stringify(spawnWitnessPayload({ version: 2, childOsStartInstantMs: 1700000000000, boundaryEpochMs: 1700000000300, firstWriteEpochMs: 1700000000400 }))}\n`, { mode: 0o600 });
+    const admission = await admitSpawnAncestryWitness({ captureDirectory: scope.captureDirectory, nonce: R3 });
+    assert.equal(admission.status, 'established', JSON.stringify(admission));
+    assert.equal(admission.reason, null);
+    assert.deepEqual(Object.keys(admission.identity).sort(),
+      ['boundaryEpochMs', 'childNonce', 'childOsStartInstantMs', 'childPid', 'childPpid', 'childStartIdentity', 'class', 'firstWriteEpochMs', 'firstWritePreciseMs', 'nonce', 'role', 'startOriginMs', 'version', 'writerPid', 'writerStartIdentity']);
+    assert.equal(admission.identity.version, SPAWN_ANCESTRY_WITNESS_VERSION);
+    assert.equal(admission.identity.childOsStartInstantMs, 1700000000000);
+    assert.equal(admission.identity.role, 'invocation');
+    assert.equal(admission.localProcessObservationVersion, 3, 'the witness verdict rides the v3 observer contract (the codex-round-5 capture-and-bind registration)');
+    // A named-absent numeric instant (an unresolvable parse) admits too —
+    // the absence is recorded AS absent, and the join's marker binding
+    // refuses rather than guessing (§26.7 item 3/5).
+    await rm(recordPath, { force: true });
+    await writeFile(recordPath, `${JSON.stringify(spawnWitnessPayload({ version: 2, childOsStartInstantMs: null, boundaryEpochMs: 1700000000300, firstWriteEpochMs: 1700000000400 }))}\n`, { mode: 0o600 });
+    const absentAdmission = await admitSpawnAncestryWitness({ captureDirectory: scope.captureDirectory, nonce: R3 });
+    assert.equal(absentAdmission.status, 'established', JSON.stringify(absentAdmission));
+    assert.equal(absentAdmission.identity.childOsStartInstantMs, null);
+    // RETAINED v1 REPLAY (§26.7 item 2): the pre-round-5 record shape admits
+    // under its recorded version with its recorded closed identity — the
+    // member is genuinely ABSENT (never fabricated), and the join refuses
+    // the marker path for it (pinned at the route-(b) polarity assertion).
+    await rm(recordPath, { force: true });
+    await writeFile(recordPath, `${JSON.stringify(spawnWitnessPayload())}\n`, { mode: 0o600 });
+    const v1Admission = await admitSpawnAncestryWitness({ captureDirectory: scope.captureDirectory, nonce: R3 });
+    assert.equal(v1Admission.status, 'established', JSON.stringify(v1Admission));
+    assert.deepEqual(Object.keys(v1Admission.identity).sort(),
+      ['boundaryEpochMs', 'childNonce', 'childPid', 'childPpid', 'childStartIdentity', 'class', 'firstWriteEpochMs', 'firstWritePreciseMs', 'nonce', 'role', 'startOriginMs', 'version', 'writerPid', 'writerStartIdentity']);
+    assert.equal(v1Admission.identity.version, 1);
+    assert.equal(v1Admission.identity.childOsStartInstantMs, undefined);
+    // The OTHER boundary role's file never exists (a missing record is the
+    // named fact, never a launch/liveness claim).
+    const daemonAdmission = await admitSpawnAncestryWitness({ captureDirectory: scope.captureDirectory, nonce: R3, role: 'broker-daemon' });
+    assert.equal(daemonAdmission.status, 'missing');
+    assert.equal(daemonAdmission.reason, 'spawn-witness-missing');
+  });
+
+  test('same-second-completion witness admission negatives: torn, oversize, not-regular, foreign-nonce, role mismatch, shape invalid and the ordering refusals are named with no identity', async (t) => {
+    const torn = await witnessScope(t);
+    const tornPath = join(torn.captureDirectory, `${R3}.spawn-witness.json`);
+    const payload = spawnWitnessPayload();
+    await writeFile(tornPath, `${JSON.stringify(payload)}\n`.slice(0, 40), { mode: 0o600 });
+    const tornVerdict = await admitSpawnAncestryWitness({ captureDirectory: torn.captureDirectory, nonce: R3 });
+    assert.deepEqual({ status: tornVerdict.status, reason: tornVerdict.reason, identity: tornVerdict.identity },
+      { status: 'invalid', reason: 'spawn-witness-torn', identity: null });
+
+    const oversize = await witnessScope(t);
+    await writeFile(join(oversize.captureDirectory, `${R3}.spawn-witness.json`), JSON.stringify({ padding: 'x'.repeat(8 * 1024) }) + '\n', { mode: 0o600 });
+    const oversizeVerdict = await admitSpawnAncestryWitness({ captureDirectory: oversize.captureDirectory, nonce: R3 });
+    assert.equal(oversizeVerdict.status, 'invalid');
+    assert.equal(oversizeVerdict.reason, 'spawn-witness-oversize');
+
+    const symlinked = await witnessScope(t);
+    const realPath = join(symlinked.root, 'outside-target.txt');
+    await writeFile(realPath, 'harmless', { mode: 0o600 });
+    await symlink(realPath, join(symlinked.captureDirectory, `${R3}.spawn-witness.json`));
+    const symlinkVerdict = await admitSpawnAncestryWitness({ captureDirectory: symlinked.captureDirectory, nonce: R3 });
+    assert.equal(symlinkVerdict.status, 'invalid');
+    assert.equal(symlinkVerdict.reason, 'spawn-witness-not-regular');
+
+    const foreignScope = await witnessScope(t);
+    await writeFile(join(foreignScope.captureDirectory, `${R3}.spawn-witness.json`), `${JSON.stringify(spawnWitnessPayload({ nonce: 'd'.repeat(64) }))}\n`, { mode: 0o600 });
+    const foreignVerdict = await admitSpawnAncestryWitness({ captureDirectory: foreignScope.captureDirectory, nonce: R3 });
+    assert.deepEqual({ status: foreignVerdict.status, reason: foreignVerdict.reason }, { status: 'invalid', reason: 'spawn-witness-nonce-mismatch' });
+
+    const wrongRole = await witnessScope(t);
+    await writeFile(join(wrongRole.captureDirectory, `${R3}.spawn-witness.json`), `${JSON.stringify(spawnWitnessPayload({ role: 'broker-daemon' }))}\n`, { mode: 0o600 });
+    const wrongRoleVerdict = await admitSpawnAncestryWitness({ captureDirectory: wrongRole.captureDirectory, nonce: R3 });
+    assert.deepEqual({ status: wrongRoleVerdict.status, reason: wrongRoleVerdict.reason }, { status: 'invalid', reason: 'spawn-witness-role-mismatch' });
+
+    const crafted = await witnessScope(t);
+    await writeFile(join(crafted.captureDirectory, `${R3}.spawn-witness.json`), `${JSON.stringify(spawnWitnessPayload({ established: true }))}\n`, { mode: 0o600 });
+    const craftedVerdict = await admitSpawnAncestryWitness({ captureDirectory: crafted.captureDirectory, nonce: R3 });
+    assert.equal(craftedVerdict.status, 'invalid');
+    assert.equal(craftedVerdict.reason, 'spawn-witness-shape-invalid',
+      'a hand-edited established boolean is not a closed field and never admits — the capture proof is the record, never a flag');
+
+    const writeBeforeCapture = await witnessScope(t);
+    await writeFile(join(writeBeforeCapture.captureDirectory, `${R3}.spawn-witness.json`), `${JSON.stringify(spawnWitnessPayload({ firstWriteEpochMs: 1999, firstWritePreciseMs: null, startOriginMs: null }))}\n`, { mode: 0o600 });
+    const orderVerdict = await admitSpawnAncestryWitness({ captureDirectory: writeBeforeCapture.captureDirectory, nonce: R3 });
+    assert.equal(orderVerdict.reason, 'spawn-witness-write-before-capture');
+
+    const preciseBeforeStart = await witnessScope(t);
+    await writeFile(join(preciseBeforeStart.captureDirectory, `${R3}.spawn-witness.json`), `${JSON.stringify(spawnWitnessPayload({ firstWritePreciseMs: 900.5 }))}\n`, { mode: 0o600 });
+    const preciseVerdict = await admitSpawnAncestryWitness({ captureDirectory: preciseBeforeStart.captureDirectory, nonce: R3 });
+    assert.equal(preciseVerdict.reason, 'spawn-witness-write-before-capture');
+
+    const malformedChildNonce = await witnessScope(t);
+    // The child's own nonce is SHAPE-checked at admission (a 63-char value is
+    // not a 64-hex blob); its BINDING (childNonce == the hop's child
+    // expectation) is enforced by the join and pinned by the join-level
+    // nonce-mismatch branch test above.
+    await writeFile(join(malformedChildNonce.captureDirectory, `${R3}.spawn-witness.json`), `${JSON.stringify(spawnWitnessPayload({ childNonce: 'e'.repeat(63) }))}\n`, { mode: 0o600 });
+    const childNonceVerdict = await admitSpawnAncestryWitness({ captureDirectory: malformedChildNonce.captureDirectory, nonce: R3 });
+    assert.equal(childNonceVerdict.status, 'invalid');
+    assert.equal(childNonceVerdict.reason, 'spawn-witness-shape-invalid');
+  });
+
+  test('same-second-completion witness validation: a record whose childOsStartInstantMs POSTDATES its own capture boundary refuses admission — the child cannot be observed before its earliest possible creation (codex round 25)', async (t) => {
+    // The codex-round-25 finding: a v2 witness carrying
+    // childOsStartInstantMs 9000 with boundaryEpochMs 2850 claims the child
+    // was OBSERVED (the boundary capture) before its earliest possible
+    // creation — a physically contradictory record that previously passed
+    // validation and could establish the Companion→daemon hop with
+    // witnessClass when the endpoint supplied a compatible earlier start
+    // instant. The record validation rejects the self-contradiction: the
+    // child's OS start instant must not STRICTLY postdate the capture
+    // boundary (equality stays allowed — a child born in the same
+    // millisecond as its capture is fine, the module's tie convention).
+    const scope = await witnessScope(t);
+    const recordPath = join(scope.captureDirectory, `${R3}.spawn-witness.json`);
+    await writeFile(recordPath, `${JSON.stringify(spawnPayloadWithChildStart(9000, 2850))}\n`, { mode: 0o600 });
+    const admission = await admitSpawnAncestryWitness({ captureDirectory: scope.captureDirectory, nonce: R3 });
+    assert.equal(admission.status, 'invalid',
+      `the contradictory record refuses admission (measured: ${JSON.stringify({ status: admission.status, reason: admission.reason })})`);
+    assert.equal(admission.reason, 'spawn-witness-child-start-after-capture',
+      'the dedicated named admission label — the same self-contradiction class as spawn-witness-write-before-capture');
+    // The JOIN-LEVEL input contract: the raw forged shape at the join is
+    // the established throw path (the fabricated-boolean pin's contract).
+    assert.throws(() => joinAncestryHops({
+      ...sameSecondFacts(), companionSpawnWitness: {
+        localProcessObservationVersion: 3, class: 'spawn-ancestry-witness', status: 'established', reason: null,
+        identity: spawnPayloadWithChildStart(9000, 2850),
+        readStartedEpochMs: 2850, readEpochMs: 2860,
+      },
+    }), (error) => error instanceof Error && /shape-invalid/u.test(error.message),
+      'the raw contradictory record throws at the join input contract');
+    // CONTROL — EQUALITY: a child born in the same millisecond as its
+    // capture boundary is admitted (the tie convention).
+    await rm(recordPath, { force: true });
+    await writeFile(recordPath, `${JSON.stringify(spawnPayloadWithChildStart(2850, 2850))}\n`, { mode: 0o600 });
+    const equalityAdmission = await admitSpawnAncestryWitness({ captureDirectory: scope.captureDirectory, nonce: R3 });
+    assert.equal(equalityAdmission.status, 'established',
+      'equality at the boundary keeps the record admitted (the tie convention)');
+  });
+
+  // ---------------------------------------------------------------------------
+  // The REAL-SPAWN route-(b) control: a fixture-owned parent chain whose every
+  // boundary record is written by a REAL spawned process at a REAL spawn
+  // boundary (never hand-fabricated). The capture machinery executing here is
+  // exactly the provenance-bound observer module (the fixture parent entry is
+  // a thin constructor importing only its exported functions), and the
+  // generated preload keeps its unchanged stdout/stderr/lifetime contracts.
+  // Every emittable chain: harness (parent spawn) → parent (invocation role;
+  // spawns the broker stand-in and emits the invocation-boundary witness) →
+  // broker stand-in (broker-daemon role; optionally spawns the transport
+  // stand-in and emits the broker-boundary witness) → transport stand-in
+  // (writes its own birth marker — pid/ppid/nonce from the kernel — like the
+  // fixture's fake-ZCode transport does).
+  // ---------------------------------------------------------------------------
+  const OBSERVER_URL = pathToFileURL(fileURLToPath(new URL('../tools/shell-wait-probe/local-process-observation.mjs', import.meta.url))).href;
+
+  /**
+   * Compose ONE disposable witness chain scope with every stand-in entry and
+   * the capture environment for the parent. `withGrandchild` adds the
+   * transport boundary (the daemon emits the broker-role witness; the
+   * transport writes its own marker).
+   */
+  async function witnessChainScope(t, { withGrandchild }) {
+    const root = await mkdtemp(join(tmpdir(), 'shell-wait-local-process-witness-chain-'));
+    t.after(() => { try { parentRefs.forEach((child) => { try { child.kill('SIGKILL'); } catch { /* gone */ } }); } catch { /* disposed */ } rm(root, { recursive: true, force: true }); });
+    const captureDirectory = join(root, 'stdout-capture');
+    await mkdir(captureDirectory, { recursive: true, mode: 0o700 });
+    const nonce = randomBytes(32).toString('hex');
+    const transportNonce = 'f'.repeat(64);
+    const holdMs = 1_600;
+    const preload = await writeClosurePreload(root);
+    const configPath = join(root, 'broker-config.json');
+    await writeFile(configPath, '{}\n', { mode: 0o600 });
+    const transportMarkerPath = join(root, 'transport-marker.json');
+    const transportEntryPath = join(root, 'transport-standin.mjs');
+    const transportBody = [
+      "import { writeFileSync } from 'node:fs';",
+      'writeFileSync(process.env.ZCODE_SHELL_WAIT_TRANSPORT_MARKER, JSON.stringify({ pid: process.pid, ppid: process.ppid, nonce: process.env.FAKE_ZCODE_PROCESS_NONCE }));',
+      "process.stdout.write('transport-line\\n');",
+      'await new Promise((resolve) => setTimeout(resolve, ' + JSON.stringify(holdMs) + '));',
+    ].join('\n');
+    await writeFile(transportEntryPath, transportBody, { mode: 0o700 });
+    const brokerEntryPath = join(root, 'broker-standin.mjs');
+    const brokerBody = [
+      "import { spawn } from 'node:child_process';",
+      `import { emitSpawnAncestryWitness } from ${JSON.stringify(OBSERVER_URL)};`,
+      ...(withGrandchild ? [
+        `import { readFile } from 'node:fs/promises';`,
+        `const transportEnv = { ...process.env, FAKE_ZCODE_PROCESS_NONCE: ${JSON.stringify(transportNonce)}, ZCODE_SHELL_WAIT_TRANSPORT_MARKER: ${JSON.stringify(transportMarkerPath)} };`,
+        `const transport = spawn(process.execPath, [${JSON.stringify(transportEntryPath)}], { env: transportEnv, stdio: ['ignore', 'ignore', 'ignore'] });`,
+        `const witness = await emitSpawnAncestryWitness({ captureDirectory: process.env.ZCODE_SHELL_WAIT_CAPTURE_DIR, nonce: process.env.ZCODE_SHELL_WAIT_CAPTURE_NONCE, role: 'broker-daemon', childPid: transport.pid, childNonce: transportEnv.FAKE_ZCODE_PROCESS_NONCE, childNonceVariable: 'FAKE_ZCODE_PROCESS_NONCE' });`,
+        `process.stdout.write('broker-witness:' + witness.status + '\\n');`,
+        `await new Promise((resolve) => setTimeout(resolve, ${JSON.stringify(holdMs)}));`,
+      ] : [
+        `await new Promise((resolve) => setTimeout(resolve, ${JSON.stringify(holdMs)}));`,
+      ]),
+      "process.stdout.write('broker-final\\n');",
+    ].join('\n');
+    await writeFile(brokerEntryPath, brokerBody, { mode: 0o700 });
+    const brokerEntryRealpath = await realpath(brokerEntryPath);
+    const parentEntryPath = join(root, 'parent-standin.mjs');
+    const parentBody = [
+      "import { spawn } from 'node:child_process';",
+      `import { emitSpawnAncestryWitness } from ${JSON.stringify(OBSERVER_URL)};`,
+      `const child = spawn(process.execPath, [${JSON.stringify(brokerEntryRealpath)}, ${JSON.stringify(configPath)}], { env: process.env, stdio: ['ignore', 'ignore', 'ignore'] });`,
+      "const witness = await emitSpawnAncestryWitness({ captureDirectory: process.env.ZCODE_SHELL_WAIT_CAPTURE_DIR, nonce: process.env.ZCODE_SHELL_WAIT_CAPTURE_NONCE, role: 'invocation', childPid: child.pid, childNonce: process.env.ZCODE_SHELL_WAIT_CAPTURE_NONCE });",
+      "process.stdout.write('parent-witness:' + witness.status + '\\n');",
+      'await new Promise((resolve) => setTimeout(resolve, ' + JSON.stringify(holdMs) + '));',
+      "process.stdout.write('parent-final\\n');",
+    ].join('\n');
+    await writeFile(parentEntryPath, parentBody, { mode: 0o700 });
+    const parentEntryRealpath = await realpath(parentEntryPath);
+    const env = captureEnvironment({
+      captureDirectory, nonce, entryRealpath: parentEntryRealpath,
+      brokerEntryRealpath, baseEnv: isolatedBaseEnv(root), nodeOptionsFragment: preload.nodeOptionsFragment,
+    });
+    const parentRefs = [];
+    return {
+      root, captureDirectory, nonce, transportNonce, transportMarkerPath,
+      parentEntryRealpath, brokerEntryRealpath, env, parentRefs,
+    };
+  }
+
+  test('same-second-completion REAL spawn-boundary capture (hop 1): the actual fixture-owned parent writes the invocation-boundary witness at its own spawn boundary and the join consumes it', async (t) => {
+    const chain = await witnessChainScope(t, { withGrandchild: false });
+    const parent = spawnDetached(process.execPath, [chain.parentEntryRealpath, 'invoke-prepared', 'rescue'], chain.env);
+    t.after(() => { try { parent.kill('SIGKILL'); } catch { /* gone */ } });
+    const witnessPath = join(chain.captureDirectory, `${chain.nonce}.spawn-witness.json`);
+    assert.equal(await waitFor(async () => lstat(witnessPath).then(() => true, () => false), 6000), true,
+      'the emitted witness record appears at the real spawn boundary');
+    const invocationAdmission = await observation.admitStartupIdentityRecord({ captureDirectory: chain.captureDirectory, nonce: chain.nonce, expectedEntryRealpath: chain.parentEntryRealpath });
+    assert.equal(await waitFor(async () => lstat(join(chain.captureDirectory, `${chain.nonce}.identity-broker.json`)).then(() => true, () => false), 6000), true,
+      'the broker child WROTE ITS OWN startup record — a real spawned child, never a hand-fabricated record');
+    const brokerAdmission = await observation.admitStartupIdentityRecord({ captureDirectory: chain.captureDirectory, nonce: chain.nonce, role: 'broker-daemon', expectedEntryRealpath: chain.brokerEntryRealpath });
+    const witnessAdmission = await admitSpawnAncestryWitness({ captureDirectory: chain.captureDirectory, nonce: chain.nonce });
+    assert.equal(invocationAdmission.status, 'established', JSON.stringify(invocationAdmission));
+    assert.equal(brokerAdmission.status, 'established', JSON.stringify(brokerAdmission));
+    assert.equal(witnessAdmission.status, 'established', JSON.stringify(witnessAdmission));
+    assert.equal(witnessAdmission.identity.writerPid, parent.pid, 'the witness writer is the REAL parent process');
+    assert.equal(witnessAdmission.identity.childPid, brokerAdmission.identity.pid, 'the witnessed child is the REAL spawned child generation');
+    assert.ok(Number.isFinite(witnessAdmission.identity.startOriginMs) && witnessAdmission.identity.firstWritePreciseMs >= witnessAdmission.identity.startOriginMs,
+      'the writer precise window keeps its own order');
+    let parentObserved = null;
+    let childObserved = null;
+    assert.equal(await waitFor(async () => {
+      parentObserved = await observeLocalProcess({ pid: parent.pid, nonce: chain.nonce });
+      if (parentObserved?.status !== 'established') return false;
+      childObserved = await observeLocalProcess({ pid: brokerAdmission.identity.pid, nonce: chain.nonce });
+      return childObserved?.status === 'established';
+    }, 8000), true, 'both chain members OS-verify alive at their read window');
+    assert.equal(childObserved.observation.ppid, parent.pid, 'the kernel reports the spawned child\u2019s parent as the fixture-owned parent');
+    // The carried refusal WITHOUT the witness (on REAL measured facts).
+    const noWitness = joinAncestryHops({
+      nonce: chain.nonce,
+      companionObservation: parentObserved,
+      daemonObservation: childObserved,
+      transportMarker: { pid: 1, ppid: 1, nonce: chain.transportNonce },
+      expectedTransportNonce: chain.transportNonce,
+    });
+    const pair = sameSecondPair(parentObserved, childObserved);
+    if (pair.second) {
+      assert.deepEqual([noWitness.hops[0].status, noWitness.hops[0].reason], ['unestablished', 'generation-lifetime-unverifiable'],
+        'the REAL same-second pair keeps the carried refusal without the witness (§26.6 behavior)');
+    }
+    // WITH the admitted witness: the REAL capture-time causal record binds
+    // the hop — WHEN it can. (codex rounds 7–9, the continuity bindings'
+    // honest real-chain consequence) the invocation witness is written by
+    // the REAL parent at the REAL boundary — INSIDE both the parent's and
+    // the daemon's first possible second on a fast chain — so BOTH
+    // continuity conclusions (the read-time endpoints are the witnessed
+    // generations) are AMBIGUOUS under the whole-second floor. The
+    // expectation is therefore DERIVED from the measured instants with the
+    // FULL join predicate: the witness upgrades only when its write
+    // postdates the parent's ENTIRE creation window AND its boundary
+    // postdates the daemon's ENTIRE creation window AND the daemon read
+    // follows the capture; otherwise the hop honestly refuses the
+    // continuity label of whichever conjunct fails first (the join's
+    // decision order: parent before child; the absent capability —
+    // exact-PID generation evidence, route (c) — is what would resolve
+    // either).
+    const parentFloorInstant = parentObserved.observation.startInstantEpochMs;
+    const daemonFloorInstant = childObserved.observation.startInstantEpochMs;
+    // (codex round 11) the child-continuity ordering consumes the daemon
+    // endpoint's COLLECTION bound (the read start), never its completion.
+    const daemonReadForHop1 = Number.isSafeInteger(childObserved.readStartedEpochMs) ? childObserved.readStartedEpochMs : childObserved.readEpochMs;
+    const witnessUsableForParentContinuity = Number.isSafeInteger(witnessAdmission.identity.firstWriteEpochMs)
+      && witnessAdmission.identity.firstWriteEpochMs >= parentFloorInstant + 1000
+      // (codex round 12) the parent-continuity ordering consumes the
+      // Companion endpoint's COLLECTION bound (the read start), never its
+      // completion.
+      && Number.isSafeInteger(parentObserved.readStartedEpochMs)
+      && parentObserved.readStartedEpochMs >= witnessAdmission.identity.firstWriteEpochMs;
+    const witnessUsableForChildContinuity = Number.isSafeInteger(witnessAdmission.identity.boundaryEpochMs)
+      && witnessAdmission.identity.boundaryEpochMs >= daemonFloorInstant + 1000
+      && daemonReadForHop1 >= witnessAdmission.identity.boundaryEpochMs;
+    const witnessUsableForHop1 = witnessUsableForParentContinuity && witnessUsableForChildContinuity;
+    const withWitness = joinAncestryHops({
+      nonce: chain.nonce,
+      companionObservation: parentObserved,
+      daemonObservation: childObserved,
+      transportMarker: { pid: 1, ppid: 1, nonce: chain.transportNonce },
+      expectedTransportNonce: chain.transportNonce,
+      companionSpawnWitness: witnessAdmission,
+    });
+    if (!pair.boundRefused || witnessUsableForHop1) {
+      assert.equal(withWitness.hops[0].status, 'established', JSON.stringify(withWitness.hops));
+    } else {
+      const expectedContinuityLabel = witnessUsableForParentContinuity
+        ? 'spawn-witness-child-generation-ambiguous'
+        : 'spawn-witness-parent-generation-ambiguous';
+      assert.deepEqual([withWitness.hops[0].status, withWitness.hops[0].reason], ['unestablished', expectedContinuityLabel],
+        `a fast real chain\u2019s witness honestly refuses the continuity conclusion (measured: parent floor ${parentFloorInstant}, daemon floor ${daemonFloorInstant}, witness write ${witnessAdmission.identity.firstWriteEpochMs}, boundary ${witnessAdmission.identity.boundaryEpochMs})`);
+    }
+    if (pair.second && withWitness.hops[0].status === 'established') {
+      assert.equal(withWitness.hops[0].witnessClass, 'spawn-boundary-capture',
+        'a same-second pair\u2019s establishment rides the preregistered causal witness');
+    }
+    assert.deepEqual([withWitness.hops[1].status, withWitness.hops[1].reason], ['unestablished', 'marker-ppid-mismatch-at-capture'],
+      'a proof for ONE hop never bridges the other: the placeholder marker keeps its own refusal');
+  });
+
+  test('same-second-completion REAL full chain (both hops): each real parent writes its own boundary witness, the runtime composition attributes end to end, and the duty aggregate matches the measured platform bounds', async (t) => {
+    const chain = await witnessChainScope(t, { withGrandchild: true });
+    const parent = spawnDetached(process.execPath, [chain.parentEntryRealpath, 'invoke-prepared', 'rescue'], chain.env);
+    t.after(() => { try { parent.kill('SIGKILL'); } catch { /* gone */ } });
+    // The parent writes its OWN startup identity record at its own startup —
+    // wait for the real write (a one-shot admission is a named missing fact
+    // if it races the child's kernel startup window).
+    assert.equal(await waitFor(async () => lstat(join(chain.captureDirectory, `${chain.nonce}.identity.json`)).then(() => true, () => false), 6000), true,
+      'the parent wrote its own startup identity record');
+    const invocationAdmission = await observation.admitStartupIdentityRecord({ captureDirectory: chain.captureDirectory, nonce: chain.nonce, expectedEntryRealpath: chain.parentEntryRealpath });
+    assert.equal(await waitFor(async () => lstat(join(chain.captureDirectory, `${chain.nonce}.identity-broker.json`)).then(() => true, () => false), 6000), true);
+    const brokerAdmission = await observation.admitStartupIdentityRecord({ captureDirectory: chain.captureDirectory, nonce: chain.nonce, role: 'broker-daemon', expectedEntryRealpath: chain.brokerEntryRealpath });
+    assert.equal(invocationAdmission.status, 'established', JSON.stringify(invocationAdmission));
+    assert.equal(brokerAdmission.status, 'established', JSON.stringify(brokerAdmission));
+    // The transport marker is written by the TRANSPORT process itself at its
+    // own birth (pid/ppid kernel facts) — the exact shape the real fixture
+    // transport uses.
+    assert.equal(await waitFor(async () => lstat(chain.transportMarkerPath).then(() => true, () => false), 6000), true,
+      'the real spawned transport wrote its own birth marker');
+    const marker = JSON.parse(await readFile(chain.transportMarkerPath, 'utf8'));
+    assert.equal(marker.nonce, chain.transportNonce);
+    // Both witnesses were emitted by the two REAL parents at the REAL
+    // boundaries — INDEPENDENTLY, after each parent's own asynchronous OS
+    // inspections, so EITHER scheduling order is possible: wait for BOTH
+    // files before admitting either record (a one-shot admission would
+    // otherwise name a race-dependent spawn-witness-missing).
+    assert.equal(await waitFor(async () => lstat(join(chain.captureDirectory, `${chain.nonce}.spawn-witness.json`)).then(() => true, () => false), 6000), true,
+      'the parent emitted its own invocation-boundary witness');
+    assert.equal(await waitFor(async () => lstat(join(chain.captureDirectory, `${chain.nonce}.spawn-witness-broker.json`)).then(() => true, () => false), 6000), true);
+    const invocationWitness = await admitSpawnAncestryWitness({ captureDirectory: chain.captureDirectory, nonce: chain.nonce });
+    const brokerWitness = await admitSpawnAncestryWitness({ captureDirectory: chain.captureDirectory, nonce: chain.nonce, role: 'broker-daemon' });
+    assert.equal(invocationWitness.status, 'established', JSON.stringify(invocationWitness));
+    assert.equal(brokerWitness.status, 'established', JSON.stringify(brokerWitness));
+    assert.equal(brokerWitness.identity.writerPid, brokerAdmission.identity.pid, 'the daemon itself bound its own boundary');
+    assert.equal(brokerWitness.identity.childPid, marker.pid, 'the witnessed transport is the real spawned transport generation');
+    // Capture AUTHENTICITY (never a hand-edited established boolean): each
+    // witness's pids agree with the INDEPENDENTLY machined startup records of
+    // the same generations (two separate capture paths — the boundary double
+    // read vs the preload's startup write — observing the same kernel facts).
+    // The start identities are cross-checked below against the fresh OS
+    // observations.
+    assert.equal(invocationWitness.identity.childPid, brokerAdmission.identity.pid,
+      'the witnessed child pid equals the broker startup record\u2019s pid');
+    assert.ok(typeof brokerWitness.identity.childStartIdentity === 'string' && brokerWitness.identity.childStartIdentity.length > 0,
+      'the transport generation rides the daemon\u2019s positively captured boundary identity (the marker carries none)');
+    // OS observations while the chain is alive (the transport under its OWN
+    // declared transport nonce, never the capture scope).
+    let parentObserved = null;
+    let daemonObserved = null;
+    let transportObserved = null;
+    assert.equal(await waitFor(async () => {
+      parentObserved = await observeLocalProcess({ pid: parent.pid, nonce: chain.nonce });
+      if (parentObserved?.status !== 'established') return false;
+      daemonObserved = await observeLocalProcess({ pid: brokerAdmission.identity.pid, nonce: chain.nonce });
+      if (daemonObserved?.status !== 'established') return false;
+      transportObserved = await observeLocalProcess({ pid: marker.pid, nonce: marker.nonce, nonceVariable: FAKE_ZCODE_NONCE_VARIABLE });
+      return transportObserved?.status === 'established';
+    }, 8000), true, 'every chain member OS-verifies alive');
+    const daemonOB = daemonObserved.observation;
+    // The boundary-captured OS identities agree with the fresh OS
+    // observations of the SAME generations (never a hand-edited boolean:
+    // two independent ps double reads of the same kernel facts).
+    assert.equal(invocationWitness.identity.writerStartIdentity, parentObserved.observation.startIdentity,
+      'the parent\u2019s boundary self-identity equals its fresh OS-verified start identity');
+    assert.equal(brokerWitness.identity.writerStartIdentity, daemonObserved.observation.startIdentity,
+      'the daemon\u2019s boundary self-identity equals its fresh OS-verified start identity');
+    const pair1 = sameSecondPair(parentObserved, daemonObserved);
+    assert.equal(daemonOB.ppid, parent.pid, 'the kernel parent link rides the fresh daemon read');
+    // The runtime composition (the EXACT composition consumer the runtime
+    // runs): both real hops, each with its own admitted witness. The
+    // marker's own write instant (its file mtime — the same derivation the
+    // driver's default capture composes) is the required marker epoch.
+    const markerStats = await lstat(chain.transportMarkerPath);
+    const markerEpochMs = Math.round(markerStats.mtimeMs);
+    // (codex round 3) The TRANSPORT hop's expectation comes from its OWN
+    // REGISTERED marker-time predicates — never the endpoint-to-endpoint
+    // formula applied to a floored marker instant: the daemon's creation
+    // lower bound (start + the uniform 1000-ms uncertainty) must
+    // demonstrably precede the marker, and the marker must precede the
+    // daemon's identity read. Outside that demonstrable window the hop rides
+    // the daemon-boundary witness route instead (the witnessClass assertion
+    // below); on the real chain the marker is written at spawn time and the
+    // daemon's read postdates it, so the later-than-read terminal refusal
+    // cannot occur here.
+    const daemonReadForMarker = Number.isSafeInteger(daemonObserved.identityReadEpochMs) ? daemonObserved.identityReadEpochMs : daemonObserved.readEpochMs;
+    const transportDemonstrablyEstablished = daemonOB.startInstantEpochMs + 1000 <= markerEpochMs && markerEpochMs <= daemonReadForMarker;
+    const markerWithinDaemonRead = markerEpochMs <= daemonReadForMarker;
+    const runtimeComposed = composeAncestryJoinForRuntime({
+      nonce: chain.nonce,
+      companionObservation: parentObserved,
+      daemonObservation: daemonObserved,
+      transportMarker: { pid: marker.pid, ppid: marker.ppid, nonce: marker.nonce },
+      expectedTransportNonce: chain.transportNonce,
+      daemonCaptureParentPid: parent.pid,
+      markerEpochMs,
+      companionSpawnWitness: invocationWitness,
+      daemonSpawnWitness: brokerWitness,
+    });
+    // (codex rounds 6–9, the root adjudications' honest real-chain
+    // consequences) The transport hop's MARKER route requires a
+    // POST-CREATION-SECOND marker: a marker written inside the witnessed
+    // transport's first possible second (the real chain's typical shape —
+    // the transport writes its birth marker within its own creation second)
+    // is generation-AMBIGUOUS against a same-second predecessor and the
+    // witness route refuses it (`spawn-witness-marker-generation-ambiguous`)
+    // instead of upgrading. Hop 1's witness route requires BOTH continuity
+    // conclusions (codex round 7 the parent's, codex round 8 the child's,
+    // codex round 9 the read-ordering): the invocation witness's write must
+    // postdate the REAL parent's ENTIRE creation window, its boundary must
+    // postdate the daemon's ENTIRE creation window, and the daemon's read
+    // must follow the boundary — a fast chain's witness fails at least the
+    // parent conjunct and the join refuses whichever continuity label fires
+    // first (parent before child in the join's decision order). All
+    // expectations are DERIVED from the measured instants, never asserted
+    // outright.
+    // (codex round 11) the child-continuity ordering consumes the daemon
+    // endpoint's COLLECTION bound (the read start), never its completion.
+    const daemonReadForHop1Full = Number.isSafeInteger(daemonObserved.readStartedEpochMs) ? daemonObserved.readStartedEpochMs : daemonObserved.readEpochMs;
+    const invocationWitnessParentContinuityUsable = Number.isSafeInteger(invocationWitness.identity.firstWriteEpochMs)
+      && invocationWitness.identity.firstWriteEpochMs >= parentObserved.observation.startInstantEpochMs + 1000
+      // (codex round 12) the parent-continuity ordering consumes the
+      // Companion endpoint's COLLECTION bound (the read start), never its
+      // completion.
+      && Number.isSafeInteger(parentObserved.readStartedEpochMs)
+      && parentObserved.readStartedEpochMs >= invocationWitness.identity.firstWriteEpochMs;
+    const invocationWitnessChildContinuityUsable = Number.isSafeInteger(invocationWitness.identity.boundaryEpochMs)
+      && invocationWitness.identity.boundaryEpochMs >= daemonOB.startInstantEpochMs + 1000
+      && daemonReadForHop1Full >= invocationWitness.identity.boundaryEpochMs;
+    const invocationWitnessContinuityUsable = invocationWitnessParentContinuityUsable && invocationWitnessChildContinuityUsable;
+    const expectedHop1Established = !pair1.boundRefused || invocationWitnessContinuityUsable;
+    const expectedRuntimeAttribution = expectedHop1Established && transportDemonstrablyEstablished;
+    assert.equal(runtimeComposed.companionToTransportAttributed, expectedRuntimeAttribution,
+      `the attribution matches the registered per-hop predicates (measured: daemonStart ${daemonOB.startInstantEpochMs}, marker ${markerEpochMs}, read ${daemonReadForMarker}, parent floor ${parentObserved.observation.startInstantEpochMs}, witness write ${invocationWitness.identity.firstWriteEpochMs}, boundary ${invocationWitness.identity.boundaryEpochMs})`);
+    if (expectedHop1Established && runtimeComposed.hops[0].status === 'established') {
+      if (pair1.second) {
+        assert.equal(runtimeComposed.hops[0].witnessClass, 'spawn-boundary-capture');
+      }
+    } else if (!expectedHop1Established) {
+      const expectedHop1Label = invocationWitnessParentContinuityUsable
+        ? 'spawn-witness-child-generation-ambiguous'
+        : 'spawn-witness-parent-generation-ambiguous';
+      assert.deepEqual([runtimeComposed.hops[0].status, runtimeComposed.hops[0].reason],
+        ['unestablished', expectedHop1Label],
+        `a fast real chain\u2019s invocation witness honestly refuses the continuity conclusion (measured: ${JSON.stringify(runtimeComposed.hops[0])})`);
+    }
+    // (codex round 8, the test-side fix) The transport hop's refusal
+    // assertion is conditioned on the TRANSPORT hop's own registered
+    // predicate, never on the combined attribution: attribution can be
+    // false solely from hop 1 (the parent-continuity refusal) while a
+    // marker written after the daemon's whole first second legitimately
+    // establishes hop 2 — pinning BOTH scheduling outcomes honestly.
+    if (transportDemonstrablyEstablished) {
+      assert.deepEqual([runtimeComposed.hops[1].status, runtimeComposed.hops[1].reason], ['established', null],
+        `the transport hop rides its own registered marker-time predicate regardless of hop 1 (measured: ${JSON.stringify(runtimeComposed.hops[1])})`);
+    } else {
+      assert.deepEqual([runtimeComposed.hops[1].status, runtimeComposed.hops[1].reason],
+        ['unestablished', markerWithinDaemonRead ? 'spawn-witness-marker-generation-ambiguous' : 'generation-lifetime-unverifiable'],
+        `an ambiguous real-chain marker honestly refuses the transport hop (measured: ${JSON.stringify(runtimeComposed.hops[1])})`);
+    }
+    // The composition consumer WITHOUT the witness inputs: the same-second
+    // refusal is preserved on the REAL chain (never a permissive fallback);
+    // the expected attribution is DERIVED from each hop's REGISTERED
+    // predicates (codex round 3): hop 1 keeps the endpoint lifetime rules
+    // (pair1.boundRefused), the transport hop the marker-time rules above.
+    const runtimeNoWitness = composeAncestryJoinForRuntime({
+      nonce: chain.nonce,
+      companionObservation: parentObserved,
+      daemonObservation: daemonObserved,
+      transportMarker: { pid: marker.pid, ppid: marker.ppid, nonce: marker.nonce },
+      expectedTransportNonce: chain.transportNonce,
+      daemonCaptureParentPid: parent.pid,
+      markerEpochMs,
+    });
+    const expectedNoWitnessAttribution = !pair1.boundRefused && transportDemonstrablyEstablished;
+    assert.equal(runtimeNoWitness.companionToTransportAttributed, expectedNoWitnessAttribution,
+      'the no-witness attribution matches the registered per-hop predicates (endpoint rules for hop 1, marker-time rules for the transport hop)');
+    if (!expectedNoWitnessAttribution) {
+      assert.ok(runtimeNoWitness.hops.some((hop) => hop.reason === 'generation-lifetime-unverifiable'), JSON.stringify(runtimeNoWitness.hops));
+    }
+    // The DUTY aggregate over the same REAL chain: every applicable duty
+    // established AND the ancestry attribution from the witnesses.
+    const duties = adjudicateLocalDuties({
+      nonce: chain.nonce,
+      invocation: { startupRecord: invocationAdmission, osObservation: parentObserved },
+      broker: { startupRecord: brokerAdmission, osObservation: daemonObserved },
+      transport: { startupRecord: null, osObservation: transportObserved },
+      identifiedDescendants: [],
+      ancestryEstablished: runtimeComposed.companionToTransportAttributed === true,
+      expectedTransportNonce: chain.transportNonce,
+    });
+    const settledDuties = duties.duties.map((entry) => [entry.duty, entry.status, entry.reasons]);
+    // (codex round 4) The witness resolves ANCESTRY only — the startup
+    // generation gate is unchanged, so the expected duty results are DERIVED
+    // from the measured platform bounds (the same derivation as the
+    // REAL-CHILD fast-startup test): darwin's whole-second second-containment
+    // binds a fast startup exactly; on Linux the whole-second btime
+    // uncertainty may honestly leave a fast startup
+    // `generation-start-ambiguous` (or `generation-start-after-write` when
+    // the computed creation demonstrably postdates the write) — these stay
+    // possible and are asserted from the measured instants, never
+    // unconditionally. The transport slot carries no startup record: it
+    // binds on its own OS observation and transport nonce alone and stays
+    // established on every platform.
+    const deriveDutyExpectation = (observation, startupIdentity) => {
+      if (process.platform !== 'linux') return { status: 'established', reasons: [] };
+      const computed = observation.startInstantEpochMs;
+      const recordWrite = startupIdentity.firstWritePreciseMs;
+      if (computed > recordWrite + 10) return { status: 'unestablished', reasons: ['generation-start-after-write'] };
+      if (recordWrite < computed + 1000) return { status: 'unestablished', reasons: ['generation-start-ambiguous'] };
+      return { status: 'established', reasons: [] };
+    };
+    const expectedInvocationDuty = deriveDutyExpectation(parentObserved.observation, invocationAdmission.identity);
+    const expectedBrokerDuty = deriveDutyExpectation(daemonObserved.observation, brokerAdmission.identity);
+    const expectedStatuses = [expectedInvocationDuty.status, expectedBrokerDuty.status, 'established'];
+    assert.deepEqual(settledDuties.map((entry) => entry[1]), expectedStatuses,
+      `the duty statuses match the measured platform bounds (measured: ${JSON.stringify(settledDuties)})`);
+    assert.deepEqual(duties.duties.find((entry) => entry.duty === 'invocation-process').reasons, expectedInvocationDuty.reasons);
+    assert.deepEqual(duties.duties.find((entry) => entry.duty === 'broker-daemon').reasons, expectedBrokerDuty.reasons);
+    // (codex round 6) the aggregate settles only when every derived duty
+    // established AND the ancestry attribution held — an ambiguous same-second
+    // marker leaves the composed ancestry unattributed and the aggregate
+    // honestly unsettled with the named ancestry refusal.
+    const expectedAggregateSettled = expectedStatuses.every((status) => status === 'established') && expectedRuntimeAttribution;
+    assert.equal(duties.settled, expectedAggregateSettled,
+      `the aggregate settles only when every derived duty established and the ancestry attributed (measured: ${JSON.stringify(settledDuties)}, attributed: ${expectedRuntimeAttribution})`);
+    assert.equal(duties.ancestryRefusal, expectedRuntimeAttribution ? undefined : 'ancestry-hops-unattributed',
+      'the ancestry refusal rides exactly the unattributed compositions');
+  });
+
+  /**
+   * One disposable emit-probe scope: a REAL writer process (spawned with the
+   * capture env) calls emitSpawnAncestryWitness for the requested child and
+   * writes its verdict JSON for the test to read — the capture mechanics run
+   * inside a real process carrying the env at exec time, never fabricated
+   * in-process (the writer's OS self-verification reads the exec-time env).
+   */
+  async function emitProbeScope(t, { withCaptureEnv = true } = {}) {
+    const root = await mkdtemp(join(tmpdir(), 'shell-wait-local-process-emit-probe-'));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const captureDirectory = join(root, 'stdout-capture');
+    await mkdir(captureDirectory, { recursive: true, mode: 0o700 });
+    const nonce = randomBytes(32).toString('hex');
+    const resultPath = join(root, 'emit-result.json');
+    const entryPath = join(root, 'emit-probe.mjs');
+    const body = [
+      "import { writeFileSync } from 'node:fs';",
+      `import { emitSpawnAncestryWitness } from ${JSON.stringify(OBSERVER_URL)};`,
+      "const [, , captureDirectory, nonce, childPid, childNonce, childVariable] = process.argv;",
+      "const verdict = await emitSpawnAncestryWitness({ captureDirectory, nonce, role: 'invocation', childPid: Number(childPid), childNonce, childNonceVariable: childVariable });",
+      `writeFileSync(${JSON.stringify(resultPath)}, JSON.stringify(verdict) + '\\n');`,
+    ].join('\n');
+    await writeFile(entryPath, body, { mode: 0o700 });
+    const entryRealpath = await realpath(entryPath);
+    const baseEnv = isolatedBaseEnv(root);
+    const env = withCaptureEnv ? { ...baseEnv, ZCODE_SHELL_WAIT_CAPTURE_NONCE: nonce } : baseEnv;
+    return { root, captureDirectory, nonce, resultPath, entryRealpath, env };
+  }
+
+  /** Spawn the probe writer for one child declaration and wait for its verdict file. */
+  const runEmitProbe = async (probe, childPid, childNonce, childVariable) => {
+    // Clear any PREVIOUS probe run's result first: the wait below must see
+    // THIS writer's verdict, never a stale file from an earlier probe.
+    await rm(probe.resultPath, { force: true });
+    const writer = spawnDetached(process.execPath, [probe.entryRealpath, probe.captureDirectory, probe.nonce, String(childPid), childNonce, childVariable], probe.env);
+    t_afterWriter(writer);
+    assert.equal(await waitFor(async () => lstat(probe.resultPath).then(() => true, () => false), 8000), true,
+      'the emitter returned its verdict within the bounded budget');
+    return JSON.parse(await readFile(probe.resultPath, 'utf8'));
+  };
+  const writersToDispose = [];
+  const t_afterWriter = (writer) => {
+    writersToDispose.push(writer);
+  };
+
+  test('same-second-completion emitter negative: a child that cannot be OS-verified yields a NAMED unverifiable fact and NO witness file — a failed capture is never fabricated', async (t) => {
+    const probe = await emitProbeScope(t);
+    t.after(() => { for (const writer of writersToDispose.splice(0)) { try { writer.kill('SIGKILL'); } catch { /* gone */ } } });
+    // A pid no live process occupies (far beyond any local pid): the bounded
+    // visibility poll expires WITHOUT an OS-verified child generation and the
+    // named fact exposes no identity.
+    const verdict = await runEmitProbe(probe, 4000000, probe.nonce, 'ZCODE_SHELL_WAIT_CAPTURE_NONCE');
+    assert.deepEqual({ status: verdict.status, reason: verdict.reason, identity: verdict.identity },
+      { status: 'unestablished', reason: 'spawn-witness-child-unverifiable', identity: null },
+      'the bounded visibility poll names the failed boundary observation');
+    assert.equal(await lstat(join(probe.captureDirectory, `${probe.nonce}.spawn-witness.json`)).then(() => true, () => false), false,
+      'no witness record is written when the child generation could not be OS-verified');
+  });
+
+  test('same-second-completion emitter negative: a live child that does NOT carry the declared scope nonce is never witnessed (inherited nonce in a wrong scope refuses at capture)', async (t) => {
+    const probe = await emitProbeScope(t);
+    t.after(() => { for (const writer of writersToDispose.splice(0)) { try { writer.kill('SIGKILL'); } catch { /* gone */ } } });
+    // A real LIVE child whose environment does not carry the declared child
+    // nonce variable: the double read cannot bind it to the declared scope.
+    const foreign = spawnDetached(process.execPath, ['-e', 'setTimeout(() => {}, 4000);'], isolatedBaseEnv());
+    t.after(() => { try { foreign.kill('SIGKILL'); } catch { /* gone */ } });
+    const verdict = await runEmitProbe(probe, foreign.pid, probe.nonce, 'WITNESS_TEST_FOREIGN_NONCE_VAR');
+    assert.deepEqual({ status: verdict.status, reason: verdict.reason, identity: verdict.identity },
+      { status: 'unestablished', reason: 'spawn-witness-child-nonce-mismatch', identity: null },
+      'a visible child without the declared nonce is a NAMED scope contradiction (the fresh §26.7 item-5 label)');
+    assert.equal(await lstat(join(probe.captureDirectory, `${probe.nonce}.spawn-witness.json`)).then(() => true, () => false), false,
+      'a child outside the declared scope never receives a witness record');
+  });
+
+  test('same-second-completion emitter negative: a writer that does not carry the capture env never emits — the creator identity is OS-verified before any record exists', async (t) => {
+    const probe = await emitProbeScope(t, { withCaptureEnv: false });
+    t.after(() => { for (const writer of writersToDispose.splice(0)) { try { writer.kill('SIGKILL'); } catch { /* gone */ } } });
+    const verdict = await runEmitProbe(probe, 4000000, probe.nonce, 'ZCODE_SHELL_WAIT_CAPTURE_NONCE');
+    assert.deepEqual({ status: verdict.status, reason: verdict.reason, identity: verdict.identity },
+      { status: 'unestablished', reason: 'spawn-witness-writer-unverifiable', identity: null },
+      'the writer\u2019s own failed verification is the named first refusal');
+    assert.equal(await lstat(join(probe.captureDirectory, `${probe.nonce}.spawn-witness.json`)).then(() => true, () => false), false,
+      'an unverifiable writer never produces a witness record');
+  });
+
+  test('same-second-completion emitter negative: a DETECTED generation change LATCHES as terminal — the replacement occupant is never witnessed as the originally spawned child (codex round 3)', async (t) => {
+    // Seam-driven through the REAL emitter (the round-24 OS-seam discipline:
+    // the inspector's actual error paths, never a fabricated error string):
+    // the child's FIRST boundary double read observes start identity
+    // 'S-CHILD-V1' and then 'S-CHILD-V2' — the inspector's mid-double-read
+    // identity-change class (POSITIVE replacement evidence) — and the NEXT
+    // poll attempt verifies the replacement occupant cleanly (same pid, new
+    // start identity, SAME scope nonce). Retrying a DETECTED generation
+    // change would establish a witness for the successor as the originally
+    // spawned child (the §26.6 clauses: a changed generation refuses, and a
+    // replaced process is never credited); the detection must LATCH as a
+    // terminal refusal instead. Transient inspection failures (the
+    // not-yet-visible/torn/nonce-window classes) stay retriable inside the
+    // bounded poll — pinned by the two emitter negatives above.
+    const root = await mkdtemp(join(tmpdir(), 'shell-wait-local-process-emit-latch-'));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const captureDirectory = join(root, 'stdout-capture');
+    await mkdir(captureDirectory, { recursive: true, mode: 0o700 });
+    const nonce = randomBytes(32).toString('hex');
+    let childReads = 0;
+    const osSeams = {
+      platform: 'darwin',
+      ps: async (pid) => {
+        if (pid === process.pid) return { pid, ppid: 1, lstart: 'S-WRITER-STABLE' };
+        if (pid !== 4242) return undefined;
+        childReads += 1;
+        return { pid, ppid: process.pid, lstart: childReads === 1 ? 'S-CHILD-V1' : 'S-CHILD-V2' };
+      },
+      environ: 'present',
+    };
+    const verdict = await emitSpawnAncestryWitness({ captureDirectory, nonce, role: 'invocation', childPid: 4242, childNonce: nonce, osSeams });
+    assert.deepEqual({ status: verdict.status, reason: verdict.reason, identity: verdict.identity },
+      { status: 'unestablished', reason: 'spawn-witness-child-generation-changed', identity: null },
+      'the detected identity change latches terminally — the successor is never witnessed');
+    assert.equal(childReads, 2,
+      'the latch stops the poll BEFORE the next attempt (the replacement occupant is never read)');
+    assert.equal(await lstat(join(captureDirectory, `${nonce}.spawn-witness.json`)).then(() => true, () => false), false,
+      'no witness record is written when a generation change was detected');
+  });
+
+  test('same-second-completion emitter negative: an OBSERVED-then-errored child identity is RETAINED across retries — the replacement arriving after a non-message-class error still refuses (codex round 4)', async (t) => {
+    // The codex-round-4 sequence, through the REAL emitter with the round-24
+    // OS seams: poll attempt 1 OBSERVES the child's start identity V1 and
+    // then the attempt ERRORS with the observed-then-gone class — the error
+    // CARRIES the observed V1 as its observedStartIdentity (its message is
+    // deliberately NOT the 'identity changed' reuse class, so the round-3
+    // message-matched latch discarded it and the retry witnessed the
+    // successor V2). The invariant is retain-and-compare: every observed
+    // child identity — successful inspections AND error-carried
+    // observedStartIdentity — is retained across the poll, and ANY two
+    // retained observations of the same pid that disagree refuse.
+    const root = await mkdtemp(join(tmpdir(), 'shell-wait-local-process-emit-retain-'));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const captureDirectory = join(root, 'stdout-capture');
+    await mkdir(captureDirectory, { recursive: true, mode: 0o700 });
+    const nonce = randomBytes(32).toString('hex');
+    let childReads = 0;
+    const osSeams = {
+      platform: 'darwin',
+      ps: async (pid) => {
+        if (pid === process.pid) return { pid, ppid: 1, lstart: 'S-WRITER-STABLE' };
+        if (pid !== 4242) return undefined;
+        childReads += 1;
+        if (childReads === 1) return { pid, ppid: process.pid, lstart: 'S-CHILD-V1' };
+        if (childReads === 2) return undefined; // the observed V1 vanished before the SECOND start read — observedThenGone(V1)
+        return { pid, ppid: process.pid, lstart: 'S-CHILD-V2' }; // the replacement occupant verifies cleanly
+      },
+      environ: 'present',
+    };
+    const verdict = await emitSpawnAncestryWitness({ captureDirectory, nonce, role: 'invocation', childPid: 4242, childNonce: nonce, osSeams });
+    assert.deepEqual({ status: verdict.status, reason: verdict.reason, identity: verdict.identity },
+      { status: 'unestablished', reason: 'spawn-witness-child-generation-changed', identity: null },
+      'the retained V1 compares against the replacement V2 and latches the terminal refusal');
+    assert.equal(childReads, 4,
+      'the latch fires at the retained-vs-success comparison (the replacement\u2019s own double read completed first)');
+    assert.equal(await lstat(join(captureDirectory, `${nonce}.spawn-witness.json`)).then(() => true, () => false), false,
+      'no witness record is written for the replacement occupant');
+  });
+
+  test('same-second-completion emitter negative: an identity observed before an ORDINARY inspection failure is retained — the replacement arriving after an identity-less error still refuses (codex round 5)', async (t) => {
+    // The codex-round-5 sequence, through the REAL emitter with the round-24
+    // OS seams: poll attempt 1's FIRST read observes start identity V1, then
+    // the SECOND identity read throws an ORDINARY I/O error — a failure class
+    // that carries no error-shaped identity evidence of its own unless the
+    // inspector RIDES the first-read identity on it. With the ride missing,
+    // the catch retains nothing, the next attempt verifies the replacement
+    // occupant V2 (same pid, same scope nonce) and an established witness is
+    // written FOR THE SUCCESSOR after four child reads. The invariant is the
+    // poll-scoped retained-observation set: every observation of the child's
+    // start identity — successful inspections AND every post-observation
+    // failure's carried identity — persists ACROSS attempts for the whole
+    // poll lifetime, and ANY later observation contradicting ANY retained
+    // observation latches the terminal refusal.
+    const root = await mkdtemp(join(tmpdir(), 'shell-wait-local-process-emit-retain-io-'));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const captureDirectory = join(root, 'stdout-capture');
+    await mkdir(captureDirectory, { recursive: true, mode: 0o700 });
+    const nonce = randomBytes(32).toString('hex');
+    let childReads = 0;
+    const osSeams = {
+      platform: 'darwin',
+      ps: async (pid) => {
+        if (pid === process.pid) return { pid, ppid: 1, lstart: 'S-WRITER-STABLE' };
+        if (pid !== 4242) return undefined;
+        childReads += 1;
+        if (childReads === 1) return { pid, ppid: process.pid, lstart: 'S-CHILD-V1' };
+        if (childReads === 2) throw new Error('ps: ordinary I/O error reading the process table');
+        return { pid, ppid: process.pid, lstart: 'S-CHILD-V2' }; // the replacement occupant verifies cleanly
+      },
+      environ: 'present',
+    };
+    const verdict = await emitSpawnAncestryWitness({ captureDirectory, nonce, role: 'invocation', childPid: 4242, childNonce: nonce, osSeams });
+    assert.deepEqual({ status: verdict.status, reason: verdict.reason, identity: verdict.identity },
+      { status: 'unestablished', reason: 'spawn-witness-child-generation-changed', identity: null },
+      'the identity observed before the ordinary failure compares against the replacement V2 and latches');
+    assert.equal(childReads, 4,
+      'the latch fires at the retained-vs-success comparison (the replacement\u2019s own double read completed first)');
+    assert.equal(await lstat(join(captureDirectory, `${nonce}.spawn-witness.json`)).then(() => true, () => false), false,
+      'no witness record is written for the replacement occupant');
+  });
+
+  test('same-second-completion emitter negative: the retained observation set NEVER resets between attempts — V1 carried by an error survives a later identity-less benign attempt and still latches V2 (codex round 5)', async (t) => {
+    // The task's exact three-attempt sequence: attempt 1 observes V1 and then
+    // errors on the ordinary I/O class (the V1 evidence RIDES the error after
+    // the fix); attempt 2 errors WITHOUT any identity evidence (the child is
+    // simply not visible — the benign retriable class); attempt 3 verifies
+    // the replacement V2. A retained set that reset between attempts (or that
+    // only lived inside one catch block) would establish V2 here; the
+    // poll-scoped set that never resets retains V1 across the benign attempt
+    // and latches the contradiction.
+    const root = await mkdtemp(join(tmpdir(), 'shell-wait-local-process-emit-retain-poll-'));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const captureDirectory = join(root, 'stdout-capture');
+    await mkdir(captureDirectory, { recursive: true, mode: 0o700 });
+    const nonce = randomBytes(32).toString('hex');
+    let childReads = 0;
+    const osSeams = {
+      platform: 'darwin',
+      ps: async (pid) => {
+        if (pid === process.pid) return { pid, ppid: 1, lstart: 'S-WRITER-STABLE' };
+        if (pid !== 4242) return undefined;
+        childReads += 1;
+        if (childReads === 1) return { pid, ppid: process.pid, lstart: 'S-CHILD-V1' };
+        if (childReads === 2) throw new Error('ps: ordinary I/O error reading the process table');
+        if (childReads === 3) return undefined; // benign invisible attempt — no identity evidence at all
+        return { pid, ppid: process.pid, lstart: 'S-CHILD-V2' };
+      },
+      environ: 'present',
+    };
+    const verdict = await emitSpawnAncestryWitness({ captureDirectory, nonce, role: 'invocation', childPid: 4242, childNonce: nonce, osSeams });
+    assert.deepEqual({ status: verdict.status, reason: verdict.reason, identity: verdict.identity },
+      { status: 'unestablished', reason: 'spawn-witness-child-generation-changed', identity: null },
+      'the retained V1 survives the identity-less benign attempt and latches against the replacement V2');
+    assert.equal(childReads, 5,
+      'the latch fires at attempt 3\u2019s success comparison, after the benign attempt\u2019s single read');
+    assert.equal(await lstat(join(captureDirectory, `${nonce}.spawn-witness.json`)).then(() => true, () => false), false,
+      'no witness record is written for the replacement occupant');
+  });
+
+  test('same-second-completion emitter: a Linux boot-clock resolution FAILURE after a verified child is the NAMED-ABSENT null — the guarded-resolver pattern never lets the emitter throw (codex round 6)', async (t) => {
+    // The codex-round-6 finding, through the REAL emitter with the round-24
+    // OS seams: the child's identity VERIFIES (the ps seam reports the
+    // proc-ticks identity), but the start-instant resolution — on Linux the
+    // /proc/stat boot-clock read — REJECTS (a masked or unreadable /proc/stat).
+    // Mirroring observeLocalProcess's guarded-resolver pattern, the emitter
+    // must catch the resolution failure and preserve the documented nullable
+    // start instant (`childOsStartInstantMs: null`, the named-absent state
+    // the join's marker path already refuses) — the caller receives the
+    // established witness verdict with its other positive bindings intact,
+    // never an escaped exception. §26.7 item 5: absent facts stay absent;
+    // discarding the WHOLE capture over an unrelated host masking condition
+    // would be disproportionate, and the marker upgrade refuses downstream
+    // exactly as it does for an absent member.
+    const root = await mkdtemp(join(tmpdir(), 'shell-wait-local-process-emit-linux-clock-'));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const captureDirectory = join(root, 'stdout-capture');
+    await mkdir(captureDirectory, { recursive: true, mode: 0o700 });
+    const nonce = randomBytes(32).toString('hex');
+    const osSeams = {
+      platform: 'linux',
+      ps: async (pid) => {
+        if (pid === process.pid) return { pid, ppid: 1, lstart: 'proc:999' };
+        if (pid !== 4242) return undefined;
+        return { pid, ppid: process.pid, lstart: 'proc:12345' };
+      },
+      environ: 'present',
+    };
+    const verdict = await emitSpawnAncestryWitness({
+      captureDirectory, nonce, role: 'invocation', childPid: 4242, childNonce: nonce, osSeams,
+      linuxClock: { clock: Promise.reject(new Error('the masked /proc/stat boot clock')) },
+    });
+    assert.deepEqual({ status: verdict.status, reason: verdict.reason, childOsStartInstantMs: verdict.identity === null ? null : verdict.identity.childOsStartInstantMs },
+      { status: 'established', reason: null, childOsStartInstantMs: null },
+      'the resolution failure is the named-absent null on an otherwise-established capture — the emitter never throws');
+    assert.equal(await lstat(join(captureDirectory, `${nonce}.spawn-witness.json`)).then(() => true, () => false), true,
+      'the witness record with its other positive bindings is written');
+  });
+
+  test('same-second-completion emitter timestamp provenance: a STALLING boot-clock resolution never advances the child-capture instant — the boundary is the identity-read instant, pre-resolution (codex round 9)', async (t) => {
+    // The codex-round-9 finding, through the REAL emitter: the child's
+    // identity VERIFIES (the proc: identity), but the boot-clock resolution
+    // STALLS for 500 ms before resolving. Pre-fix, the record's
+    // boundaryEpochMs was sampled AFTER the await — a full stall later than
+    // the actual child observation — so the join's child-continuity proof
+    // ("the witnessed child was alive at the boundary") consumed a
+    // fabricated survival instant and a same-tick pid replacement sharing
+    // the proc: start identity could ride it into an established verdict.
+    // Post-fix the boundary is the identity-READ instant (sampled
+    // pre-resolution), so boundary − childOsStart stays INSIDE the child's
+    // creation-uncertainty window and the continuity check refuses. The
+    // delayed clock's schedule: the child's resolved creation floor (btime +
+    // 1000 ticks at CLK_TCK 100 = btime + 10000) lands ~700 ms BEFORE the
+    // actual read, so floor + 1000 sits ~300 ms after the read — inside the
+    // 500 ms stall window: pre-fix the advanced boundary crosses it (RED:
+    // the join establishes), post-fix the honest read instant does not
+    // (GREEN: the join refuses ambiguous).
+    const root = await mkdtemp(join(tmpdir(), 'shell-wait-local-process-emit-stall-clock-'));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const captureDirectory = join(root, 'stdout-capture');
+    await mkdir(captureDirectory, { recursive: true, mode: 0o700 });
+    const nonce = randomBytes(32).toString('hex');
+    const bootMs = Date.now() - 10700; // the resolved child creation floor ≈ now − 700 (btime + 10000 ms of ticks)
+    const osSeams = {
+      platform: 'linux',
+      ps: async (pid) => {
+        if (pid === process.pid) return { pid, ppid: 1, lstart: 'proc:999' };
+        if (pid !== 4242) return undefined;
+        return { pid, ppid: process.pid, lstart: 'proc:1000' };
+      },
+      environ: 'present',
+    };
+    const emitStartedAt = Date.now();
+    const verdict = await emitSpawnAncestryWitness({
+      captureDirectory, nonce, role: 'invocation', childPid: 4242, childNonce: nonce, osSeams,
+      linuxClock: { clock: new Promise((resolve) => { setTimeout(() => resolve({ btimeMs: bootMs, hz: 100 }), 500); }) },
+    });
+    assert.equal(verdict.status, 'established', JSON.stringify(verdict));
+    const witnessPath = join(captureDirectory, `${nonce}.spawn-witness.json`);
+    const record = JSON.parse(await readFile(witnessPath, 'utf8'));
+    // The PROVENANCE pin: the boundary is the identity-read instant — within
+    // the child's creation-uncertainty window (boundary − childOsStart <
+    // 1000), never the post-stall clock. The emitter was entered at
+    // emitStartedAt and the resolution alone holds the read for 500 ms, so a
+    // post-advance boundary would sit ≥ 500 ms after the read and cross the
+    // window's edge (floor + 1000 ≈ read + 200).
+    assert.equal(Number.isSafeInteger(record.childOsStartInstantMs), true, JSON.stringify(record));
+    assert.ok(record.boundaryEpochMs - record.childOsStartInstantMs < 1000,
+      `the boundary is the pre-resolution identity-read instant, never the post-stall clock (boundary ${record.boundaryEpochMs} − floor ${record.childOsStartInstantMs} = ${record.boundaryEpochMs - record.childOsStartInstantMs})`);
+    assert.ok(record.boundaryEpochMs >= emitStartedAt, 'the boundary postdates the emitter\u2019s entry (it sampled the real read)');
+    // The JOIN consequence on the admitted record: the child-continuity
+    // check consumes the boundary and honestly refuses the ambiguous band —
+    // the fabricated survival instant is gone.
+    const childFloor = record.childOsStartInstantMs;
+    const endpoint = (pid, ppid, startIdentity, startInstantEpochMs, read) => ({
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'established', reason: null,
+      observation: { pid, ppid, startIdentity, nonce, startInstantEpochMs, ppidChangedFromCapture: null },
+      queried: { pid, nonce },
+      readStartedEpochMs: read - 50, identityReadEpochMs: read, readEpochMs: read, absenceConfirmed: null,
+    });
+    const admitted = {
+      localProcessObservationVersion: 3, class: 'spawn-ancestry-witness', status: 'established', reason: null,
+      identity: record, readStartedEpochMs: record.boundaryEpochMs, readEpochMs: record.firstWriteEpochMs,
+    };
+    const joinVerdict = joinAncestryHops({
+      nonce,
+      companionObservation: endpoint(process.pid, 1, 'proc:999', childFloor - 500, Date.now() + 3000),
+      daemonObservation: endpoint(4242, process.pid, 'proc:1000', childFloor, Date.now() + 3000),
+      transportMarker: { pid: 4243, ppid: 4242, nonce },
+      expectedTransportNonce: nonce,
+      daemonCaptureParentPid: process.pid,
+      companionSpawnWitness: admitted,
+    });
+    assert.deepEqual([joinVerdict.hops[0].status, joinVerdict.hops[0].reason], ['unestablished', 'spawn-witness-child-generation-ambiguous'],
+      `the pre-resolution boundary governs the continuity check (measured: ${JSON.stringify(joinVerdict.hops[0])})`);
+  });
+
+  test('same-second-completion emitter timestamp provenance: the boundary is the FINAL OS inspection\u2019s TAKEN instant, never the response arrival — a late inspection response cannot fabricate survival (codex round 11)', async (t) => {
+    // The codex-round-11 finding, through the REAL emitter with a
+    // DELAYED-RESOLUTION seam: both child snapshots are TAKEN at their
+    // dispatch instants (the seam rows carry the original's identity), the
+    // original then "dies" and a same-second pid reuse is born, and the
+    // inspection responses arrive a full delay AFTER the snapshots. Pre-fix
+    // the record's boundaryEpochMs was sampled at RESPONSE ARRIVAL — it
+    // cleared the creation-window check and the join established ancestry
+    // for a generation the child observation never witnessed. Post-fix the
+    // boundary is the inspector's surfaced TAKEN instant (the final read's
+    // dispatch bound): boundary − childOsStart stays INSIDE the child's
+    // creation-uncertainty window and the join refuses.
+    const root = await mkdtemp(join(tmpdir(), 'shell-wait-local-process-emit-late-response-'));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const captureDirectory = join(root, 'stdout-capture');
+    await mkdir(captureDirectory, { recursive: true, mode: 0o700 });
+    const nonce = randomBytes(32).toString('hex');
+    const delayMs = 1500;
+    const floorMs = Math.floor((Date.now() + 1200) / 1000) * 1000; // the child's whole-second creation floor
+    const d = new Date(floorMs);
+    const wd = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][d.getUTCDay()];
+    const mon = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][d.getUTCMonth()];
+    const lstart = `${wd} ${mon} ${d.getUTCDate()} ${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}:${String(d.getUTCSeconds()).padStart(2, '0')} ${d.getUTCFullYear()}`;
+    const childRow = { pid: 4242, ppid: process.pid, lstart };
+    const ps = async (pid) => {
+      if (pid === process.pid) return { pid, ppid: 1, lstart: 'S-WRITER-STABLE' };
+      if (pid !== 4242) return undefined;
+      await new Promise((resolve) => { setTimeout(resolve, delayMs); }); // the snapshot is TAKEN now; the response arrives later
+      return { ...childRow };
+    };
+    const emitStartedAt = Date.now();
+    const verdict = await emitSpawnAncestryWitness({
+      captureDirectory, nonce, role: 'invocation', childPid: 4242, childNonce: nonce,
+      osSeams: { platform: 'darwin', ps, environ: 'present' },
+    });
+    assert.equal(verdict.status, 'established', JSON.stringify(verdict));
+    const record = JSON.parse(await readFile(join(captureDirectory, `${nonce}.spawn-witness.json`), 'utf8'));
+    // The PROVENANCE pin: the boundary is the TAKEN instant of the final
+    // read (dispatched right after the first snapshot's 1500 ms delivery) —
+    // never the response arrival (which lands after the SECOND 1500 ms
+    // delay). The taken instant is within [emitStartedAt + delay*0.6,
+    // emitStartedAt + delay*1.4]; the response arrival is ≥ emitStartedAt +
+    // delay*1.9.
+    assert.ok(record.boundaryEpochMs >= emitStartedAt + delayMs * 0.6
+      && record.boundaryEpochMs <= emitStartedAt + delayMs * 1.4,
+      `the boundary is the final read\u2019s taken instant, not the response arrival (boundary ${record.boundaryEpochMs}, emit start ${emitStartedAt}, delay ${delayMs})`);
+    assert.ok(record.firstWriteEpochMs >= record.boundaryEpochMs + delayMs * 0.5,
+      'the write instant still postdates the boundary by at least the second read\u2019s response delay');
+    // The JOIN consequence on the admitted record: (codex round 26+27
+    // re-derivation) the child ENDPOINT numeric must derive from the SAME
+    // source as the record's own instant (the boot clock the emitter
+    // resolved) — the cross-record consistency requires equality — and the
+    // boundary (the taken instant, start + ~1500) sits INSIDE the child's
+    // creation window [floor, floor + 1000) (floor = start − 400-class):
+    // the child-window ambiguity fires with the honest taken-instant
+    // boundary.
+    const childFloor = record.childOsStartInstantMs;
+    const parentFloor = childFloor - 1500; // the parent floor precedes the child's creation window (creation order consistent)
+    const endpoint = (pid, ppid, startIdentity, startInstantEpochMs, readStarted, readCompleted) => ({
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'established', reason: null,
+      observation: { pid, ppid, startIdentity, nonce, startInstantEpochMs, ppidChangedFromCapture: null },
+      queried: { pid, nonce },
+      readStartedEpochMs: readStarted, identityReadEpochMs: readCompleted, readEpochMs: readCompleted, absenceConfirmed: null,
+    });
+    const admitted = {
+      localProcessObservationVersion: 3, class: 'spawn-ancestry-witness', status: 'established', reason: null,
+      identity: record, readStartedEpochMs: record.boundaryEpochMs, readEpochMs: record.firstWriteEpochMs,
+    };
+    const joinVerdict = joinAncestryHops({
+      nonce,
+      companionObservation: endpoint(process.pid, 1, 'S-WRITER-STABLE', parentFloor, Date.now() + 2000, Date.now() + 2000),
+      daemonObservation: endpoint(4242, process.pid, lstart, childFloor, record.boundaryEpochMs + 50, record.firstWriteEpochMs + 500),
+      transportMarker: { pid: 4243, ppid: 4242, nonce },
+      expectedTransportNonce: nonce,
+      daemonCaptureParentPid: process.pid,
+      companionSpawnWitness: admitted,
+    });
+    // (codex round 26+27 re-derivation) the child ENDPOINT numeric derives
+    // from the SAME boot-clock source as the record's own instant (the
+    // equality the cross-record consistency requires — the record instant
+    // and the endpoint numeric are identical), and the taken instant
+    // postdates the child's whole creation window, so the hop establishes
+    // ARITHMETICALLY (the windows are compatible — no bound window for the
+    // witness route to resolve; the PROVENANCE assertions above pin that
+    // the boundary is the TAKEN instant — the response arrival never
+    // fabricates survival).
+    assert.deepEqual([joinVerdict.hops[0].status, joinVerdict.hops[0].reason], ['established', null],
+      `the same-source-consistent record consumes cleanly — the boundary provenance is pinned by the taken-instant assertions above (measured: ${JSON.stringify(joinVerdict.hops[0])})`);
+    assert.equal(joinVerdict.hops[0].witnessClass, undefined,
+      'an arithmetic-compatible schedule never claims a witnessClass (the witness route is not consulted)');
+  });
+
+  test('same-second-completion emitter negative: ORDINARY OS-query failures keep the budget-expiry label child-unverifiable — the nonce-contradiction flag is set only by an actual nonce verification failure (codex round 19)', async (t) => {
+    // The codex-round-19 finding: with a seam that verifies the writer but
+    // throws an ORDINARY OS-query error from every child read, the
+    // unconditional contradiction flag made budget expiry report
+    // spawn-witness-child-nonce-mismatch — unsupported scope-mismatch
+    // evidence. The flag is set ONLY by an actual nonce VERIFICATION
+    // failure (a seen child whose nonce contradicted the expectation);
+    // failed or torn identity queries keep the honest
+    // spawn-witness-child-unverifiable label.
+    const root = await mkdtemp(join(tmpdir(), 'shell-wait-local-process-emit-ordinary-fails-'));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const captureDirectory = join(root, 'stdout-capture');
+    await mkdir(captureDirectory, { recursive: true, mode: 0o700 });
+    const nonce = randomBytes(32).toString('hex');
+    const osSeams = {
+      platform: 'darwin',
+      ps: async (pid) => {
+        if (pid === process.pid) return { pid, ppid: 1, lstart: 'S-WRITER-STABLE' };
+        throw new Error('ps: ordinary OS-query error');
+      },
+      environ: 'present',
+    };
+    const verdict = await emitSpawnAncestryWitness({ captureDirectory, nonce, role: 'invocation', childPid: 4242, childNonce: nonce, osSeams });
+    assert.deepEqual({ status: verdict.status, reason: verdict.reason, identity: verdict.identity },
+      { status: 'unestablished', reason: 'spawn-witness-child-unverifiable', identity: null },
+      'failed identity queries never assert unsupported scope-mismatch evidence — the budget expiry keeps the honest unverified label');
+    assert.equal(await lstat(join(captureDirectory, `${nonce}.spawn-witness.json`)).then(() => true, () => false), false,
+      'no witness record is written');
+  });
+
+  test('same-second-completion emitter negative: a MIXED history (one real nonce verification failure among ordinary failures) still classifies the contradiction at expiry (codex round 19)', async (t) => {
+    // The no-fold polarity of the same fix: ONE attempt actually saw the
+    // child and its nonce VERIFICATION failed; the rest failed with
+    // ordinary OS-query errors. The real contradiction is retained — budget
+    // expiry still names spawn-witness-child-nonce-mismatch.
+    const root = await mkdtemp(join(tmpdir(), 'shell-wait-local-process-emit-mixed-fails-'));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const captureDirectory = join(root, 'stdout-capture');
+    await mkdir(captureDirectory, { recursive: true, mode: 0o700 });
+    const nonce = randomBytes(32).toString('hex');
+    let childPsCalls = 0;
+    const osSeams = {
+      platform: 'darwin',
+      ps: async (pid) => {
+        if (pid === process.pid) return { pid, ppid: 1, lstart: 'S-WRITER-STABLE' };
+        childPsCalls += 1;
+        if (childPsCalls === 1) return { pid: 4242, ppid: process.pid, lstart: 'S-CHILD' }; // seen — its nonce verification FAILS below
+        throw new Error('ps: ordinary OS-query error');
+      },
+      // The REAL marker read (environ undefined): the writer's own env
+      // carries the capture nonce (the writer verifies); the child's env
+      // LACKS the child nonce (attempt 1's nonce verification genuinely
+      // fails — a real contradiction among the later ordinary failures).
+      runProcess: async (input) => {
+        const queriedPid = Number(input.args[input.args.length - 1]);
+        if (queriedPid === process.pid) return { code: 0, stdout: `ZCODE_SHELL_WAIT_CAPTURE_NONCE=${nonce}`, stderr: '' };
+        return { code: 0, stdout: 'SOME_OTHER_VAR=x', stderr: '' };
+      },
+    };
+    const verdict = await emitSpawnAncestryWitness({ captureDirectory, nonce, role: 'invocation', childPid: 4242, childNonce: nonce, osSeams });
+    assert.deepEqual({ status: verdict.status, reason: verdict.reason, identity: verdict.identity },
+      { status: 'unestablished', reason: 'spawn-witness-child-nonce-mismatch', identity: null },
+      'the mixed history keeps the real contradiction — never downgraded to unverifiable');
+  });
+
+  test('same-second-completion prohibitions (§26.6 registered global prohibitions, source level): per-PID reads only, bounded poll only, no fabricated nonce authority, unchanged startup choreography', async () => {
+    const { readFileSync } = await import('node:fs');
+    const observerModulePath = fileURLToPath(new URL('../tools/shell-wait-probe/local-process-observation.mjs', import.meta.url));
+    const source = readFileSync(observerModulePath, 'utf8');
+    // Prohibition 1 — no global process enumeration: every ps query site is
+    // per-PID ('-p String(pid)'), never a whole-table sweep.
+    const psSites = source.split("command: 'ps'").length - 1;
+    assert.equal(psSites, 3, 'the observer has exactly the three carried ps query sites');
+    let cursor = 0;
+    for (let site = 0; site < psSites; site += 1) {
+      const at = source.indexOf("command: 'ps'", cursor);
+      cursor = at + 1;
+      const window = source.slice(at, at + 120);
+      assert.ok(window.includes("'-p'") && window.includes('String(pid)'),
+        `ps query site ${site + 1} is per-PID scoped`);
+    }
+    // Prohibition 3 — no added launch delay solely to cross a second: the
+    // emit path's ONLY delay is the bounded child-visibility poll (12
+    // attempts, 100 ms, ref'd and attempt-budget-bounded — the kernel's own
+    // fork/exposure window; the ref'd timer keeps an idle writer loop alive
+    // until the bounded work settles).
+    const emitStart = source.indexOf('export async function emitSpawnAncestryWitness');
+    const admitStart = source.indexOf('export async function admitSpawnAncestryWitness');
+    const emitSlice = source.slice(emitStart, admitStart);
+    assert.ok(/attempt < 12/u.test(emitSlice), 'the visibility poll is attempt-bounded');
+    assert.equal(emitSlice.split('setTimeout(').length - 1, 1, 'the emit path adds exactly one delay');
+    assert.ok(/setTimeout\(resolve, 100\)\)/u.test(emitSlice), 'the one delay is the bounded (12-attempt) visibility poll whose ref\u2019d timer keeps an idle writer loop alive until the bounded work settles');
+    const admitSlice = source.slice(admitStart, source.indexOf('function validatedSpawnWitnessInput'));
+    assert.equal(admitSlice.split('setTimeout(').length - 1, 0, 'the admission path is purely offline — no delays, no reads beyond the record');
+    // Prohibition 2 — no fabricated nonce authority: the emitter requires the
+    // caller-supplied scope nonce and never invents one; the witness binds
+    // the queried nonce AND the queried boundary role at admission.
+    assert.ok(emitSlice.includes('validateCaptureNonce(nonce'), 'the emitter validates the caller-supplied capture nonce');
+    assert.ok(emitSlice.split('randomBytes').length - 1 === 0, 'the emitter never generates a nonce');
+    assert.ok(admitSlice.includes('spawn-witness-nonce-mismatch') && admitSlice.includes('spawn-witness-role-mismatch'),
+      'admission refuses a foreign nonce and a wrong boundary role');
+    // Prohibition 4 — no changed startup choreography: the capture seam
+    // (closure preload) is byte-untouched by the witness route.
+    const preload = closurePreloadSource();
+    assert.ok(preload.includes('spawn-witness') === false && preload.includes('SpawnAncestryWitness') === false,
+      'the startup preload carries no witness machinery');
+    // Prohibition 5 — no pure user-space-timestamp/PPID-equality sufficiency:
+    // the emitter\u2019s record is written ONLY after OS-verified double reads of
+    // BOTH endpoints (the writer\u2019s own identity and the child\u2019s identity),
+    // and the join refuses every timestamp-only shortcut (covered by the
+    // capture-unbounded/child-foreign negative family above).
+    assert.ok(emitSlice.indexOf('inspectVerifiedProcessIdentity(process.pid') < emitSlice.indexOf('inspectVerifiedProcessIdentity(/** @type {number} */ (childPid)') && emitSlice.indexOf('inspectVerifiedProcessIdentity(/** @type {number} */ (childPid)') < emitSlice.indexOf('writeFileSync'),
+      'the record is written only after both OS-verified reads complete');
+  });
+
+  /**
+   * The measure-derived expectation for the Companion→daemon hop ONLY (codex
+   * round 3): that hop's registered predicates ARE the endpoint-to-endpoint
+   * lifetime rules, so its no-witness expectation is this bound refusal. The
+   * daemon→transport hop is NOT covered here — its registered predicates are
+   * marker-time rules (see transportDemonstrablyEstablished in the full-chain
+   * test); applying this formula to a floored marker instant was the round-3
+   * test-helper bug. A same-second pair rides the witness route; a
+   * cross-second pair establishes on the existing OS arithmetic alone. BOTH
+   * cases keep the ORIGINAL refusal when the witness is ABSENT (the
+   * no-witness family) and keep every other refusal intact.
+   * @param {any} childObserved @param {any} parentObserved
+   */
+  const sameSecondPair = (parentObserved, childObserved) => {
+    const parentFirst = Math.floor(parentObserved.observation.startInstantEpochMs / 1000) * 1000;
+    const childFirst = Math.floor(childObserved.observation.startInstantEpochMs / 1000) * 1000;
+    const parentRead = Number.isSafeInteger(parentObserved.identityReadEpochMs) ? parentObserved.identityReadEpochMs : parentObserved.readEpochMs;
+    const childRead = Number.isSafeInteger(childObserved.identityReadEpochMs) ? childObserved.identityReadEpochMs : childObserved.readEpochMs;
+    const boundRefused = childObserved.observation.startInstantEpochMs + 1000 > parentRead
+      || parentObserved.observation.startInstantEpochMs + 1000 > childRead
+      || parentObserved.observation.startInstantEpochMs + 1000 > childObserved.observation.startInstantEpochMs;
+    return { second: parentFirst === childFirst, boundRefused };
+  };
+});
+
+// ---------------------------------------------------------------------------
+// Evidence-completion Task 4 (integration-completion): both proof chains —
+// Task 2's call-coverage admission and Task 3's ancestry witness/join — reach
+// the final all-duty gate through the REAL executor composition and its
+// offline replay. The §28.22 classification (the daemon-hop witness
+// establishment route is UNSATISFIABLE) is enforced at the replay; a
+// witness-established runtime hop replays from its OWN persisted digest-only
+// witness projection; omitted/contradictory witnesses never credit.
+// ---------------------------------------------------------------------------
+describe('evidence-completion task 4: the ancestry witness route reaches the offline all-duty join (integration-completion)', async () => {
+  const { nativeInterruptionGateDInput } = await import('../tools/shell-wait-probe/driver.mjs');
+  const { evaluateNativeInterruptionSettlement } = await import('../tools/shell-wait-probe/release-qualification.mjs');
+  const sha = (value) => createHash('sha256').update(value).digest('hex');
+  const MEASUREMENT_CUTOFF_AT_MS = 20_000;
+  /** One complete armed block in the §25.10 persisted shape, parameterized
+   * for the witness-route schedules: the endpoint creation instants, the
+   * marker epoch, per-hop witnessClass claims and the digest-only persisted
+   * witness projections. Every other field matches the proven armed base
+   * (the §25.10 junction block) so the ONLY varying dimension is the one
+   * under test. */
+  const witnessBlock = (over = {}) => {
+    const companionStart = over.companionStartEpochMs ?? 0;
+    const daemonStart = over.daemonStartEpochMs ?? 1000;
+    const markerEpochMs = over.markerEpochMs ?? 4500;
+    const block = {
+      version: 1,
+      armed: true,
+      clock: 'wall-epoch-ms',
+      ancestry: { localProcessObservationVersion: 3, class: 'ancestry-join', nonceSha256: sha('n'.repeat(64)), companionToTransportAttributed: true, hops: [
+        { hop: 'companion-to-daemon', status: 'established', reason: null, ...(over.hop1WitnessClass ? { witnessClass: 'spawn-boundary-capture' } : {}) },
+        { hop: 'daemon-to-transport', status: 'established', reason: null, ...(over.hop2WitnessClass ? { witnessClass: 'spawn-boundary-capture' } : {}) },
+      ] },
+      ancestryEndpoints: {
+        companion: { class: 'os-live-observation', status: 'established', reason: null, localProcessObservationVersion: 3, observation: { pid: 60100, ppid: 600, startIdentity: 'S-COMPANION', startInstantEpochMs: companionStart, ppidChangedFromCapture: null, nonceSha256: sha('n'.repeat(64)) }, queried: { pid: 60100, nonceSha256: sha('n'.repeat(64)) }, readStartedEpochMs: 5000, identityReadEpochMs: 5050, readEpochMs: 5100, absenceConfirmed: null },
+        daemon: { class: 'os-live-observation', status: 'established', reason: null, localProcessObservationVersion: 3, observation: { pid: 60200, ppid: 60100, startIdentity: 'S-DAEMON', startInstantEpochMs: daemonStart, ppidChangedFromCapture: null, nonceSha256: sha('n'.repeat(64)) }, queried: { pid: 60200, nonceSha256: sha('n'.repeat(64)) }, readStartedEpochMs: 5000, identityReadEpochMs: 5060, readEpochMs: 5200, absenceConfirmed: null },
+        transportMarker: { pid: 60300, ppid: 60200, nonceSha256: sha('f'.repeat(64)), markerEpochMs },
+      },
+      nonceSha256: sha('n'.repeat(64)),
+      admission: { status: 'established', reason: null, class: 'startup-identity', localProcessObservationVersion: 3, identity: { role: 'invocation', argv: ['invoke-prepared', 'rescue'], entryRealpathSha256: sha('launcher-entry'), pid: 60100, ppid: 600, firstWriteEpochMs: companionStart, startOriginMs: companionStart + 0.1, firstWritePreciseMs: companionStart + 0.5, nonceSha256: sha('n'.repeat(64)) }, readStartedEpochMs: 1000, readEpochMs: 1100 },
+      presence: { class: 'os-live-observation', status: 'established', reason: null, localProcessObservationVersion: 3, observation: { pid: 60100, ppid: 600, startIdentity: 'S-COMPANION', startInstantEpochMs: companionStart, ppidChangedFromCapture: null, nonceSha256: sha('n'.repeat(64)) }, queried: { pid: 60100, nonceSha256: sha('n'.repeat(64)) }, readStartedEpochMs: 1100, identityReadEpochMs: 1150, readEpochMs: 1200, absenceConfirmed: null },
+      reads: [{ class: 'os-live-observation', status: 'absent', reason: 'no-such-process', localProcessObservationVersion: 3, observation: null, queried: { pid: 60100, nonceSha256: sha('n'.repeat(64)) }, readStartedEpochMs: 5100, readEpochMs: 5200, absenceConfirmed: true }],
+      exit: { class: 'exit-absence', status: 'disappeared', reason: null, localProcessObservationVersion: 3, boundIdentity: { pid: 60100, startIdentity: 'S-COMPANION', nonceSha256: sha('n'.repeat(64)) }, lastVerifiedPresenceEpochMs: 1150, firstVerifiedAbsenceEpochMs: 5200, exitCorroboratedByMeta: false },
+      brokerAdmission: { status: 'established', reason: null, class: 'startup-identity', localProcessObservationVersion: 3, identity: { role: 'broker-daemon', entryRealpathSha256: sha('broker-entry'), pid: 60200, ppid: 60100, firstWriteEpochMs: daemonStart, startOriginMs: daemonStart + 0.2, firstWritePreciseMs: daemonStart + 0.6, nonceSha256: sha('n'.repeat(64)) }, readStartedEpochMs: 1100, readEpochMs: 1150 },
+      brokerObservation: { class: 'os-live-observation', status: 'established', reason: null, localProcessObservationVersion: 3, observation: { pid: 60200, ppid: 60100, startIdentity: 'S-DAEMON', startInstantEpochMs: daemonStart, ppidChangedFromCapture: null, nonceSha256: sha('n'.repeat(64)) }, queried: { pid: 60200, nonceSha256: sha('n'.repeat(64)) }, readStartedEpochMs: 1150, identityReadEpochMs: 1160, readEpochMs: 1300, absenceConfirmed: null },
+      transportObservation: { class: 'os-live-observation', status: 'established', reason: null, localProcessObservationVersion: 3, observation: { pid: 60300, ppid: 60100, startIdentity: 'S-TRANSPORT', startInstantEpochMs: daemonStart, ppidChangedFromCapture: null, nonceSha256: sha('f'.repeat(64)) }, queried: { pid: 60300, nonceSha256: sha('f'.repeat(64)) }, readStartedEpochMs: 1150, identityReadEpochMs: 1170, readEpochMs: 1400, absenceConfirmed: null },
+      transportExit: { class: 'os-live-observation', status: 'absent', reason: 'no-such-process', localProcessObservationVersion: 3, observation: null, queried: { pid: 60300, nonceSha256: sha('f'.repeat(64)) }, readStartedEpochMs: 5300, identityReadEpochMs: 5350, readEpochMs: 5400, absenceConfirmed: true },
+      duties: { class: 'local-duty-verdict', localProcessObservationVersion: 3, settled: true, duties: [
+        { duty: 'invocation-process', status: 'established', reasons: [], identity: { pid: 60100, startIdentity: 'S-COMPANION', nonceSha256: sha('n'.repeat(64)) } },
+        { duty: 'broker-daemon', status: 'established', reasons: [], identity: { pid: 60200, startIdentity: 'S-DAEMON', nonceSha256: sha('n'.repeat(64)) } },
+        { duty: 'transport-descendant', status: 'established', reasons: [], identity: { pid: 60300, startIdentity: 'S-TRANSPORT', nonceSha256: sha('f'.repeat(64)) } },
+      ] },
+      stoppedAt: null,
+      fenceAtMs: null,
+      cutoffAtMs: MEASUREMENT_CUTOFF_AT_MS,
+      cleanupBoundaryAtMs: null,
+      composedAtMs: 5450,
+    };
+    if (over.spawnWitnesses !== undefined) block.spawnWitnesses = over.spawnWitnesses;
+    return block;
+  };
+  /** The digest-only persisted witness projection the runtime composes (the
+   * established shape; every raw nonce rides as its digest only). */
+  const witnessProjection = (over = {}) => ({
+    status: 'established',
+    reason: null,
+    identity: {
+      version: 2,
+      class: 'spawn-ancestry-witness',
+      role: 'invocation',
+      writerPid: 60100,
+      writerStartIdentity: 'S-COMPANION',
+      childPid: 60200,
+      childPpid: 60100,
+      childStartIdentity: 'S-DAEMON',
+      nonceSha256: sha('n'.repeat(64)),
+      childNonceSha256: sha('n'.repeat(64)),
+      boundaryEpochMs: over.boundaryEpochMs ?? 2000,
+      firstWriteEpochMs: over.firstWriteEpochMs ?? 2100,
+      startOriginMs: 0.5,
+      firstWritePreciseMs: 2100.5,
+      childOsStartInstantMs: over.childOsStartInstantMs ?? 1,
+      ...(over.identityOverrides ?? {}),
+    },
+    readStartedEpochMs: over.readStartedEpochMs ?? 2150,
+    readEpochMs: over.readEpochMs ?? 2200,
+  });
+
+  const record = (over = {}) => ({
+    status: 'executed', case: 'rescue-interrupt', executedAt: '2026-11-04T00:00:00.000Z',
+    interrupt: { measurementCutoffAtMs: MEASUREMENT_CUTOFF_AT_MS },
+    stdoutCaptureDeclaration: {
+      preload: 'closure-observe.mjs', preloadSha256: sha('preload-bytes'), maxBytes: 65536,
+      gate: { argv: ['invoke-prepared', 'rescue'], declaredEntryRealpathSha256: sha('launcher-entry') },
+      brokerGate: { declaredBrokerEntryRealpathSha256: sha('broker-entry') },
+      identityRecord: { version: 2, roles: { invocation: 'identity.json', brokerDaemon: 'identity-broker.json' } },
+      environmentVariables: [],
+    },
+    observations: {}, child: {},
+    localProcess: witnessBlock(over),
+    ...over,
+  });
+
+  test('integration-completion §28.22 at the replay: a persisted daemon-to-transport witnessClass establishment claim is the named unsatisfiable classification — never credited (the final gate refuses)', () => {
+    const joined = nativeInterruptionGateDInput(record({ markerEpochMs: 500, hop2WitnessClass: true }));
+    assert.ok(joined.localProcessDuties, 'the armed block composes the local-duty input');
+    assert.equal(joined.localProcessDuties.settled, false, JSON.stringify(joined.localProcessDuties.refusals));
+    assert.ok(joined.localProcessDuties.refusals.includes('spawn-witness-route-unsatisfiable'),
+      `the §28.22 named classification rides the replay (actual ${JSON.stringify(joined.localProcessDuties.refusals)})`);
+    const verdict = evaluateNativeInterruptionSettlement(joined);
+    assert.equal(verdict.qualified, false);
+    assert.equal(verdict.layers.localProcess, false, 'the local layer never credits an unsatisfiable witness claim');
+  });
+
+  test('integration-completion: a persisted companion-to-daemon witnessClass claim without the witness projection refuses spawn-witness-absent (replay agreement — no silent permissive fallback)', () => {
+    const joined = nativeInterruptionGateDInput(record({ companionStartEpochMs: 0, daemonStartEpochMs: 0, hop1WitnessClass: true }));
+    assert.equal(joined.localProcessDuties.settled, false, JSON.stringify(joined.localProcessDuties.refusals));
+    assert.ok(joined.localProcessDuties.refusals.includes('spawn-witness-absent'),
+      `the omitted witness is named, never folded (actual ${JSON.stringify(joined.localProcessDuties.refusals)})`);
+  });
+
+  test('integration-completion replay agreement: a runtime witness-established hop survives persistence — the verified digest-only projection resolves the hop-1 lifetime conjuncts and the local layer credits (hop 2 stays independently arithmetic)', () => {
+    const joined = nativeInterruptionGateDInput(record({
+      companionStartEpochMs: 0, daemonStartEpochMs: 1000, hop1WitnessClass: true,
+      spawnWitnesses: { companion: witnessProjection({ childOsStartInstantMs: 1000 }), daemon: null },
+    }));
+    assert.deepEqual(joined.localProcessDuties.refusals, [],
+      `the witness-established hop re-verifies from its own fields (actual ${JSON.stringify(joined.localProcessDuties.refusals)})`);
+    assert.equal(joined.localProcessDuties.settled, true);
+    const verdict = evaluateNativeInterruptionSettlement(joined);
+    assert.equal(verdict.layers.localProcess, true, 'the local layer credits the re-verified witness establishment');
+  });
+
+  test('overall-review RED (replay): a persisted witness whose childOsStartInstantMs CONTRADICTS the endpoint numeric start refuses settlement (replay agreement — mirrored classification)', () => {
+    // The reviewer\u2019s exact mutation: the witness start 1950 while the
+    // endpoint numeric remains 0 and the boundary is 2000 \u2014 a
+    // mixed/corrupted record bypassing generation ambiguity via the
+    // endpoint\u2019s window. The replay mirrors the runtime classification.
+    const joined = nativeInterruptionGateDInput(record({
+      companionStartEpochMs: 0, daemonStartEpochMs: 0, hop1WitnessClass: true,
+      spawnWitnesses: { companion: witnessProjection({ childOsStartInstantMs: 1950, readStartedEpochMs: 2050, readEpochMs: 2100 }), daemon: null },
+    }));
+    assert.equal(joined.localProcessDuties.settled, false,
+      `the contradictory persisted witness never receives settlement credit (measured: ${JSON.stringify({ settled: joined.localProcessDuties.settled, refusals: joined.localProcessDuties.refusals })})`);
+    assert.ok(joined.localProcessDuties.refusals.includes('spawn-witness-child-start-contradicted'),
+      `the mirrored inconsistent label rides the replay (actual ${JSON.stringify(joined.localProcessDuties.refusals)})`);
+    // The final-oracle regression the reviewer names: with the
+    // contradictory record and otherwise-passing independent proofs, the
+    // final oracle never returns qualified:true.
+    const verdict = evaluateNativeInterruptionSettlement(joined);
+    assert.notEqual(verdict.qualified, true,
+      'the final oracle refuses qualified for the contradictory witness record');
+    assert.equal(verdict.layers.localProcess, false, 'the local layer never credits the contradictory record');
+  });
+
+  test('overall-review control (replay): a witness whose childOsStartInstantMs EQUALS the endpoint numeric start keeps the witness-established settlement (unchanged)', () => {
+    // The agreeing-witness control: the record instant EQUALS the endpoint
+    // numeric instant (both 1 \u2014 the same captured start identity, the
+    // same source derivation) \u2014 the witness-established hop survives
+    // persistence and the local layer credits, unchanged.
+    const joined = nativeInterruptionGateDInput(record({
+      companionStartEpochMs: 0, daemonStartEpochMs: 1000, hop1WitnessClass: true,
+      spawnWitnesses: { companion: witnessProjection({ childOsStartInstantMs: 1000, readStartedEpochMs: 2050, readEpochMs: 2100 }), daemon: null },
+    }));
+    assert.deepEqual(joined.localProcessDuties.refusals, [],
+      `the agreeing witness keeps the witness-established settlement (actual ${JSON.stringify(joined.localProcessDuties.refusals)})`);
+    assert.equal(joined.localProcessDuties.settled, true);
+    const verdict = evaluateNativeInterruptionSettlement(joined);
+    assert.equal(verdict.layers.localProcess, true, 'the local layer credits the agreeing witness establishment');
+  });
+
+  test('integration-completion witness-binding negative: a foreign writer generation refuses spawn-witness-writer-foreign', () => {
+    const projection = witnessProjection({ identityOverrides: { writerStartIdentity: 'S-FOREIGN' } });
+    const joined = nativeInterruptionGateDInput(record({
+      companionStartEpochMs: 0, daemonStartEpochMs: 1000, hop1WitnessClass: true,
+      spawnWitnesses: { companion: projection, daemon: null },
+    }));
+    assert.ok(joined.localProcessDuties.refusals.includes('spawn-witness-writer-foreign'), JSON.stringify(joined.localProcessDuties.refusals));
+  });
+
+  test('integration-completion witness-binding negative: a foreign child generation refuses spawn-witness-child-foreign', () => {
+    const projection = witnessProjection({ identityOverrides: { childStartIdentity: 'S-FOREIGN' } });
+    const joined = nativeInterruptionGateDInput(record({
+      companionStartEpochMs: 0, daemonStartEpochMs: 1000, hop1WitnessClass: true,
+      spawnWitnesses: { companion: projection, daemon: null },
+    }));
+    assert.ok(joined.localProcessDuties.refusals.includes('spawn-witness-child-foreign'), JSON.stringify(joined.localProcessDuties.refusals));
+  });
+
+  test('integration-completion witness-binding negative: a foreign capture-time parent link refuses spawn-witness-parent-foreign', () => {
+    const projection = witnessProjection({ identityOverrides: { childPpid: 59999 } });
+    const joined = nativeInterruptionGateDInput(record({
+      companionStartEpochMs: 0, daemonStartEpochMs: 1000, hop1WitnessClass: true,
+      spawnWitnesses: { companion: projection, daemon: null },
+    }));
+    assert.ok(joined.localProcessDuties.refusals.includes('spawn-witness-parent-foreign'), JSON.stringify(joined.localProcessDuties.refusals));
+  });
+
+  test('integration-completion witness-binding negative: a foreign scope digest refuses spawn-witness-nonce-mismatch', () => {
+    const projection = witnessProjection({ identityOverrides: { nonceSha256: sha('x'.repeat(64)) } });
+    const joined = nativeInterruptionGateDInput(record({
+      companionStartEpochMs: 0, daemonStartEpochMs: 1000, hop1WitnessClass: true,
+      spawnWitnesses: { companion: projection, daemon: null },
+    }));
+    assert.ok(joined.localProcessDuties.refusals.includes('spawn-witness-nonce-mismatch'), JSON.stringify(joined.localProcessDuties.refusals));
+  });
+
+  // §29 polish supersession (2026-11-04): this row pinned the shared
+  // `spawn-witness-nonce-mismatch` for the child-nonce divergence; the
+  // §26.7 no-fold discipline now gives the replay-side child-nonce
+  // divergence its OWN fresh label `spawn-witness-child-nonce-foreign`
+  // (distinct from the scope-nonce refusal AND from the runtime emitter's
+  // `spawn-witness-child-nonce-mismatch` poll contradiction). The row's
+  // expectation is renamed at exactly this one pin; no other row moved.
+  test('integration-completion witness-binding negative: a foreign child nonce digest refuses spawn-witness-child-nonce-foreign', () => {
+    const projection = witnessProjection({ identityOverrides: { childNonceSha256: sha('x'.repeat(64)) } });
+    const joined = nativeInterruptionGateDInput(record({
+      companionStartEpochMs: 0, daemonStartEpochMs: 1000, hop1WitnessClass: true,
+      spawnWitnesses: { companion: projection, daemon: null },
+    }));
+    assert.ok(joined.localProcessDuties.refusals.includes('spawn-witness-child-nonce-foreign'), JSON.stringify(joined.localProcessDuties.refusals));
+    assert.equal(joined.localProcessDuties.refusals.includes('spawn-witness-nonce-mismatch'), false,
+      'the child-nonce divergence no longer rides the scope-nonce label');
+  });
+
+  test('integration-completion witness-binding negative: a write at/after the operative fence refuses spawn-witness-post-fence (the fence discipline)', () => {
+    const projection = witnessProjection({ identityOverrides: { firstWriteEpochMs: MEASUREMENT_CUTOFF_AT_MS } });
+    const joined = nativeInterruptionGateDInput(record({
+      companionStartEpochMs: 0, daemonStartEpochMs: 1000, hop1WitnessClass: true,
+      spawnWitnesses: { companion: projection, daemon: null },
+    }));
+    assert.ok(joined.localProcessDuties.refusals.includes('spawn-witness-post-fence'), JSON.stringify(joined.localProcessDuties.refusals));
+  });
+
+  test('integration-completion witness-binding negative: a write inside the writer creation window refuses spawn-witness-parent-generation-ambiguous', () => {
+    // Gate round 1: the row's record is now RUNTIME-ADMITTABLE (the write
+    // postdates the boundary — the admission's own self-consistency) while
+    // the write still sits INSIDE the writer's possible creation window
+    // [3000, 4000): the parent-generation continuity conjunct refuses.
+    const projection = witnessProjection({ identityOverrides: { boundaryEpochMs: 3500, firstWriteEpochMs: 3600, firstWritePreciseMs: 3600.5, childOsStartInstantMs: 3500 } });
+    const joined = nativeInterruptionGateDInput(record({
+      companionStartEpochMs: 3000, daemonStartEpochMs: 3500, hop1WitnessClass: true,
+      spawnWitnesses: { companion: projection, daemon: null },
+    }));
+    assert.ok(joined.localProcessDuties.refusals.includes('spawn-witness-parent-generation-ambiguous'), JSON.stringify(joined.localProcessDuties.refusals));
+  });
+
+  test('integration-completion witness-binding negative: a boundary inside the child creation window refuses spawn-witness-child-generation-ambiguous', () => {
+    // (codex round 25+26+27 re-derivation) the witness instant AGREES with
+    // the endpoint numeric (1000 = 1000 — the cross-record consistency)
+    // AND precedes its own boundary (1000 ≤ 1500 — the round-25
+    // self-consistency); the pinned violation is the BOUNDARY inside the
+    // child creation window (1500 < 1000 + 1000).
+    const projection = witnessProjection({ identityOverrides: { boundaryEpochMs: 1500, firstWriteEpochMs: 1600, firstWritePreciseMs: 1600.5, childOsStartInstantMs: 1000 } });
+    const joined = nativeInterruptionGateDInput(record({
+      companionStartEpochMs: 0, daemonStartEpochMs: 1000, hop1WitnessClass: true,
+      spawnWitnesses: { companion: projection, daemon: null },
+    }));
+    assert.ok(joined.localProcessDuties.refusals.includes('spawn-witness-child-generation-ambiguous'), JSON.stringify(joined.localProcessDuties.refusals));
+  });
+
+
+  test('integration-completion witness-binding negative: a boundary predating the writer OS creation refuses spawn-witness-capture-before-writer', () => {
+    // Gate round 1: the row's record is RUNTIME-ADMITTABLE (positive
+    // boundary, write following it) while the boundary still PRECEDES the
+    // writer's OS creation — the capture-precedes-writer conjunct refuses.
+    const projection = witnessProjection({ identityOverrides: { boundaryEpochMs: 500, firstWriteEpochMs: 600, firstWritePreciseMs: 600.5, childOsStartInstantMs: 500 } });
+    const joined = nativeInterruptionGateDInput(record({
+      companionStartEpochMs: 1000, daemonStartEpochMs: 2000, hop1WitnessClass: true,
+      spawnWitnesses: { companion: projection, daemon: null },
+    }));
+    assert.ok(joined.localProcessDuties.refusals.includes('spawn-witness-capture-before-writer'), JSON.stringify(joined.localProcessDuties.refusals));
+  });
+
+  // --- gate round 1 (report §29.9): the replay mirrors the admission's own
+  // invariants and the runtime's unconditional ordering ---
+
+  test('integration-completion replay admission invariants: a self-contradictory witness record (write before capture) refuses spawn-witness-write-before-capture — the runtime admission label mirrored', () => {
+    // The reviewer's mutation: firstWriteEpochMs 1500 with boundaryEpochMs
+    // 2000 — the runtime admission rejects it spawn-witness-write-before-
+    // capture; the replay must refuse identically, never settle.
+    const projection = witnessProjection({ identityOverrides: { boundaryEpochMs: 2000, firstWriteEpochMs: 1500, firstWritePreciseMs: 1500.5 } });
+    const joined = nativeInterruptionGateDInput(record({
+      companionStartEpochMs: 0, daemonStartEpochMs: 0, hop1WitnessClass: true,
+      spawnWitnesses: { companion: projection, daemon: null },
+    }));
+    assert.equal(joined.localProcessDuties.settled, false, JSON.stringify(joined.localProcessDuties.refusals));
+    assert.ok(joined.localProcessDuties.refusals.includes('spawn-witness-write-before-capture'), JSON.stringify(joined.localProcessDuties.refusals));
+  });
+
+  test('integration-completion replay admission invariants: an unsupported witness record version refuses (the versioned-shape gate mirrored)', () => {
+    const projection = witnessProjection({ identityOverrides: { version: 99 } });
+    const joined = nativeInterruptionGateDInput(record({
+      companionStartEpochMs: 0, daemonStartEpochMs: 0, hop1WitnessClass: true,
+      spawnWitnesses: { companion: projection, daemon: null },
+    }));
+    assert.equal(joined.localProcessDuties.settled, false, JSON.stringify(joined.localProcessDuties.refusals));
+    assert.ok(joined.localProcessDuties.refusals.includes('spawn-witness-shape-invalid'), JSON.stringify(joined.localProcessDuties.refusals));
+  });
+
+  test('integration-completion witnessed-hop ordering: a DEMONSTRABLY inverted endpoint creation order refuses unconditionally — the witness route is never consulted (runtime agreement pinned on the same schedule)', async () => {
+    // The reviewer's mutation: companion creation floor 1000, daemon floor 0
+    // — the strict creation order is inverted, which joinAncestryHops
+    // refuses (generation-lifetime-unverifiable) BEFORE its witness route.
+    // The replay must refuse identically even when a witnessClass rides the
+    // hop — a witness resolves ONLY uncertainty-window failures, never a
+    // demonstrable contradiction.
+    const { joinAncestryHops } = await import('../tools/shell-wait-probe/local-process-observation.mjs');
+    const runtimeJoin = joinAncestryHops({
+      nonce: 'a'.repeat(64),
+      companionObservation: { class: 'os-live-observation', status: 'established', reason: null, localProcessObservationVersion: 3, observation: { pid: 60100, ppid: 600, startIdentity: 'S-COMPANION', startInstantEpochMs: 1000, ppidChangedFromCapture: null, nonce: 'a'.repeat(64) }, queried: { pid: 60100, nonce: 'a'.repeat(64) }, readStartedEpochMs: 5000, identityReadEpochMs: 5050, readEpochMs: 5100, absenceConfirmed: null },
+      daemonObservation: { class: 'os-live-observation', status: 'established', reason: null, localProcessObservationVersion: 3, observation: { pid: 60200, ppid: 60100, startIdentity: 'S-DAEMON', startInstantEpochMs: 0, ppidChangedFromCapture: null, nonce: 'a'.repeat(64) }, queried: { pid: 60200, nonce: 'a'.repeat(64) }, readStartedEpochMs: 5000, identityReadEpochMs: 5060, readEpochMs: 5200, absenceConfirmed: null },
+      transportMarker: { pid: 60300, ppid: 60200, nonce: 'f'.repeat(64) },
+    });
+    assert.deepEqual([runtimeJoin.hops[0].status, runtimeJoin.hops[0].reason], ['unestablished', 'generation-lifetime-unverifiable'],
+      'premise: the runtime refuses the inverted order before consulting any witness');
+    const projection = witnessProjection({ identityOverrides: { childOsStartInstantMs: null } });
+    const joined = nativeInterruptionGateDInput(record({
+      companionStartEpochMs: 1000, daemonStartEpochMs: 0, hop1WitnessClass: true,
+      spawnWitnesses: { companion: projection, daemon: null },
+    }));
+    assert.equal(joined.localProcessDuties.settled, false, JSON.stringify(joined.localProcessDuties.refusals));
+    assert.ok(joined.localProcessDuties.refusals.includes('ancestry-endpoint-lifetime-unverifiable'),
+      `the inverted order refuses unconditionally, witness claim notwithstanding (actual ${JSON.stringify(joined.localProcessDuties.refusals)})`);
+    assert.equal(joined.localProcessDuties.refusals.includes('spawn-witness-writer-foreign'), false,
+      'the refusal is the ordering contradiction, not a witness-binding divergence');
+  });
+
+  test('integration-completion witness admission fence: a witness admission collected at/after the operative cutoff refuses admission-at-or-after-fence — never settles', () => {
+    // The reviewer's mutation: the witness projection's own collection
+    // interval 21000–2200 against the 20000 cutoff — post-cutoff
+    // collection cannot establish settlement (§25.7, the startup-admission
+    // fence semantics mirrored).
+    const projection = witnessProjection({ readStartedEpochMs: 21_000, readEpochMs: 22_000 });
+    const joined = nativeInterruptionGateDInput(record({
+      companionStartEpochMs: 0, daemonStartEpochMs: 0, hop1WitnessClass: true,
+      spawnWitnesses: { companion: projection, daemon: null },
+    }));
+    assert.equal(joined.localProcessDuties.settled, false, JSON.stringify(joined.localProcessDuties.refusals));
+    assert.ok(joined.localProcessDuties.refusals.includes('admission-at-or-after-fence'), JSON.stringify(joined.localProcessDuties.refusals));
+  });
+  test('integration-completion replay closed key set: a v1-stamped projection retaining the v2 member refuses spawn-witness-shape-invalid (the runtime admission rejects it identically)', () => {
+    const projection = witnessProjection({ identityOverrides: { version: 1 } });
+    const joined = nativeInterruptionGateDInput(record({
+      companionStartEpochMs: 0, daemonStartEpochMs: 0, hop1WitnessClass: true,
+      spawnWitnesses: { companion: projection, daemon: null },
+    }));
+    assert.equal(joined.localProcessDuties.settled, false, JSON.stringify(joined.localProcessDuties.refusals));
+    assert.ok(joined.localProcessDuties.refusals.includes('spawn-witness-shape-invalid'), JSON.stringify(joined.localProcessDuties.refusals));
+  });
+
+  test('integration-completion replay closed key set: a projection carrying an unknown member refuses spawn-witness-shape-invalid', () => {
+    const projection = witnessProjection({ identityOverrides: { witnessAnnotation: 'free-form' } });
+    const joined = nativeInterruptionGateDInput(record({
+      companionStartEpochMs: 0, daemonStartEpochMs: 0, hop1WitnessClass: true,
+      spawnWitnesses: { companion: projection, daemon: null },
+    }));
+    assert.equal(joined.localProcessDuties.settled, false, JSON.stringify(joined.localProcessDuties.refusals));
+    assert.ok(joined.localProcessDuties.refusals.includes('spawn-witness-shape-invalid'), JSON.stringify(joined.localProcessDuties.refusals));
+  });});
+
+describe('evidence-completion task 4: the preflight rejects the known-absent witness-reliant design and every refusal leaves zero hosted calls (integration-completion preflight)', async () => {
+  const { runShellWaitCase, evaluateLiveLaunchPreflight } = await import('../tools/shell-wait-probe/driver.mjs');
+
+  test('integration-completion preflight: the closed daemon-witness-reliance map is EMPTY and frozen (no registered case relies on the unsatisfiable route)', async () => {
+    const { DAEMON_WITNESS_RELIANT_CASES } = await import('../tools/shell-wait-probe/driver.mjs');
+    assert.equal(DAEMON_WITNESS_RELIANT_CASES.size, 0, 'the registered design never relies on the daemon-hop witness establishment route (report §28.22: UNSATISFIABLE — the preflight must not treat it as an available positive path)');
+    assert.equal(Object.isFrozen(DAEMON_WITNESS_RELIANT_CASES), true, 'the map is frozen');
+  });
+
+  test('integration-completion preflight: a case whose registered design RELIES on the daemon-hop witness establishment refuses before any launch (the known-absent positive path)', async () => {
+    const verdict = await evaluateLiveLaunchPreflight({
+      case: 'rescue-interrupt', survivalControlSelector: null,
+      fixture: { workspace: '/tmp/x', stdoutCapture: null, record: {}, env: {} },
+    }, { daemonWitnessReliantCases: ['rescue-interrupt'] });
+    assert.equal(verdict.ok, false);
+    assert.match(String(verdict.reason), /daemon-hop witness establishment route.*known unavailable|known unavailable/u, verdict.reason);
+  });
+
+  test('integration-completion preflight launch-spy: a missing pinned binary refuses before ANY fixture work or host/provider invocation (both spies stay at zero)', async () => {
+    let fixtureCalls = 0;
+    let liveCalls = 0;
+    await assert.rejects(
+      runShellWaitCase(
+        { case: 'rescue-interrupt', codexBinary: join(tmpdir(), 'integration-completion-missing-binary'), sourceSha: '9f2d4fc30bd2815e42a7d1efb30f6d3f8a2b61c9', output: join(tmpdir(), 'integration-completion-out'), workerDurationMs: 420_000, capMs: 3_600_000, pollMs: 3_600_000, budgetMs: 1_200_000 },
+        {
+          createFixture: async () => { fixtureCalls += 1; throw new Error('the fixture must never be created for a missing binary'); },
+          executeLiveCase: async () => { liveCalls += 1; return {}; },
+        },
+      ),
+      /does not exist|regular file/i,
+    );
+    assert.equal(fixtureCalls, 0, 'zero fixture work');
+    assert.equal(liveCalls, 0, 'ZERO hosted calls — the executor never ran');
+  });
+
+  test('integration-completion preflight launch-spy: the DEFAULT live path (the only host-launch site) refuses the unarmed mandatory observer before the executor can ever run (the named pre-launch gate; the fixture is disposed; no record persists)', async () => {
+    const previousGate = process.env.ZCODE_SHELL_WAIT_E2E;
+    process.env.ZCODE_SHELL_WAIT_E2E = '1';
+    try {
+      let fixtureCalls = 0;
+      const fsPromises = await import('node:fs/promises');
+      const root = await fsPromises.mkdtemp(join(tmpdir(), 'integration-completion-refusal-'));
+      const output = join(root, 'output');
+      await fsPromises.mkdir(output, { mode: 0o700 });
+      // An UNARMED fixture stub: no stdoutCapture handle, no record arming —
+      // the mandatory local-observation observer is known absent for the
+      // registered case. The DEFAULT executor path applies the pipeline's
+      // pre-launch gate (executeLiveCase undefined — the gate's own
+      // instrument-inert clause), whose named refusal is thrown from
+      // runShellWaitCase itself BEFORE its only executor call site: zero
+      // host/provider invocations are structurally guaranteed, and the
+      // refusal path disposes the fixture.
+      await assert.rejects(
+        runShellWaitCase(
+          { case: 'rescue-interrupt', codexBinary: process.execPath, sourceSha: '9f2d4fc30bd2815e42a7d1efb30f6d3f8a2b61c9', output, workerDurationMs: 420_000, capMs: 3_600_000, pollMs: 3_600_000, budgetMs: 1_200_000 },
+          { createFixture: async () => { fixtureCalls += 1; return { dispose: async () => {}, workspace: '/tmp/integration-completion-ws', env: { HOME: '/tmp/integration-completion-home', ZCODE_DATA_ROOT: '/tmp/integration-completion-data' }, record: {}, stdoutCapture: null } } },
+        ),
+        /local Companion observation seam is not armed/u,
+      );
+      assert.equal(fixtureCalls, 1, 'the fixture was created and then disposed by the refusal path');
+      const persisted = (await fsPromises.readdir(output).catch(() => [])).filter((name) => name.endsWith('.record.json'));
+      assert.equal(persisted.length, 0, 'no case record persists — nothing was launched');
+    } finally {
+      if (previousGate === undefined) delete process.env.ZCODE_SHELL_WAIT_E2E;
+      else process.env.ZCODE_SHELL_WAIT_E2E = previousGate;
+    }
+  });
+});
+
+describe('evidence-completion task 4 gate round 2: the witness admissions ride the shared abort/budget and the replay enforces the versioned closed key set (integration-completion gate round 2)', async () => {
+  const { runHeldHostTurn } = await import('../tools/shell-wait-probe/driver.mjs');
+
+  test('integration-completion runtime: a stalled witness admission is bounded by the shared abort/budget — the turn respects the budget, the outcome is the named window-closed fact, and no admission starts after abort', async () => {
+    const CAPTURE_NONCE = 'c'.repeat(64);
+    const TRANSPORT_NONCE = '9'.repeat(64);
+    const ENTRY = '/private/tmp/g2-installed/skills/rescue/launcher.mjs';
+    const BROKER_ENTRY = '/private/tmp/g2-installed/scripts/zcode-broker.mjs';
+    const declaration = { captureDirectory: '/private/tmp/g2-capture', nonce: CAPTURE_NONCE, entryRealpath: ENTRY, brokerEntryRealpath: BROKER_ENTRY };
+    const BASE = Math.floor(Date.now() / 1000) * 1000;
+    const companionStart = BASE - 4_000;
+    const daemonStart = BASE - 2_000;
+    const markerEpochMs = BASE - 1_000;
+    let companionReads = 0;
+    let phaseThree = false;
+    const admissionEstablished = () => ({
+      localProcessObservationVersion: 3, class: 'startup-identity', status: 'established', reason: null,
+      identity: { role: 'invocation', nonce: CAPTURE_NONCE, entryRealpath: ENTRY, argv: ['invoke-prepared', 'rescue'], pid: 60100, ppid: 600, firstWriteEpochMs: companionStart + 80, startOriginMs: companionStart + 50, firstWritePreciseMs: companionStart + 80.5 },
+      readStartedEpochMs: Date.now(), readEpochMs: Date.now(),
+    });
+    const osEstablished = (pid, ppid, startIdentity, startInstant, nonce) => ({
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'established', reason: null,
+      observation: { pid, ppid, startIdentity, nonce, startInstantEpochMs: startInstant, ppidChangedFromCapture: null },
+      queried: { pid, nonce }, readStartedEpochMs: Date.now(), identityReadEpochMs: Date.now(), readEpochMs: Date.now(), absenceConfirmed: null,
+    });
+    /** The witness seam: the COMPANION admission stalls 700 ms (the
+     * reviewer's simulated slow lstat) while the 100-ms budget aborts. */
+    const witnessCalls = [];
+    const stalledWitnessSeam = async (witnessInput) => {
+      witnessCalls.push(witnessInput.role);
+      if (witnessInput.role === 'invocation') await new Promise((resolve) => setTimeout(resolve, 700));
+      return { localProcessObservationVersion: 3, class: 'spawn-ancestry-witness', status: 'missing', reason: 'spawn-witness-missing', identity: null };
+    };
+    const started = Date.now();
+    let held;
+    try {
+      held = await runHeldHostTurn({
+        gatePath: 'unused-gate',
+        holdMs: 300_000,
+        budgetMs: 100,
+        measurementCutoffSchedule: true,
+        launch: async () => ({
+          result: new Promise((resolve) => {
+            const anchor = setInterval(() => { if (companionReads >= 3) { clearInterval(anchor); resolve({ code: 0, stdout: '', stderr: '' }); } }, 5);
+            anchor.unref?.();
+            setTimeout(() => { clearInterval(anchor); resolve({ code: 0, stdout: '', stderr: '' }); }, 10_000).unref?.();
+          }),
+          terminate: async () => {},
+        }),
+        waitForGate: async () => {},
+        captureProcessIdentity: async () => ({ pid: 60300, ppid: 60200, nonce: TRANSPORT_NONCE, startIdentity: 'S-TRANSPORT', markerEpochMs }),
+        readProcessIdentity: async () => undefined,
+        terminateProcessIdentity: async () => ({ attempted: true, signalled: 'SIGTERM', exited: true, failure: null }),
+        waitForProcessExit: async () => {},
+        releaseGate: async () => {},
+        localObservation: declaration,
+        captureLocalObservationIdentity: async () => admissionEstablished(),
+        observeLocalObservationIdentity: async () => {
+          companionReads += 1;
+          if (companionReads === 1) return osEstablished(60100, 600, 'S-COMPANION', companionStart, CAPTURE_NONCE);
+          if (companionReads === 2) return { ...osEstablished(60100, 600, 'S-COMPANION', companionStart, CAPTURE_NONCE), status: 'unestablished', reason: 'liveness-read-failed', observation: null };
+          return new Promise((resolve) => setTimeout(() => resolve({ localProcessObservationVersion: 3, class: 'os-live-observation', status: 'absent', reason: 'no-such-process', observation: null, queried: { pid: 60100, nonce: CAPTURE_NONCE }, readStartedEpochMs: Date.now(), readEpochMs: Date.now(), absenceConfirmed: true }), 30));
+        },
+        captureLocalBrokerObservationIdentity: async () => ({ ...admissionEstablished(), identity: { role: 'broker-daemon', nonce: CAPTURE_NONCE, entryRealpath: BROKER_ENTRY, configRealpathSha256: 'b'.repeat(64), pid: 60200, ppid: 60100, firstWriteEpochMs: daemonStart + 470, startOriginMs: daemonStart + 450, firstWritePreciseMs: daemonStart + 470.5 } }),
+        observeLocalBrokerObservationIdentity: async () => osEstablished(60200, 60100, 'S-DAEMON', daemonStart, CAPTURE_NONCE),
+        observeLocalTransportObservationIdentity: async () => {
+          phaseThree = true;
+          return osEstablished(60300, 60200, 'S-TRANSPORT', markerEpochMs - 500, TRANSPORT_NONCE);
+        },
+        admitLocalSpawnWitness: stalledWitnessSeam,
+        sleep: (ms) => new Promise((resolve) => setTimeout(resolve, Math.min(ms, 5))),
+        now: (() => { let value = 0; let gated = false; return () => {
+          if (!gated) { if (phaseThree) gated = true; else return 0; }
+          value += 500;
+          return value;
+        }; })(),
+        processNonce: TRANSPORT_NONCE,
+      });
+    } finally {
+      const elapsed = Date.now() - started;
+      const block = held?.cleanup?.localObservation ?? null;
+      assert.ok(block, 'the block persisted');
+      assert.ok(elapsed < 650, `the turn respects its 100-ms budget: a 700-ms stalled witness admission must be released by the shared abort (actual elapsed ${elapsed} ms)`);
+      assert.equal(witnessCalls.length, 1, `no admission may START after abort (the daemon admission must be skipped; actual calls ${JSON.stringify(witnessCalls)})`);
+      assert.equal(block.spawnWitnesses?.companion?.status, 'unestablished', JSON.stringify(block.spawnWitnesses ?? null));
+      assert.equal(block.spawnWitnesses?.companion?.reason, 'spawn-witness-admission-window-closed',
+        `the bounded outcome is the named window-closed fact (actual ${JSON.stringify(block.spawnWitnesses?.companion ?? null)})`);
+    }
   });
 });
