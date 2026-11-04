@@ -24480,3 +24480,361 @@ neuter used for a can-fail proof was restored and md5-verified byte-identical
   run solo on the amended bytes: **98 tests, 98 pass, 0 fail, 0 skipped, exit 0** (an interleaved first attempt
   reported 96 while the local-process SOLO was still draining; the clean solo re-run is the recorded 98/98) —
   Task 2's pins are unaffected by the tie-rank guard.
+
+## 29. 2026-11-04 evidence-completion Task 4: both proof chains integrated into the executor and the final all-duty gate, the preflight extended with the known-absent witness-reliance gate and zero-hosted-call launch-spy regressions, the readiness verdict recorded (offline; zero model turns, zero live launches)
+
+Task 4 of [the evidence-completion plan](../superpowers/plans/2026-11-03-rescue-shell-wait-evidence-completion.md), executed in worktree
+`.worktrees/rescue-shell-wait-evidence-completion` on Task 3's final commit `f3c9503a8124efd1f3e88d44f303e3ad6b4f42cb` (parent chain
+`faf8ce4` → `6f5d117` → `9c33740`). This is an ADDITIVE dated registration directly after §28.33; nothing in §26–§28 is rewritten. Offline
+end to end: zero model turns, zero `ZCODE_SHELL_WAIT_E2E=1` hosted runs, zero host/provider launches (the only processes launched are the
+research suites' own harmless local fixture children, the same discipline every prior task recorded). The owned files are
+`tools/shell-wait-probe/driver.mjs` (integration wiring + preflight + the offline join growth) and the three isolated research test entries;
+`evidence.mjs`, `shape-diagnostic.mjs`, `local-process-observation.mjs`, `fixture.mjs` and `release-qualification.mjs` are UNTOUCHED (the
+§27 union and the §28 v3/v2 witness contracts stand byte-identically; integration consumed them through their existing public seams only).
+
+### 29.1 The integration wiring map (what consumes both proof chains, where)
+
+- **The final all-duty gate is `evaluateNativeInterruptionSettlement` (release-qualification.mjs, oracle v5) fed by
+  `nativeInterruptionGateDInput` (driver.mjs, join v38 — see 29.2) from the PERSISTED record.** BOTH proof chains meet there:
+  Task 2's call-coverage admission rides the delivery layer (`delivery.hostActivityAdmitted` — the §19.4 admission over the
+  complete-scan recognizer union; a scan-incomplete cell withholds it, the §27 withhold test), and Task 3's ancestry
+  witness/join rides the `localProcessDuties` layer (the join's §25.7-fenced composition of the persisted localProcess block;
+  the ancestry hops, the three applicable duties, the pre-fence fences and now the witness projections below). Neither chain
+  alone qualifies — pinned by the native entry's `integration-completion final gate` test: the call-coverage-only input
+  refuses `local-process-observation-unadjudicated`, the ancestry-only input refuses `host-activity-unadmitted`, and the
+  composed shape qualifies with every layer credited.
+- **The executor runtime composition (driver.mjs, the armed held turn's finalize):** `composeAncestryJoinForRuntime` now
+  receives the optional admitted spawn-witness verdicts (`companionSpawnWitness`/`daemonSpawnWitness` — the §28.1 join
+  contract, unchanged) and the runtime ancestry verdict persists with the block as before. The witnesses reach that
+  composition through the ONLY honest capture-side route: **admit-then-forward** — the fixture-owned parent processes (the
+  Companion at its detached-spawn boundary, the daemon at its protocol-spawn boundary) are where the §28.2 emitters run; the
+  DRIVER is never the parent, so the executor runtime ADMITS the boundary records already materialized in the capture scope
+  through the offline `admitSpawnAncestryWitness` admission (full shape/nonce/role validation, never a hand-set boolean) and
+  forwards the ADMITTED verdicts into the composition. An absent or failed admission persists its NAMED fact and the
+  composition rides the arithmetic-only path byte-identically (the §28.1 clause: no permissive fallback).
+- **The persisted projections:** the block gains the schema-additive `spawnWitnesses: { companion, daemon }` field — the
+  DIGEST-ONLY projection of each witness verdict (the scope nonce and the child nonce ride as SHA-256 digests only; the
+  §25.4 item-2 privacy discipline; the identity pids/start identities/instants ride verbatim). The projections survive
+  serialize → reload, and the offline join re-verifies the establishment from the record's own fields.
+- **The replay agreement (the §28.25 clause enforced at the join):** a persisted `witnessClass: 'spawn-boundary-capture'`
+  member on hop 1 (companion-to-daemon) is re-verified through `verifyPersistedSpawnWitnessEstablishment` (driver.mjs) — the
+  frozen `establishThroughSpawnWitness` conjunct family mirrored on the persisted digest-only shapes: scope/role/nonce
+  digests, writer pid+start identity, child pid+start identity, the capture-time kernel parent link, the §25.7 pre-fence
+  write fence, the capture window inside the writer's verified presence (boundary AND write ≤ the writer's establishing
+  read; the boundary never precedes the writer's or the child's OS creation), the creation-order binding (round 10), the
+  parent-generation continuity with the round-12 collection bound (rounds 7/11/12), and the child-generation continuity
+  (rounds 8/9/11). Each divergence keeps its OWN named label from the §28.1 route family (`spawn-witness-absent`,
+  `spawn-witness-unadmitted`, `spawn-witness-nonce-mismatch`, `spawn-witness-role-mismatch`, `spawn-witness-writer-foreign`,
+  `spawn-witness-child-foreign`, `spawn-witness-parent-foreign`, `spawn-witness-capture-unbounded`,
+  `spawn-witness-capture-before-writer`, `spawn-witness-creation-order-inverted`,
+  `spawn-witness-parent-generation-ambiguous`, `spawn-witness-child-generation-ambiguous`, `spawn-witness-post-fence`,
+  `spawn-witness-shape-invalid`, plus the shared torn-evidence label `observation-interval-inverted`) — never folded into
+  the old hop labels (the §26.7 item-5 no-fold discipline). The replay-side CHILD-nonce divergence carries its OWN fresh
+  label `spawn-witness-child-nonce-foreign` — distinct from the scope-nonce refusal (`spawn-witness-nonce-mismatch`) and
+  from the runtime emitter's `spawn-witness-child-nonce-mismatch` (the emitter's poll-budget contradiction — a different
+  fact; folding the two onto one label would itself be a fold). The lifetime conjuncts SPLIT per hop: a witness-resolved hop 1
+  never relaxes hop 2's arithmetic (each conjunct set independently verified).
+- **Helper verdicts that remain NON-QUALIFYING:** the runtime's own composed ancestry/duties aggregates (the serialized
+  `ancestry`/`duties` blocks) stay re-verified inputs, never credit stamps (the §25.10 discipline, unchanged); the witness
+  route's ADMISSION verdicts establish nothing by themselves (only the join's hop rule consumes them, after every frozen
+  conjunct holds); and the preflight/qualifier layers never treat the §28.22 route as a positive path (29.3).
+
+### 29.2 Version registration (§26.7 item 2)
+
+`NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION` 37 → **38** (the join consumes the new persisted `spawnWitnesses` field — a
+consumed semantic field). The pin restamp is exactly: the two full-history pins (native entry `the wired choreography is
+versioned...`, probe entry `the join carries its own versioned identity (the §19.9 v1/v2 precedent mechanism)`) were
+re-stamped 37 → 38 with the v38 note appended additively; the other 25 round-specific pins across the three entries were
+re-stamped to the number 38 only, their historical lineage-label messages left as-written (e.g. the local entry's round-4
+pins still read "join v18 (...round 14)" while asserting the current 38 — the file's own convention: the asserted value
+tracks the current version, the message records the round that introduced it); and ONE symbolic rename beside the numeric
+re-stamps (the probe entry's sample-reproduction pin, the literal 37 → the symbolic current-version reference) —
+27 numeric + 1 symbolic = 28 pin-site edits in total. The witness record class stays `SPAWN_ANCESTRY_WITNESS_VERSION` 2 and
+`LOCAL_PROCESS_OBSERVATION_VERSION` stays 3 (both modules byte-untouched). The oracle stays v5. No old verdict is
+re-classified: an ABSENT `witnessClass` claim on hop 1 keeps the exact §25.10 arithmetic behavior (the byte-stability rows
+of the 24 prior review rounds re-verified inside the full-suite run below), and an absent `spawnWitnesses` field with a
+claimed `witnessClass` refuses `spawn-witness-absent` (replay agreement — never a permissive fallback).
+
+### 29.3 The preflight extensions (known-absent mechanisms covered) and the zero-hosted-call launch-spy evidence
+
+- **The §28.22 gate at preflight:** the new frozen map `DAEMON_WITNESS_RELIANT_CASES` (CLOSED and EMPTY — the registered
+  design never relies on the daemon-hop witness establishment route) and a new first arm in `evaluateLiveLaunchPreflight`:
+  a case whose registered design RELIES on the daemon-hop witness establishment route refuses BEFORE any host/provider
+  invocation with a reason that names the §28.22 UNSATISFIABLE classification and the mechanism absence (the route-(c)
+  exact-generation surface that §28.1 named unavailable is described in the reason's closing clause, not cited by
+  label). The mechanism is pipeline-testable through the injectable dependency (the wrapped-interrupt-gate precedent).
+  **The §28.22 classification is thereby enforced at BOTH layers:** the preflight refuses a design leaning on the route,
+  and the offline join refuses a persisted establishment claim with `spawn-witness-route-unsatisfiable`.
+- **The previously-registered known-absent coverage stands (verified, not rewritten):** the pinned 0.163.0 binary swept from
+  disk fails closed at `assertCodexBinaryExists` (driver.mjs:913–921, the ENOENT throw at :918 and the
+  not-a-regular-file throw at :920, called unconditionally at :631 BEFORE any fixture
+  work — the ENOENT/not-a-regular-file throws), covered by the pre-existing probe rows and NEWLY pinned by the launch-spy
+  regression below; route (c) stays named unavailable (§28.1, no mechanism discovered — unchanged); a known-unimplemented
+  mandatory observer is refused pre-launch by the LOCAL_OBSERVATION_REQUIRED_CASES arm (the §25.3/§25.8 gate, unchanged);
+  and the exact effective preload/env/selector match was already enforced by the round-27–33 arms (the tokenizer, the
+  frozen contract on the handle, the private 0700 directory, the frozen argv selector) — all byte-unchanged.
+- **The launch-spy regressions (zero hosted calls, by construction):** (1) a MISSING pinned binary refuses at
+  `runShellWaitCase` before ANY fixture work — the injected `createFixture` spy records ZERO calls and the executor spy
+  records ZERO calls (the executor is the ONLY host-launch site); (2) the DEFAULT live path (no injected executor) refuses
+  an unarmed mandatory observer at the pipeline's pre-launch gate — the fixture spy records exactly ONE creation (the
+  refusal path then disposes it, asserted via the disposal discipline) and nothing persists, no record is written, and no
+  host/provider invocation can have happened because the gate stands before the sole launch site. Runtime facts (model
+  obedience, observed call shapes, pending-window state, dynamically observed syntax) stay OUT of preflight per the §26.8
+  freeze — no new preflight arm predicts them.
+- **A distinct runtime evidence gate for actual Companion identity, startup/baseline, pending call shape, native response,
+  exit/ancestry and control outcome is PRESERVED unchanged** (the plan's bullet-2 wording): those layers remain exactly
+  what the launched trial must establish — the §25.4/§25.5 identity machinery, the §24.4 pending-window relocation, the
+  oracle's delivery/responsiveness conjuncts and the §16.4 control layer are untouched.
+
+### 29.4 The pipeline negative-case ledger (the plan's bullet 3; each row its own pre-existing or new test, all green in the final battery)
+
+Every named negative below is carried by a registered test (source pins at the §-registrations that introduced them; none
+was removed, skipped or weakened — the full-suite run proves the complete family on the final bytes):
+
+| Negative case | Verdict discipline | Test (entry; registered where) |
+| --- | --- | --- |
+| Real SessionEnd versus native resolution | a session-end sample winner stays an OBSERVED fact in `durableSamplesJoin`; the cause never flips to native settlement; the later SessionEnd remains its own authority (no hidden reconcile/cancel/stop/gate manufactures settlement) | `genuine later SessionEnd: its own stop cause rides verbatim...` (native entry; §23 era) |
+| Legitimate natural winner versus cancellation | `natural-completion-misclassified-as-cancelled` refuses; a pre-call resolution refuses the request window (`prior natural completion`) | probe entry `every mandated rejection...` row + native `prior natural completion...` |
+| No-op/unsent/rejected interrupt | `delivery-unsent` / the rejected-send family never credit (f2 requires the returned send); absence stays UNKNOWN on an unsupported cell (never `attempted: false`) | native `rejected and unsent submissions never credit`; probe `the only interrupt sits in an unsupported wrapper cell...` |
+| Duplicate interrupt | `duplicate interruption: more than one attempt hides collateral interruptions — never attributed` | native entry (§23 era) |
+| Explicit cell terminate | window-closing evidence only, never native settlement credit | native `explicit cell terminate...` |
+| Budget/harness cleanup | a marker at/after the cleanup boundary is the kill resolution (`budget cleanup...`); `cleanup-termination-is-not-native-settlement` | native + probe rows |
+| Process/guard still alive | `companion-still-live-unsettled`; the §16.4 survival-control negatives (buffered pre-delivery lines never prove survival) | native rows + probe I1 battery |
+| Post-cutoff state | a native cancellation at/after the cutoff never credits settlement or latency; post-cutoff completions never ground the Companion layer | native `a native cancellation at/after the measurement cutoff...`, `a post-cutoff completion never grounds...` |
+| Buffered-only control output | the mandated buffered-output negative holds end to end (all lines pre-delivery → never qualified) | probe `the mandated buffered-output negative holds end to end...` |
+| Witness-route negatives (NEW this task) | the §28.22 classification at the replay + the full digest-only binding family (foreign writer/child/parent/scope/child-nonce, post-fence write, parent/child-generation ambiguity, capture-before-writer, omitted/invalid witness) | local-process entry `integration-completion §28.22 at the replay...` + the ten `integration-completion witness-binding negative...` rows |
+
+All existing operation timeouts and the 100-hour semantics remain byte-unchanged (no timeout constant touched in this task;
+the §26.8 schedule bounds 60000/3600000/≤1200000 stand).
+
+### 29.5 RED→GREEN evidence per new family (measured 2026-11-04 in this worktree)
+
+TDD protocol per slice; RED measured with the implementing delta reverted to the base bytes, GREEN on the amended bytes:
+
+1. **The offline join family (17 tests in the local-process entry, prefix `integration-completion`):** RED 12/12 on the
+   base bytes (the §28.22 replay pin, the omitted-witness pin, the replay-agreement positive and the nine binding
+   negatives all fail — actual `ancestry-endpoint-lifetime-unverifiable`/empty refusals), then GREEN after the
+   `verifyPersistedSpawnWitnessEstablishment` + per-hop lifetime split landed (focused `integration-completion` = 17 pass,
+   0 fail). The remaining 5 of the family (the junction + the four preflight rows) landed in slices 3–4 below.
+2. **The executor junction (1 test):** RED on the base bytes (`the runtime block carries the spawn-witness projections` —
+   the runtime composed no witnesses), GREEN after the admit-then-forward wiring (the real fixture → preflight → armed held
+   turn → serializer → reload → Gate-D join pipeline; the same-second chain attributes hop 1 with `witnessClass:
+   'spawn-boundary-capture'`, hop 2 stays refused, the offline replay re-verifies from the persisted projections with zero
+   spawn-witness refusals).
+3. **The preflight/launch-spy family (4 tests):** RED 4/4 on the base bytes (the map absent, the reliance arm absent, the
+   two spy assertions unprovable), GREEN after `DAEMON_WITNESS_RELIANT_CASES` + the preflight arm landed.
+4. **The final both-chains gate (2 tests in the native entry):** the composed-input refactors verified the shape
+   (call-coverage-only refuses, ancestry-only refuses, composed qualifies, the contradictory aggregate rides its refusal
+   through, and an unknown contract version THROWS — the no-legacy-fallback rule); RED for the missing-pin facets rode the
+   join version bump (37 → 38) whose stale pins failed on the amended bytes until re-stamped.
+5. **The join-version bump:** every pinned `NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION` assertion across the three entries
+   updated 37 → 38 with the v38 note appended to the two full-history pin messages.
+
+### 29.6 The gate battery (executed 2026-11-04 in this worktree on the exact converged bytes; every exit captured)
+
+| Command | Result | Exit |
+| --- | --- | --- |
+| `node --test tests/test-selection.test.mjs` | 6 tests, 6 pass, 0 fail | 0 |
+| `npm run test:shell-research` (backgrounded; the COMPLETE suite with the nested selection self-tests) | **1454 tests, 1454 pass, 0 fail, 0 skipped**, suites 135 | 0 |
+| `npm run lint` | clean | 0 |
+| `npm run typecheck` | clean | 0 |
+| `git diff --check` | no output | 0 |
+
+By-name visibility for the new tests inside the final run (all `integration-completion` prefixed): the 12 offline-join
+rows, the junction row, the four preflight/launch-spy rows (17 in the local-process entry) and the two native-entry rows
+are each reported ✔ by name in the suite output. The 19 new tests raise the three entries 386 + 100 + 1(guarded probe) =
+**487** inside the spawned selection suite (the direct runner spawn was measured at exactly 487/487, exit 0), and the
+probe entry's `shellSuiteSpawnedTestTotal` pin was corrected to the MEASURED 487 with the arithmetic recorded in its
+comment. **Honest correction registered here:** the pre-existing pin (393) had ridden STALE since Task 3 — Task 3's 27
+review rounds grew the local-process entry 294 → 369 while the full probe battery was not re-run (§28.22–§28.33 ran the
+local entry SOLO, which is the honest battery that entry needed, but the spawned-suite total pin inside the probe entry
+was never re-derived), so the pin described 393 while the true total at the Task-4 base was 468. This task's full-suite
+runs exposed it; the correction is the measured re-derivation above, not a lucky re-run.
+
+**Two interim full-suite runs are disclosed (repeat reason: concrete, not luck):** the first exposed the then-broken pin
+note syntax (an unescaped apostrophe inside a JS string literal — a build error, fixed) and a stale literal pin at
+tests/shell-wait-probe.test.mjs:28141 (`37` → the symbolic current-version reference); the second ran while driver.mjs was
+still being amended for typecheck narrowing, so the observer-provenance digest pins legitimately detected mid-run source
+change (`sourcesChangedDuringRun: true` — the machinery working as designed, the run invalid by construction). The final
+run above is the converged-bytes battery.
+
+### 29.7 The readiness verdict per the plan's Task 4 bullet 4 (independently reviewed BEFORE E)
+
+- **Every mandatory seam's measurement path is implemented:** the call-coverage seam (§27 union through the real pipeline,
+  the differential/withhold behavior, the diagnostic v1 register) and the ancestry seam (§28 route (b) hop-1 witness
+  through the executor's admit-then-forward composition, the runtime join, persistence and the offline re-verification)
+  both reach the final all-duty gate from the persisted record. The negative families are complete for every implemented
+  path (29.4). The changed executable bytes and the prospective contracts (join v38, the digest-only projection shape, the
+  preflight arm) were reviewed against the plan's Spec-fidelity/anti-reuse/privacy/causal-fence/negative-coverage clauses
+  during this task's own self-review round (the §28-style discipline applied to §29's own diffs; the findings that
+  surfaced — the emit-at-the-driver design error replaced by admit-then-forward, the stale pin, the apostrophe escapes,
+  the TS narrowing — are recorded in 29.5/29.6 rather than papered over).
+- **Verdict: OBSERVER-BLOCKED for E, with the precise statement:** the hop-2 (daemon→transport) ancestry attribution
+  remains the open proof obligation — the daemon-hop witness establishment route is classified UNSATISFIABLE (§28.22) and
+  route (c)'s exact-PID generation surface stays NAMED UNAVAILABLE (§28.1), so same-second daemon-hop ancestry cannot be
+  positively established by any implemented mechanism. The Task-2 call-coverage seam and Task-3's hop-1 witness are
+  measured paths; the §26.8 freeze requires every mandatory native/local/durable/control layer to hold an implemented
+  measurement path before E, and the local layer's hop-2 conjunct cannot be satisfied on a same-second real chain (the
+  recorded V shape) — the offline join refuses it (`ancestry-hops-unattributed` via the arithmetic-only hop 2), the local
+  layer never settles, and the final gate stays unqualified by design.
+- **The concrete next action (the §28.22 bounded repair proposal, carried forward as the E-gate):** discover and justify —
+  against the pinned binaries' platforms — a route-(c) exact-PID generation mechanism (a kernel-addressed PID
+  generation/birth token or equivalent non-reused generation surface reachable through EXISTING local reads only, with its
+  exactness and bounded uncertainty named per §26.6 route (c)); OR a separately authorized change to the daemon's spawn
+  choreography that produces a second-boundary marker write (outside this plan's read-only production boundary — it would
+  need new user authority). Until one exists, E must not launch: the honest status is not "not yet proven" on the other
+  layers but a NAMED unavailable mechanism on this conjunct, with the refusal (never a credit) as the designed behavior.
+- **The runtime uncertainty to record for E (the plan's bullet-4 wording):** lack of certainty that the model will use the
+  finite supported grammar (the §27 union) is a RUNTIME risk, not a preflight requirement — preflight correctly does not
+  predict model obedience; a future NO-MATCH under the §27 union remains the correct fail-closed answer with the §27.6
+  discriminator classes available.
+
+### 29.8 Prohibited paths and commit
+
+The prohibited-paths diff (`git diff f3c9503a8124efd1f3e88d44f303e3ad6b4f42cb --stat -- scripts/ hooks/ skills/ agents/
+.codex-plugin/ prompts/ schemas/ marketplace/ docs/superpowers/specs/ package.json npm-shrinkwrap.json`) is EMPTY; the
+shared-lock repair/snapshot merged in PR #74 stands untouched. One new commit, no push, no earlier-commit amendment.
+
+**Same-day polish corrections (2026-11-04, four P3 findings from the clean self-review; add-only; amended into this
+task's own commit):** (1) the §29.6 comment arithmetic inside `tests/shell-wait-probe.test.mjs` was mended after the
+393→487 pin edit left a garbled duplicated fragment (the measured arithmetic 393 = 294+98+1, 468 = 369+98+1,
+487 = 386+100+1 kept verbatim); (2) the replay-side CHILD-nonce divergence label renamed to the fresh
+`spawn-witness-child-nonce-foreign` (the §26.7 no-fold discipline — the child-specific `-mismatch` form was already the
+runtime emitter's poll-budget label for a different fact; the ONE pin on the old replay-side label — this task's own
+integration row — renamed with its supersession note inline; §29.1's enumeration updated to name the split);
+(3) §29.2's pin-restamp description tightened to the actual scope (the two full-history pins carry the v38 note, the 25
+round-specific pins the number only, lineage labels left as-written) — the less invasive option, chosen over re-styling
+25 history-verbatim pin messages; (4) §29.3's `assertCodexBinaryExists` citation corrected to driver.mjs:913–921
+(the ENOENT throw at :918, the not-a-regular-file throw at :920 — numbers verified by direct read) and the route-(c)
+substance in the preflight reason now DESCRIBED rather than quoted; the §29.2 pin census likewise corrected by the
+narrow re-verification (the probe full-history pin's actual test name, and the 28th symbolic pin-site edit added to the
+enumeration).
+
+### 29.9 Gate round 1 corrections (2026-11-04, four findings from the independent codex review of this task's delta; all pre-existing in the task's own diff; add-only)
+
+**Finding 1 [P2 — witness capture not wired to the real fixture launch path] — ROOT ADJUDICATION: option (b), the hop-1
+capture mechanism at the REAL launch boundary is explicitly classified NOT WIRED (unavailable on the registered launch
+path); the join semantics remain implemented. NOT option (a).** The feasibility check the review ordered, with evidence:
+(1) the daemon spawn is hookable — `spawnDaemon` (scripts/lib/process.mjs:80–88) calls plain `child_process.spawn`, and the
+spawn site is `reconcileBrokerOwnership` (scripts/zcode-broker.mjs:600) executed INSIDE the launcher/Companion process —
+but (2) the registered offline launch path never reaches it: the production launcher (`skills/rescue/launcher.mjs`, a
+42-line dispatch into `runCompanionCli`) fast-fails in authorization BEFORE any broker spawn — the byte-exact envelope
+test (local-process entry :4496, `the REAL launcher fast-fail stays byte-exact...`) proves the offline run exits 1 at the
+`THREAD_ID_REQUIRED`/ambient-turn identity gates (zcode-companion.mjs:831, the prepared-invocation branch :853–860) with
+ONLY the stdout/meta/identity artifacts captured and NO broker identity record — so a preload spawn-hook has no spawn to
+observe on the registered path; (3) driving the launcher past those gates requires fabricating persisted turn-identity/
+thread-spawn-child authorization state — fabricated evidence, prohibited (§26.6's fabricated-authority prohibition; the
+plan's no-fabricated-witness discipline); and (4) the preload cannot reach `emitSpawnAncestryWitness` at all — it is an
+ESM research module with repository imports while the preload is generated pure-CJS text whose registered source-level
+pins forbid repository/research imports, so wiring would require a SECOND, reduced CJS implementation of the
+27-round-refined emitter inside the generated preload — a duplicate-evidence-implementation whose divergence from the
+frozen emitter is exactly the unsoundness class the §26.7 freeze disciplines against. Under (b): **hop-1 witness capture
+is wired through the executor's ADMIT-THEN-FORWARD composition (driver.mjs) consuming capture-side records produced by
+the §28.2 fixture-owned parent emitters — the emission at the REAL installed-host launch boundary is NOT wired and stays
+precisely where §28.6 placed it: the live-trial question.** The junction test's stand-in witness artifacts (the
+identity-record stand-in pattern — the same trust level as the junction's own identity records, validated by the offline
+`admitSpawnAncestryWitness` admission and bound by the join's full conjunct family) prove the composition/replay path;
+they do NOT claim real-boundary capture. **§29.7's wording is superseded accordingly:** the call-coverage seam and the
+witness JOIN/admission/composition/replay semantics are implemented and reviewed; the hop-1 CAPTURE at the real launch
+boundary and the hop-2 capture (unsatisfiable per §28.22, wiring it would be dead code — not wired by adjudication) are
+NOT implemented. E remains observer-blocked — now with the capture-boundary statement joined to the §28.22 statement in
+§29.7's verdict.
+
+**Finding 2 [P2 — replay skips the admission invariants] — FIXED.** `verifyPersistedSpawnWitnessEstablishment`
+(driver.mjs) now mirrors `validateSpawnWitnessRecord`'s versioned shape and record self-consistency on the digest-only
+projection BEFORE any binding: the version gate (1 or SPAWN_ANCESTRY_WITNESS_VERSION — anything else refuses
+`spawn-witness-shape-invalid`), the closed role set (`spawn-witness-role-invalid`), the 64-hex digest forms of the two
+nonces, the identity string/pid/instant bounds, the WRITE-BEFORE-CAPTURE self-consistency pair (`firstWriteEpochMs <
+boundaryEpochMs` and the precise-pair order → `spawn-witness-write-before-capture` — the runtime admission's own
+labels), and the round-25 v2 record self-consistency (`childOsStartInstantMs > boundaryEpochMs` →
+`spawn-witness-child-start-after-capture`). RED: the reviewer's mutation (firstWriteEpochMs 1500 with boundaryEpochMs
+2000) settled true with zero refusals; an unsupported version (99) likewise. GREEN: both refuse with the runtime's
+labels (focused rows `integration-completion replay admission invariants...` ×2). **Version reading: NO version bump**
+— the projection already carried every field the mirror consumes (consumption-side only; the rounds-19–23 precedent).
+
+**Finding 3 [P2 — witnessed hops bypass unconditional arithmetic checks] — FIXED.** The replay now mirrors
+`joinAncestryHops`'s EXACT adjudication order: the DEMONSTRABLE strict orderings (`childStart > parentRead`,
+`parentStart > childRead`, `parentStart > childStart` — the runtime's lifetimeCompatible refusals) refuse
+`ancestry-endpoint-lifetime-unverifiable` UNCONDITIONALLY, BEFORE any witness consultation; only the round-19
+uncertainty-window failures are witness-eligible (hop 2 keeps its §28.22 never-establishes rule — its bound window
+refuses with the witness claim riding the unsatisfiable label, without it the lifetime label). RED: the reviewer's exact
+mutation (companion creation floor 1000, daemon floor 0, nullable childOsStartInstantMs) settled true on the replay
+while `joinAncestryHops` refuses `generation-lifetime-unverifiable` on the same schedule (pinned in the row as the
+runtime-agreement premise). GREEN: the replay refuses unconditionally, the witness route never consulted (focused row
+`integration-completion witnessed-hop ordering...`).
+
+**Finding 4 [P2 — witness admission completion fence not enforced] — FIXED.** The replay now enforces the §25.7
+completion fence on the witness ADMISSION's own collection interval (the projection's `readEpochMs` strictly before the
+operative fence, equality refused) beside the existing WRITE fence — the same completion-fence semantics every startup
+admission and ancestry observation already owes, riding the established label `admission-at-or-after-fence` (no new
+name: the same completion-fence semantics, the rounds-19–23 no-new-name precedent; the WRITE fence keeps its own
+`spawn-witness-post-fence`). RED: the reviewer's mutation (collection 21000–22000 against the 20000 cutoff) settled
+true; GREEN: refuses `admission-at-or-after-fence` (focused row `integration-completion witness admission fence...`).
+
+**Collateral corrections the fixes surfaced (registered, not papered over):** two pre-existing witness-binding negative
+rows carried records the runtime admission itself would have refused (a write PRECEDING its own boundary; a negative
+boundary) — their expectations predated the invariant mirror and were row-corrected to runtime-admittable records that
+isolate the same conjuncts (`parent-generation-ambiguous` via a write inside the writer's creation window;
+`capture-before-writer` via a positive boundary preceding the writer's OS creation), so every row now proves its
+conjunct on a record the admission would actually accept. The junction's witness stand-in artifacts are UNCHANGED under
+(b) (they are the composition/replay proof, not a capture claim), and the projection test helper's default
+`childOsStartInstantMs` moved to a runtime-admittable positive value with overridable read stamps.
+
+**Re-verification on the amended bytes (2026-11-04, the final battery):** `node --test tests/test-selection.test.mjs`
+6/6 exit 0; `npm run test:shell-research` (backgrounded solo, the COMPLETE suite) = **1458 tests, 1458 pass, 0 fail,
+0 skipped** (suites 135) with the four new join-invariant rows ✔ by name; native entry SOLO = 100 tests, 100 pass,
+0 fail, 0 skipped, exit 0; local entry SOLO = 390 tests, 390 pass, 0 fail, 0 skipped, exit 0; `npm run lint` exit 0;
+`npm run typecheck` exit 0; `git diff --check` exit 0. Every Task-2/§27 and Task-3/§28 standing pin in the touched files
+re-verified inside these runs.
+Disclosed interim runs (concrete repeat reasons): the first post-fix full-suite run failed exactly 8 rows — ALL the
+spawned-suite count pin (then 487) whose arithmetic this round's four new join-invariant tests moved to the measured 491
+(local 390 + native 100 + guarded probe 1, the local solo run's own count) — corrected by the measured re-derivation and
+verified by the contract test itself (which spawns the real suite); one `npm run typecheck` invocation transiently
+reported 5 pre-existing-shaped errors in an UNTOUCHED file (tools/wait-route-probe/server.mjs — the ambient MCP-sdk
+resolution family) and passed cleanly on immediate re-run and on the stash-baseline check (exit 0 on base bytes, exit 0
+on the final bytes) — recorded as the environmental glitch it was, never worked around.
+
+### 29.10 Gate round 2 corrections (2026-11-04, two findings from the independent codex review — adjacent completions of §29.9's fixes; add-only)
+
+**Finding 1 [P2 — witness admissions escape the shared abort/budget] — FIXED.** Both witness admissions (the invocation-
+boundary and broker-boundary reads in driver.mjs's armed local runtime) now ride `localBoundedOperation` — the SAME
+shared abort/budget source every local read rides (round-9's bounded-operation wrapper, listener-release included) — and
+NO admission STARTS after abort: an abort recheck precedes each seam call, so an aborted turn never kicks off another
+witness admission, and a budget expiry can never be extended by a stalled witness filesystem operation (teardown's
+`localRuntimeSettled` wait is thereby bounded). The bounded outcome is the NAMED window-closed fact
+`spawn-witness-admission-window-closed` on the witness projection (the localObserveOnce pattern — the observation family's
+`observation-window-closed` naming applied to the admission class; a fresh label, never folded). The mechanism is
+pipeline-testable through the injectable `admitLocalSpawnWitness` seam (the instrument pattern; the default dispatch is
+the real offline admission, byte-identical when the seam is absent). RED: the reviewer's repro — a simulated 700-ms
+stalled admission seam against a 100-ms budget — ran the turn past 700 ms with the daemon admission starting after abort
+(the seam-dispatch layer of the test failed first: no injectable seam existed); GREEN: the turn completes inside the
+budget (focused row `integration-completion runtime: a stalled witness admission is bounded...`), the companion outcome
+is `spawn-witness-admission-window-closed`, and `witnessCalls` pins exactly ONE call — the post-abort daemon admission
+never started.
+
+**Finding 2 [P2 — replay's versioned-shape check incomplete] — FIXED (duplicate key-set mirror, not direct reuse — the
+choice and why).** `validateSpawnWitnessRecord` enforces the version-specific CLOSED key set (`keys.join(',') !==
+required.join(',')` — an unknown member or a misplaced member is foreign), but the runtime validator consumes the RAW
+`nonce`/`childNonce` members while the persisted projection carries only their DIGESTS (the privacy contract), so direct
+reuse on the digest-only projection is impossible — the mirror is the consumption-side form (the rounds-19–23
+consumption-only precedent; no version event). `verifyPersistedSpawnWitnessEstablishment` now enforces the exact
+PROJECTED key set per recorded version — v1's fourteen members (the runtime's v1 set with `nonce`→`nonceSha256`,
+`childNonce`→`childNonceSha256` substituted), v2's fifteen (plus `childOsStartInstantMs`); any unknown member or any
+missing member refuses `spawn-witness-shape-invalid`, and a v1-stamped projection retaining the v2 member refuses
+identically — precisely what the runtime admission rejects. RED: the reviewer's two mutations (version 1 + retained
+`childOsStartInstantMs`; an unknown `witnessAnnotation` member) both settled true; GREEN: both refuse with the runtime's
+label (focused rows `integration-completion replay closed key set...` ×2). **Collateral tightening the mirror required:**
+`localProjectSpawnWitness` now composes the projection by explicit members instead of undefined-assigning the raw nonce
+keys — the in-memory projection is EXACTLY the digest key set the gate enforces (undefined-valued keys would have
+defeated an exact key-set comparison), and the persisted shape is unchanged (JSON already dropped them).
+
+**Re-verification on the amended bytes (2026-11-04, the final battery):** `node --test tests/test-selection.test.mjs`
+6/6 exit 0; `npm run test:shell-research` (backgrounded solo, the COMPLETE suite) = **1461 tests, 1461 pass, 0 fail,
+0 skipped** (suites 136) with all three gate-round-2 rows ✔ by name; native entry SOLO = 100 tests, 100 pass, 0 fail,
+0 skipped, exit 0; local entry SOLO = **393 tests, 393 pass**, 0 fail, 0 skipped, exit 0 (391 pre-round + the two
+closed-key-set rows in the round-1 describe); `npm run lint` exit 0; `npm run typecheck` exit 0; `git diff --check`
+exit 0. The spawned-suite count pin re-derived per round (487 → 491 → 494, always the measured
+local + native + guarded-probe composition, each round's contract test spawning the real suite to verify). One interim
+full-suite run failed exactly the 8 count-pin rows (491 vs the actual 494) — disclosed, corrected by the measured
+re-derivation, contract-test-verified; every Task-2/§27 and Task-3/§28 standing pin in the touched files
+re-verified inside these runs.

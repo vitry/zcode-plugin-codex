@@ -33,7 +33,7 @@ import { EXECUTING_CLOSURE_OBSERVATION_SOURCE, admitStdoutCapture, readDurableOb
 import { CAPTURE_BROKER_ENTRY_VARIABLE, CAPTURE_DIRECTORY_VARIABLE, CAPTURE_ENTRY_VARIABLE, CAPTURE_MAX_BYTES_VARIABLE, CAPTURE_NONCE_VARIABLE, EXECUTING_CLOSURE_PRELOAD_SOURCE, STDOUT_CAPTURE_MAX_BYTES, TERMINAL_ARGV_SELECTOR } from './closure-preload.mjs';
 import { EXECUTING_RELEASE_QUALIFICATION_SOURCE, evaluateSurvivalControl, exactRescueForegroundRenderedExpectation } from './release-qualification.mjs';
 import { EXECUTING_SHAPE_DIAGNOSTIC_SOURCE } from './shape-diagnostic.mjs';
-import { EXECUTING_HELPER_MATERIALIZATION, EXECUTING_LOCAL_PROCESS_OBSERVATION_SOURCE, FAKE_ZCODE_NONCE_VARIABLE, LINUX_BTIME_UNCERTAINTY_MS, LINUX_PROC_RESOLUTION_MS, adjudicateLocalDuties, adjudicateLocalExit, admitStartupIdentityRecord, composeAncestryJoinForRuntime, observeLocalProcess } from './local-process-observation.mjs';
+import { EXECUTING_HELPER_MATERIALIZATION, EXECUTING_LOCAL_PROCESS_OBSERVATION_SOURCE, FAKE_ZCODE_NONCE_VARIABLE, LINUX_BTIME_UNCERTAINTY_MS, LINUX_PROC_RESOLUTION_MS, LOCAL_PROCESS_OBSERVATION_VERSION, SPAWN_ANCESTRY_WITNESS_VERSION, adjudicateLocalDuties, adjudicateLocalExit, admitSpawnAncestryWitness, admitStartupIdentityRecord, composeAncestryJoinForRuntime, observeLocalProcess } from './local-process-observation.mjs';
 
 
 const repositoryRoot = fileURLToPath(new URL('../..', import.meta.url));
@@ -1779,6 +1779,12 @@ export async function runHeldHostTurn(input) {
     presence: null,
     reads: /** @type {unknown[]} */ ([]),
     exit: null,
+    // Evidence-completion Task 4 (report §29): the persisted DIGEST-ONLY
+    // spawn-witness projections (schema-additive; the §28.25 replay-agreement
+    // clause — the offline join re-verifies a witness-established hop from
+    // these fields, and the raw nonces never ride the record). Fields stay
+    // null until the runtime actually composes the boundary witnesses.
+    spawnWitnesses: { companion: null, daemon: null },
     duties: null,
     stoppedAt: null,
     fenceAtMs: null,
@@ -1862,6 +1868,39 @@ export async function runHeldHostTurn(input) {
       boundIdentity: verdict.boundIdentity === null || verdict.boundIdentity === undefined
         ? null
         : { ...verdict.boundIdentity, nonce: undefined, nonceSha256: localBindingDigest(verdict.boundIdentity.nonce) },
+    };
+  };
+  /** Evidence-completion Task 4 (report §29): the spawn-witness projection —
+   * the established verdict's bounded identity rides with its scope and
+   * child nonces as DIGESTS only (the §25.4 item-2 privacy discipline: the
+   * raw nonces never persist); a non-established verdict rides as its named
+   * fact alone (status + reason), never an identity. */
+  const localProjectSpawnWitness = (/** @type {any} */ verdict) => {
+    if (verdict === null || verdict === undefined) return null;
+    if (verdict.status !== 'established') {
+      return { status: verdict.status, reason: verdict.reason ?? null };
+    }
+    const identity = verdict.identity ?? null;
+    if (identity === null) return { ...verdict, identity: null };
+    return {
+      ...verdict,
+      identity: {
+        version: identity.version,
+        class: identity.class,
+        role: identity.role,
+        writerPid: identity.writerPid,
+        writerStartIdentity: identity.writerStartIdentity,
+        childPid: identity.childPid,
+        childPpid: identity.childPpid,
+        childStartIdentity: identity.childStartIdentity,
+        nonceSha256: localBindingDigest(identity.nonce),
+        childNonceSha256: localBindingDigest(identity.childNonce),
+        boundaryEpochMs: identity.boundaryEpochMs,
+        firstWriteEpochMs: identity.firstWriteEpochMs,
+        startOriginMs: identity.startOriginMs,
+        firstWritePreciseMs: identity.firstWritePreciseMs,
+        ...(identity.childOsStartInstantMs === undefined ? {} : { childOsStartInstantMs: identity.childOsStartInstantMs }),
+      },
     };
   };
   /** The operative credit fence: the EARLIEST recorded closing instant (the
@@ -2043,6 +2082,12 @@ export async function runHeldHostTurn(input) {
      * finalize's composition then carries the CAPTURE-TIME parent link as
      * hop 1's ppid fact. */
     let selectedDaemonParentNeedsRecord = false;
+    // Evidence-completion Task 4 (report §29): the task-scoped spawn-witness
+    // verdicts the finalize's ancestry composition consumes (undefined = the
+    // route not composed; a verdict = the admitted (or named-unestablished)
+    // witness the join may consult).
+    let companionSpawnWitness;
+    let daemonSpawnWitness;
     const absenceReads = /** @type {any[]} */ ([]);
     try {
       // Phase 1 — ARM (concurrent with the launch; the admission may retry a
@@ -2175,6 +2220,63 @@ export async function runHeldHostTurn(input) {
           && Number.isSafeInteger(brokerAdmission.identity?.ppid);
         ancestryCompanion = selectedCompanion;
         ancestryDaemon = selectedDaemon;
+        // Evidence-completion Task 4 (report §29): the SPAWN-BOUNDARY
+        // WITNESS integration — the capture-side emitters run INSIDE the
+        // fixture-owned parent processes (the Companion at its detached-spawn
+        // boundary, the daemon at its protocol-spawn boundary; the driver is
+        // never the parent), so the runtime's only honest composition is
+        // ADMIT-then-FORWARD: the boundary records already materialized in
+        // the capture scope are admitted through the offline
+        // {@link admitSpawnAncestryWitness} admission (the full
+        // shape/nonce/role validation — never a hand-set boolean) and the
+        // ADMITTED verdicts ride the finalize's ancestry composition. An
+        // absent or failed admission persists its NAMED fact and the
+        // composition rides the arithmetic-only path byte-identically (the
+        // §28.1 clause: an absent witness never falls back permissively).
+        try {
+          /** @type {any} */
+          const admittedWitnesses = { companion: undefined, daemon: undefined };
+          // Gate round 2, finding 1 (report §29.10): BOTH admissions ride the
+          // shared abort/budget — `localBoundedOperation`, the SAME shared
+          // abort source every local read rides — and NO admission STARTS
+          // after abort: the abort recheck precedes each seam call, so a
+          // budget expiry can never be extended by a stalled witness
+          // filesystem operation and an aborted turn never kicks off another
+          // admission. The bounded outcome is the named window-closed fact
+          // (the localObserveOnce pattern). The injectable seam keeps the
+          // mechanism pipeline-testable (the instrument pattern).
+          const admitWitnessSeam = typeof input.admitLocalSpawnWitness === 'function'
+            ? input.admitLocalSpawnWitness
+            : (/** @type {any} */ witnessInput) => admitSpawnAncestryWitness(witnessInput);
+          const admitWitness = async (/** @type {'invocation' | 'broker-daemon'} */ role) => {
+            if (budgetController.signal.aborted) {
+              return { localProcessObservationVersion: LOCAL_PROCESS_OBSERVATION_VERSION, class: 'spawn-ancestry-witness', status: 'unestablished', reason: 'spawn-witness-admission-window-closed', identity: null };
+            }
+            const verdict = await localBoundedOperation(Promise.resolve().then(() => admitWitnessSeam({
+              captureDirectory: declared.captureDirectory,
+              nonce: declared.nonce,
+              role,
+            })).catch(() => ({ localProcessObservationVersion: LOCAL_PROCESS_OBSERVATION_VERSION, class: 'spawn-ancestry-witness', status: 'unestablished', reason: 'spawn-witness-unreadable', identity: null })));
+            if (verdict === undefined && budgetController.signal.aborted) {
+              return { localProcessObservationVersion: LOCAL_PROCESS_OBSERVATION_VERSION, class: 'spawn-ancestry-witness', status: 'unestablished', reason: 'spawn-witness-admission-window-closed', identity: null };
+            }
+            return verdict;
+          };
+          const companionWitness = await admitWitness('invocation');
+          block.spawnWitnesses.companion = localProjectSpawnWitness(companionWitness);
+          if (companionWitness?.status === 'established') admittedWitnesses.companion = companionWitness;
+          const daemonWitness = await admitWitness('broker-daemon');
+          block.spawnWitnesses.daemon = localProjectSpawnWitness(daemonWitness);
+          if (daemonWitness?.status === 'established') admittedWitnesses.daemon = daemonWitness;
+          companionSpawnWitness = admittedWitnesses.companion;
+          daemonSpawnWitness = admittedWitnesses.daemon;
+        } catch {
+          // The witness route never fails the held turn: an unexpected
+          // condition is the named absent fact and the composition rides the
+          // arithmetic-only path.
+          companionSpawnWitness = undefined;
+          daemonSpawnWitness = undefined;
+        }
         // (Review round 16, Finding 1) the SELECTED same-generation companion
         // refresh joins the exit adjudication's read sequence: it walks the
         // running presence horizon (the offline horizon walk consumes the
@@ -2463,6 +2565,8 @@ export async function runHeldHostTurn(input) {
             : {}),
           ...(typeof input.processNonce === 'string' ? { expectedTransportNonce: input.processNonce } : {}),
           ...(Number.isSafeInteger(/** @type {any} */ (identity)?.markerEpochMs) ? { markerEpochMs: /** @type {any} */ (identity).markerEpochMs } : {}),
+          ...(companionSpawnWitness !== undefined ? { companionSpawnWitness } : {}),
+          ...(daemonSpawnWitness !== undefined ? { daemonSpawnWitness } : {}),
         });
         block.ancestry = localProjectAncestry(ancestryVerdict);
         block.duties = localProjectDuties(adjudicateLocalDuties({
@@ -4907,7 +5011,7 @@ export const INTERRUPT_PARTIAL_FACTS_VERSION = 1;
 // from the record's own fence stamps. A record without the block (every
 // legacy record, every unarmed case) maps NULL — never a pass under this
 // contract (the frozen oracle refuses it by name).
-export const NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION = 37;
+export const NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION = 38;
 
 // ---------------------------------------------------------------------------
 // Local-settlement Task 3 (report §25.10): the OFFLINE composition of the
@@ -4922,6 +5026,160 @@ export const NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION = 37;
  * bumped with the contract's own semantics change — old adjudications stand
  * as history through the join/oracle versions). */
 export const LOCAL_PROCESS_DUTY_CONTRACT_VERSION = 1;
+
+/**
+ * Evidence-completion Task 4 (report §29): re-verify a persisted hop-1
+ * spawn-witness establishment claim from the block's OWN digest-only
+ * projection — the offline mirror of the frozen
+ * `establishThroughSpawnWitness` conjunct family applied to the persisted
+ * shapes (the §28.25 replay-agreement clause: the runtime's established
+ * verdict survives persistence through its own fields; an omitted, stale or
+ * contradictory witness never credits, and the serialized witnessClass
+ * member alone is never proof — the same discipline as every other
+ * serialized aggregate in this join). The nonce bindings compare DIGESTS
+ * (the privacy contract: the raw nonces never ride the record); every other
+ * conjunct consumes the persisted fields verbatim. Each divergence keeps its
+ * OWN named label (the §26.7 item-5 no-fold discipline) — the labels mirror
+ * the runtime route's fresh family, never folded into the old hop labels.
+ * @param {any} witness the block's persisted `spawnWitnesses.<role>` projection
+ * @param {{
+ *   declaredScope: string | null,
+ *   expectedRole: string,
+ *   writerPid: number | undefined,
+ *   writerStartIdentity: string | undefined,
+ *   childPid: number | undefined,
+ *   childStartIdentity: string | undefined,
+ *   childPpid: number | undefined,
+ *   childNonceSha256: string | undefined,
+ *   writerReadEpochMs: number | undefined,
+ *   writerReadStartedEpochMs: number | undefined,
+ *   childReadStartedEpochMs: number | undefined,
+ *   writerOsStartInstant: number | undefined,
+ *   childOsStartInstant: number | undefined,
+ *   operativeFenceMs: number | null,
+ * }} expected the persisted endpoint facts the hop binds
+ * @returns {string | null} the named refusal, or null when the witness
+ *   establishment re-verifies
+ */
+function verifyPersistedSpawnWitnessEstablishment(witness, expected) {
+  if (witness === null || witness === undefined) return 'spawn-witness-absent';
+  if (typeof witness !== 'object' || witness.status !== 'established') return 'spawn-witness-unadmitted';
+  const facts = witness.identity ?? null;
+  if (facts === null || typeof facts !== 'object') return 'spawn-witness-unadmitted';
+  // Gate round 1, finding 2 (report §29.9): the replay mirrors the
+  // admission's OWN versioned shape and record self-consistency
+  // (validateSpawnWitnessRecord's semantics) on the digest-only projection
+  // BEFORE any binding — an unsupported record version or a
+  // self-contradictory record (the write preceding its own capture) is
+  // exactly what the runtime admission refuses, and the replay refuses with
+  // the SAME labels (runtime/replay agreement; §26.7 item 2's versioned
+  // replay). The nonce shape check maps to the DIGEST domain (the projection
+  // carries 64-hex digests where the runtime record carries the raw
+  // 64-hex nonces — the same closed form).
+  if (facts.version !== 1 && facts.version !== SPAWN_ANCESTRY_WITNESS_VERSION) return 'spawn-witness-shape-invalid';
+  // Gate round 2, finding 2 (report §29.10): the VERSION-SPECIFIC CLOSED
+  // key set — validateSpawnWitnessRecord admits a record only when its key
+  // set is EXACTLY the recorded version's closed set (an unknown member or
+  // a misplaced member is foreign). The digest projection substitutes the
+  // two nonce members with their digest forms (the privacy contract); the
+  // mirror enforces the exact projected key set per version — v1 must NOT
+  // carry the v2 member. Direct reuse of the runtime validator is
+  // impossible on the digest-only projection (it validates the RAW nonce
+  // members), so the key-set mirror is the consumption-side form (the
+  // rounds-19–23 precedent; no version event — consumption only).
+  const projectedV1Keys = ['boundaryEpochMs', 'childNonceSha256', 'childPid', 'childPpid', 'childStartIdentity', 'class', 'firstWriteEpochMs', 'firstWritePreciseMs', 'nonceSha256', 'role', 'startOriginMs', 'version', 'writerPid', 'writerStartIdentity'];
+  const projectedV2Keys = ['boundaryEpochMs', 'childNonceSha256', 'childOsStartInstantMs', 'childPid', 'childPpid', 'childStartIdentity', 'class', 'firstWriteEpochMs', 'firstWritePreciseMs', 'nonceSha256', 'role', 'startOriginMs', 'version', 'writerPid', 'writerStartIdentity'];
+  const requiredKeys = facts.version === 1 ? projectedV1Keys : projectedV2Keys;
+  if (Object.keys(facts).sort().join(',') !== requiredKeys.join(',')) return 'spawn-witness-shape-invalid';
+  if (facts.class !== 'spawn-ancestry-witness') return 'spawn-witness-shape-invalid';
+  if (facts.role !== 'invocation' && facts.role !== 'broker-daemon') return 'spawn-witness-role-invalid';
+  if (typeof facts.nonceSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(facts.nonceSha256)
+    || typeof facts.childNonceSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(facts.childNonceSha256)) return 'spawn-witness-shape-invalid';
+  for (const field of ['writerStartIdentity', 'childStartIdentity']) {
+    const value = facts[field];
+    if (typeof value !== 'string' || value.length === 0 || value.length > 256) return 'spawn-witness-shape-invalid';
+  }
+  for (const field of ['writerPid', 'childPid', 'childPpid', 'boundaryEpochMs', 'firstWriteEpochMs']) {
+    const value = facts[field];
+    if (!Number.isSafeInteger(value) || /** @type {number} */ (value) <= 0) return 'spawn-witness-shape-invalid';
+  }
+  if (facts.version === SPAWN_ANCESTRY_WITNESS_VERSION
+    && (!('childOsStartInstantMs' in facts)
+      || (facts.childOsStartInstantMs !== null
+        && (!Number.isSafeInteger(facts.childOsStartInstantMs) || /** @type {number} */ (facts.childOsStartInstantMs) <= 0)))) return 'spawn-witness-shape-invalid';
+  // The record self-consistency pair (the runtime admission's own labels):
+  // the write follows the capture, and the precise-write pair keeps the
+  // identity-record order.
+  if (facts.firstWriteEpochMs < facts.boundaryEpochMs) return 'spawn-witness-write-before-capture';
+  for (const field of ['startOriginMs', 'firstWritePreciseMs']) {
+    const value = facts[field];
+    if (value !== null && (typeof value !== 'number' || !Number.isFinite(value) || value <= 0)) return 'spawn-witness-shape-invalid';
+  }
+  if (facts.startOriginMs !== null && facts.firstWritePreciseMs !== null
+    && facts.firstWritePreciseMs < facts.startOriginMs) return 'spawn-witness-write-before-capture';
+  if (facts.version === SPAWN_ANCESTRY_WITNESS_VERSION && facts.childOsStartInstantMs !== null
+    && Number.isSafeInteger(facts.childOsStartInstantMs)
+    && /** @type {number} */ (facts.childOsStartInstantMs) > facts.boundaryEpochMs) return 'spawn-witness-child-start-after-capture';
+  // The persisted admission's own collection interval is evidence too: a
+  // torn admission interval is the same torn-evidence class as every other
+  // credited read (the shared label's semantics are identical).
+  if (!Number.isSafeInteger(witness.readStartedEpochMs) || !Number.isSafeInteger(witness.readEpochMs)
+    || witness.readStartedEpochMs > witness.readEpochMs) return 'observation-interval-inverted';
+  // Gate round 1, finding 4 (report §29.9): the admission's COMPLETION
+  // strictly precedes the operative fence — the §25.7 discipline every
+  // startup admission and ancestry observation already owes (equality
+  // refused); a post-cutoff collection can never establish settlement. The
+  // established admission-fence label rides (the same completion-fence
+  // semantics — no fold, no new name needed); the witness WRITE fence below
+  // keeps its own spawn-witness-post-fence label.
+  if (expected.operativeFenceMs !== null && witness.readEpochMs >= expected.operativeFenceMs) return 'admission-at-or-after-fence';
+  if (expected.declaredScope !== null && facts.nonceSha256 !== expected.declaredScope) return 'spawn-witness-nonce-mismatch';
+  if (facts.role !== expected.expectedRole) return 'spawn-witness-role-mismatch';
+  if (facts.writerPid !== expected.writerPid || facts.writerStartIdentity !== expected.writerStartIdentity) return 'spawn-witness-writer-foreign';
+  if (facts.childPid !== expected.childPid || facts.childStartIdentity !== expected.childStartIdentity) return 'spawn-witness-child-foreign';
+  if (facts.childPpid !== expected.childPpid) return 'spawn-witness-parent-foreign';
+  // The CHILD-nonce divergence carries its OWN fresh label (the §26.7
+  // item-5 no-fold discipline): distinct from the scope-nonce refusal above
+  // AND from the runtime emitter's `spawn-witness-child-nonce-mismatch`
+  // (the emitter's poll-budget contradiction — a different fact, never
+  // folded onto the replay-side digest divergence).
+  if (facts.childNonceSha256 !== expected.childNonceSha256) return 'spawn-witness-child-nonce-foreign';
+  // The §25.7 credit fence on the witness WRITE: the record's write must
+  // complete STRICTLY before the operative fence (equality refused — the
+  // shared completion discipline), beside the ADMISSION fence above.
+  if (expected.operativeFenceMs !== null && facts.firstWriteEpochMs >= expected.operativeFenceMs) return 'spawn-witness-post-fence';
+  const writerOsStartInstantMs = Number.isSafeInteger(expected.writerOsStartInstant) ? /** @type {number} */ (expected.writerOsStartInstant) : null;
+  if (writerOsStartInstantMs !== null && facts.boundaryEpochMs < writerOsStartInstantMs) return 'spawn-witness-capture-before-writer';
+  const writerReadEpochMs = Number.isSafeInteger(expected.writerReadEpochMs) ? /** @type {number} */ (expected.writerReadEpochMs) : null;
+  if (writerReadEpochMs === null
+    || facts.boundaryEpochMs > writerReadEpochMs || facts.firstWriteEpochMs > writerReadEpochMs) return 'spawn-witness-capture-unbounded';
+  const childOsStartInstantMs = Number.isSafeInteger(expected.childOsStartInstant) ? /** @type {number} */ (expected.childOsStartInstant) : null;
+  if (childOsStartInstantMs !== null && facts.boundaryEpochMs < childOsStartInstantMs) return 'spawn-witness-capture-unbounded';
+  // The creation-order binding (codex round 10): the witnessed child's OS
+  // creation must not demonstrably precede the writer's. A projection
+  // without the member (a v1 replay record) stays absent — never guessed.
+  if (writerOsStartInstantMs !== null && Number.isSafeInteger(facts.childOsStartInstantMs)
+    && /** @type {number} */ (facts.childOsStartInstantMs) < writerOsStartInstantMs) return 'spawn-witness-creation-order-inverted';
+  if (writerOsStartInstantMs === null) return 'spawn-witness-capture-unbounded';
+  // The parent-generation continuity (codex round 7 + the round-12
+  // collection bound): the write must postdate the writer's ENTIRE possible
+  // creation window and the parent identity must be provably COLLECTED after
+  // the write.
+  const writerReadStarted = Number.isSafeInteger(expected.writerReadStartedEpochMs) ? /** @type {number} */ (expected.writerReadStartedEpochMs) : null;
+  if (facts.firstWriteEpochMs < writerOsStartInstantMs + LINUX_BTIME_UNCERTAINTY_MS
+    || writerReadStarted === null
+    || writerReadStarted < facts.firstWriteEpochMs) return 'spawn-witness-parent-generation-ambiguous';
+  // The child-generation continuity (codex rounds 8/9/11): the boundary must
+  // postdate the read-time child's ENTIRE possible creation window and the
+  // child identity must be provably COLLECTED after the boundary.
+  if (childOsStartInstantMs !== null) {
+    const childReadStarted = Number.isSafeInteger(expected.childReadStartedEpochMs) ? /** @type {number} */ (expected.childReadStartedEpochMs) : null;
+    if (facts.boundaryEpochMs < childOsStartInstantMs + LINUX_BTIME_UNCERTAINTY_MS
+      || childReadStarted === null
+      || childReadStarted < facts.boundaryEpochMs) return 'spawn-witness-child-generation-ambiguous';
+  }
+  return null;
+}
 
 /**
  * Compose the local-duty join input from the record's persisted
@@ -5543,18 +5801,78 @@ function joinRecordLocalProcessDuties(block, interrupt, captureDeclaration) {
           }
         }
         const endpointCarriedRead = (/** @type {any} */ endpoint) => (Number.isSafeInteger(endpoint?.identityReadEpochMs) ? endpoint.identityReadEpochMs : endpoint?.readEpochMs);
-        const companionRead = endpointCarriedRead(endpointFor('companion'));
-        const daemonRead = endpointCarriedRead(endpointFor('daemon'));
-        const companionStart = (endpointFor('companion') ?? null)?.observation?.startInstantEpochMs;
-        const daemonStart = (endpointFor('daemon') ?? null)?.observation?.startInstantEpochMs;
-        const lifetimeVerified = Number.isSafeInteger(companionRead) && Number.isSafeInteger(daemonRead)
-          && Number.isSafeInteger(companionStart) && Number.isSafeInteger(daemonStart)
-          && daemonStart + LINUX_BTIME_UNCERTAINTY_MS <= companionRead
-          && companionStart + LINUX_BTIME_UNCERTAINTY_MS <= daemonRead
-          && companionStart + LINUX_BTIME_UNCERTAINTY_MS <= daemonStart
-          && daemonStart + LINUX_BTIME_UNCERTAINTY_MS <= marker.markerEpochMs
-          && marker.markerEpochMs <= daemonRead;
-        if (!lifetimeVerified) refusals.push('ancestry-endpoint-lifetime-unverifiable');
+        const companionEndpoint = endpointFor('companion');
+        const daemonEndpoint = endpointFor('daemon');
+        const companionRead = endpointCarriedRead(companionEndpoint);
+        const daemonRead = endpointCarriedRead(daemonEndpoint);
+        const companionStart = companionEndpoint?.observation?.startInstantEpochMs;
+        const daemonStart = daemonEndpoint?.observation?.startInstantEpochMs;
+        // Evidence-completion Task 4 (report §29): the §28.22 SPLIT — hop 1's
+        // lifetime conjuncts may be witness-resolved from the block's OWN
+        // persisted digest-only spawn-witness projection (the §28.25
+        // replay-agreement clause: a runtime witness-established hop survives
+        // persistence through its own fields, and an omitted, stale or
+        // contradictory witness never credits — the serialized witnessClass
+        // member alone is never proof). Hop 2's conjuncts may NEVER be
+        // witness-resolved: the daemon-hop witness establishment route is
+        // classified UNSATISFIABLE (§28.22 — the bound-window entry
+        // contradicts the positive marker-to-generation binding), so a
+        // persisted witnessClass claim on that hop is contradictory evidence
+        // refusing by its own named label.
+        // Gate round 1, finding 3 (report §29.9): the replay mirrors
+        // joinAncestryHops's EXACT adjudication order — the DEMONSTRABLE
+        // strict orderings refuse UNCONDITIONALLY (the runtime's
+        // lifetimeCompatible check runs before its witness route, so a
+        // witness can never resolve an inverted endpoint order), and ONLY
+        // the round-19 uncertainty-window failures are witness-eligible.
+        const hop1StrictViolation = !Number.isSafeInteger(companionRead) || !Number.isSafeInteger(daemonRead)
+          || !Number.isSafeInteger(companionStart) || !Number.isSafeInteger(daemonStart)
+          || daemonStart > companionRead || companionStart > daemonRead || companionStart > daemonStart;
+        const hop1BoundWindowRefused = !hop1StrictViolation
+          && (daemonStart + LINUX_BTIME_UNCERTAINTY_MS > companionRead
+            || companionStart + LINUX_BTIME_UNCERTAINTY_MS > daemonRead
+            || companionStart + LINUX_BTIME_UNCERTAINTY_MS > daemonStart);
+        const hop2StrictViolation = !Number.isSafeInteger(daemonStart) || !Number.isSafeInteger(daemonRead)
+          || !Number.isSafeInteger(marker.markerEpochMs)
+          || daemonStart > marker.markerEpochMs || marker.markerEpochMs > daemonRead;
+        const hop2BoundWindowRefused = !hop2StrictViolation
+          && daemonStart + LINUX_BTIME_UNCERTAINTY_MS > marker.markerEpochMs;
+        const hop1WitnessClaimed = ancestryHops.find((/** @type {any} */ entry) => entry?.hop === 'companion-to-daemon')?.witnessClass === 'spawn-boundary-capture';
+        const hop2WitnessClaimed = ancestryHops.find((/** @type {any} */ entry) => entry?.hop === 'daemon-to-transport')?.witnessClass === 'spawn-boundary-capture';
+        // The §28.22 classification rides the CLAIM itself (a persisted
+        // daemon-hop witnessClass establishment is contradictory evidence —
+        // the route can never produce one). The STRICT refusals below are
+        // UNCONDITIONAL — they precede every witness consultation, exactly
+        // like joinAncestryHops's lifetimeCompatible check precedes its
+        // witness route.
+        if (hop2WitnessClaimed) refusals.push('spawn-witness-route-unsatisfiable');
+        if (hop1StrictViolation) refusals.push('ancestry-endpoint-lifetime-unverifiable');
+        else if (hop1WitnessClaimed) {
+          const witnessRefusal = verifyPersistedSpawnWitnessEstablishment(
+            typeof block === 'object' && block !== null ? block.spawnWitnesses?.companion ?? null : null,
+            {
+              declaredScope,
+              expectedRole: 'invocation',
+              writerPid: companionEndpoint?.observation?.pid,
+              writerStartIdentity: companionEndpoint?.observation?.startIdentity,
+              childPid: daemonEndpoint?.observation?.pid,
+              childStartIdentity: daemonEndpoint?.observation?.startIdentity,
+              childPpid: companionEndpoint?.observation?.pid,
+              childNonceSha256: daemonEndpoint?.observation?.nonceSha256,
+              writerReadEpochMs: companionRead,
+              writerReadStartedEpochMs: companionEndpoint?.readStartedEpochMs,
+              childReadStartedEpochMs: daemonEndpoint?.readStartedEpochMs,
+              writerOsStartInstant: companionStart,
+              childOsStartInstant: daemonStart,
+              operativeFenceMs: Number.isSafeInteger(operativeFenceMs) ? operativeFenceMs : null,
+            },
+          );
+          if (witnessRefusal !== null) refusals.push(witnessRefusal);
+        } else if (hop1BoundWindowRefused) {
+          refusals.push('ancestry-endpoint-lifetime-unverifiable');
+        }
+        if (hop2StrictViolation) refusals.push('ancestry-endpoint-lifetime-unverifiable');
+        else if (!hop2WitnessClaimed && hop2BoundWindowRefused) refusals.push('ancestry-endpoint-lifetime-unverifiable');
       }
     }
   }
@@ -7098,6 +7416,21 @@ export function localObservationDeclarationFor(fixture, caseLabel) {
 export const WRAPPED_INTERRUPT_REQUIRED_CASES = Object.freeze(new Set());
 
 /**
+ * Evidence-completion Task 4 (report §29): the closed frozen map of cases
+ * whose registered design RELIES on the daemon-hop spawn-witness establishment
+ * route — classified UNSATISFIABLE (report §28.22: the bound-window entry
+ * contradicts the positive marker-to-generation binding, so establishment can
+ * never occur; route (c) stays named unavailable). A case on this map refuses
+ * at the pre-launch gate BEFORE any host/provider invocation: the route is a
+ * KNOWN-ABSENT positive path, never a runtime possibility, and the preflight
+ * must not let a design lean on it. The set is CLOSED and EMPTY: the
+ * registered design never relies on the daemon-hop witness establishment; the
+ * ledger freeze extends the set at this definition if a future design ever
+ * does (the wrapped-interrupt precedent).
+ */
+export const DAEMON_WITNESS_RELIANT_CASES = Object.freeze(new Set());
+
+/**
  * The frozen §16.4 control-design facts a DECLARED survival-control run
  * requires on the fixture's recorded declaration (native-acceptance Task 3,
  * the preflight arm): the fixture writes its control script from THESE
@@ -7142,13 +7475,26 @@ export const SURVIVAL_CONTROL_DECLARATION_FACTS = Object.freeze({
  * pending state, retained host-event fields) stay facts the trial must
  * establish — never preflight-guessed booleans.
  * @param {{ case: string, survivalControlSelector: string | null, fixture: any, gateArtifacts?: { completionGatePath?: string, completionGateReachedPath?: string } }} input
- * @param {{ lstat?: typeof import('node:fs/promises').lstat, readFile?: typeof import('node:fs/promises').readFile, wrappedInterruptRequiredCases?: readonly string[] }} [dependencies]
+ * @param {{ lstat?: typeof import('node:fs/promises').lstat, readFile?: typeof import('node:fs/promises').readFile, wrappedInterruptRequiredCases?: readonly string[], daemonWitnessReliantCases?: readonly string[] }} [dependencies]
  * @returns {Promise<{ ok: boolean, reason: string | null }>}
  */
 export async function evaluateLiveLaunchPreflight(input, dependencies = {}) {
   const lstat = dependencies.lstat ?? (await import('node:fs/promises')).lstat;
   const readFile = dependencies.readFile ?? (await import('node:fs/promises')).readFile;
   const wrappedRequired = dependencies.wrappedInterruptRequiredCases ?? WRAPPED_INTERRUPT_REQUIRED_CASES;
+  // Evidence-completion Task 4 (report §29): the daemon-witness reliance
+  // gate — a case whose registered design relies on the daemon-hop
+  // spawn-witness establishment route is refused pre-launch: the route is
+  // classified UNSATISFIABLE (§28.22) and route (c) stays named unavailable
+  // (§28.1), so it is a KNOWN-ABSENT positive mechanism, never a runtime
+  // possibility the launch could measure. (The injectable dependency keeps
+  // the mechanism pipeline-testable — the wrapped-gate precedent.)
+  const daemonWitnessRequired = dependencies.daemonWitnessReliantCases ?? DAEMON_WITNESS_RELIANT_CASES;
+  if (input.case !== null && input.case !== undefined
+    && Array.isArray(/** @type {readonly string[]} */ (daemonWitnessRequired))
+    && /** @type {readonly string[]} */ (daemonWitnessRequired).includes(input.case)) {
+    return { ok: false, reason: 'the registered design relies on the daemon-hop witness establishment route, which is known unavailable (report §28.22: the route is classified UNSATISFIABLE and no exact-generation mechanism exists to repair it)' };
+  }
   // (0) The wrapped-path reliance gate (codex round 4): a case whose
   // registered design relies on the code-mode-wrapped interrupt is refused
   // pre-launch — that path cannot establish the exact-target layer on this
@@ -7463,6 +7809,7 @@ export async function evaluateLiveLaunchPreflight(input, dependencies = {}) {
  *   waitForProcessExit?: (identity: unknown, phase: string) => Promise<void>,
  *   localObservation?: { captureDirectory: string, nonce: string, entryRealpath: string, brokerEntryRealpath?: string },
  *   captureLocalObservationIdentity?: (admissionInput: any) => Promise<any>,
+ *   admitLocalSpawnWitness?: (witnessInput: { captureDirectory: string, nonce: string, role: 'invocation' | 'broker-daemon' }) => Promise<any>,
  *   observeLocalObservationIdentity?: (observationInput: any) => Promise<any>,
  *   captureLocalBrokerObservationIdentity?: (admissionInput: any) => Promise<any>,
  *   observeLocalBrokerObservationIdentity?: (observationInput: any) => Promise<any>,
