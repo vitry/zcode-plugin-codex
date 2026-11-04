@@ -25072,3 +25072,306 @@ encodes the hop-2 ancestry blocker. Corrections made: §30.1's closing sentence 
 future-launch SAFETY OBLIGATION (extend the preflight with a non-empty reliance set or a dedicated arm — a
 Task-4-scoped code change outside this task's report-only ownership — or enforce the blocker manually at launch time).
 Everything else in §30 (the freeze block, the version pins, the bounds, the dispositions) is byte-stable.
+
+## 31. 2026-11-04 evidence-completion Task 6: the exact-source verification battery on the FINAL bytes, the S1–S7/Q1–Q6 mapping, and the ONE scoped production-ready decision — OBSERVER-BLOCKED (offline; zero model turns, zero hosted/provider attempts)
+
+Task 6 of the 2026-11-03 plan, executed 2026-11-04 in the same worktree (branch
+`docs/rescue-shell-wait-evidence-completion`) on top of Task 5's commit. OFFLINE throughout: zero
+model turns, zero live cases, zero label consumption — the Task-5 ledger stands exactly as
+registered in §30 (E UNLAUNCHED/UNSPENT, E-fix NOT NEEDED) and this task ran no launch of any
+kind. The only owned file is this report (the battery RUNS tests; it changes no code — no
+production, test, config, or dependency byte was edited). This section is ADDITIVE — §1–§30 stand
+byte-unchanged; historical verdicts are carried, never rewritten.
+
+### 31.1 The source pin at battery time
+
+The battery ran on the FINAL executable/test bytes of the campaign: `git rev-parse HEAD` =
+`82ace65a31376c3c836084e086674ee8e2a3dc7e` (Task 5's final commit) on branch
+`docs/rescue-shell-wait-evidence-completion`; `git status --porcelain` EMPTY at battery start (this
+section's own report edit is the only working-tree change, written AFTER the battery completed —
+the battery's executed source is exactly the committed source). Real `node_modules` present (the
+plan-§3 `npm ci --ignore-scripts` state), and the run executed inside THIS worktree — the exact
+clean verification source with `.git` and real `node_modules`, preserving unowned scratch, per the
+plan's Task-6 bullet-3 source requirement (no `/tmp` copy, no CI substitution). The campaign's
+whole diff against the base `9c337403658…` is exactly NINE files — the four `tools/shell-wait-probe/`
+modules (`driver.mjs`, `evidence.mjs`, `local-process-observation.mjs`, `shape-diagnostic.mjs`),
+the three isolated research test entries (`tests/shell-wait-local-process.test.mjs`,
+`tests/shell-wait-native-interruption.test.mjs`, `tests/shell-wait-probe.test.mjs`), and the two
+docs files (this report + the plan) — so every production byte (`scripts/`, `hooks/`, `skills/`,
+`agents/`, `.codex-plugin/`, `prompts/`, `schemas/`, `marketplace/`, package/lockfiles) is
+byte-identical to the merged base at battery time.
+
+### 31.2 The battery (the plan's Task-6 command block, VERBATIM, in order; every count, skip, failure and exit recorded)
+
+Executed sequentially 2026-11-04 in this worktree (background execution with per-command logs;
+each command's exit captured from its own process; wall-clock alongside the runner's own
+`duration_ms`). Every result below is this run's own; nothing is reused from an earlier battery:
+
+| # | Command (plan order) | Verbatim result | Exit | Wall |
+| --- | --- | --- | --- | --- |
+| 1 | `npm run test:shell-research` | **ℹ tests 1461 / ℹ suites 136 / ℹ pass 1460 / ℹ fail 1 / ℹ cancelled 0 / ℹ skipped 0 / ℹ todo 0** (duration_ms 1383059.186). The ONE failure: `an underscore alias of the reporter flag is replaced` (tests/shell-wait-probe.test.mjs:466→:469, AssertionError `1 !== 0`, `generatedMessage: true` — the child's stderr was EMPTY; the nested run lasted 147090.0185 ms) — adjudicated WITH cause in the dated entry below | **1** | 1384 s |
+| 2 | `node --test tests/test-selection.test.mjs` | tests 6 / suites 0 / pass 6 / fail 0 / cancelled 0 / skipped 0 / todo 0 (duration_ms 34.161334) | **0** | 0 s |
+| 3 | `node --expose-gc --test --test-name-pattern='abandoned in-flight lock operation' tests/state.test.mjs` | **the NAMED GC OPT-IN ran for real**: tests 1 / pass 1 / fail 0 / skipped 0 / cancelled 0 / todo 0 (duration_ms 284.721) — never a plain skipped test represented as verified (inside `npm test` the same test reports its standing named skip, see gate 12) | **0** | 0 s |
+| 4 | `node --test tests/rescue-preparation.test.mjs tests/rescue-binding.test.mjs tests/rescue-route-planner.test.mjs` | tests 417 / pass 417 / fail 0 / skipped 0 (duration_ms 24106.581292) | **0** | 24 s |
+| 5 | `node --test tests/rescue-lifecycle.test.mjs tests/rescue-child-reconciliation.test.mjs tests/rescue-progress-relay.test.mjs` | tests 126 / pass 126 / fail 0 / skipped 0 (duration_ms 38678.549334) | **0** | 39 s |
+| 6 | `node --test tests/job-control.test.mjs tests/mcp-result.test.mjs` | tests 213 / pass 213 / fail 0 / skipped 0 (duration_ms 50266.34875) | **0** | 50 s |
+| 7 | `npm run lint` | eslint clean, no findings | **0** | 6 s |
+| 8 | `npm run typecheck` | `tsc --noEmit` clean, no output | **0** | 7 s |
+| 9 | `node scripts/check-line-endings.mjs` | *"LF line endings verified in 550 tracked files."* | **0** | 0 s |
+| 10 | `git diff --check` | no output | **0** | 0 s |
+| 11 | prohibited diff `git diff 9c337403658ed8cb5319e5da75635154ba4aa851 --stat -- scripts/ hooks/ skills/ agents/ .codex-plugin/ prompts/ schemas/ marketplace/ docs/superpowers/specs/ package.json npm-shrinkwrap.json` | **EMPTY (0 bytes)** — see §31.3 | **0** | 0 s |
+| 12 | `npm test` (the COMPLETE suite: `node tools/run-test-suite.mjs routine && node --test tests/integration/marketplace-snapshot-build.mjs`) | routine entry: **ℹ tests 3398 / ℹ suites 0 / ℹ pass 3394 / ℹ fail 0 / ℹ cancelled 0 / ℹ skipped 4 / ℹ todo 0**; integration entry (`marketplace-snapshot-build`): **ℹ tests 2 / ℹ pass 2 / ℹ fail 0 / ℹ skipped 0**. The 4 skips are the STANDING NAMED OPT-IN skips, each printed with its own reason: `installed marketplace skill crosses a real ephemeral Codex turn into ZCode` and `installed Rescue uses one isolated native child for initial and choice continuations` (`# codex-skills-unqualified` — `opt-in-required`; `ZCODE_CODEX_SKILLS_E2E=1` / `ZCODE_CODEX_RESCUE_E2E=1` spend authenticated Codex credits), `real ZCode discovery, two-turn session, read-only Companion, cancellation, model, and history import` (`# real-zcode-unqualified` — `opt-in-required`; `ZCODE_REAL_E2E=1`), and `an abandoned in-flight lock operation keeps its advisory handle out of the garbage collector` (`# Forcing collection deterministically requires --expose-gc` — the flag gate 3 supplies, where the test passed 1/1) | **0** | 712 s |
+
+**Dated entry (2026-11-04, the gate-1 failure adjudicated WITH cause — the failed run stays
+failed; no waiver, no lucky path, no byte changed).** The failing test is a selection-self-test
+that spawns the COMPLETE research suite as a child
+(`spawnSuiteWithPresetNodeOptions('--test_reporter=tap')`, tests/shell-wait-probe.test.mjs:466–472)
+and asserts the child's exit status is 0. Attribution evidence, gathered read-only:
+(1) the assertion's message argument is the child's stderr, and the recorded AssertionError carries
+`generatedMessage: true` — the child's stderr was EMPTY, so the ~487-test nested run executed in
+full (its 147090 ms duration is a complete nested suite) and its exit 1 came from a test failure
+INSIDE the child, whose spec diagnostics stream to the child's discarded stdout;
+(2) the preset is PROVEN irrelevant: `withoutTestReporterFlags`
+(tests/shell-wait-probe.test.mjs:350–363) underscore-normalizes each argument's logical value and
+drops any `--test-reporter(=…)`/`--test-reporter-destination(=…)` match, so `--test_reporter=tap`
+is stripped and the child's `NODE_OPTIONS` is exactly `--test-reporter=spec` (`suiteChildEnv`,
+:376–386) — IDENTICAL to the other self-tests' child env; the SEVEN sibling nested runs in this
+same gate-1 execution (147102–148255 ms each) all PASSED under the same construction;
+(3) load evidence: an UNRELATED system process (a homebrew `git remote-https` fetch, ≈99% CPU in
+`ps` samples, ≈25 CPU-minutes, running ≈14:39–≈15:05 UTC) overlapped gate 1's window
+(14:35:17–14:58:21 UTC) and the failing nested run's slot, while this suite's timing-sensitive
+real-timer tests were in flight (the same gate-1 output records single tests at 15105 ms and the
+nested runs at ≈147–148 s);
+(4) the read-only attribution run: after the battery, the EXACT spawn was reproduced with the
+harness helpers spliced VERBATIM from the test file (same env construction, same preset, nothing
+else executed; no production or test byte changed between the two runs — HEAD still `82ace65`) —
+STATUS **0**, stderr EMPTY, the full nested suite green;
+(5) the campaign's diff does not touch the harness or the failing test: `git diff
+9c337403658…` over `tests/shell-wait-probe.test.mjs` contains ZERO hunks in
+`withoutTestReporterFlags`/`spawnSuiteWithPresetNodeOptions`/the :466 test (verified by hunk
+inspection; the harness predates this campaign — the §22-era post-merge-review fix), and the
++7 outer tests since §29.6's 1454-test green run are exactly §29.9/§29.10's registered
+gate-round additions.
+**Classification:** the gate-1 record STANDS FAILED (exit 1; 1460 pass / 1 fail) and is recorded
+as a failure whose cause is attributed to transient machine-load interference with the
+timing-sensitive nested suite during the battery window — an environmental/baseline cause per the
+plan's "baseline/environment/cwd failures are recorded as failures" rule, never relabeled as a
+pass. The applicable independent evidence that the FINAL bytes are sound: §29.6's complete
+suite green on the same executable bytes (the +7 delta being the reviewed gate-round tests),
+7/8 sibling nested runs green inside the failed run itself, and the exact-spawn reproduction
+green post-battery. No production byte is implicated (the harness and the failing test are
+byte-identical to the merged base); no repair is proposed because no defect was observed in any
+campaign byte.
+
+### 31.3 The prohibited-path diff and the merged shared-lock repair
+
+The prohibited-path diff (gate 11 above, re-verified before this section's commit) is **EMPTY**:
+`git diff 9c337403658ed8cb5319e5da75635154ba4aa851 --stat -- scripts/ hooks/ skills/ agents/
+.codex-plugin/ prompts/ schemas/ marketplace/ docs/superpowers/specs/ package.json
+npm-shrinkwrap.json` produces 0 bytes of output. The merged shared-lock repair/snapshot (the
+advisory-lock FileHandle retention fix and the refreshed snapshot from PR #74, implemented in
+`scripts/lib/` — e.g. `scripts/lib/fs.mjs`'s advisory-lock machinery) is therefore intact at the
+source level: `git diff 9c337403658… -- scripts/lib/fs.mjs scripts/lib/state.mjs` is EMPTY, and
+its behavior was re-proven by gate 3 (the GC opt-in `abandoned in-flight lock operation` test:
+1/1 pass under `--expose-gc`) and by the untouched `tests/state.test.mjs` (not in the campaign's
+nine-file diff). Production directories, user configuration, caches, `../codex`, and marketplace
+snapshots were read-only throughout Tasks 1–6 (the §2 boundary; §28.2's fixture-owned capture
+wrote only disposable temporary roots; §30.6's zero-new-fixture-records verification carries).
+
+### 31.4 The S1–S7 mapping (plan Task-6 bullet 2): inherited contract guarantees versus this campaign's actual observations
+
+Labels per the 2026-10-05 spec §S1–§S7. "INHERITED" = the guarantee rides the unchanged production
+contract suites (green in §31.2 gates 4–6 and inside gates 1/12) plus the unchanged production
+bytes (§31.3); "MEASURED" = this campaign's own offline observations (§26–§30 registrations); no S
+item was weakened anywhere (requirements UNCHANGED — the prohibited diff is EMPTY).
+
+- **S1 (binding/preparation/named/generic/same-Child authority) — INHERITED, unchanged.**
+  Preparation/binding/route authority suites green on the final bytes (gates 4: 417/417 —
+  e.g. tests/rescue-binding.test.mjs:49 `binding codec creates one exact active generation…`,
+  :145 `binding codec rejects unknown, duplicate, unsafe, and identity-mismatched data with fixed
+  errors`; tests/rescue-preparation.test.mjs:71 `exports one canonical exact reactivation
+  validator…`; tests/rescue-route-planner.test.mjs:194 `modern Hook binding path mismatch fails
+  closed without legacy downgrade or replacement spawn` — the same-Child/no-replacement-spawn
+  authority). The campaign changed zero production binding/preparation bytes (§31.3) and its
+  fixtures never touched a production seam (§26.2/§28.2).
+- **S2 (original handle / empty observation / no duplicate poll) — INHERITED, with the campaign's
+  additive MEASURED proof that new admissions preserve it.** The pipeline ownership machinery is
+  unchanged (the probe entry's call-ID ownership family: `call-ID ownership rejects a launcher and
+  poll sharing one terminal response` and its ID-undefined/null/""/91/`["poll-1"]` rows — all
+  green inside gates 1/12); lifecycle's wait-intent row
+  (tests/rescue-lifecycle.test.mjs:220 `a wait intent observes the same bounded policy without
+  stop authority`) carries the bounded-observation authority. MEASURED: the §27 differential
+  proved every newly admitted form settles IDENTICALLY to the pinned `r` control through the REAL
+  pipeline with the launch/poll handles unchanged
+  (tests/shell-wait-native-interruption.test.mjs:451 `coverage-completion §27 differential…`),
+  and the withhold row (:485) proved a scan-incomplete cell still earns NO credit (no duplicate
+  poll, no manufactured completion).
+- **S3 (output/choice/error) — INHERITED, unchanged.** Byte-for-byte terminal public stdout,
+  bounded stderr/progress ownership and error semantics ride the unchanged production bytes plus
+  tests/mcp-result.test.mjs (:62 `success text equals the CLI stdout bytes for every fixture`,
+  :96 `the domain interruption keeps empty stdout, bounded stderr, and the signal exit code`),
+  tests/rescue-progress-relay.test.mjs (:38 `relay wire rejects unknown keys, mismatched pairs,
+  unsafe bounds, and private exception text`), and the job-control terminal projections (gate 6:
+  213/213). MEASURED: the §27 admitted family preserves per-statement output ownership by
+  construction (the equal-sink-only rule D5, §27.1) and the differential rows deepEqual-compare
+  the settled values against the pinned control (:451).
+- **S4 (placement matrix / background / Status observation-only) — INHERITED, unchanged.**
+  Placement authority: tests/rescue-preparation.test.mjs:131 (`v4 accepts only the authorized
+  placement pairs and rejects v1/v2 plus partial, mixed, and unauthorized v4 options`);
+  background semantics: tests/rescue-lifecycle.test.mjs:213 (`background child loss without
+  matching receipt keeps the remote turn running`); Status observation-only: the job-control
+  Status rows (e.g. tests/job-control.test.mjs:223 `bound Rescue status selects the exact binding
+  current job and returns only the fixed safe projection`). MEASURED: the campaign's observation
+  windows/budgets are OBSERVATION bounds only, never production timeouts (§26.8 freeze carried
+  verbatim into §30.4's future-launch package); the one observational sidecar / between-polls
+  semantics were never touched (zero production bytes).
+- **S5 (native interruption / owned settlement / no-collateral / timeouts / 100-hour ceiling /
+  unrelated survival) — the campaign's CORE: measurement paths BUILT and negative-complete
+  OFFLINE; the LIVE conjuncts NOT MEASURED (observer-blocked).** MEASURED (offline): the
+  call-coverage admission (§27; 17 `coverage-completion` rows in
+  tests/shell-wait-probe.test.mjs from :28944 + the differential/withhold pair) and the hop-1
+  same-second ancestry witness (§28; the `same-second-completion` family, 67 rows in
+  tests/shell-wait-local-process.test.mjs, plus the complete adversarial negative family) are
+  integrated into the final all-duty gate and proven to compose from BOTH chains — neither alone
+  qualifies (tests/shell-wait-native-interruption.test.mjs:5488 `integration-completion final
+  gate: the all-duty oracle consumes BOTH proof chains…`; the 24 `integration-completion` rows in
+  tests/shell-wait-local-process.test.mjs). NOT MEASURED (live): actual native responsiveness
+  under a proven causal admission, all applicable owned/local/no-collateral settlement, and the
+  unrelated-control survival observation — E was UNLAUNCHED on the §29.7/§30.2 observer-blocked
+  verdict (the hop-2 conjunct cannot be satisfied on a same-second real chain), so these cells
+  stay honestly empty with the NAMED cause (§31.5). INHERITED and unchanged: the configured
+  operation timeouts and the 100-hour safety ceiling (zero production bytes — no six-hour ceiling,
+  no inactivity detector, no new operation timeout); reconciliation/loss fail-closed behavior
+  (gate 5: 126/126 — e.g. tests/rescue-child-reconciliation.test.mjs:328 `fails closed with
+  unavailable evidence and no writes when the Host cannot prove the terminal turn`).
+- **S6 (named/generic parity AND the §26 call-coverage obligations — what Task 2 added).**
+  Spec-parity clauses INHERITED: the named/generic alignment and no-fallback-weakening authority
+  ride the unchanged route-planner suite (gate 4) and the unchanged production route bytes; the
+  generic route's structural unavailability (§17.14.4) is unchanged; no grammar grew outside the
+  research probe. MEASURED (Task 2's addition, §27): ONE additive whole-body recognition family
+  (`WRAPPER_STATEMENT_PATTERN`, §27.1) beside the byte-identical pinned skeletons — the union
+  widens and retreats nothing — with the finite bounds D1–D7 (declaration `const|let|var`; the
+  mechanical ECMA name class bounded 1–64; raw-byte junction runs 1–8/0–8; ONE-break layout;
+  equal-sink-only; ONE valid directive over the raw anchor; the unchanged 4096-bound literal
+  decoder; the frozen tool set); RED→GREEN measured (§27.2: 12 focused tests 4 pass/8 fail before
+  the delta, 12/12 after); deliberate refusals registered (§27.3); the v1 diagnostic register
+  classifies refusals content-free (§26.5/§27.5, no schema bump); V's historical spelling stays
+  unknown/unchanged (§27.6); model obedience under the wider union remains a RUNTIME risk
+  (§29.7's wording), never a preflight claim.
+- **S7 (production isolation) — VERIFIED.** The prohibited diff is EMPTY at the final tree
+  (§31.3, gates 10–11); production configuration, canonical Skills, Role templates, installed
+  caches, marketplace snapshots and `../codex` were read-only all campaign; temporary fixture
+  edits stayed in disposable roots and were disposed (§28.2's 0600/0700 pattern; §30.6: zero new
+  fixture records retained); session-confined ownership authority unchanged
+  (tests/job-control.test.mjs:189 `owner IDs are stable, opaque and session-confined`). No
+  global configuration edit, auto-promotion or release authorization follows from anything in
+  this campaign.
+
+**Q1–Q6 disposition (carrying the measured-cohort limits; Q4 updated from the E/E-fix ledger):**
+
+- **Q1–Q3, Q6 — CARRIED UNCHANGED, scoped to the measured 0.163.0 cohort.** The §24.1/§25.1
+  re-pins stand; every composition claim above is scoped to the measured 0.163.0 cohort; the
+  selected binary remains swept from disk since 2026-11-03 (§30.4's byte-identical re-provision
+  duty for any future launch). This campaign added ZERO new live cohort evidence (zero hosted
+  attempts) and re-ran no long/repeat/cadence campaign (none was authorized). Q6's smallest-
+  deployment answer is untouched by Task 6; no configuration seam was invented or adopted.
+- **Q4 — UPDATED from the E/E-fix ledger outcome (E UNLAUNCHED observer-blocked; E-fix NOT
+  NEEDED/unused):** native explicit interruption during a pending long observation remains
+  NOT PROVEN live — now with the blocking cause NAMED to the mechanism level: the hop-2
+  (daemon→transport) same-second ancestry attribution has NO implemented establishment route
+  (§28.22 UNSATISFIABLE; §28.1 route (c) named unavailable), so the local layer's settlement
+  conjunct can never qualify a same-second real chain and the final gate stays unqualified by
+  design. Every OTHER layer holds an implemented, negative-complete measurement path (§30.5's
+  CAN-list); the noise and sidecar cells are unchanged from §17.14.1/§13.6 (this campaign re-ran
+  neither); zero kills were observed because zero trials ran; the request-side submission
+  mechanics records from N/I0/I1/V remain historical history, never upgraded by inference.
+- **Q5 — RETAINED SEPARATE AND UNTOUCHED (zero production scope).** Root-owned Review,
+  Adversarial-Review and Status `--wait` claims stand exactly as §17.14.3/§22.4 recorded them
+  (AR + ST single-run compatible; RV not qualified on its own production-scope no-send cause; BG
+  live placement unproven). Task 6 ran no Root command case and authorizes none; a Rescue research
+  completion never qualifies any Root-owned surface.
+
+### 31.5 The decision record (plan Task-6 bullet 4): exactly ONE explicit scoped decision
+
+**The decision: OBSERVER-BLOCKED — the managed-Rescue native/owned/no-collateral acceptance is
+NOT proven, and the finite qualification closes as evidence-complete offline and precisely
+blocked live.** Per §29.7/§30 (unchanged by Task 6 — the battery could not and did not alter any
+seam's semantics), the decision's precise content:
+
+- **The exactly-one fact that remains unsupported:** the **hop-2 (daemon→transport) SAME-SECOND
+  ancestry attribution** — no implemented mechanism can positively establish it on a same-second
+  real chain (the recorded V shape), so the local layer's settlement conjunct fails
+  (`ancestry-hops-unattributed` via the arithmetic-only hop 2) and the final all-duty gate stays
+  unqualified BY DESIGN. Both hops must hold; hop 1 (Companion→daemon) is qualified offline
+  (§28), hop 2 is not — and a proof for one hop never bridges the other (§26.7/§28.24
+  composition rule).
+- **Which evaluated routes prevent a safe correction today:** (i) the daemon-witness route is
+  classified **UNSATISFIABLE** (§28.22) by full predicate contradiction — its bound-window entry
+  condition (`markerTime < daemonStart + LINUX_BTIME_UNCERTAINTY_MS`) contradicts its own
+  establishment requirements jointly (`markerTime >= daemonStart +
+  LINUX_BTIME_UNCERTAINTY_MS`), so every admitted-witness outcome is one of the named refusals
+  and establishment can never occur; the refusal is enforced at BOTH layers (the offline join
+  mirror `spawn-witness-route-unsatisfiable`, driver.mjs:5848; the preflight no-reliance design
+  rule, driver.mjs:7431/:7492); (ii) route (c) — platform-supported exact-PID generation
+  evidence — is **NAMED UNAVAILABLE** (§28.1): no exact-PID generation surface exists through the
+  existing local reads (the darwin `lstart` whole-second floor and the Linux btime/proc
+  resolution unchanged; no new OS API probed); (iii) the §29.9 Finding-1 boundary: CAPTURE at the
+  real installed-host launch boundary is NOT wired (hop 1's capture side exists as fixture-owned
+  emitters; wiring the hop-2 capture would be dead code while §28.22 stands). **"Not yet proven,"
+  never "impossible":** the block is a named, bounded, potentially-repairable MECHANISM absence —
+  nothing in this ledger claims the underlying fact is unknowable (§26.6's route wording carried
+  through §29.7/§30.6 verbatim).
+- **What does NOT follow:** no Skill, configuration, or cache enablement; no reduced acceptance
+  requirement; no separately released `rescue-long` island; no production adoption of any kind.
+  Production enablement is NOT part of this plan; **`do-not-adopt-yet` is carried unchanged**
+  (§22.7's unified recommendation stands; §31.4's Q5 separation intact). Research completion
+  never means production was enabled.
+- **The concrete next action (carried from §29.7/§30.2, unchanged):** EITHER discover and
+  justify — against the pinned binaries' platforms — a **route-(c) exact-PID generation
+  mechanism** (a kernel-addressed PID generation/birth token or equivalent non-reused generation
+  surface reachable through EXISTING local reads only, with its exactness and bounded uncertainty
+  named per §26.6 route (c)), OR obtain **separate user authority for a daemon spawn-choreography
+  change** that produces a second-boundary marker write (outside this plan's read-only production
+  boundary). Any future authorized launch then satisfies §30.4's frozen package: the four
+  task-specific variables re-resolved, the byte-identical 0.163.0 binary re-provisioned, the
+  observer/input version pins recorded (`LOCAL_PROCESS_OBSERVATION_VERSION` 3,
+  `SPAWN_ANCESTRY_WITNESS_VERSION` 2, join v38, diagnostic v1 — all verified in the executing
+  bytes today), and the §30.4 future-launch SAFETY OBLIGATION honored (the hop-2 blocker enforced
+  by a preflight extension or manually with §29.7 rigor) — followed by a NEW finite ledger
+  registered before any launch. Further hosted cases require NEW user authority; the E slot
+  remains UNSPENT (§30.2), never transferred.
+
+### 31.6 The review record and the completion statement (plan Task-6 bullets 4 and the completion clause)
+
+- **Reviews on the executable/test bytes — COMPLETED before this section (recorded at their cited
+  locations, carried not repeated):** the §27.5 diagnostic corrections + §27.8 self-review round,
+  §28's seventeen codex-review rounds (§28.9–§28.33, each add-only), §29.9/§29.10's gate rounds,
+  and §30.6's gate round 1. The final bytes' review state is the state those rounds left; Task 6
+  changed no executable or test byte (the campaign's nine-file diff is unchanged by Task 6), so
+  those reviews remain reviews OF the final revision's code.
+- **Review of Task 6's own delta — DATED ENTRY (the independent adversarial review was ATTEMPTED
+  and NOT OBTAINED; recorded pending, never ticked as completed):** the plan's Task-6 bullet 4
+  asks for independent final reviews on the actual final revision. For the EXECUTABLE/TEST bytes
+  that requirement is already satisfied by the recorded rounds listed above — Task 6 changed no
+  executable or test byte (the campaign's nine-file diff is byte-identical before and after
+  Task 6; §31.1/§31.3), so §27.5/§27.8, §28's seventeen codex-review rounds, §29.9/§29.10's gate
+  rounds and §30.6's gate round 1 remain reviews OF the final revision's code. For Task 6's OWN
+  delta (this section + the battery record; docs-only), an independent codex adversarial review
+  was dispatched (job `review-mw29pbe4-id1fcf`, 2026-11-04 15:21 UTC, scoped to §31 only, against
+  the plan's Task-6 clauses and the §26–§30 registrations), ran 46+ minutes, and produced NO
+  result — its log's last entry is 15:24 UTC (a scope-listing command; no findings were ever
+  returned), and the job was cancelled at 16:12 UTC rather than left wedged (this session's
+  predecessor adversarial-review had also been cancelled at 24 m without a result). **The Task-6
+  delta's independent review is therefore recorded as PENDING / NOT OBTAINED — honestly, per the
+  plan's do-not-tick-while-pending rule; no review claim is made for §31 itself.** The battery
+  table, the failure adjudication and the decision record carry their own verbatim, re-runnable
+  evidence and do not depend on this pending review; a later session can re-dispatch the review
+  against the committed revision (docs-only; no code implications either way).
+- **The completion statement:** the finite qualification of the 2026-11-03 plan is **PRECISELY
+  BLOCKED** — evidence-complete offline (the call-coverage seam, the hop-1 same-second witness,
+  and the integrated all-duty gate are measured, negative-complete, independently reviewed, and
+  green on the final bytes) and observer-blocked live (E unlaunched on the named hop-2 mechanism
+  absence before any host contact; the slot unspent; E-fix not needed). Verification is honestly
+  recorded (§31.2's battery, including its one adjudicated environmental failure), the decision
+  is exactly one scoped record (§31.5), and the next action is concrete (§31.5's final bullet).
+  Research completion never means production was enabled.
