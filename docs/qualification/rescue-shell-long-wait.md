@@ -25375,3 +25375,86 @@ seam's semantics), the decision's precise content:
   recorded (§31.2's battery, including its one adjudicated environmental failure), the decision
   is exactly one scoped record (§31.5), and the next action is concrete (§31.5's final bullet).
   Research completion never means production was enabled.
+
+### 31.7 The overall evidence/privacy closing review (2026-11-05): the witness-endpoint start-instant contradiction closed on BOTH sides + the final-oracle regression; one NEW dedicated commit (add-only)
+
+- **The finding (the evidence/privacy adversarial closing review, verbatim):** "[medium] Reject conflicting child
+  start instants before granting witness credit (tools/shell-wait-probe/driver.mjs:5156-5162). The runtime witness
+  join and this replay never compare the witness's childOsStartInstantMs with the child endpoint's
+  startInstantEpochMs, despite both describing the same captured start identity. Using the registered replay
+  fixture, setting the witness start to 1950 while the endpoint remains 0 and the boundary is 2000 produces
+  settled:true with zero refusals. With otherwise passing independent proofs, the final oracle returns
+  qualified:true. A mixed or corrupted v2 record can therefore bypass generation ambiguity by using the endpoint's
+  earlier creation window. Recommendation: Reject conflicting supplied child start instants in both
+  establishThroughSpawnWitness and the persisted replay. Add a negative regression that verifies the final oracle
+  refuses this mutation."
+- **The comparison-semantics adjudication: SAME-SOURCE EQUALITY, no tolerance.** The witness record's
+  `childOsStartInstantMs` derives at capture from `resolveObservationStartInstantMs(childVerified.startIdentity)`
+  and the child endpoint's `startInstantEpochMs` derives from `resolveObservationStartInstantMs(daemonFacts.startIdentity)`
+  — the SAME resolver on the SAME captured start identity text (the darwin lstart parse or the Linux proc-ticks
+  arithmetic; the childStartIdentity STRING equality already binds the two observations to one generation, so both
+  numerics are the same derivation of the same identity). Same-domain same-source numerics therefore require
+  EQUALITY — no uncertainty tolerance, no epsilon. Absent on either side stays absent (never credited as
+  agreement): the endpoint numeric absent keeps the standing classification (the record's instant alone governs
+  the creation-order/continuity rules), and a v1 record without the member keeps the legacy shape. **The label:
+  `spawn-witness-child-start-contradicted`** — MY CALL per no-fold: a CROSS-RECORD numeric contradiction is
+  distinct from the creation-order inversion (round 10), the boundary contradiction (round 25's
+  child-start-after-capture), and the generation-ambiguity family; it is refused identically on BOTH sides
+  (runtime/replay label agreement).
+- **Fix 1 (runtime, establishThroughSpawnWitness, local-process-observation.mjs:2764-2778):** when
+  `expected.childOsStartInstant` (the endpoint's numeric start, hop 1's `daemonFacts.startInstantEpochMs`) and
+  `facts.childOsStartInstantMs` (the record's) are both present and differ → the hop refuses
+  `spawn-witness-child-start-contradicted`. **Fix 2 (replay, verifyPersistedSpawnWitnessEstablishment,
+  driver.mjs:5163-5175):** the same comparison on the digest-only projection's `childOsStartInstantMs` vs
+  `expected.childOsStartInstant` (the persisted daemon endpoint's numeric start) — the SAME label mirrored
+  (runtime/replay agreement). **Version reading: NO VERSION BUMP** — admission/establishment-side validation of
+  the existing v2 member and the existing endpoint field; no persisted-shape change.
+- **RED (a, runtime):** the reviewer's schedule through joinAncestryHops (the witness childOsStartInstantMs 1950,
+  the endpoint numeric 0, the boundary 2000, the identity strings equal): pre-fix `established` +
+  `witnessClass: 'spawn-boundary-capture'`. **GREEN:** `['unestablished', 'spawn-witness-child-start-contradicted']`
+  (tests/shell-wait-local-process.test.mjs:7141). **RED (b, replay):** Task 4's registered replay fixture with the
+  same mutation (the endpoint 0, the witness 1950): pre-fix `settled: true, refusals: []`. **GREEN:** settled false
+  with `spawn-witness-child-start-contradicted` surfaced (:16281). **RED/GREEN (c, the FINAL-ORACLE regression the
+  reviewer names):** the same fixture through `nativeInterruptionGateDInput` → `evaluateNativeInterruptionSettlement`:
+  pre-fix `qualified: true` (otherwise-passing independent proofs); post-fix `qualified !== true` AND
+  `layers.localProcess === false` with the contradiction refusal surfacing through the local layer
+  (:16312, the exact surfacing pinned). **The controls pinned (both sides):** the EQUAL pair (the witness instant
+  = the endpoint numeric) keeps establishing/crediting (unchanged); the ABSENT endpoint numeric keeps the existing
+  classification (the record instant alone governs the creation-order/continuity rules); the ABSENT record member
+  (a v1 replay record) keeps the legacy shape.
+- **Task-4 fixture re-derivations (enumerated honestly):** Task 4's registered fixture carried its projection
+  default `childOsStartInstantMs: 1` against the endpoint numeric 0 — ALREADY an unequal pair that the missing
+  comparison never caught. Post-fix, EVERY witness-carrying fixture must carry an AGREEING pair: the positive
+  replay-agreement pin, the agreeing control, and the five witness-binding negatives (writer-foreign/child-foreign/
+  parent-foreign/nonce-mismatch/child-nonce-foreign/post-fence) re-derived onto `daemonStartEpochMs: 1000` +
+  `childOsStartInstantMs: 1000` (the endpoint numeric 0 is second-misaligned for the record shape on darwin —
+  admission-start containment requires a second-aligned instant); their PINNED labels are byte-identical (the
+  aligned pair passes the new comparison and each pinned violation fires as before). The boundary-inside-the-child-
+  window pin re-derived onto an AGREEING instant with the boundary 1500 inside the window [1000, 2000) — the pinned
+  `spawn-witness-child-generation-ambiguous` byte-identical. The round-11 provenance pin's join numerics re-derived
+  onto the record's own resolved instant (the same-source derivation) — the taken-instant provenance assertions
+  unchanged. No pinned outcome changed; only fixture consistency was established.
+- **Prior-counterexample re-run (all by name on the amended bytes, all ✔ — 202 matching pins incl. the complete
+  task-2 exit family):** the complete standing table from §28.9–§28.33 plus the overall-review runtime/replay/
+  oracle pins and their controls (listed above). **Standing-pin movements: NONE** beyond the enumerated Task-4
+  fixture re-derivations (which preserve every pinned label byte-identically).
+- **Gates on the amended bytes (executed 2026-11-05):** focused `same-second-completion` + `integration-completion`
+  families = **95 tests, 95 pass, 0 fail** (by name visible); `node --test tests/test-selection.test.mjs` =
+  **6/6, exit 0**; `npm run lint` exit 0; `npm run typecheck` exit 0; `git diff --check` exit 0.
+- **Battery lines (executed 2026-11-05 on the amended bytes):** full local-process entry, SOLO = **369 tests,
+  369 pass, 0 fail, 0 skipped, exit 0**; NATIVE-INTERRUPTION (Task 2's file, consumed read-only) SOLO = **98 tests,
+  98 pass, 0 fail, 0 skipped, exit 0**; the FULL shell-research suite (`npm run test:shell-research`) = **1464
+  tests, 1464 pass, 0 fail, 0 skipped, exit 0** after the spawned-suite count pin's honest re-derivation 494→497
+  (see below); PROBE solo = **968 tests, 968 pass, 0 fail, 0 skipped, exit 0** on the clean re-run.
+- **The spawned-suite count pin honestly re-derived (disclosed):** my two new tests shifted the shell-research
+  runner's aggregate, and Task 4's probe file pins the spawned aggregate (`shellSuiteSpawnedTestTotal` 494).
+  EMPIRICAL re-derivation: the spawned runner (tap reporter) reports **497 tests, 497 pass, 0 fail** — the pin
+  moved 494→497 in `tests/shell-wait-probe.test.mjs:135` (the count pin is the runner-agreement constant; NO other
+  line in that file touched). A first probe solo reported one worktree-canary failure — an ISOLATION artifact (the
+  canary registration was pruned by a concurrently-draining suite; the clean solo re-run passes 968/968 including
+  the canary).
+- **The commit:** the overall-review fix lands as a NEW dedicated commit (NOT an amend of any task commit —
+  cross-task finding per the fix-attribution rule), message exactly "research: close the overall-review
+  witness-endpoint start-instant contradiction (evidence-completion overall review)", staging exactly the four
+  touched files (the runtime join, the replay verification, the two test files — the local-process suite and the
+  probe suite's re-derived spawned-count pin — and this report).

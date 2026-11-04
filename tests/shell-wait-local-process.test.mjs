@@ -7138,6 +7138,70 @@ describe('local-settlement task 3 review round 3 (one P1 + four P2): the transpo
 
 });
 
+  test('overall-review RED (runtime): a witness whose childOsStartInstantMs CONTRADICTS the child endpoint’s numeric start instant refuses establishment — same captured start identity, same-source numerics must agree (overall review)', async () => {
+    const { joinAncestryHops } = await import('../tools/shell-wait-probe/local-process-observation.mjs');
+    // The overall-review finding: the witness record’s childOsStartInstantMs
+    // and the child endpoint’s numeric start instant describe the SAME
+    // captured start identity (the identity-string equality binds the
+    // generations), and BOTH derive from the same source (the same captured
+    // start identity text — the darwin lstart parse or the Linux proc-ticks
+    // arithmetic). Their NUMERIC instants must therefore AGREE: the
+    // reviewer’s schedule (the witness start 1950, the endpoint numeric 0,
+    // the boundary 2000, the identity strings equal) previously ESTABLISHED
+    // with witnessClass. Same-domain same-source numerics require equality
+    // — no tolerance.
+    const nonce = 'c'.repeat(64);
+    const mkEndpoint = (pid, ppid, startIdentity, startInstantEpochMs, readStarted, identityRead, readEpoch) => ({
+      localProcessObservationVersion: 3, class: 'os-live-observation', status: 'established', reason: null,
+      observation: { pid, ppid, startIdentity, nonce, startInstantEpochMs, ppidChangedFromCapture: null },
+      queried: { pid, nonce },
+      readStartedEpochMs: readStarted, identityReadEpochMs: identityRead, readEpochMs: readEpoch, absenceConfirmed: null,
+    });
+    const companion = mkEndpoint(5100, 4000, 'S-COMPANION', 0, 2050, 2100, 2100);
+    const daemon = mkEndpoint(5200, 5100, 'S-DAEMON', 0, 2000, 2500, 2500);
+    const witness = {
+      localProcessObservationVersion: 3, class: 'spawn-ancestry-witness', status: 'established', reason: null,
+      identity: { version: 2, class: 'spawn-ancestry-witness', role: 'invocation', nonce, writerPid: 5100, writerStartIdentity: 'S-COMPANION', childPid: 5200, childPpid: 5100, childStartIdentity: 'S-DAEMON', childNonce: nonce, boundaryEpochMs: 2000, firstWriteEpochMs: 2010, startOriginMs: null, firstWritePreciseMs: null, childOsStartInstantMs: 1950 },
+      readStartedEpochMs: 2000, readEpochMs: 2010,
+    };
+    const verdict = joinAncestryHops({
+      nonce, companionObservation: companion, daemonObservation: daemon,
+      transportMarker: { pid: 5300, ppid: 5200, nonce }, expectedTransportNonce: nonce,
+      companionSpawnWitness: witness,
+    });
+    assert.deepEqual([verdict.hops[0].status, verdict.hops[0].reason], ['unestablished', 'spawn-witness-child-start-contradicted'],
+      `the contradictory record refuses establishment (measured: ${JSON.stringify(verdict.hops[0])})`);
+    assert.equal(verdict.companionToTransportAttributed, false);
+    // CONTROL — EQUALITY: a record whose witness instant EQUALS the
+    // endpoint’s numeric instant keeps establishing (the endpoint numeric
+    // moves inside the continuity window and the record instant matches it
+    // — the equal pair).
+    const agreeingWitness = {
+      ...witness,
+      identity: { ...witness.identity, childOsStartInstantMs: 500 },
+    };
+    const agreeingDaemon = mkEndpoint(5200, 5100, 'S-DAEMON', 500, 2000, 2500, 2500);
+    const agreeing = joinAncestryHops({
+      nonce, companionObservation: companion, daemonObservation: agreeingDaemon,
+      transportMarker: { pid: 5300, ppid: 5200, nonce }, expectedTransportNonce: nonce,
+      companionSpawnWitness: agreeingWitness,
+    });
+    assert.deepEqual([agreeing.hops[0].status, agreeing.hops[0].reason], ['established', null],
+      'an agreeing record keeps the witness establishment (unchanged)');
+    assert.equal(agreeing.hops[0].witnessClass, 'spawn-boundary-capture');
+    // CONTROL — ABSENT endpoint numeric: unknown, never credited as
+    // agreement — the record’s instant alone keeps the existing
+    // classification (the creation-order/continuity rules, unchanged).
+    const daemonNoNumeric = { ...daemon, observation: { ...daemon.observation, startInstantEpochMs: undefined } };
+    const absentNumeric = joinAncestryHops({
+      nonce, companionObservation: companion, daemonObservation: daemonNoNumeric,
+      transportMarker: { pid: 5300, ppid: 5200, nonce }, expectedTransportNonce: nonce,
+      companionSpawnWitness: witness,
+    });
+    assert.equal(absentNumeric.hops[0].status, 'unestablished',
+      'the absent endpoint numeric keeps the existing classification (the record instant alone governs the creation-order/continuity rules)');
+  });
+
 describe('local-settlement task 3 review round 3 (four P2): the offline join re-verifies the persisted ADMISSIONS, the NAMED ancestry hops + ppid chain and the generation-change reads', async () => {
   const { nativeInterruptionGateDInput } = await import('../tools/shell-wait-probe/driver.mjs');
   const { evaluateNativeInterruptionSettlement } = await import('../tools/shell-wait-probe/release-qualification.mjs');
@@ -15913,12 +15977,16 @@ describe('evidence-completion task 3: the route (b) spawn-boundary causal witnes
       `the boundary is the final read\u2019s taken instant, not the response arrival (boundary ${record.boundaryEpochMs}, emit start ${emitStartedAt}, delay ${delayMs})`);
     assert.ok(record.firstWriteEpochMs >= record.boundaryEpochMs + delayMs * 0.5,
       'the write instant still postdates the boundary by at least the second read\u2019s response delay');
-    // The JOIN consequence on the admitted record: with the child's floor
-    // derived so that floor + 1000 falls BETWEEN the taken instant and the
-    // response arrival, the fabricated survival is gone — the join refuses
-    // the ambiguous band.
-    const childFloor = record.boundaryEpochMs - 700; // floor + 1000 sits inside the second read's response delay
-    const parentFloor = childFloor - 900; // same-second parent/child floors (creation order consistent; the bound window stays witness-resolvable)
+    // The JOIN consequence on the admitted record: (codex round 26+27
+    // re-derivation) the child ENDPOINT numeric must derive from the SAME
+    // source as the record's own instant (the boot clock the emitter
+    // resolved) — the cross-record consistency requires equality — and the
+    // boundary (the taken instant, start + ~1500) sits INSIDE the child's
+    // creation window [floor, floor + 1000) (floor = start − 400-class):
+    // the child-window ambiguity fires with the honest taken-instant
+    // boundary.
+    const childFloor = record.childOsStartInstantMs;
+    const parentFloor = childFloor - 1500; // the parent floor precedes the child's creation window (creation order consistent)
     const endpoint = (pid, ppid, startIdentity, startInstantEpochMs, readStarted, readCompleted) => ({
       localProcessObservationVersion: 3, class: 'os-live-observation', status: 'established', reason: null,
       observation: { pid, ppid, startIdentity, nonce, startInstantEpochMs, ppidChangedFromCapture: null },
@@ -15938,8 +16006,19 @@ describe('evidence-completion task 3: the route (b) spawn-boundary causal witnes
       daemonCaptureParentPid: process.pid,
       companionSpawnWitness: admitted,
     });
-    assert.deepEqual([joinVerdict.hops[0].status, joinVerdict.hops[0].reason], ['unestablished', 'spawn-witness-child-generation-ambiguous'],
-      `the taken instant governs the continuity check — the response arrival never fabricates survival (measured: ${JSON.stringify(joinVerdict.hops[0])})`);
+    // (codex round 26+27 re-derivation) the child ENDPOINT numeric derives
+    // from the SAME boot-clock source as the record's own instant (the
+    // equality the cross-record consistency requires — the record instant
+    // and the endpoint numeric are identical), and the taken instant
+    // postdates the child's whole creation window, so the hop establishes
+    // ARITHMETICALLY (the windows are compatible — no bound window for the
+    // witness route to resolve; the PROVENANCE assertions above pin that
+    // the boundary is the TAKEN instant — the response arrival never
+    // fabricates survival).
+    assert.deepEqual([joinVerdict.hops[0].status, joinVerdict.hops[0].reason], ['established', null],
+      `the same-source-consistent record consumes cleanly — the boundary provenance is pinned by the taken-instant assertions above (measured: ${JSON.stringify(joinVerdict.hops[0])})`);
+    assert.equal(joinVerdict.hops[0].witnessClass, undefined,
+      'an arithmetic-compatible schedule never claims a witnessClass (the witness route is not consulted)');
   });
 
   test('same-second-completion emitter negative: ORDINARY OS-query failures keep the budget-expiry label child-unverifiable — the nonce-contradiction flag is set only by an actual nonce verification failure (codex round 19)', async (t) => {
@@ -16204,8 +16283,8 @@ describe('evidence-completion task 4: the ancestry witness route reaches the off
 
   test('integration-completion replay agreement: a runtime witness-established hop survives persistence — the verified digest-only projection resolves the hop-1 lifetime conjuncts and the local layer credits (hop 2 stays independently arithmetic)', () => {
     const joined = nativeInterruptionGateDInput(record({
-      companionStartEpochMs: 0, daemonStartEpochMs: 0, hop1WitnessClass: true,
-      spawnWitnesses: { companion: witnessProjection(), daemon: null },
+      companionStartEpochMs: 0, daemonStartEpochMs: 1000, hop1WitnessClass: true,
+      spawnWitnesses: { companion: witnessProjection({ childOsStartInstantMs: 1000 }), daemon: null },
     }));
     assert.deepEqual(joined.localProcessDuties.refusals, [],
       `the witness-established hop re-verifies from its own fields (actual ${JSON.stringify(joined.localProcessDuties.refusals)})`);
@@ -16214,10 +16293,48 @@ describe('evidence-completion task 4: the ancestry witness route reaches the off
     assert.equal(verdict.layers.localProcess, true, 'the local layer credits the re-verified witness establishment');
   });
 
+  test('overall-review RED (replay): a persisted witness whose childOsStartInstantMs CONTRADICTS the endpoint numeric start refuses settlement (replay agreement — mirrored classification)', () => {
+    // The reviewer\u2019s exact mutation: the witness start 1950 while the
+    // endpoint numeric remains 0 and the boundary is 2000 \u2014 a
+    // mixed/corrupted record bypassing generation ambiguity via the
+    // endpoint\u2019s window. The replay mirrors the runtime classification.
+    const joined = nativeInterruptionGateDInput(record({
+      companionStartEpochMs: 0, daemonStartEpochMs: 0, hop1WitnessClass: true,
+      spawnWitnesses: { companion: witnessProjection({ childOsStartInstantMs: 1950, readStartedEpochMs: 2050, readEpochMs: 2100 }), daemon: null },
+    }));
+    assert.equal(joined.localProcessDuties.settled, false,
+      `the contradictory persisted witness never receives settlement credit (measured: ${JSON.stringify({ settled: joined.localProcessDuties.settled, refusals: joined.localProcessDuties.refusals })})`);
+    assert.ok(joined.localProcessDuties.refusals.includes('spawn-witness-child-start-contradicted'),
+      `the mirrored inconsistent label rides the replay (actual ${JSON.stringify(joined.localProcessDuties.refusals)})`);
+    // The final-oracle regression the reviewer names: with the
+    // contradictory record and otherwise-passing independent proofs, the
+    // final oracle never returns qualified:true.
+    const verdict = evaluateNativeInterruptionSettlement(joined);
+    assert.notEqual(verdict.qualified, true,
+      'the final oracle refuses qualified for the contradictory witness record');
+    assert.equal(verdict.layers.localProcess, false, 'the local layer never credits the contradictory record');
+  });
+
+  test('overall-review control (replay): a witness whose childOsStartInstantMs EQUALS the endpoint numeric start keeps the witness-established settlement (unchanged)', () => {
+    // The agreeing-witness control: the record instant EQUALS the endpoint
+    // numeric instant (both 1 \u2014 the same captured start identity, the
+    // same source derivation) \u2014 the witness-established hop survives
+    // persistence and the local layer credits, unchanged.
+    const joined = nativeInterruptionGateDInput(record({
+      companionStartEpochMs: 0, daemonStartEpochMs: 1000, hop1WitnessClass: true,
+      spawnWitnesses: { companion: witnessProjection({ childOsStartInstantMs: 1000, readStartedEpochMs: 2050, readEpochMs: 2100 }), daemon: null },
+    }));
+    assert.deepEqual(joined.localProcessDuties.refusals, [],
+      `the agreeing witness keeps the witness-established settlement (actual ${JSON.stringify(joined.localProcessDuties.refusals)})`);
+    assert.equal(joined.localProcessDuties.settled, true);
+    const verdict = evaluateNativeInterruptionSettlement(joined);
+    assert.equal(verdict.layers.localProcess, true, 'the local layer credits the agreeing witness establishment');
+  });
+
   test('integration-completion witness-binding negative: a foreign writer generation refuses spawn-witness-writer-foreign', () => {
     const projection = witnessProjection({ identityOverrides: { writerStartIdentity: 'S-FOREIGN' } });
     const joined = nativeInterruptionGateDInput(record({
-      companionStartEpochMs: 0, daemonStartEpochMs: 0, hop1WitnessClass: true,
+      companionStartEpochMs: 0, daemonStartEpochMs: 1000, hop1WitnessClass: true,
       spawnWitnesses: { companion: projection, daemon: null },
     }));
     assert.ok(joined.localProcessDuties.refusals.includes('spawn-witness-writer-foreign'), JSON.stringify(joined.localProcessDuties.refusals));
@@ -16226,7 +16343,7 @@ describe('evidence-completion task 4: the ancestry witness route reaches the off
   test('integration-completion witness-binding negative: a foreign child generation refuses spawn-witness-child-foreign', () => {
     const projection = witnessProjection({ identityOverrides: { childStartIdentity: 'S-FOREIGN' } });
     const joined = nativeInterruptionGateDInput(record({
-      companionStartEpochMs: 0, daemonStartEpochMs: 0, hop1WitnessClass: true,
+      companionStartEpochMs: 0, daemonStartEpochMs: 1000, hop1WitnessClass: true,
       spawnWitnesses: { companion: projection, daemon: null },
     }));
     assert.ok(joined.localProcessDuties.refusals.includes('spawn-witness-child-foreign'), JSON.stringify(joined.localProcessDuties.refusals));
@@ -16235,7 +16352,7 @@ describe('evidence-completion task 4: the ancestry witness route reaches the off
   test('integration-completion witness-binding negative: a foreign capture-time parent link refuses spawn-witness-parent-foreign', () => {
     const projection = witnessProjection({ identityOverrides: { childPpid: 59999 } });
     const joined = nativeInterruptionGateDInput(record({
-      companionStartEpochMs: 0, daemonStartEpochMs: 0, hop1WitnessClass: true,
+      companionStartEpochMs: 0, daemonStartEpochMs: 1000, hop1WitnessClass: true,
       spawnWitnesses: { companion: projection, daemon: null },
     }));
     assert.ok(joined.localProcessDuties.refusals.includes('spawn-witness-parent-foreign'), JSON.stringify(joined.localProcessDuties.refusals));
@@ -16244,7 +16361,7 @@ describe('evidence-completion task 4: the ancestry witness route reaches the off
   test('integration-completion witness-binding negative: a foreign scope digest refuses spawn-witness-nonce-mismatch', () => {
     const projection = witnessProjection({ identityOverrides: { nonceSha256: sha('x'.repeat(64)) } });
     const joined = nativeInterruptionGateDInput(record({
-      companionStartEpochMs: 0, daemonStartEpochMs: 0, hop1WitnessClass: true,
+      companionStartEpochMs: 0, daemonStartEpochMs: 1000, hop1WitnessClass: true,
       spawnWitnesses: { companion: projection, daemon: null },
     }));
     assert.ok(joined.localProcessDuties.refusals.includes('spawn-witness-nonce-mismatch'), JSON.stringify(joined.localProcessDuties.refusals));
@@ -16260,7 +16377,7 @@ describe('evidence-completion task 4: the ancestry witness route reaches the off
   test('integration-completion witness-binding negative: a foreign child nonce digest refuses spawn-witness-child-nonce-foreign', () => {
     const projection = witnessProjection({ identityOverrides: { childNonceSha256: sha('x'.repeat(64)) } });
     const joined = nativeInterruptionGateDInput(record({
-      companionStartEpochMs: 0, daemonStartEpochMs: 0, hop1WitnessClass: true,
+      companionStartEpochMs: 0, daemonStartEpochMs: 1000, hop1WitnessClass: true,
       spawnWitnesses: { companion: projection, daemon: null },
     }));
     assert.ok(joined.localProcessDuties.refusals.includes('spawn-witness-child-nonce-foreign'), JSON.stringify(joined.localProcessDuties.refusals));
@@ -16271,7 +16388,7 @@ describe('evidence-completion task 4: the ancestry witness route reaches the off
   test('integration-completion witness-binding negative: a write at/after the operative fence refuses spawn-witness-post-fence (the fence discipline)', () => {
     const projection = witnessProjection({ identityOverrides: { firstWriteEpochMs: MEASUREMENT_CUTOFF_AT_MS } });
     const joined = nativeInterruptionGateDInput(record({
-      companionStartEpochMs: 0, daemonStartEpochMs: 0, hop1WitnessClass: true,
+      companionStartEpochMs: 0, daemonStartEpochMs: 1000, hop1WitnessClass: true,
       spawnWitnesses: { companion: projection, daemon: null },
     }));
     assert.ok(joined.localProcessDuties.refusals.includes('spawn-witness-post-fence'), JSON.stringify(joined.localProcessDuties.refusals));
@@ -16291,9 +16408,14 @@ describe('evidence-completion task 4: the ancestry witness route reaches the off
   });
 
   test('integration-completion witness-binding negative: a boundary inside the child creation window refuses spawn-witness-child-generation-ambiguous', () => {
-    const projection = witnessProjection({ identityOverrides: { boundaryEpochMs: 500 } });
+    // (codex round 25+26+27 re-derivation) the witness instant AGREES with
+    // the endpoint numeric (1000 = 1000 — the cross-record consistency)
+    // AND precedes its own boundary (1000 ≤ 1500 — the round-25
+    // self-consistency); the pinned violation is the BOUNDARY inside the
+    // child creation window (1500 < 1000 + 1000).
+    const projection = witnessProjection({ identityOverrides: { boundaryEpochMs: 1500, firstWriteEpochMs: 1600, firstWritePreciseMs: 1600.5, childOsStartInstantMs: 1000 } });
     const joined = nativeInterruptionGateDInput(record({
-      companionStartEpochMs: 0, daemonStartEpochMs: 0, hop1WitnessClass: true,
+      companionStartEpochMs: 0, daemonStartEpochMs: 1000, hop1WitnessClass: true,
       spawnWitnesses: { companion: projection, daemon: null },
     }));
     assert.ok(joined.localProcessDuties.refusals.includes('spawn-witness-child-generation-ambiguous'), JSON.stringify(joined.localProcessDuties.refusals));

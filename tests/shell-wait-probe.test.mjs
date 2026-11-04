@@ -132,7 +132,7 @@ const localProcessEntry = 'tests/shell-wait-local-process.test.mjs';
 // 494 after gate rounds 1–2 (487 = 386 + 100 + 1 at the pre-round bytes; 491 after round 1's four join-invariant tests) — so a wrong
 // selection (an extra or missing entry) or a silently
 // skipped contract test still breaks them.
-const shellSuiteSpawnedTestTotal = 494;
+const shellSuiteSpawnedTestTotal = 497;
 /** @param {number} count */
 const suiteCountPattern = (count) => new RegExp(`ℹ tests ${count}\\r?\\n`);
 /** @param {number} count */

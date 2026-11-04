@@ -2761,6 +2761,25 @@ function establishThroughSpawnWitness(witness, expected) {
     && /** @type {number} */ (facts.childOsStartInstantMs) < /** @type {number} */ (expected.writerOsStartInstant)) {
     return mismatch('spawn-witness-creation-order-inverted');
   }
+  // (the overall review — CROSS-RECORD CONSISTENCY) the record's numeric
+  // child OS start instant and the child ENDPOINT's numeric start instant
+  // describe the SAME captured start identity (the childStartIdentity
+  // equality binds the generations above), and BOTH derive from the same
+  // source (the same captured start identity text — the darwin lstart parse
+  // or the Linux proc-ticks arithmetic), so their NUMERIC instants must
+  // AGREE: a disagreement is a mixed/corrupted record that would borrow the
+  // endpoint's creation window to bypass the record's own generation
+  // ambiguity. Same-domain same-source numerics require EQUALITY — no
+  // tolerance. Absent on either side stays absent (never credited as
+  // agreement). The label follows the no-fold discipline: a cross-record
+  // numeric contradiction is distinct from the creation-order inversion and
+  // from the boundary contradiction — spawn-witness-child-start-
+  // contradicted. The replay mirrors the same label and comparison.
+  if (Number.isSafeInteger(expected.childOsStartInstant)
+    && Number.isSafeInteger(facts.childOsStartInstantMs)
+    && /** @type {number} */ (facts.childOsStartInstantMs) !== /** @type {number} */ (expected.childOsStartInstant)) {
+    return mismatch('spawn-witness-child-start-contradicted');
+  }
   // The MARKER-GENERATION binding (codex round 4): when the hop's child
   // evidence is an ARTIFACT the child generation itself writes (the
   // daemon→transport hop's marker, whose write instant the caller supplies

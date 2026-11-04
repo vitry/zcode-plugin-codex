@@ -5160,6 +5160,18 @@ function verifyPersistedSpawnWitnessEstablishment(witness, expected) {
   // without the member (a v1 replay record) stays absent — never guessed.
   if (writerOsStartInstantMs !== null && Number.isSafeInteger(facts.childOsStartInstantMs)
     && /** @type {number} */ (facts.childOsStartInstantMs) < writerOsStartInstantMs) return 'spawn-witness-creation-order-inverted';
+  // (the overall review — CROSS-RECORD CONSISTENCY, the replay mirror of the
+  // runtime's establishThroughSpawnWitness comparison) the record's numeric
+  // child OS start instant and the child ENDPOINT's numeric start instant
+  // describe the SAME captured start identity (the childStartIdentity
+  // equality binds the generations), and BOTH derive from the same source —
+  // their NUMERIC instants must AGREE: a disagreement is a mixed/corrupted
+  // record refusing exit-reuse... no — spawn-witness-child-start-
+  // contradicted (the SAME label the runtime refuses, replay agreement),
+  // never stale-skipped into settlement credit. Absent on either side stays
+  // absent (never credited as agreement).
+  if (childOsStartInstantMs !== null && Number.isSafeInteger(facts.childOsStartInstantMs)
+    && /** @type {number} */ (facts.childOsStartInstantMs) !== childOsStartInstantMs) return 'spawn-witness-child-start-contradicted';
   if (writerOsStartInstantMs === null) return 'spawn-witness-capture-unbounded';
   // The parent-generation continuity (codex round 7 + the round-12
   // collection bound): the write must postdate the writer's ENTIRE possible
