@@ -24838,3 +24838,237 @@ local + native + guarded-probe composition, each round's contract test spawning 
 full-suite run failed exactly the 8 count-pin rows (491 vs the actual 494) — disclosed, corrected by the measured
 re-derivation, contract-test-verified; every Task-2/§27 and Task-3/§28 standing pin in the touched files
 re-verified inside these runs.
+
+## 30. 2026-11-04 evidence-completion Task 5: the finite live ledger registered WITHOUT a launch — E unlaunched on the §29.7 observer-blocked verdict BEFORE any host contact (slot NOT consumed), E-fix not needed, the frozen future-launch command and the per-layer fact disposition recorded (offline; zero model turns, zero hosted/provider attempts; registration-only)
+
+### 30.1 The registration-time state verification (what was checked before registering; nothing superseded the verdict)
+
+The plan's Task 4 bullet commands "If a mandatory seam is still known unavailable, do not launch E", and Task 5 was
+therefore executed as a REGISTRATION-ONLY task: no launch was attempted, and this section registers the ledger outcome
+precisely. Before registering, the state was re-verified against the tree and the EXECUTING bytes — never from memory:
+`git rev-parse HEAD` = `72fd760f81481185375a03e309110022a91944f7` (Task 4's final commit) on branch
+`docs/rescue-shell-wait-evidence-completion`, the tracked tree clean before this section's own report edit. §29.7's
+registered verdict — **OBSERVER-BLOCKED for E** — stands UNCHANGED (the add-only discipline; no later section re-classifies
+it); §29.9's Finding 1 refined its wording ADDITIVELY (the hop-1 capture-boundary statement joined to the §28.22
+statement in the verdict's meaning) without rewriting the registered text or moving the blocking fact. The blocking
+mechanisms were re-verified in the executing bytes today: the daemon-hop witness establishment arm returns the
+fail-closed named label `spawn-witness-route-unsatisfiable` (local-process-observation.mjs:3282) and the replay mirror
+refuses a persisted establishment claim with the same label (driver.mjs:5848); the preflight's reliance arm consumes the
+frozen EMPTY `DAEMON_WITNESS_RELIANT_CASES` (driver.mjs:7431, consumed at :7492; asserted frozen-empty by
+tests/shell-wait-local-process.test.mjs:16406–16408); and the two zero-hosted-call launch-spy regressions stand
+(tests/shell-wait-local-process.test.mjs:16420 — a missing pinned binary refuses before ANY fixture work with BOTH the
+fixture and executor spies at zero, backed by `assertCodexBinaryExists` called unconditionally at driver.mjs:631 BEFORE
+the only host-launch site; :16437 — the default live path refuses an unarmed mandatory observer at the pre-launch gate
+before the executor can ever run). **The preflight's fail-close scope, stated precisely (the §30.6 gate-round-1
+correction): it covers the KNOWN-ABSENT ARTIFACT/OBSERVER cases only — a missing pinned binary and an unarmed mandatory
+observer — NOT the registered blocking case itself.** Because the reliance map is frozen EMPTY (the registered design
+never leans on the UNSATISFIABLE route — the §29.3 arm enforces the no-reliance DESIGN rule, not the §29.7 verdict), an
+ARMED `rescue-interrupt` fixture passes `evaluateLiveLaunchPreflight` with `{ ok: true, reason: null }` — verified
+2026-11-04 by direct read of the arm (driver.mjs:7492–7500: the refusal fires only when `input.case` is a member of the
+empty set) and by re-running the focused junction row read-only (1 test, 1 pass, 0 fail; the pins at
+tests/shell-wait-local-process.test.mjs:5520–5521 and :5707 assert exactly `{ ok: true, reason: null }` for the real
+armed fixture). **The reason E was NOT launched is therefore the MANUAL §29.7 readiness verdict — an operator-honored
+gate (the plan's "do not launch E" bullet) — never an automatic preflight refusal of the hop-2 blocker**; no
+hosted/provider attempt was made because the operator honors the verdict, and a future armed launch would NOT be
+stopped by preflight on this fact (§30.4 registers the required future-launch safety obligation).
+
+### 30.2 The E slot disposition: UNLAUNCHED — observer-blocked BEFORE host contact; the slot is NOT consumed
+
+- **The disposition: E is UNLAUNCHED.** §29.7's verdict names the blocking fact precisely: the **hop-2
+  (daemon→transport) SAME-SECOND ancestry attribution** cannot be positively established by any implemented mechanism.
+  §28.22 classified the daemon-witness route **UNSATISFIABLE** — the full predicate contradiction: the route is
+  consulted only when `markerTime < daemonStart + LINUX_BTIME_UNCERTAINTY_MS` (the bound-window entry) while its
+  establishment requires `markerTime >= childOsStartInstantMs + LINUX_BTIME_UNCERTAINTY_MS` (the round-6
+  marker-to-generation binding) under `childOsStartInstantMs >= daemonStart` (the round-10 creation-order binding) —
+  jointly `markerTime >= daemonStart + LINUX_BTIME_UNCERTAINTY_MS`, contradicting the entry condition, so every
+  admitted-witness outcome is one of the named refusals and establishment can never occur. §28.1 keeps route (c) **NAMED
+  UNAVAILABLE**: no exact-PID generation surface exists through the existing local reads (the darwin `lstart`
+  whole-second floor and the Linux btime/proc resolution unchanged). The §26.8 freeze requires every mandatory
+  native/local/durable/control layer to hold an implemented measurement path BEFORE E; the local layer's hop-2 conjunct
+  cannot be satisfied on a same-second real chain (the recorded V shape) — the offline join refuses it
+  (`ancestry-hops-unattributed` via the arithmetic-only hop 2; any establishment claim refused
+  `spawn-witness-route-unsatisfiable`), the local layer never settles, and the final gate stays unqualified by design.
+- **The slot consequence (the plan's counting rule, applied):** "Pure offline rejection before host contact consumes no
+  slot." ZERO hosted/provider attempts of any kind were made in this task — no launch, no warm-up, no debug launch, no
+  auth/initialization probe, no model shopping (the counting rule's named attempt classes). The rejection happened
+  entirely offline at the registered verdict layer, before any host contact. **The E slot (maximum 1 hosted case) is
+  therefore NOT CONSUMED and is registered as UNSPENT** — held open for a future authorized launch under §30.4's
+  obligations, never spent, and never transferred from any old slot (the V/V-fix ledger stays CLOSED per §25.11; the
+  plan's stop rule: "no transferred old slot").
+- **The concrete next action (carried in substance from §29.7; unchanged):** EITHER discover and justify — against the
+  pinned binaries' platforms — a **route-(c) exact-PID generation mechanism** (a kernel-addressed PID
+  generation/birth token or equivalent non-reused generation surface reachable through EXISTING local reads only, with
+  its exactness and bounded uncertainty named per §26.6 route (c)); OR obtain **separate user authority for a daemon
+  spawn-choreography change** that produces a second-boundary marker write (outside this plan's read-only production
+  boundary — it would need new user authority). Until one exists, E must not launch: the honest status is a NAMED
+  unavailable mechanism on this conjunct, with the refusal (never a credit) as the designed behavior. The launch block
+  is the operator-honored §29.7 verdict, NOT an automatic preflight refusal of this blocker (§30.1's precise scope
+  statement; §30.4's future-launch safety obligation names the required protection).
+
+### 30.3 The E-fix disposition: NOT NEEDED
+
+**E-fix is NOT NEEDED and is registered unused.** The plan makes E-fix conditional ("1 total, conditional"; "One bounded
+cause-directed correction ... after E") and eligible only for "a concrete demonstrated bounded cause plus offline
+RED→GREEN correction or tested supported choreography change": E never ran, so no observed live cause exists to correct
+and the eligibility condition never triggered. No cause-directed correction is owed and none was attempted. The stop
+rule's demand — "If no safe bounded correction exists, record the specific evaluated candidate, counterexample or
+unavailable mechanism" — is satisfied by the blocking-mechanism record itself: the unavailable mechanism IS the
+§28.22/§28.1-named hop-2 fact (§30.2), not a new E-observed unknown; newly observed unknown content would have been
+insufficient anyway. With E unlaunched and E-fix unused, the stop rule applies: **hosted work for this ledger STOPS
+here.** The historical V ledger's own close-out — local observability proven end-to-end, full acceptance NOT proven,
+V-fix NOT ELIGIBLE (§25.11) — stands unchanged; no slot, correction or verdict transfers between the ledgers.
+
+### 30.4 The frozen future-launch registration (RECORDED OBLIGATIONS only — nothing below has been run; a launch under them requires new user authority)
+
+This subsection registers the EXACT frozen launch package so that any FUTURE authorized E launch has ONE obligation
+source. Every item below is an obligation to satisfy at that future launch's pre-freeze, never a claim that it was
+executed.
+
+The frozen command (the plan's Task 5 freeze block, VERBATIM; the four task-specific variables remain NAMED obligations
+to resolve at pre-freeze per the plan — "Resolve the four task-specific variables to the selected absolute binary,
+committed installed-fixture SHA, private 0700 output directory and supported model"; and "any implementation-added
+selector must be published and parsed offline before launch"):
+
+```bash
+ZCODE_SHELL_WAIT_E2E=1 node tools/shell-wait-probe/driver.mjs \
+  --case rescue-interrupt \
+  --codex "$EVIDENCE_COMPLETION_CODEX_BINARY" \
+  --source-sha "$EVIDENCE_COMPLETION_PLUGIN_SHA" \
+  --output "$EVIDENCE_COMPLETION_PRIVATE_OUTPUT" \
+  --model "$EVIDENCE_COMPLETION_MODEL" \
+  --worker-duration-ms 420000 --poll-ms 3600000 --budget-ms 1200000 \
+  --cap-ms 3600000 --wait-policy config-default --exec-default-ms 3600000 \
+  --unclassified-structural-diagnostic 1 --unclassified-shape-diagnostic 1 \
+  --survival-control-selector progress-terminal
+```
+
+- **The binary re-pin duty (the §26.1 registered obligation, restated):** the selected trial binary is the MEASURED
+  0.163.0 executable — absolute realpath
+  `/Users/zhangzikai/.codex/packages/standalone/releases/0.163.0-aarch64-apple-darwin/bin/codex`, `codex-cli 0.163.0`,
+  SHA-256 `8813367285524ac798dd96d1b071aea30d58708c7226fd236cd275cf1cfdee31` — which the ambient auto-update sweep
+  REMOVED from disk at `2026-11-03 15:41:15` (the releases directory's own mtime; §26.1's dated renewal note). **A
+  byte-identical re-provision of that exact binary (same realpath/version/SHA-256) is the pre-launch freeze duty**; no
+  ambient/updated host (0.162.1/0.164.0/0.165.0/0.166.0 recorded in §26.1) may be silently substituted. The driver
+  backs the duty fail-closed: `assertCodexBinaryExists` (driver.mjs:913–921 — the ENOENT throw and the
+  not-a-regular-file throw, re-verified in the executing bytes today) is called unconditionally at driver.mjs:631
+  BEFORE any fixture work, so an absent or non-regular pinned path refuses before the executor — the ONLY host-launch
+  site — can ever run.
+- **The observer/input version pins (verified in the executing bytes today):** `LOCAL_PROCESS_OBSERVATION_VERSION` **3**
+  (local-process-observation.mjs:90), `SPAWN_ANCESTRY_WITNESS_VERSION` **2** (local-process-observation.mjs:989), the
+  gate-D join `NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION` **38** (driver.mjs:5014; §29.2's registration), and the shape
+  diagnostic schema version **1** (`SHAPE_DIAGNOSTIC_SCHEMA_VERSION`, shape-diagnostic.mjs:84 — the §26.5 v1
+  diagnostic; the command's `--unclassified-shape-diagnostic 1` enables its emission). A future launch records these
+  alongside its pins; a changed version is a version event, never a silent re-meaning (the §26.7 freeze discipline).
+- **The bound set (the §26.8 freeze, carried verbatim — OBSERVATION bounds only, never production timeouts; the
+  100-hour ceiling unchanged):** worker hold `--worker-duration-ms 420000` anchored at the observation-detection
+  instant; candidate cap/poll `--cap-ms 3600000` / `--poll-ms 3600000`; total case budget `--budget-ms 1200000` (≤);
+  `--exec-default-ms 3600000`; `--wait-policy config-default`; the responsiveness comparison 60000 ms riding ONLY on a
+  causally admitted trial (`RESPONSIVENESS_BOUND_MS = 60_000`, release-qualification.mjs:806, per §26.8); both
+  unclassified diagnostics ON (`--unclassified-structural-diagnostic 1 --unclassified-shape-diagnostic 1`); the
+  survival-control selector `progress-terminal` (designed end = the readiness cutoff ≈120 s; measurement cutoff = hold
+  deadline + 10000 ms; observation teardown = cutoff + 5000 ms; §25.7/§26.8 carried); durable passive reads ≥1000-ms
+  cadence, ≤600 attempts, ≤32 retained summaries; every new local read bounded by the SAME case deadline and completing
+  strictly pre-cutoff for credit.
+- **The remaining pre-freeze pin duties (registered owners, carried):** the committed installed-fixture SHA
+  (`$EVIDENCE_COMPLETION_PLUGIN_SHA`), the private 0700 output directory (`$EVIDENCE_COMPLETION_PRIVATE_OUTPUT`), and
+  the supported-model pin with the effective-model identity investigation (requested `gpt-6.1-sol`; observed effective
+  metadata `null` in every prior live record — §26.9 item 1, owned by Task 5's pre-launch pin duty in the
+  `EXECUTING_OBSERVER_PROVENANCE` block, driver.mjs:103–140: a real preflight/search resolving what the launched binary
+  actually executes, recorded next to the requested spelling, never guessed). The per-run instruction/config/artifact
+  pins are re-executed for THAT launch (§26.1: the §24.1 recorded candidates `2ea76cf0…`/`5800e3ab…` stay the recorded
+  forms; any future launch recomputes and records them whole). At that launch the counting rule's discipline applies
+  unchanged: EVERY real hosted/provider attempt counts once launched — including auth/initialization failures, no
+  Rescue call, unsupported shape and model nonadherence — while pure offline rejection consumes no slot.
+- **The future-launch SAFETY OBLIGATION on the hop-2 blocker (the §30.6 gate-round-1 correction, registered
+  2026-11-04):** before any authorized future E launch, the operator must EITHER extend the preflight to enforce the
+  §29.7 hop-2 blocker for the registered case (a non-empty `DAEMON_WITNESS_RELIANT_CASES` entry or a dedicated arm — a
+  Task-4-scoped CODE change, out of this registration-only task's report-only ownership, carrying its own RED→GREEN
+  discipline) OR enforce the blocker manually at launch time with the same rigor as the §29.7 verdict (the readiness
+  re-check recorded next to that launch's pins). The facts that make this obligation necessary, verified 2026-11-04:
+  `DAEMON_WITNESS_RELIANT_CASES` is frozen EMPTY (driver.mjs:7431) so the §29.3 reliance arm never fires, and
+  `evaluateLiveLaunchPreflight` returns `{ ok: true, reason: null }` for an ARMED `rescue-interrupt` fixture
+  (tests/shell-wait-local-process.test.mjs:5520–5521 and :5707; the focused junction row re-run read-only, 1 pass) —
+  NO automatic protection against an observer-blocked hosted attempt exists at the preflight layer, and no future
+  operator may assume one.
+
+### 30.5 The per-layer fact disposition (what the implemented measurement paths can and cannot capture today; each with its provenance)
+
+The plan's Task 5 bullet 3 freezes the per-layer fact retention list for a launched E. Against the IMPLEMENTED
+measurement paths (the §29.1 integration map), the disposition today is:
+
+**CAN be captured by an implemented, offline-negative-complete path (a future authorized E records these):**
+
+1. **Complete call scan/unknowns — the call-coverage admission:** the §27 union through the real
+   `parseCallStatements` → whole-case scan pipeline, admitted at the delivery layer (`delivery.hostActivityAdmitted`,
+   §29.1; a scan-incomplete cell withholds it), with the diagnostic v1 register classifying refusals content-free
+   (§26.5/§27; a NO-MATCH stays "not in the current admitted set", never a known-spelling claim).
+2. **Hop-1 (Companion→daemon) ancestry witness:** the witness record contract, admission, join and replay are
+   implemented and negative-complete (the §28.2 capture-seam records; §28.1's join rule; §29.1's admit-then-forward
+   composition; §29.2's replay mirror). The provenance caveat is carried, never papered over (§29.9 Finding 1): CAPTURE
+   at the REAL installed-host launch boundary is NOT wired — the capture side exists as the §28.2 fixture-owned parent
+   emitters, and wiring at the real boundary remains the live-trial question under the §29.9 fabricated-authority
+   prohibition.
+3. **Native request and exact acknowledgement/resolution:** the request/acknowledgement/resolution contract and the
+   pending-window relocation rule (§24.4, carried by §26.8), adjudicated by the oracle v5 through the gate-D join v38
+   from the persisted record (§29.1/§29.2).
+4. **Invocation/transport exit and applicable broker/runner/guard duties:** the §25.5 local duty table and §25.6's
+   lifecycle/epoch-receipt authority, composed through the executor's persisted localProcess block (§29.1).
+5. **Durable state/integrity:** the durable passive-read schedule (≥1000-ms cadence, ≤600 attempts, ≤32 retained
+   summaries; §23.5/§24.8/§25.7).
+6. **Pre-request Companion presence and the unrelated control active-at-request/survival:** the §25.2/§25.4 identity
+   machinery (proven end-to-end on the real managed Companion, §25.10/§25.11) and the §16.4 survival-control layer
+   under the `progress-terminal` selector (the buffered-output negatives intact, §29.4).
+
+**CANNOT be captured by any implemented path (the observer-blocked fact):**
+
+- **Hop-2 (daemon→transport) SAME-SECOND ancestry** — the §29.7 blocking fact. The daemon-witness establishment route
+  is UNSATISFIABLE (§28.22; the fail-closed `spawn-witness-route-unsatisfiable` arm, local-process-observation.mjs:3282,
+  mirrored at the replay, driver.mjs:5848) and route (c) is NAMED UNAVAILABLE (§28.1). The hop's positives stay
+  ARITHMETIC-only (the registered marker-time predicate `daemonStart + 1000 <= markerTime <= daemonRead`), which cannot
+  resolve a same-second chain — the recorded V shape. On a real same-second E this layer REFUSES
+  (`ancestry-hops-unattributed`), the local layer never settles, and the final gate stays unqualified BY DESIGN — the
+  refusal is the correct fail-closed behavior, not a defect to tolerate or repair in-flight.
+
+### 30.6 The ledger closure and the zero-new-fixture-records verification
+
+- **The closure statement:** the finite ledger of this campaign (E: 1 maximum; E-fix: 1 conditional) closes as
+  **EVIDENCE-COMPLETE on the offline side and PRECISELY BLOCKED on the live side**. Offline: the call-coverage seam
+  (§27), the safe same-second ancestry witness for hop 1 (§28, with §28.22's honest UNSATISFIABLE classification of the
+  hop-2 route), and the integration plus the independently reviewed readiness verdict (§29) are measured,
+  negative-complete, reviewed and green on the converged bytes. Live: E is unlaunched on a NAMED unavailable mechanism
+  (§30.2), and the "not yet proven" versus "impossible" discipline (§26.6's route wording, carried through §29.7)
+  applies verbatim — the block is a named, bounded, potentially-repairable mechanism absence (a route-(c) exactness-
+  justified discovery, or a separately authorized spawn-choreography change), NOT a proof that the underlying fact is
+  unknowable; nothing in this ledger claims impossibility. **Further hosted cases beyond this ledger require NEW user
+  authority** (the plan's stop rule); **independent in-scope offline work may still finish** (Task 6 owns the
+  exact-source verification and the production-ready decision record; §29.7's runtime-risk wording — model obedience is
+  a RUNTIME risk preflight never predicts — carries into any future authorized launch).
+- **The fixture-record verification (the plan's Task 5 file row: "prospective report registration and private redacted
+  fixture records"):** with E unlaunched there was no trial to retain from, and the verification found **ZERO new
+  fixture records** to register: the tracked tree is clean (`git status --porcelain` shows only this section's own
+  report edit at commit time), and the capture-side witness records live only inside disposable temporary roots (the
+  §28.2 pattern — `0600` files inside a `0700` `stdout-capture` directory of a temporary root, fixture.mjs:637
+  `join(temporary, 'stdout-capture')`), so nothing from this task persists as a private redacted artifact. **The V
+  historical record remains the ONLY retained trial record** — SHA-256
+  `710c071e3da6939030a0a4493dd1bc7b778f80a7120aca703fe344dcea9d3ce0`, 1644122 bytes, mode 0600 inside its 0700
+  directory (registered at §25.10, re-hashed BEFORE use at §26.3/§26.1) — and its ledger stays closed (§25.11:
+  local-process observability proven end-to-end, full acceptance NOT proven, V-fix NOT ELIGIBLE). This registration was
+  made with the gates `npm run lint`, `npm run typecheck` and `git diff --check` all exit 0 (registration-only task; the
+  test suites are Task 6's battery).
+
+**Gate round 1 correction (2026-11-04, one P2 finding from the independent codex review of this section; add-only; the
+original task commit amended, message unchanged):** the finding — §30.1's closing sentence claimed the preflight
+"fail-closes TODAY on exactly the registered blocking case", an UNSUPPORTED OPERATIONAL SAFETY GUARANTEE that could lead
+a future operator to rely on preflight to prevent an observer-blocked hosted attempt. The reviewer's factual basis was
+independently re-verified BEFORE correcting (2026-11-04): `evaluateLiveLaunchPreflight` (driver.mjs:7492–7500) refuses
+on the reliance map ONLY when `input.case` is a member of `DAEMON_WITNESS_RELIANT_CASES` — frozen EMPTY
+(driver.mjs:7431; asserted frozen-empty by tests/shell-wait-local-process.test.mjs:16406–16408) — so for an ARMED
+`rescue-interrupt` fixture the preflight returns `{ ok: true, reason: null }` (the junction pins :5520–5521 and :5707
+assert exactly that; the focused junction row re-run read-only today = 1 test, 1 pass, 0 fail), and the two
+launch-spy regressions (:16420, :16437) cover the missing-binary and unarmed-observer refusals only — no preflight arm
+encodes the hop-2 ancestry blocker. Corrections made: §30.1's closing sentence replaced by the precise scope statement
+(artifact/observer fail-close only; the launch block is the MANUAL §29.7 readiness verdict, an operator-honored gate),
+§30.2's next-action clause and §30.4 (a new closing obligation bullet) state the operator-honored gate and register the
+future-launch SAFETY OBLIGATION (extend the preflight with a non-empty reliance set or a dedicated arm — a
+Task-4-scoped code change outside this task's report-only ownership — or enforce the blocker manually at launch time).
+Everything else in §30 (the freeze block, the version pins, the bounds, the dispositions) is byte-stable.
