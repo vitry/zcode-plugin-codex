@@ -87,7 +87,7 @@ export { EXECUTING_CLOSURE_PRELOAD_SOURCE } from './closure-preload.mjs';
  * never fall back to the permissive old contract because every new record
  * carries the member (number or named-absent null).
  */
-export const LOCAL_PROCESS_OBSERVATION_VERSION = 3;
+export const LOCAL_PROCESS_OBSERVATION_VERSION = 4;
 
 /**
  * Version tag of the local-observer provenance construction: bump when the
@@ -258,12 +258,310 @@ function psRunner(seam) {
   return seam ?? (async (launch, options) => (await loadMaterializedHelperModules()).runProcess(launch, options));
 }
 
-/** @param {number} pid @param {{ runProcess?: osSeamsRunProcess }} [osSeams] */
+/**
+ * Parse one closed EXACT start-identity form (`kinfo:<sec>:<usec>`).
+ * Exported for the replay mirror (driver.mjs's admission-start containment
+ * consumes the same form discrimination) and the representation-aware
+ * consumers (§32.12 Finding 2).
+ * @param {unknown} startIdentity
+ * @returns {{ sec: number, usec: number, ms: number } | null}
+ */
+export function parseExactStartIdentity(startIdentity) {
+  if (typeof startIdentity !== 'string') return null;
+  const match = /^kinfo:(\d+):(\d+)$/u.exec(startIdentity);
+  if (match === null) return null;
+  const sec = Number(match[1]);
+  const usec = Number(match[2]);
+  if (!Number.isSafeInteger(sec) || sec <= 0 || !Number.isInteger(usec) || usec < 0 || usec >= 1_000_000) return null;
+  // The module's exact-millisecond convention: the microsecond field rounds
+  // to the nearest millisecond (never floored — a floor would reintroduce
+  // the whole-second uncertainty exact mode exists to remove).
+  return { sec, usec, ms: sec * 1000 + Math.round(usec / 1000) };
+}
+
+/**
+ * The CLOCK-DOMAIN GUARD (route (c) negative family): a kernel start instant
+ * lives in the same wall-clock epoch as Date.now() (the join's capture
+ * instants and the marker mtime). A "start" in the future (beyond the
+ * sub-second read/skew tolerance) is not a plausible creation instant —
+ * the answer is fail-closed to the ps path, NEVER emitted as exact evidence.
+ * A start older than the epoch is legitimate (long-lived processes).
+ * @param {number} ms @param {number} nowMs @returns {boolean}
+ */
+function isPlausibleExactStartMs(ms, nowMs) {
+  return Number.isSafeInteger(ms) && ms > 0 && ms <= nowMs + 1_000;
+}
+
+/**
+ * @param {{ sec: number, usec: number } | { malformed: number } | null | undefined} answer
+ * @param {number} nowMs
+ * @returns {{ state: 'exact', sec: number, usec: number, ms: number } | { state: 'gone' } | { state: 'malformed' }}
+ */
+function classifyKinfoAnswer(answer, nowMs) {
+  // (§32.10 Finding 3) the bridge's FAILED marker (`{"failed": true}` — a
+  // sysctl rc != 0, e.g. the measured undersized-struct ENOMEM) is a failed
+  // READ, never a gone answer: it classifies malformed so the reader
+  // DEGRADES to ps. Only `null` (the bridge's rc == 0 && len == 0 answer) is
+  // gone — a live process whose exact read failed must never read as exited.
+  if (answer === null || answer === undefined) return { state: 'gone' };
+  if (typeof answer !== 'object' || 'malformed' in answer || 'failed' in answer) return { state: 'malformed' };
+  const sec = answer.sec;
+  const usec = answer.usec;
+  if (!Number.isSafeInteger(sec) || sec <= 0 || !Number.isInteger(usec) || usec < 0 || usec >= 1_000_000) return { state: 'malformed' };
+  const ms = sec * 1000 + Math.round(usec / 1000);
+  if (!isPlausibleExactStartMs(ms, nowMs)) return { state: 'malformed' };
+  return { state: 'exact', sec, usec, ms };
+}
+
+/**
+ * The darwin EXACT-generation mechanism (route (c), user-directed landing;
+ * §32): sysctl(3) MIB {CTL_KERN, KERN_PROC, KERN_PROC_PID, pid} into a
+ * fixed 648-byte kinfo_proc, the start time read as tv_sec (int64 LE,
+ * offset 0) + tv_usec (int32 LE, offset 8) through an inline ctypes bridge
+ * on /usr/bin/python3. Measured (2026-11-05, /tmp/pipm-probe): same clock
+ * domain as `ps -o lstart=` (tv_sec equals the wall second exactly) and
+ * tracks Date.now() within ~1 ms; two kernel paths agree exactly;
+ * same-second back-to-back spawn pairs distinguish at microsecond
+ * granularity (10/10 pairs, 484–1427 µs in the re-measurement); a dead pid
+ * maps to rc == 0 with len 0 (gone); a sysctl FAILURE (rc != 0 — the
+ * measured undersized-struct case returns -1/ENOMEM errno 12 atomically,
+ * never torn) maps to the bridge's `{"failed": true}` marker, which the
+ * reader classifies malformed → DEGRADES to ps (§32.10 Finding 3: rc != 0
+ * is NEVER mapped to gone — only rc == 0 && len == 0 is gone); the
+ * NULL-buffer size query is UNSTABLE (648/3888/3240
+ * observed), so the buffer discipline is the FIXED 648-byte read with
+ * len==648 accepted and 0<len<648 malformed (fail-closed) — the size query
+ * is never used to size the read.
+ *
+ * DEGRADE DISCIPLINE: any unavailability (no python3/CLT shim, bridge
+ * failure, malformed/undersized/torn answer, implausible clock domain) keeps
+ * the existing ps whole-second path — the exact route is an ENHANCEMENT,
+ * never a duty-establishing precondition and never a fallback to a weaker
+ * contract.
+ * @param {number} pid
+ * @param {{ kinfoExact?: (pid: number) => Promise<{ sec: number, usec: number } | { malformed: number } | null> }} [osSeams]
+ * @returns {Promise<{ state: 'exact', sec: number, usec: number, ms: number } | { state: 'gone' } | { state: 'malformed' } | { state: 'unavailable' }>}
+ */
+async function readDarwinKinfoExact(pid, osSeams = {}) {
+  // The seam (the deterministic test surface) parallels the runProcess ps
+  // seam: injected, it fully owns the read (the real bridge never runs).
+  if (typeof osSeams.kinfoExact === 'function') {
+    try {
+      const answer = await osSeams.kinfoExact(pid);
+      return classifyKinfoAnswer(answer, Date.now());
+    } catch {
+      return { state: 'unavailable' };
+    }
+  }
+  // The real bridge runs ONLY under the registered env opt-in
+  // (`ZCODE_SHELL_WAIT_KINFO_EXACT=1`): plain unit/real-chain runs keep the
+  // ps byte-identical path, and enabling the exact route on a production
+  // installed host remains the live-trial wiring question (§32; no
+  // production call site sets the variable today). The degrading discipline:
+  // hosts without developer tools keep the existing ps whole-second
+  // behavior, never a duty-establishing precondition.
+  if (process.env.ZCODE_SHELL_WAIT_KINFO_EXACT !== '1') return { state: 'unavailable' };
+  const bridge = [
+    'import ctypes, json, sys',
+    'class TV(ctypes.Structure):',
+    "    _fields_ = [('tv_sec', ctypes.c_long), ('tv_usec', ctypes.c_int32)]",
+    'class EP(ctypes.Structure):',
+    "    _fields_ = [('p_un', TV), ('pad', ctypes.c_byte * 48)]",
+    'class KP(ctypes.Structure):',
+    "    _fields_ = [('kp_proc', EP), ('kp_eproc', ctypes.c_byte * 584)]",
+    'def read(pid):',
+    '    mib = (ctypes.c_int * 4)(1, 14, 1, pid)',
+    '    kp = KP(); size = ctypes.c_size_t(648)',
+    '    rc = ctypes.CDLL(None).sysctl(mib, 4, ctypes.byref(kp), ctypes.byref(size), None, 0)',
+    '    if rc != 0: return {"failed": True}',
+    '    if size.value == 0: return None',
+    '    if size.value < 648: return {"malformed": size.value}',
+    "    return {'sec': kp.kp_proc.p_un.tv_sec, 'usec': kp.kp_proc.p_un.tv_usec}",
+    'print(json.dumps(read(int(sys.argv[1]))))',
+  ].join('\n');
+  try {
+    const stdout = await new Promise((resolve, reject) => {
+      (async () => {
+        const helpers = await loadMaterializedHelperModules();
+        return helpers.runProcess(
+          { command: '/usr/bin/python3', args: ['-S', '-c', bridge, String(pid)] },
+          { timeoutMs: 5_000, maxOutputBytes: 4 * 1024, env: { ...process.env } },
+        );
+      })().then((/** @type {{ code: number | null, stdout: string, stderr: string }} */ r) => resolve(r.stdout)).catch(reject);
+    });
+    const answer = JSON.parse(stdout);
+    return classifyKinfoAnswer(answer, Date.now());
+  } catch {
+    return { state: 'unavailable' };
+  }
+}
+
+/**
+ * The closed EXACT start-identity form (route (c)): `kinfo:<sec>:<usec>`.
+ * @param {string} startIdentity @returns {boolean}
+ */
+function isExactStartIdentity(startIdentity) {
+  return parseExactStartIdentity(startIdentity) !== null;
+}
+
+/** @param {number} pid @param {{ runProcess?: osSeamsRunProcess, kinfoExact?: (pid: number) => Promise<{ sec: number, usec: number } | { malformed: number } | null> }} [osSeams] */
 async function readMacProcessStart(pid, osSeams = {}) {
   // ROUND-31/32: lstart is requested in EXPLICIT UTC with the C locale
   // (`TZ=UTC LC_ALL=C ps`) — the local rendering carries no offset and is
   // AMBIGUOUS during a DST fall-back hour, and a localized locale renders
   // month/day names the strict field parse cannot read.
+  // The EFFECTIVE platform (the injected seam overrides the host) mirrors
+  // the caller's dispatch: a darwin-configured deterministic test on any
+  // host reaches the exact seam; a real host uses its own platform.
+  if ((/** @type {any} */ (osSeams).platform ?? process.platform) === 'darwin') {
+    // (codex gate round 9, Finding 2 — the FIRST-READ bounds carry) the
+    // exact query's dispatch and completion bounds are captured around the
+    // query itself, so the cancellation error below carries the same
+    // {identity, taken, completed} unit the second read's errors receive
+    // from the inspector's catch: a first query overlapping a newer presence
+    // baseline was previously dated at the cancellation's completion and
+    // incorrectly produced pid-start-identity-reused; with the true query
+    // window the interval classification yields the lawful ambiguous fact.
+    const kinfoTakenEpochMs = Date.now();
+    const exact = await readDarwinKinfoExact(pid, osSeams);
+    const kinfoCompletedEpochMs = Date.now();
+    if (exact.state === 'gone') return undefined;
+    // (§32.12 Finding 3) the observation's cancellation is RECHECKED between
+    // the exact query and the ps query: the inspector's window checks
+    // surround the COMBINED readStart operation and cannot prevent this
+    // inner subprocess, whose two-second timeout could extend teardown after
+    // the window closed. The thrown shape is the inspector's own
+    // window-closed error carrying the observed identity (the exact read DID
+    // observe it — evidence preservation, the uniform ride discipline), so
+    // the aborted read is an unestablished fact — never 'gone', never a
+    // fabricated identity.
+    if (/** @type {any} */ (osSeams).abortSignal?.aborted === true) {
+      throw Object.assign(new Error('the observation window closed over the in-flight identity read'), {
+        observationWindowClosed: true,
+        ...(exact.state === 'exact' ? {
+          observedStartIdentity: `kinfo:${exact.sec}:${exact.usec}`,
+          observedIdentityTakenEpochMs: kinfoTakenEpochMs,
+          observedIdentityCompletedEpochMs: kinfoCompletedEpochMs,
+        } : {}),
+      });
+    }
+    if (exact.state === 'exact') {
+      // (codex gate round 33 follow-up, Finding 2 — the LATER PS WINDOW) the
+      // ps read's own dispatch/completion bounds are captured around the
+      // query: a disagreement's refusal carries the LATER ps observation with
+      // THIS window (the round-25/27 later-read carry protocol), never the
+      // kinfo window.
+      const psTakenEpochMs = Date.now();
+      let ps;
+      try {
+        ps = await psIdentityRead(pid, osSeams);
+      } catch {
+        // (codex gate round 9, Finding 1 — the ps-FAILURE carry; codex gate
+        // round 11, Finding 1 — the ERROR-VS-ABSENCE DISTINCTION) ps
+        // EXECUTION and PARSING failures lose the observed exact identity
+        // just like the empty-result branch below: the ordinary error would
+        // fall to the inspector's uniform ride and attach the FIRST read's
+        // original identity, so a subsequent confirmed absence reported
+        // disappeared despite the observed PID reuse. The carry preserves
+        // the successor's exact identity and its collection bounds on every
+        // ps-failure shape — but the THROWN shape is an ERROR, never an
+        // observed absence: it carries the distinct observedThenQueryFailed
+        // marker and NO observedThenGone flag (only the EMPTY-ps result
+        // below — where absence WAS observed — may drive the default
+        // readers' exit conversions). The carried identity and bounds flow
+        // through the consumers as error evidence (an unchanged-process
+        // classification stays non-exit).
+        // (codex gate round 10, Finding 2 — the KINFO-BOUNDS DATING rule)
+        // the carried identity was observed by the KINFO query — it is dated
+        // with the kinfo query's own window (already captured for the
+        // cancellation recheck), never with the later ps query's window:
+        // dating a predecessor collected during [1000,1100] with a ps
+        // failure at 3000 produced [1100,3000] and misclassified stale
+        // predecessors as ambiguous against a newer baseline.
+        throw Object.assign(
+          new Error('the exact fake-ZCode process identity query failed after its start identity was observed'),
+          {
+            observedThenQueryFailed: true,
+            observedStartIdentity: `kinfo:${exact.sec}:${exact.usec}`,
+            observedIdentityTakenEpochMs: kinfoTakenEpochMs,
+            observedIdentityCompletedEpochMs: kinfoCompletedEpochMs,
+          },
+        );
+      }
+      // (codex gate round 33 follow-up, Finding 2) the completion bound is
+      // sampled only after the query RETURNED (the ps-failure branch above
+      // keeps its kinfo-dated carry) — the disagreement refusal below dates
+      // the carried ps observation with this window.
+      const psCompletedEpochMs = Date.now();
+      if (ps === undefined) {
+        // (codex gate round 8, Finding 1 — the EXACT OBSERVED-THEN-GONE
+        // carry) the exact read observed THIS pid's live occupant (on a
+        // reused PID: the successor) and the subsequent ps query found the
+        // pid gone — the observed-then-gone shape. Returning undefined would
+        // DISCARD the observed exact identity, let the inspector's plain
+        // absence flow credit the ORIGINAL generation's disappearance, and
+        // erase the replacement evidence. The coarse path's own
+        // observed-then-gone error carries the observed identity instead —
+        // (codex gate round 10, Finding 2) dated with the KINFO query's own
+        // window (see the ps-failure branch above), never the later ps
+        // query's: the observation layer classifies a demonstrably different
+        // carried identity as the generation change and the exit adjudicator
+        // latches the reuse; an equal carried identity keeps the lawful
+        // absence.
+        throw observedThenGoneError(`kinfo:${exact.sec}:${exact.usec}`, kinfoTakenEpochMs, kinfoCompletedEpochMs);
+      }
+      // (codex gate round 5, Finding 2 — the GENERATION-AGREEMENT rule; the
+      // round 11 Finding 2 SHARED COMPOSITION) the kinfo query and the
+      // subsequent ps query are two SEPARATE snapshots, and this combination
+      // must not pair contradictory ones — the agreement check lives in the
+      // SHARED composedExactStartIdentity helper BOTH composition sites call
+      // (the real path here and the injected osSeams.ps + kinfoExact seam),
+      // so the deterministic seam tests the real protocol and can never
+      // certify contradictory generations. Agreeing seconds keep the
+      // §32.11 Finding-3 representation-stable combination unchanged.
+      // (codex gate round 33 follow-up, Finding 2 — the LATER PS CARRY) on
+      // THIS path the kinfo read comes FIRST, so a disagreement's proven
+      // later observation is the ps read: the refusal carries the ps
+      // identity with its own collection window (the round-25/27 later-read
+      // carry protocol), never the first read's kinfo identity the
+      // adjudicator would discard as the bound generation's own arrival.
+      const composedIdentity = composedExactStartIdentity(exact, ps.startIdentity, {
+        identity: ps.startIdentity,
+        takenEpochMs: psTakenEpochMs,
+        completedEpochMs: psCompletedEpochMs,
+      }, {
+        takenEpochMs: kinfoTakenEpochMs,
+        completedEpochMs: kinfoCompletedEpochMs,
+      });
+      // (§32.11 Finding 3) the ps-text representation of the SAME read rides
+      // the result (`coarseStartIdentity`): the ps read already runs for the
+      // kernel parent link, so the coarse form is always derivable alongside
+      // the kinfo form at zero extra cost — the double-read generation
+      // comparison is representation-stable.
+      // (codex gate round 12, Finding 2 — the KERNEL-BOUNDS CARRIAGE) the
+      // successful composition carries the kernel query's own bounds on the
+      // result, so the inspector's subsequent error rides date the carried
+      // exact identity with the KERNEL window — never the entire combined
+      // read (a slow ps query used to stretch the carried window across a
+      // concurrent baseline and misclassify stale predecessors as
+      // ambiguous).
+      return {
+        pid, ppid: ps.ppid, startIdentity: composedIdentity, startInstantEpochMs: exact.ms, coarseStartIdentity: ps.startIdentity,
+        observedIdentityTakenEpochMs: kinfoTakenEpochMs,
+        observedIdentityCompletedEpochMs: kinfoCompletedEpochMs,
+      };
+    }
+    // malformed/unavailable → DEGRADE to the ps whole-second path. The
+    // degradation path rechecks the cancellation too (§32.12 Finding 3).
+    if (/** @type {any} */ (osSeams).abortSignal?.aborted === true) {
+      throw Object.assign(new Error('the observation window closed over the in-flight identity read'), { observationWindowClosed: true });
+    }
+  }
+  return psIdentityRead(pid, osSeams);
+}
+
+/** @param {number} pid @param {{ runProcess?: osSeamsRunProcess }} [osSeams] The ps whole-second identity read (the DEGRADE path; unchanged). */
+async function psIdentityRead(pid, osSeams = {}) {
   const run = psRunner(osSeams.runProcess);
   const result = await run({ command: 'ps', args: ['-o', 'pid=', '-o', 'ppid=', '-o', 'lstart=', '-p', String(pid)] }, { timeoutMs: 2_000, maxOutputBytes: 4 * 1024, env: psIdentitySpawnEnv() });
   if (result.code !== 0 || !result.stdout.trim()) return undefined;
@@ -271,7 +569,7 @@ async function readMacProcessStart(pid, osSeams = {}) {
   if (!match || Number(match[1]) !== pid || !Number.isSafeInteger(Number(match[2])) || Number(match[2]) <= 0) {
     throw new Error('the exact fake-ZCode process identity could not be parsed');
   }
-  return { pid, ppid: Number(match[2]), startIdentity: match[3] };
+  return { pid, ppid: Number(match[2]), startIdentity: match[3], coarseStartIdentity: match[3] };
 }
 
 /** @param {number} pid */
@@ -349,7 +647,15 @@ function observedThenGoneError(observedStartIdentity, observedTakenEpochMs, obse
  * and termination.
  * @param {number} pid @param {string} expectedNonce @param {string} [nonceVariable]
  * @param {{ platform?: string, ps?: (pid: number) => Promise<{ pid: number, ppid: number, lstart: string }>, environ?: 'present' | 'mismatch' | 'gone', runProcess?: osSeamsRunProcess }} [osSeams]
- * @returns {Promise<{ pid: number, ppid: number, startIdentity: string, nonce: string, takenEpochMs: number } | undefined>}
+ * @returns {Promise<{ pid: number, ppid: number, startIdentity: string, nonce: string, takenEpochMs: number,
+ *       observedStartIdentity?: string, observedIdentityTakenEpochMs?: number, observedIdentityCompletedEpochMs?: number }
+ *   | { pid: number, ppid: number, startIdentity: string, coarseStartIdentity: string, nonce: string, takenEpochMs: number,
+ *       observedStartIdentity?: string, observedIdentityTakenEpochMs?: number, observedIdentityCompletedEpochMs?: number }
+ *   | undefined>}
+ *   (§32.14 Finding 1) the second arm is the JOINTLY VERIFIED mixed-resolution
+ *   return: when the double reads' resolutions mix, the coarse form both reads
+ *   verified returns (never an exact identity only one read saw) — the ps
+ *   path's own shape.
  */
 export async function inspectVerifiedProcessIdentity(pid, expectedNonce, nonceVariable = FAKE_ZCODE_NONCE_VARIABLE, osSeams = {}) {
   if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error('the exact fake-ZCode PID is invalid');
@@ -374,8 +680,25 @@ export async function inspectVerifiedProcessIdentity(pid, expectedNonce, nonceVa
   const readStart = osSeams.ps
     ? (async (/** @type {number} */ observedPid) => {
         const psResult = /** @type {any} */ (await osSeams.ps?.(observedPid));
-        return psResult === undefined ? undefined
-          : { ...psResult, startIdentity: psResult.lstart };
+        if (psResult === undefined) return undefined;
+        const base = { ...psResult, startIdentity: psResult.lstart, coarseStartIdentity: psResult.lstart };
+        // (route (c), §32) the injected kinfo seam COMPOSES with the ps
+        // seam (ps owns pid/ppid; the exact reader owns the identity form
+        // and the exact ms): the EXACT identity wins over the lstart text.
+        // Unavailable/malformed → the ps identity; gone → the process left.
+        if (typeof /** @type {any} */ (osSeams).kinfoExact === 'function') {
+          const exact = await readDarwinKinfoExact(observedPid, { kinfoExact: /** @type {any} */ (osSeams).kinfoExact });
+          if (exact.state === 'gone') return undefined;
+          if (exact.state === 'exact') {
+            // (codex gate round 11, Finding 2 — the SHARED COMPOSITION) the
+            // injected composition runs the SAME creation-second agreement
+            // helper as the real path: a kinfo identity and a ps identity
+            // from different seconds refuse identically (carrying the exact
+            // identity), never returning successfully.
+            return { ...base, startIdentity: composedExactStartIdentity(exact, base.startIdentity), startInstantEpochMs: exact.ms };
+          }
+        }
+        return base;
       })
     : (platform === 'linux' ? readLinuxProcessStart : (/** @type {number} */ observedPid) => readMacProcessStart(observedPid, osSeams));
   // (codex round 13 — EVIDENCE TIMING) the FIRST identity read's TAKEN
@@ -388,7 +711,23 @@ export async function inspectVerifiedProcessIdentity(pid, expectedNonce, nonceVa
   // observed, never when the failure happened to finish.
   const beforeTakenEpochMs = Date.now();
   const before = await readStart(pid);
+  const beforeResolvedEpochMs = Date.now();
   if (!before) return undefined;
+  // (codex gate round 13, Finding 5 — the KERNEL-BOUND RESOLUTION) a
+  // successful exact composition carries the kinfo query's own bounds —
+  // EVERY first-read failure carry (the nonce-mismatch, the marker-gone and
+  // the missing-second-read shapes) dates the observed identity with them,
+  // never with the entire combined read's window. A kinfo window collected
+  // during [20000,20100] followed by a ps completion at 23000 produced
+  // [20000,23000] and misclassified stale predecessors as ambiguous against
+  // a newer presence at [22000,22100]; the kernel bounds classify them
+  // stale (the lawful outcome).
+  const carriedTakenEpochMs = Number.isSafeInteger((/** @type {any} */ (before)).observedIdentityTakenEpochMs)
+    ? (/** @type {any} */ (before)).observedIdentityTakenEpochMs
+    : beforeTakenEpochMs;
+  const carriedCompletedEpochMs = Number.isSafeInteger((/** @type {any} */ (before)).observedIdentityCompletedEpochMs)
+    ? (/** @type {any} */ (before)).observedIdentityCompletedEpochMs
+    : beforeResolvedEpochMs;
   // (codex round 14 — the COLLECTION INTERVAL) the taken instant is only a
   // collection LOWER bound: a ps request dispatched before a concurrent
   // presence baseline can COLLECT a successor's identity after it (the
@@ -398,7 +737,6 @@ export async function inspectVerifiedProcessIdentity(pid, expectedNonce, nonceVa
   // RESOLUTION upper bound — so consumers treat an interval OVERLAPPING a
   // presence baseline as AMBIGUOUS evidence instead of definitively dating
   // it at either bound.
-  const beforeResolvedEpochMs = Date.now();
   // (codex round 5) UNIFORM IDENTITY RIDE: every failure thrown AFTER the
   // first read verified an occupant carries that observed start identity on
   // the error (`observedStartIdentity`) — an ORDINARY I/O error (the
@@ -413,8 +751,15 @@ export async function inspectVerifiedProcessIdentity(pid, expectedNonce, nonceVa
   // non-deciding.
   const rideObservedIdentity = (/** @type {Error} */ error) => {
     /** @type {any} */ (error).observedStartIdentity = before.startIdentity;
-    /** @type {any} */ (error).observedIdentityTakenEpochMs = beforeTakenEpochMs;
-    /** @type {any} */ (error).observedIdentityCompletedEpochMs = beforeResolvedEpochMs;
+    // (codex gate round 12, Finding 2) a successful composition carries the
+    // KERNEL query's own bounds — the ride dates the carried identity with
+    // them (never the entire combined read's window).
+    /** @type {any} */ (error).observedIdentityTakenEpochMs = Number.isSafeInteger((/** @type {any} */ (before)).observedIdentityTakenEpochMs)
+      ? (/** @type {any} */ (before)).observedIdentityTakenEpochMs
+      : beforeTakenEpochMs;
+    /** @type {any} */ (error).observedIdentityCompletedEpochMs = Number.isSafeInteger((/** @type {any} */ (before)).observedIdentityCompletedEpochMs)
+      ? (/** @type {any} */ (before)).observedIdentityCompletedEpochMs
+      : beforeResolvedEpochMs;
     return error;
   };
   if (inspectorWindowClosed()) throw rideObservedIdentity(windowClosedError());
@@ -439,8 +784,10 @@ export async function inspectVerifiedProcessIdentity(pid, expectedNonce, nonceVa
     const nonceFailure = new Error('the exact fake-ZCode process nonce identity verification failed');
     if (before && typeof before.startIdentity === 'string') {
       /** @type {any} */ (nonceFailure).observedStartIdentity = before.startIdentity;
-      /** @type {any} */ (nonceFailure).observedIdentityTakenEpochMs = beforeTakenEpochMs;
-      /** @type {any} */ (nonceFailure).observedIdentityCompletedEpochMs = beforeResolvedEpochMs;
+      // (codex gate round 13, Finding 5) the kernel-bound resolution (see
+      // the hoist above) — never the entire combined read's window.
+      /** @type {any} */ (nonceFailure).observedIdentityTakenEpochMs = carriedTakenEpochMs;
+      /** @type {any} */ (nonceFailure).observedIdentityCompletedEpochMs = carriedCompletedEpochMs;
     }
     throw nonceFailure;
   }
@@ -452,7 +799,7 @@ export async function inspectVerifiedProcessIdentity(pid, expectedNonce, nonceVa
     // the failure (the same shape as the nonce-mismatch ride); the message
     // deliberately carries no 'identity changed' (that phrase stays the
     // mid-double-read reuse class).
-    throw observedThenGoneError(before.startIdentity, beforeTakenEpochMs, beforeResolvedEpochMs);
+    throw observedThenGoneError(before.startIdentity, carriedTakenEpochMs, carriedCompletedEpochMs);
   }
   if (inspectorWindowClosed()) throw rideObservedIdentity(windowClosedError());
   // (codex round 11 — TIMESTAMP PROVENANCE for the boundary capture) The
@@ -471,13 +818,75 @@ export async function inspectVerifiedProcessIdentity(pid, expectedNonce, nonceVa
   try {
     after = await readStart(pid);
   } catch (secondReadError) {
+    // (§32.14 Finding 2) when the SECOND read's failure CARRIES an observed
+    // identity of its own (e.g. the window closed over it after a
+    // successor's exact identity was read), that SECOND observation and its
+    // dispatch bound are the truthful evidence — the uniform ride's
+    // first-read overwrite would erase positive replacement evidence. Only
+    // errors that observed nothing inherit the first read's ride.
+    if (secondReadError instanceof Error && (/** @type {any} */ (secondReadError)).observedStartIdentity !== undefined) {
+      // (codex gate round 10, Finding 1 — the GENERATION-COMPARISON-BEFORE-
+      // RETHROW rule) the OBSERVED-THEN-GONE carries (the ps-throw and
+      // empty-result shapes) preserve the SECOND read's identity — but that
+      // identity is first COMPARED with the first read's through the
+      // generation relation: a definitively different successor is the
+      // generation change and the refusal fires BEFORE the rethrow (the
+      // witness poll's retained history would otherwise ground on the
+      // uncompared V2 and a later same-successor retry would certify the
+      // replacement); same/uncertain keeps the round-9 carry. The
+      // window-closed carries keep their established classification (their
+      // carried bounds feed the adjudicator's interval rules — the
+      // round-8-finding-2 semantics are untouched).
+      if (((/** @type {any} */ (secondReadError)).observedThenGone === true
+        || (/** @type {any} */ (secondReadError)).observedThenQueryFailed === true)
+        && startIdentitiesDefinitivelyDiffer((/** @type {any} */ (secondReadError)).observedStartIdentity, before.startIdentity)) {
+        // (codex gate round 27, Finding 1 — the LATER-READ CARRY ON
+        // SECOND-READ FAILURES) the SECOND read observed the successor and
+        // only its FOLLOWING ps query failed (or found the pid gone): that
+        // later observation is the replacement evidence, and the refusal
+        // carries the SECOND read's identity with its own collection bounds
+        // — the same {identity, taken, completed} unit the non-failure
+        // mismatch path below preserves (codex gate round 25, Finding 1) —
+        // never rideObservedIdentity's first-read copy. The uniform ride's
+        // first-read overwrite let the termination tracker compare its
+        // retained A against the SAME carried A and never latch the
+        // same-second successor B the second read had proven; a later
+        // degraded-to-matching-ps verification then authorized signalling
+        // the replacement. The message keeps its established 'identity
+        // changed' class.
+        throw Object.assign(new Error('the exact fake-ZCode process identity changed'), {
+          observedStartIdentity: (/** @type {any} */ (secondReadError)).observedStartIdentity,
+          observedIdentityTakenEpochMs: Number.isSafeInteger((/** @type {any} */ (secondReadError)).observedIdentityTakenEpochMs)
+            ? (/** @type {any} */ (secondReadError)).observedIdentityTakenEpochMs
+            : takenEpochMs,
+          observedIdentityCompletedEpochMs: Number.isSafeInteger((/** @type {any} */ (secondReadError)).observedIdentityCompletedEpochMs)
+            ? (/** @type {any} */ (secondReadError)).observedIdentityCompletedEpochMs
+            : Date.now(),
+        });
+      }
+      // (codex gate round 10, Finding 2 — the KINFO-BOUNDS PRESERVATION) the
+      // carry's own bounds (the kinfo query's true window, taken/completed)
+      // take precedence over the catch-level stamps: dating a kinfo-observed
+      // identity with the later ps query's window misdated stale
+      // predecessors into ambiguous replacement evidence. The dispatch bound
+      // falls back to the inspector's taken instant only for errors that
+      // carry no window of their own; the completion bound is filled only
+      // when missing.
+      /** @type {any} */ (secondReadError).observedIdentityReadEpochMs = Number.isSafeInteger((/** @type {any} */ (secondReadError)).observedIdentityTakenEpochMs)
+        ? (/** @type {any} */ (secondReadError)).observedIdentityTakenEpochMs
+        : takenEpochMs;
+      if (!Number.isSafeInteger((/** @type {any} */ (secondReadError)).observedIdentityCompletedEpochMs)) {
+        /** @type {any} */ (secondReadError).observedIdentityCompletedEpochMs = Date.now();
+      }
+      throw secondReadError;
+    }
     throw rideObservedIdentity(/** @type {Error} */ (secondReadError));
   }
   if (!after) {
     // ROUND-28: the same ride when the pid vanished before the SECOND
     // start-identity read (the marker nonce's presence is scope-only
     // evidence — it never attests the generation).
-    throw observedThenGoneError(before.startIdentity, beforeTakenEpochMs, beforeResolvedEpochMs);
+    throw observedThenGoneError(before.startIdentity, carriedTakenEpochMs, carriedCompletedEpochMs);
   }
   // SELF-DESCRIBING ERRORS (review round 24): a changed START IDENTITY
   // between the double reads is POSITIVE replacement evidence (a PID reused
@@ -488,11 +897,108 @@ export async function inspectVerifiedProcessIdentity(pid, expectedNonce, nonceVa
   // first-read identity on the error (the uniform round-5 ride: a
   // within-call contradiction is two observations, and the ppid-only class's
   // consistent identity is retained evidence — never discarded).
-  if (before.startIdentity !== after.startIdentity) {
-    throw rideObservedIdentity(new Error('the exact fake-ZCode process identity changed'));
+  // (§32.11 Finding 3 — REPRESENTATION-STABLE comparison, design (a)):
+  // every read carries the ps-text representation of the SAME read
+  // (`coarseStartIdentity` — the exact path already runs the ps read for the
+  // kernel parent link, so the coarse form is always derivable alongside the
+  // kinfo form at zero extra cost). When BOTH reads carry the exact form,
+  // the exact strings decide (the microsecond discrimination is retained —
+  // a same-second successor is still caught); otherwise the COARSE
+  // representations decide — a form-only difference (kinfo ↔ ps text, e.g.
+  // a transient bridge failure degrading the second read) with equal coarse
+  // representations is the SAME generation at this comparison's resolution,
+  // never positive change evidence. This matches the all-coarse path's
+  // pre-existing discrimination exactly: no resolution is claimed beyond
+  // what the degraded read proves.
+  /** @param {any} r @returns {boolean} */
+  const readsAreExactForm = (r) => typeof r?.startIdentity === 'string' && r.startIdentity.startsWith('kinfo:');
+  const bothReadsExact = readsAreExactForm(before) && readsAreExactForm(after);
+  /** @param {any} r @returns {string} */
+  const comparableGenerationIdentity = (r) => (bothReadsExact
+    ? r.startIdentity
+    : (typeof r.coarseStartIdentity === 'string' ? r.coarseStartIdentity : r.startIdentity));
+  if (comparableGenerationIdentity(before) !== comparableGenerationIdentity(after)) {
+    // (codex gate round 25, Finding 1 — the LATER-READ CARRY) the
+    // double-read MISMATCH is positive replacement evidence about the SECOND
+    // read's occupant: the refusal carries the SECOND (later) read's
+    // identity with its own collection bounds — the same {identity, taken,
+    // completed} unit the ppid-failure path below preserves — never
+    // rideObservedIdentity's first-read copy. The uniform ride's first-read
+    // overwrite let the SIGTERM exit polling's tracker compare its retained
+    // first-read A against the SAME carried A and never latch the
+    // same-second successor B the second read had proven; a later
+    // degraded-to-matching-ps verification then authorized signalling the
+    // replacement. The later observation is the replacement evidence; the
+    // message keeps its established 'identity changed' class.
+    throw Object.assign(new Error('the exact fake-ZCode process identity changed'), {
+      observedStartIdentity: after.startIdentity,
+      observedIdentityTakenEpochMs: Number.isSafeInteger((/** @type {any} */ (after)).observedIdentityTakenEpochMs)
+        ? (/** @type {any} */ (after)).observedIdentityTakenEpochMs
+        : takenEpochMs,
+      observedIdentityCompletedEpochMs: Number.isSafeInteger((/** @type {any} */ (after)).observedIdentityCompletedEpochMs)
+        ? (/** @type {any} */ (after)).observedIdentityCompletedEpochMs
+        : Date.now(),
+    });
   }
   if (before.ppid !== after.ppid) {
+    // (codex gate round 15, Finding 2 — the PPID-FAILURE EXACT CARRY) when
+    // the second read observed an EXACT identity (the mixed downgrade
+    // shape), the reparenting failure preserves the SECOND read's exact
+    // identity and its collection bounds — the same {identity, taken,
+    // completed} unit the successful mixed-read path preserves — never
+    // rideObservedIdentity's first-read coarse form (which discarded the
+    // successor and let a confirmed absence credit the original
+    // generation's disappearance). The message stays the ppid-changed torn
+    // class (the round-1 rule — a ppid-only change is never the reuse
+    // class); the carried exact evidence classifies per the carried rules
+    // downstream.
+    if (readsAreExactForm(after)) {
+      throw Object.assign(new Error('the exact fake-ZCode process ppid changed between reads'), {
+        observedStartIdentity: after.startIdentity,
+        observedIdentityTakenEpochMs: Number.isSafeInteger(after.observedIdentityTakenEpochMs)
+          ? after.observedIdentityTakenEpochMs
+          : takenEpochMs,
+        observedIdentityCompletedEpochMs: Number.isSafeInteger(after.observedIdentityCompletedEpochMs)
+          ? after.observedIdentityCompletedEpochMs
+          : Date.now(),
+      });
+    }
     throw rideObservedIdentity(new Error('the exact fake-ZCode process ppid changed between reads'));
+  }
+  // (§32.14 Finding 1) the returned resolution is the JOINTLY VERIFIED one:
+  // when the two reads' resolutions MIX (one exact, one degraded), the exact
+  // identity was seen by only ONE read — a same-second PID replacement
+  // between the reads would otherwise return the successor's exact identity
+  // with the predecessor's verified nonce. The mixed-resolution return is
+  // the COARSE form (the representation both reads verified, the second
+  // read's own ps shape), matching the ps path's shape exactly.
+  if (!bothReadsExact) {
+    const coarseIdentity = comparableGenerationIdentity(after);
+    // (codex gate round 12, Finding 1 — the EXACT-EVIDENCE CARRY) the
+    // jointly verified coarse identity is the RETURNED identity, but when
+    // the second read observed an EXACT identity it is separately preserved
+    // (with its bounds) as an internal carry for replacement detection —
+    // the same pattern as the carried-identity ride; the whitelisted
+    // verdict fields carry it without a persisted-shape change. A later
+    // confirmed absence then triggers the replacement detection instead of
+    // crediting the original generation's disappearance.
+    const result = { pid: after.pid, ppid: after.ppid, startIdentity: coarseIdentity, coarseStartIdentity: coarseIdentity, nonce: expectedNonce, takenEpochMs };
+    // (codex gate round 13, Finding 2 — READ-ORDER-AGNOSTIC preservation)
+    // whichever read supplied the exact identity, that observation and its
+    // bounds are preserved as the replacement-detection carry — the
+    // first-exact/second-degrades shape carries the FIRST read's exact
+    // evidence exactly as the second-exact shape carries the second's.
+    const exactSource = readsAreExactForm(after) ? after : before;
+    if (readsAreExactForm(exactSource)) {
+      (/** @type {any} */ (result)).observedStartIdentity = exactSource.startIdentity;
+      (/** @type {any} */ (result)).observedIdentityTakenEpochMs = Number.isSafeInteger((/** @type {any} */ (exactSource)).observedIdentityTakenEpochMs)
+        ? (/** @type {any} */ (exactSource)).observedIdentityTakenEpochMs
+        : takenEpochMs;
+      (/** @type {any} */ (result)).observedIdentityCompletedEpochMs = Number.isSafeInteger((/** @type {any} */ (exactSource)).observedIdentityCompletedEpochMs)
+        ? (/** @type {any} */ (exactSource)).observedIdentityCompletedEpochMs
+        : Date.now();
+    }
+    return result;
   }
   return { ...after, nonce: expectedNonce, takenEpochMs };
 }
@@ -557,33 +1063,363 @@ export async function captureVerifiedProcessIdentity(processPath, processNonce) 
 }
 
 /**
+ * The observer seam options the DEFAULT termination reader honors (codex gate
+ * round 27, Finding 2): the same closed shape the inspection layer accepts —
+ * the deterministic test surface reaches the default reader's actual protocol.
+ * @typedef {{
+ *   platform?: string,
+ *   ps?: (pid: number) => Promise<{ pid: number, ppid: number, lstart: string }>,
+ *   environ?: 'present' | 'mismatch' | 'gone',
+ *   runProcess?: osSeamsRunProcess,
+ *   kinfoExact?: (pid: number) => Promise<{ sec: number, usec: number } | { malformed: number } | null>,
+ *   abortSignal?: { aborted: boolean },
+ * }} TerminationInspectOsSeams
+ */
+
+/**
  * Terminate one exact process after re-verifying its identity; escalate to
  * SIGKILL only while the identity still matches, verify exit after every
  * signal within a bounded deadline, and return an explicit outcome: a thrown
  * signal is never a success while the process is still live, and a process
  * that survives SIGKILL verification is reported as a failure for the caller
  * to record.
- * @param {{ pid: number, ppid: number, nonce: string, startIdentity: string }} identity
- * @param {{ readIdentity?: (expected: unknown) => Promise<unknown>, kill?: (pid: number, signal: NodeJS.Signals) => boolean, waitForExit?: (identity: unknown, phase: 'terminate' | 'kill') => Promise<void> }} [dependencies]
+ * @param {{ pid: number, ppid: number, nonce: string, startIdentity: string, observedStartIdentity?: string }} identity
+ * @param {{ readIdentity?: (expected: unknown) => Promise<unknown>, kill?: (pid: number, signal: NodeJS.Signals) => boolean, waitForExit?: (identity: unknown, phase: 'terminate' | 'kill', trackedRead?: (expected: unknown) => Promise<unknown>) => Promise<void>, learnedExactReference?: string, generationChanged?: boolean, inspectOsSeams?: TerminationInspectOsSeams }} [dependencies]
  * @returns {Promise<TerminationOutcome>}
  */
 export async function terminateVerifiedProcess(identity, dependencies = {}) {
+  // (codex gate round 20, Finding 1 — the TERMINATION LEARNED-REFERENCE
+  // RETENTION) with a coarse captured identity, each termination read
+  // INDEPENDENTLY accepts any exact generation from that second — cleanup
+  // could observe exact generation A, send it SIGTERM, then observe the
+  // same-second successor B and send B SIGKILL. The termination sequence
+  // RETAINS the exact identities learned across its reads (the established
+  // learned-reference pattern) and cross-checks every subsequent read
+  // against them: the FIRST exact identity observed during termination —
+  // the read's carried identity first (it was observed during the read),
+  // then the read's own (the runtime's learning order) — becomes the
+  // reference, and a later exact identity definitively differing from it is
+  // the generation-changed fact (the reuse evidence preserved per the
+  // round-14/28 carried rules). The flag fires at the read that observed
+  // the successor: the escalation must not signal it.
+  // (codex gate round 27, Finding 2 — HOISTED above the default reader) the
+  // tracker state now precedes the default readIdentity definition so the
+  // default reader's observed-then-gone conversion can forward the carried
+  // identity through the tracker BEFORE converting the error to absence.
+  let terminationLearnedExactReference = /** @type {string | null} */ (null);
+  // (codex gate round 25, Finding 2 — the PRE-PROVEN LATCH) a caller whose
+  // lifetime reads already proved a generation change this turn (the
+  // driver's terminal-turn latch) initializes the tracker with the change
+  // LATCHED: every established gate (the pre-signal verdict gate, the
+  // post-SIGTERM latch check, the escalation gate) refuses, so a
+  // degraded-to-MATCHING-coarse-ps cleanup read can never re-authorize a
+  // signal against the proven replacement, and the replacement's own
+  // disappearance is never credited as the target's exit (the round-20/21
+  // standing rule, applied to the pre-proven fact).
+  let terminationGenerationChanged = dependencies.generationChanged === true;
   const readIdentity = dependencies.readIdentity ?? (async (expected) => {
     try {
-      return await inspectVerifiedProcessIdentity(/** @type {any} */ (expected).pid, /** @type {any} */ (expected).nonce);
+      // (codex gate round 27, Finding 2 — the OBSERVER SEAM SURFACE) the
+      // default reader honors the SAME observer seam options the inspection
+      // layer honors (the round-14 Finding-1 discipline the driver's default
+      // reader already applies): the deterministic test surface reaches the
+      // default reader's actual protocol.
+      return await inspectVerifiedProcessIdentity(/** @type {any} */ (expected).pid, /** @type {any} */ (expected).nonce, FAKE_ZCODE_NONCE_VARIABLE, dependencies.inspectOsSeams ?? {});
     } catch (error) {
-      // ROUND-28: a mid-read disappearance during termination verification
-      // is the exited shape (the pid is gone; termination gates signalling
-      // and has no adjudication to latch for).
-      if (/** @type {any} */ (error)?.observedThenGone === true) return undefined;
+      // (codex gate round 27, Finding 2 — the CONSUME-BEFORE-ABSENCE rule,
+      // mirroring the driver's separate reader) the round-28 observed-then-gone
+      // conversion now CROSS-CHECKS the error's carried identity FIRST: the
+      // inspector's observed-then-gone error carries the exact identity it
+      // observed before the pid vanished. A carried identity that definitively
+      // differs from the learned reference is the generation-change evidence —
+      // the latch sets through the SAME tracker state every read consumes — so
+      // the gone-check's post-read gate never credits the replacement's absence
+      // as the target's lawful exit (the capture seeded with exact A then
+      // reading the observed-then-gone successor B returns the named
+      // identity-change failure, never the clean exited outcome). A matching
+      // carry (the genuinely-gone original), a non-exact carry, or no carry
+      // keeps the round-28 exited shape unchanged. A carry observed with NO
+      // reference yet seeds it (the round-25 Finding-3 learning order), so a
+      // later read cross-checks against it.
+      if (/** @type {any} */ (error)?.observedThenGone === true) {
+        const carriedGoneIdentity = typeof (/** @type {any} */ (error))?.observedStartIdentity === 'string'
+          ? (/** @type {any} */ (error)).observedStartIdentity
+          : null;
+        if (carriedGoneIdentity !== null) {
+          // (codex gate round 30, Finding 1 — the COARSE-CARRY COMPARISON)
+          // the exact-form guard previously required the CARRIED identity to
+          // be exact, so when the exact bridge became unavailable and the
+          // degraded ps read observed a coarse identity from a demonstrably
+          // DIFFERENT second before the environment read found the pid gone,
+          // the replacement evidence was discarded and the absence was
+          // credited as the target's clean exit. Every carried identity is
+          // now compared against the retained EXACT reference with the
+          // established representation-aware startIdentitiesDefinitivelyDiffer
+          // rule (an exact reference side; the carry — exact or coarse —
+          // compared at the exact side's second resolution, the same rule a
+          // live double-read applies): a definitive difference latches and
+          // the gone-check's post-read gate returns the named
+          // identity-change failure. A coarse carry in the reference's own
+          // second (the non-definitive 'same' relation) and a non-exact
+          // reference prove no difference and keep the round-28 exited shape
+          // unchanged. Only an EXACT carry initializes the retained
+          // reference (the existing exact-retention contract).
+          // (codex gate round 37 review-mwc4sfh6-fx3ggt, Finding 3 — the
+          // CAPTURE COMPARISON) the carried identity is ALSO compared against
+          // the CAPTURE's own start identity before it is learned or the
+          // error is converted to absence: a COARSE capture (a whole-second ps
+          // text) with no learned exact reference previously bypassed every
+          // comparison, so the exact bridge recovering on the first
+          // termination read could observe a DIFFERENT-second successor, the
+          // conversion learned that successor as the initial reference, and
+          // the turn returned a clean exit despite proving a different
+          // generation. The representation-aware relation applies (an exact
+          // side against the coarse second: a different second is definitively
+          // different; the capture's own second and an unresolvable pair stay
+          // non-definitive), and an exact capture's own evidence is already
+          // part of the retained reference through the capture seeding above.
+          const captureGenerationChanged = typeof /** @type {any} */ (expected).startIdentity === 'string'
+            && startIdentitiesDefinitivelyDiffer(carriedGoneIdentity, /** @type {any} */ (expected).startIdentity);
+          if (captureGenerationChanged
+            || (typeof terminationLearnedExactReference === 'string'
+              && parseExactStartIdentity(terminationLearnedExactReference) !== null
+              && startIdentitiesDefinitivelyDiffer(carriedGoneIdentity, terminationLearnedExactReference))) {
+            terminationGenerationChanged = true;
+          }
+          if (parseExactStartIdentity(carriedGoneIdentity) !== null && terminationLearnedExactReference === null) {
+            terminationLearnedExactReference = carriedGoneIdentity;
+          }
+        }
+        // ROUND-28: a mid-read disappearance during termination verification
+        // is the exited shape (the pid is gone; termination gates signalling
+        // and has no adjudication to latch for).
+        return undefined;
+      }
       throw error;
     }
   });
   const kill = dependencies.kill ?? ((pid, signal) => process.kill(pid, signal));
+  // (codex gate round 22, Finding 1 — the SHARED LIFETIME SEED) the caller's
+  // held-turn lifetime reference (the exact generation the reader learned
+  // BEFORE termination began — the held-phase verification's exact A) seeds
+  // the tracker FIRST: the termination tracker never learns as an initial
+  // reference a generation the lifetime already retained. The capture's own
+  // exact identity and carry (the round-21 seeding below) are cross-checked
+  // against this seed exactly like subsequent reads.
+  if (typeof dependencies.learnedExactReference === 'string'
+    && parseExactStartIdentity(dependencies.learnedExactReference) !== null) {
+    terminationLearnedExactReference = dependencies.learnedExactReference;
+  }
+  const trackTerminationRead = async (/** @type {any} */ expected) => {
+    let record;
+    try {
+      record = await readIdentity(expected);
+    } catch (error) {
+      // (codex gate round 23, Finding 1 — the ERROR-CARRIED IDENTITY
+      // CONSUMPTION) when a read's inspector THROWS while carrying the
+      // observed identity (`observedStartIdentity` — the mid-read
+      // identity-change shape), the throw must never bypass the tracker: the
+      // error-carried identity is CONSUMED here — compared against the
+      // learned reference exactly like a returned record (definitively
+      // different latches the generation change) — BEFORE the error
+      // propagates. Without this, an exit-polling inspector error carrying a
+      // same-second successor escaped the tracker entirely: the surrounding
+      // waitForExit catch permitted escalation, a degraded-to-matching-ps
+      // pre-kill verification passed, and SIGKILL reached the successor
+      // despite the intervening exact replacement evidence.
+      const carriedIdentity = typeof /** @type {any} */ (error)?.observedStartIdentity === 'string'
+        ? /** @type {any} */ (error).observedStartIdentity : null;
+      if (carriedIdentity !== null && parseExactStartIdentity(carriedIdentity) !== null) {
+        // (codex gate round 34 review-mwbhnnxl-21lsyh, Finding 1 — the
+        // WITHIN-READ TRANSITION LATCH) an error of the inspector's OWN
+        // identity-change class ('identity changed' — the double-read
+        // mismatch, the second-read failure comparison, and the composition
+        // disagreement alike) carries a PROVEN within-read A→B transition:
+        // the read itself positively compared two generations and refused.
+        // When NO reference has been learned yet (the coarse capture + coarse
+        // early cleanup reads shape), that transition is the replacement
+        // evidence and LATCHES here — it is never treated as an initial
+        // unchanged observation seeding the reference. The former seeding let
+        // a subsequent same-nonce verification of the successor B pass
+        // against the coarse capture and authorize SIGKILL against the
+        // proven replacement (both signals fired). A non-transition error's
+        // exact carry keeps the existing seeding and comparison behavior
+        // byte-unchanged (the lawful first-exact learning), and a
+        // with-reference transition consumption keeps the round-23
+        // comparison (a carried SAME-generation identity never latches).
+        if (terminationLearnedExactReference === null) {
+          if (/identity changed/u.test(/** @type {Error} */ (error).message)) {
+            terminationGenerationChanged = true;
+          } else {
+            // (codex gate round 39 review-mwcrgo5m-8t4hr1, Finding 1 — the
+            // CAPTURE COMPARISON before the error-carry seeding) a FAILED
+            // inspection's exact carry (the ps-failure observedThenQueryFailed
+            // shape among them) is compared against the CAPTURED generation —
+            // its own start identity and its exact carry — BEFORE the carry
+            // initializes the learned reference: a coarse capture with no
+            // learned reference previously let a different-second successor
+            // exposed by the failed inspection be LEARNED as the initial
+            // generation, and the following absence returned
+            // `exited: true, failure: null` despite the proven replacement.
+            // The representation-aware relation applies (an exact side
+            // against the coarse second: a different second is definitively
+            // different; the capture's own second and an unresolvable pair
+            // stay non-definitive). Same-generation carries keep the lawful
+            // seeding; this mirrors the observed-then-gone and held-turn
+            // capture comparisons (round 37 Finding 3 / round 38 Finding 1).
+            const carryCaptureForeign = [
+              /** @type {any} */ (identity).observedStartIdentity,
+              /** @type {any} */ (identity).startIdentity,
+            ].some((captureIdentity) => typeof captureIdentity === 'string'
+              && startIdentitiesDefinitivelyDiffer(carriedIdentity, captureIdentity));
+            if (carryCaptureForeign) {
+              terminationGenerationChanged = true;
+            } else {
+              terminationLearnedExactReference = carriedIdentity;
+            }
+          }
+        } else if (startIdentitiesDefinitivelyDiffer(carriedIdentity, terminationLearnedExactReference)) {
+          terminationGenerationChanged = true;
+        }
+      } else if (carriedIdentity !== null) {
+        // (codex gate round 45 review-mwdm7a6g-7jhabk, Finding 1 — the
+        // COARSE-CAPTURE COMPARISON) with a COARSE capture and coarse
+        // pre-signal reads there is no retained reference; the bridge
+        // recovering during the SIGTERM polling can then observe the
+        // ORIGINAL generation in kinfo while the subsequent ps query observes
+        // a DIFFERENT-second successor, and the composition refusal carries
+        // that successor's COARSE identity. The coarse branch previously
+        // required a non-null reference, so the evidence was ignored and the
+        // following absence returned `exited: true, failure: null` despite
+        // the proven replacement. A coarse carry with NO retained reference
+        // is now compared against the CAPTURED identity and its exact carry
+        // (representation-aware: coarse-vs-coarse different text, or
+        // exact-vs-coarse different second, is definitively different; the
+        // capture's own second and an unresolvable pair stay non-definitive)
+        // — the same protocol family as the round-39/44 capture comparisons.
+        // The with-reference consumption keeps its existing comparison.
+        const coarseCarryCaptureChanged = [
+          /** @type {any} */ (identity).observedStartIdentity,
+          /** @type {any} */ (identity).startIdentity,
+        ].some((captureIdentity) => typeof captureIdentity === 'string'
+          && startIdentitiesDefinitivelyDiffer(carriedIdentity, captureIdentity));
+        if (coarseCarryCaptureChanged
+          || (terminationLearnedExactReference !== null
+            && startIdentitiesDefinitivelyDiffer(carriedIdentity, terminationLearnedExactReference))) {
+          // (codex gate round 36 review-mwbzhfmk-bxkb77, Finding 1 — the
+        // COARSE-CARRY COMPARISON) a kinfo/ps generation disagreement's
+        // refusal carries the LATER, COARSE ps identity (the round-33-
+        // followup later-read carry). The exact-only guard above ignored that
+        // evidence and left the replacement latch unset: with an exact
+        // `kinfo:1:100000` target and a ps observation from a DIFFERENT
+        // second during the exit polling, the subsequent absence was credited
+        // as the target's lawful exit (`exited: true, failure: null`) despite
+        // the positively observed replacement. A COARSE carry is now compared
+        // against the retained exact reference with the SAME
+        // representation-aware relation (exact side against the coarse
+        // second: a different second is definitively different; the
+        // reference's own second or an unresolvable carry is never positive
+        // evidence). Only REFERENCE INITIALIZATION remains exact-only; the
+        // no-reference case is covered by the round-45 capture comparison
+        // above (compared against the captured identity, never seeded).
+        terminationGenerationChanged = true;
+        }
+      }
+      throw error;
+    }
+    if (record !== null && typeof record === 'object') {
+      for (const candidate of [/** @type {any} */ (record).observedStartIdentity, /** @type {any} */ (record).startIdentity]) {
+        if (typeof candidate !== 'string') continue;
+        if (parseExactStartIdentity(candidate) !== null) {
+          // (codex gate round 44 review-mwdihq4h-ej561x, Finding 1 — the
+          // CAPTURE COMPARISON BEFORE THE SUCCESS CANDIDATE SEEDING) with a
+          // coarse capture and coarse pre-signal reads, the exact reader can
+          // recover during the SIGTERM polling and observe a different-second
+          // successor: this success-return loop previously seeded it as the
+          // initial reference without comparing it against the CAPTURED
+          // generation, so a second-1 capture followed by an exact second-2
+          // observation and absence returned `exited: true, failure: null`.
+          // The candidate is compared against the capture's own identity and
+          // its exact carry with the representation-aware relation (an exact
+          // side against the coarse second: a different second is
+          // definitively different) BEFORE initializing the reference — the
+          // same protocol the round-43 error-carry path and the round-39/42
+          // termination comparisons apply. Same-generation or unresolvable
+          // candidates keep the lawful seeding.
+          const candidateCaptureChanged = [
+            /** @type {any} */ (identity).observedStartIdentity,
+            /** @type {any} */ (identity).startIdentity,
+          ].some((captureIdentity) => typeof captureIdentity === 'string'
+            && startIdentitiesDefinitivelyDiffer(candidate, captureIdentity));
+          if (candidateCaptureChanged) {
+            terminationGenerationChanged = true;
+            continue;
+          }
+          if (terminationLearnedExactReference === null) {
+            terminationLearnedExactReference = candidate;
+            continue;
+          }
+          if (startIdentitiesDefinitivelyDiffer(candidate, terminationLearnedExactReference)) {
+            terminationGenerationChanged = true;
+          }
+          continue;
+        }
+        // (codex gate round 42 review-mwdbbf0x-xry6ea, Finding 1 — the
+        // RETURNED COARSE COMPARISON) a SUCCESSFUL inspection's returned
+        // coarse identity (the exact bridge unavailable during the exit
+        // polling, the degraded ps text) is replacement evidence when it
+        // definitively differs from the retained exact reference — the
+        // exact-only guard above discarded it, so a double-verified ps
+        // identity from a DIFFERENT second followed by absence reported
+        // `exited: true, failure: null` despite the observed PID reuse. The
+        // returned coarse candidate is compared with the SAME
+        // representation-aware relation (an exact reference side: a
+        // different second is definitively different; the reference's own
+        // second or an unresolvable pair is never positive evidence) and
+        // latches on a definitive difference. Only REFERENCE
+        // INITIALIZATION remains exact-only — a coarse candidate with no
+        // retained reference still seeds nothing.
+        if (terminationLearnedExactReference !== null
+          && startIdentitiesDefinitivelyDiffer(candidate, terminationLearnedExactReference)) {
+          terminationGenerationChanged = true;
+        }
+      }
+    }
+    return record;
+  };
+  // (codex gate round 21, Finding 1 — the CAPTURE SEEDING) the tracker is
+  // SEEDED from the capture's own exact identity AND exact carry (the
+  // {identity, bounds} unit the capture preserved) BEFORE the first
+  // termination read: every subsequent observation — the initial gone-check
+  // included — is COMPARED against the seed, never learned as the first.
+  // Without the seed, a capture identifying exact generation A let a
+  // same-second successor B observed by the gone-check initialize the
+  // reference to B, and a verification that degraded to the matching coarse
+  // ps text then authorized SIGTERM against B. The seeding order mirrors
+  // the runtime's learning order (the carried identity first — the
+  // preserved exact evidence — then the capture's own); a capture whose own
+  // exact identity and carry definitively differ is self-contradictory and
+  // flags the generation change fail-closed.
+  if (typeof /** @type {any} */ (identity).observedStartIdentity === 'string'
+    && parseExactStartIdentity(/** @type {any} */ (identity).observedStartIdentity) !== null) {
+    if (terminationLearnedExactReference === null) {
+      terminationLearnedExactReference = /** @type {any} */ (identity).observedStartIdentity;
+    } else if (startIdentitiesDefinitivelyDiffer(/** @type {any} */ (identity).observedStartIdentity, /** @type {any} */ (terminationLearnedExactReference))) {
+      terminationGenerationChanged = true;
+    }
+  }
+  if (typeof /** @type {any} */ (identity).startIdentity === 'string'
+    && parseExactStartIdentity(/** @type {any} */ (identity).startIdentity) !== null) {
+    if (terminationLearnedExactReference === null) {
+      terminationLearnedExactReference = /** @type {any} */ (identity).startIdentity;
+    } else if (startIdentitiesDefinitivelyDiffer(/** @type {any} */ (identity).startIdentity, /** @type {any} */ (terminationLearnedExactReference))) {
+      terminationGenerationChanged = true;
+    }
+  }
   const waitForExit = dependencies.waitForExit ?? (async (expected, phase) => {
     const deadline = Date.now() + (phase === 'kill' ? 5_000 : 2_000);
     while (Date.now() < deadline) {
-      if (await readIdentity(expected) === undefined) return;
+      if (await trackTerminationRead(expected) === undefined) return;
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
     throw new Error(`the exact verified process remained alive during ${phase}`);
@@ -592,12 +1428,31 @@ export async function terminateVerifiedProcess(identity, dependencies = {}) {
   const outcome = { attempted: false, signalled: null, exited: false, failure: null };
   // A disappeared target needs no signal and counts as exited; a live target
   // whose identity changed is never signalled and is reported as a failure.
-  if (await readIdentity(identity) === undefined) {
+  if (await trackTerminationRead(identity) === undefined) {
+    // (codex gate round 25, Finding 2 — the PRE-PROVEN LATCH) a latched
+    // generation change is terminal: the vanished pid is the PROVEN
+    // replacement's absence, never the target's exit (the round-20/21
+    // standing rule — the same gate the escalation arm applies below).
+    if (terminationGenerationChanged) {
+      outcome.failure = 'the exact fake-ZCode process identity changed during termination';
+      return outcome;
+    }
     outcome.exited = true;
     return outcome;
   }
-  if (!await verifyUnchanged(identity, readIdentity)) {
-    outcome.failure = 'the exact fake-ZCode process identity changed before signalling';
+  // (codex gate round 5, Finding 1) the verdict is CLASSIFIED: an
+  // unresolvable verification ('unverifiable') is reported honestly — it is
+  // not an observed identity change — while a demonstrably different
+  // generation (or a vanished target) keeps the identity-change failure.
+  // (codex gate round 20, Finding 1) the learned-reference cross-check
+  // participates in the same gate: a mid-sequence read that definitively
+  // differed from the reference generation is the identity-change fact —
+  // the signal never fires.
+  const preSignalVerdict = await verifyUnchanged(identity, trackTerminationRead);
+  if (preSignalVerdict !== 'unchanged' || terminationGenerationChanged) {
+    outcome.failure = preSignalVerdict === 'unverifiable' && !terminationGenerationChanged
+      ? 'the exact fake-ZCode process identity could not be verified before signalling'
+      : 'the exact fake-ZCode process identity changed before signalling';
     return outcome;
   }
   outcome.attempted = true;
@@ -606,7 +1461,18 @@ export async function terminateVerifiedProcess(identity, dependencies = {}) {
     outcome.signalled = 'SIGTERM';
   } catch (error) {
     // A thrown signal is not a success while the process is still live.
-    if (await readIdentity(identity) === undefined) {
+    // (codex gate round 29, Finding 1 — the POST-READ LATCH RECHECK AT THE
+    // SIGNAL-THROW ABSENCE CONVERSION) the awaited tracked read can observe
+    // an exact successor and set the termination latch DURING the await (the
+    // default reader's observed-then-gone conversion). The latch is rechecked
+    // AFTER the absence is collected and BEFORE the exit is credited: a
+    // latched change is the proven replacement, never the target's exit (the
+    // same rule the escalation absence conversion applies).
+    if (await trackTerminationRead(identity) === undefined) {
+      if (terminationGenerationChanged) {
+        outcome.failure = 'the exact fake-ZCode process identity changed during termination';
+        return outcome;
+      }
       outcome.exited = true;
       return outcome;
     }
@@ -614,21 +1480,74 @@ export async function terminateVerifiedProcess(identity, dependencies = {}) {
     return outcome;
   }
   try {
-    await waitForExit(identity, 'terminate');
+    // (codex gate round 21, Finding 2 — the SUPPLIED POLLING FEEDS THE
+    // TRACKER) the supplied waitForExit RECEIVES the tracking reader as its
+    // third argument: a caller whose polling reads identities directly (the
+    // driver's waitForProcessExit) polls THROUGH the same retained-generation
+    // tracker, so the polling evidence participates in the reference
+    // cross-check instead of bypassing it. The default waitForExit already
+    // closes over the tracker (the argument is uniform for both shapes).
+    // (codex gate round 21, Finding 3 — the LATCH IS TERMINAL FOR EXIT
+    // VERIFICATION) a latched generation change is terminal for the WHOLE
+    // termination: an exit verification that resolves after the latch (the
+    // successor observed, then the pid gone) never returns the clean
+    // exited:true/failure:null — the proven replacement is the outcome per
+    // the standing changed-during-termination classification.
+    await waitForExit(identity, 'terminate', trackTerminationRead);
+    if (terminationGenerationChanged) {
+      outcome.failure = 'the exact fake-ZCode process identity changed during termination';
+      return outcome;
+    }
     outcome.exited = true;
     return outcome;
   } catch { /* escalate only the still-matching PID */ }
-  if (!await verifyUnchanged(identity, readIdentity)) {
-    const gone = await readIdentity(identity) === undefined;
+  // (codex gate round 20, Finding 1 — the ESCALATION GATE) the pre-kill
+  // verification consults the learned reference too: a same-second successor
+  // observed mid-sequence (during the exit polling or this verification) is
+  // the generation-changed fact — the escalation must not signal it, and the
+  // pid's disappearance after a proven replacement is never credited as the
+  // target's exit (the changed-during-termination classification).
+  const preKillVerdict = await verifyUnchanged(identity, trackTerminationRead);
+  if (preKillVerdict !== 'unchanged' || terminationGenerationChanged) {
+    // (codex gate round 28, Finding 1 — the POST-READ LATCH RECHECK) this
+    // absence conversion AWAITS a tracked read, and the default reader's
+    // observed-then-gone conversion can detect an exact successor, set the
+    // termination latch, and return undefined DURING that await (the round-27
+    // consume-before-absence rule). The latch check therefore belongs AFTER
+    // the absence result is collected and BEFORE the exit is credited: a
+    // latched generation change is the proven replacement, never the target's
+    // exit. (The pre-await shape returned exited:true/failure:null after an
+    // unverifiable pre-kill read followed by an observed-then-gone
+    // successor.)
+    let gone = false;
+    if (!terminationGenerationChanged) {
+      if (preKillVerdict === 'gone') {
+        gone = true;
+      } else if (await trackTerminationRead(identity) === undefined) {
+        gone = !terminationGenerationChanged;
+      }
+    }
     outcome.exited = gone;
-    if (!gone) outcome.failure = 'the exact fake-ZCode process identity changed during termination';
+    if (!gone) {
+      outcome.failure = preKillVerdict === 'unverifiable' && !terminationGenerationChanged
+        ? 'the exact fake-ZCode process identity could not be verified during termination'
+        : 'the exact fake-ZCode process identity changed during termination';
+    }
     return outcome;
   }
   try {
     kill(identity.pid, 'SIGKILL');
     outcome.signalled = 'SIGKILL';
   } catch (error) {
-    if (await readIdentity(identity) === undefined) {
+    // (codex gate round 29, Finding 1 — the POST-READ LATCH RECHECK AT THE
+    // SIGNAL-THROW ABSENCE CONVERSION) the same post-read recheck as the
+    // SIGTERM catch: a successor latched during the awaited absence read is
+    // the proven replacement, never the target's exit.
+    if (await trackTerminationRead(identity) === undefined) {
+      if (terminationGenerationChanged) {
+        outcome.failure = 'the exact fake-ZCode process identity changed during termination';
+        return outcome;
+      }
       outcome.exited = true;
       return outcome;
     }
@@ -636,7 +1555,11 @@ export async function terminateVerifiedProcess(identity, dependencies = {}) {
     return outcome;
   }
   try {
-    await waitForExit(identity, 'kill');
+    await waitForExit(identity, 'kill', trackTerminationRead);
+    if (terminationGenerationChanged) {
+      outcome.failure = 'the exact fake-ZCode process identity changed during termination';
+      return outcome;
+    }
     outcome.exited = true;
     return outcome;
   } catch {
@@ -649,18 +1572,59 @@ export async function terminateVerifiedProcess(identity, dependencies = {}) {
  * Re-verify one captured identity before any signal. Even when the injected
  * reader does not throw, a returned observation that differs in any field
  * (reparented, restarted, nonce changed) blocks the signal.
- * @param {{ pid: number, ppid: number, nonce: string, startIdentity: string }} identity
+ * @param {{ pid: number, ppid: number, nonce: string, startIdentity: string, observedStartIdentity?: string }} identity
  * @param {(expected: unknown) => Promise<unknown>} readIdentity
- * @returns {Promise<boolean>} true only when the exact identity is still live
+ * @returns {Promise<'unchanged' | 'changed' | 'unverifiable' | 'gone'>}
+ *   'unchanged' only when the target is live and POSITIVELY verified as the
+ *   same generation; 'changed' on a demonstrably different generation (or a
+ *   pid/ppid/nonce divergence); 'unverifiable' when the read cannot resolve
+ *   the generation comparison at any resolution; 'gone' when the read
+ *   observed no live process.
  */
 async function verifyUnchanged(identity, readIdentity) {
   const observed = await readIdentity(identity);
-  if (observed === undefined || observed === null) return false;
+  if (observed === undefined || observed === null) return 'gone';
   const record = /** @type {any} */ (observed);
-  if (record.pid !== identity.pid || record.ppid !== identity.ppid) return false;
-  if (record.startIdentity !== identity.startIdentity) return false;
-  if (record.nonce !== identity.nonce) return false;
-  return true;
+  if (record.pid !== identity.pid || record.ppid !== identity.ppid) return 'changed';
+  // (§32.14 Finding 3) the REPRESENTATION-AWARE generation comparison: a
+  // kinfo-captured identity vs a degraded-to-MATCHING-ps verification is the
+  // SAME generation — the raw-string comparison failed verification and
+  // blocked cleanup of a still-live target (attempted: false, no signal).
+  // (codex gate round 5, Finding 1 — the FAIL-CLOSED POSITIVE-SAME rule)
+  // the guard requires the relation POSITIVELY 'same' before any signal: an
+  // unresolvable pair (the UNCERTAIN relation — e.g. an exact kinfo-bound
+  // target whose termination reader returns an unparseable identity) cannot
+  // verify the termination's target and leaves it UNSIGNALLED — uncertainty
+  // never permits signalling, it is reported as the honest unverifiable
+  // classification. A demonstrably different generation still fails
+  // fail-closed as before.
+  if (typeof record.startIdentity !== 'string') return 'unverifiable';
+  const generationRelation = startIdentityGenerationRelation(record.startIdentity, identity.startIdentity);
+  if (generationRelation === 'different') return 'changed';
+  if (generationRelation !== 'same') return 'unverifiable';
+  // (codex gate round 13, Finding 1 — the CARRIED-SUCCESSOR GUARD) a
+  // mixed-resolution verification can return matching ps text alongside a
+  // SEPARATELY PRESERVED exact identity that proves PID replacement — the
+  // coarse second matching never authorizes signalling a carried successor.
+  // The carried exact identity is checked before authorizing either signal.
+  if (typeof record.observedStartIdentity === 'string'
+    && startIdentitiesDefinitivelyDiffer(record.observedStartIdentity, identity.startIdentity)) return 'changed';
+  // (codex gate round 18, Finding 1 — the CAPTURE'S CARRIED EXACT IDENTITY)
+  // a mixed-resolution CAPTURE preserves its exact generation A in
+  // identity.observedStartIdentity while identity.startIdentity stays
+  // coarse: the verification evidence (the returned startIdentity and its
+  // own carried identity, either) is compared against that carried exact
+  // generation — a later exact generation B from the same second compares
+  // as same against the coarse capture but definitively differs from A.
+  if (typeof identity.observedStartIdentity === 'string'
+    && parseExactStartIdentity(identity.observedStartIdentity) !== null) {
+    if (typeof record.startIdentity === 'string'
+      && startIdentitiesDefinitivelyDiffer(record.startIdentity, identity.observedStartIdentity)) return 'changed';
+    if (typeof record.observedStartIdentity === 'string'
+      && startIdentitiesDefinitivelyDiffer(record.observedStartIdentity, identity.observedStartIdentity)) return 'changed';
+  }
+  if (record.nonce !== identity.nonce) return 'changed';
+  return 'unchanged';
 }
 
 /**
@@ -985,8 +1949,13 @@ export const SPAWN_ANCESTRY_WITNESS_SUFFIXES = Object.freeze({
  * numeric OS start instant derived from the SAME captured boundary start
  * identity (the owning persisted-shape version event, §26.7 item 2); retained
  * v1 records replay under their recorded version and never upgrade the marker
- * path (a record without the member cannot bind the marker's generation). */
-export const SPAWN_ANCESTRY_WITNESS_VERSION = 2;
+ * path (a record without the member cannot bind the marker's generation).
+ * v3 (route (c), §32, 2026-11-05) adds the additive `startIdentityExact`
+ * member: a STRICT boolean declaring whether the record's captured start
+ * identities and `childOsStartInstantMs` are the EXACT kinfo form (true) or
+ * the coarse whole-second form (false). v1/v2 records replay coarse-only —
+ * exact mode is never inferred for a record that did not declare it. */
+export const SPAWN_ANCESTRY_WITNESS_VERSION = 3;
 
 /** The witness record's closed bounded size (like every fixture-owned JSON). */
 export const SPAWN_ANCESTRY_WITNESS_MAX_BYTES = 4 * 1024;
@@ -1017,6 +1986,7 @@ export const SPAWN_ANCESTRY_WITNESS_MAX_BYTES = 4 * 1024;
  *   startOriginMs: number | null,
  *   firstWritePreciseMs: number | null,
  *   childOsStartInstantMs?: number | null,
+ *   startIdentityExact?: boolean,
  * }} SpawnAncestryWitnessIdentity
  */
 
@@ -1059,17 +2029,49 @@ function validateSpawnWitnessRecord(record) {
   // the member (number or named-absent null). Any other version is foreign.
   const v1Required = ['boundaryEpochMs', 'childNonce', 'childPid', 'childPpid', 'childStartIdentity', 'class', 'firstWriteEpochMs', 'firstWritePreciseMs', 'nonce', 'role', 'startOriginMs', 'version', 'writerPid', 'writerStartIdentity'];
   const v2Required = ['boundaryEpochMs', 'childNonce', 'childOsStartInstantMs', 'childPid', 'childPpid', 'childStartIdentity', 'class', 'firstWriteEpochMs', 'firstWritePreciseMs', 'nonce', 'role', 'startOriginMs', 'version', 'writerPid', 'writerStartIdentity'];
-  const required = record.version === 1 ? v1Required : record.version === SPAWN_ANCESTRY_WITNESS_VERSION ? v2Required : null;
+  // (route (c), §32) v3 = v2 + the additive EXACT-members flag: the
+  // record's childStartIdentity and childOsStartInstantMs are the EXACT
+  // kinfo identity/instant. v2 records replay coarse-only.
+  const v3Required = ['boundaryEpochMs', 'childNonce', 'childOsStartInstantMs', 'childPid', 'childPpid', 'childStartIdentity', 'class', 'firstWriteEpochMs', 'firstWritePreciseMs', 'nonce', 'role', 'startIdentityExact', 'startOriginMs', 'version', 'writerPid', 'writerStartIdentity'];
+  const required = record.version === 1 ? v1Required : record.version === 2 ? v2Required : record.version === SPAWN_ANCESTRY_WITNESS_VERSION ? v3Required : null;
   if (required === null || keys.join(',') !== required.join(',')) return { ok: false, reason: 'spawn-witness-shape-invalid' };
   if (record.class !== 'spawn-ancestry-witness') return { ok: false, reason: 'spawn-witness-shape-invalid' };
-  if (record.version !== 1 && record.version !== SPAWN_ANCESTRY_WITNESS_VERSION) return { ok: false, reason: 'spawn-witness-shape-invalid' };
+  if (record.version !== 1 && record.version !== 2 && record.version !== SPAWN_ANCESTRY_WITNESS_VERSION) return { ok: false, reason: 'spawn-witness-shape-invalid' };
+  // (route (c)) the v3 EXACT-members flag: a STRICT BOOLEAN (true = the
+  // exact kinfo identity/instant; false = the coarse capture — the flag
+  // DECLARES the exactness either way, so a coarse v3 record replays
+  // honestly). v2 records replay coarse-only.
+  if (record.version === SPAWN_ANCESTRY_WITNESS_VERSION && record.startIdentityExact !== true && record.startIdentityExact !== false) return { ok: false, reason: 'spawn-witness-shape-invalid' };
   // The v2 numeric child OS start instant: a positive epoch millisecond, or
   // the named-absent null (an unresolvable parse is recorded AS absent — the
   // join's marker binding refuses rather than guessing, §26.7 item 3/5).
-  if (record.version === SPAWN_ANCESTRY_WITNESS_VERSION
+  // (§32.11 Finding 1) VERSION-UNGATED across v2 and v3: the version bump
+  // (2 → 3) must never loosen v2's existing validation — a retained v2
+  // record with a non-numeric instant refused exactly as the base commit
+  // refused it (the version-gated form let 'garbage' ride admission and
+  // establish hop 1 with the later numeric checks silently skipping it).
+  if ((record.version === 2 || record.version === SPAWN_ANCESTRY_WITNESS_VERSION)
     && record.childOsStartInstantMs !== null
     && (!Number.isSafeInteger(record.childOsStartInstantMs) || /** @type {number} */ (record.childOsStartInstantMs) <= 0)) {
     return { ok: false, reason: 'spawn-witness-shape-invalid' };
+  }
+  // (route (c) — EXACT-vs-RAW SELF-CONSISTENCY) a v3 record declaring
+  // `startIdentityExact: true` must actually carry the exact evidence it
+  // declares: BOTH captured start identities are the closed
+  // `kinfo:<sec>:<usec>` form, and the numeric child OS start instant is
+  // non-null and EQUALS the instant derived from the child identity (the
+  // emitter derives both from the same boundary read). A lying flag, a
+  // coarse identity, or a raw numeric disagreeing with the exact identity is
+  // the record's own contradiction — refused at admission rather than
+  // silently demoted (exact evidence never rides an inconsistent record).
+  if (record.version === SPAWN_ANCESTRY_WITNESS_VERSION && record.startIdentityExact === true) {
+    const writerExact = parseExactStartIdentity(record.writerStartIdentity);
+    const childExact = parseExactStartIdentity(record.childStartIdentity);
+    if (writerExact === null || childExact === null
+      || !Number.isSafeInteger(record.childOsStartInstantMs)
+      || /** @type {number} */ (record.childOsStartInstantMs) !== childExact.ms) {
+      return { ok: false, reason: 'spawn-witness-shape-invalid' };
+    }
   }
   // (codex round 25 — RECORD SELF-CONSISTENCY) the child cannot have been
   // OBSERVED (the boundary capture) before its earliest possible creation:
@@ -1080,8 +2082,10 @@ function validateSpawnWitnessRecord(record) {
   // established self-contradiction style (spawn-witness-write-before-
   // capture — the writer-side sibling): spawn-witness-child-start-after-
   // capture, never folded into the shape label.
-  if (record.version === SPAWN_ANCESTRY_WITNESS_VERSION
-    && record.childOsStartInstantMs !== null
+  // (the round-25 self-consistency, version-ungated) the contradiction is
+  // in the MEMBER: any record carrying childOsStartInstantMs refuses when
+  // its child creation postdates its own capture boundary.
+  if (record.childOsStartInstantMs !== null
     && Number.isSafeInteger(record.childOsStartInstantMs)
     && Number.isSafeInteger(record.boundaryEpochMs)
     && /** @type {number} */ (record.childOsStartInstantMs) > /** @type {number} */ (record.boundaryEpochMs)) {
@@ -1137,6 +2141,7 @@ function validateSpawnWitnessRecord(record) {
       // binding reads the absence as a named-unbound generation); v2 records
       // carry the number or the named-absent null.
       ...(record.childOsStartInstantMs === undefined ? {} : { childOsStartInstantMs: /** @type {number | null} */ (record.childOsStartInstantMs) }),
+      ...(record.startIdentityExact === undefined ? {} : { startIdentityExact: /** @type {boolean} */ (record.startIdentityExact) }),
     },
   };
 }
@@ -1228,6 +2233,30 @@ export async function emitSpawnAncestryWitness(input) {
   // observations contradicting each other and latches immediately.
   const retainedChildIdentities = new Set();
   let childGenerationChanged = false;
+  // (§32.13 Finding 3) the RETAINED-SET comparison is the REPRESENTATION-
+  // AWARE generation relation, not a spelling set: for a candidate identity,
+  // ANY retained prior that DEFINITIVELY differs latches the terminal
+  // refusal; ANY retained prior that is the SAME generation retains (the
+  // candidate joins the retained spellings — a degraded-to-matching-ps read
+  // of an unchanged child is the same generation, never a contradiction);
+  // ONLY-UNCERTAIN candidates (an exact form against an unresolvable
+  // string) are NON-DECIDING — neither latch nor retain (the spelling
+  // proves nothing and must not poison later comparisons). Genuine
+  // replacement latching is preserved: a different exact instant or a
+  // different-second ps text definitively differs.
+  /** @param {Set<string>} retained @param {string} identity @returns {'retained' | 'changed' | 'uncertain'} */
+  const retainedIdentityVerdict = (retained, identity) => {
+    let sawSame = false;
+    for (const prior of retained) {
+      const relation = startIdentityGenerationRelation(identity, prior);
+      if (relation === 'different') return 'changed';
+      if (relation === 'same') sawSame = true;
+      // 'uncertain' against one prior proves nothing by itself — the
+      // aggregate below decides (any 'same' retains; all-'uncertain' is the
+      // non-deciding verdict).
+    }
+    return sawSame ? 'retained' : 'uncertain';
+  };
   for (let attempt = 0; attempt < 12; attempt += 1) {
     try {
       childVerified = await inspectVerifiedProcessIdentity(/** @type {number} */ (childPid), childNonce, input.childNonceVariable ?? CAPTURE_NONCE_VARIABLE, input.osSeams);
@@ -1238,11 +2267,24 @@ export async function emitSpawnAncestryWitness(input) {
       }
       const observedIdentity = inspectionError instanceof Error ? (/** @type {any} */ (inspectionError)).observedStartIdentity : undefined;
       if (typeof observedIdentity === 'string' && observedIdentity.length > 0) {
-        if (retainedChildIdentities.size > 0 && !retainedChildIdentities.has(observedIdentity)) {
+        // (codex gate round 7, Finding 3 — the RETAINED-SET MEMBERSHIP rule)
+        // the verdict governs BOTH decisions: 'changed' latches the terminal
+        // refusal; an ONLY-UNCERTAIN candidate (a nonempty history whose
+        // every relation is uncertain) is NON-DECIDING and must NOT join the
+        // retained set — an unparseable ride retained beside an exact
+        // generation made every later candidate 'different' by the raw
+        // spelling comparison and poisoned the history (the final
+        // matching-ps retry refused against the unparseable string even
+        // though it matched the original exact generation). The set holds
+        // only decision-grade observations; the FIRST observation grounds
+        // the history (an empty set retains — the §26.6 grounding the
+        // successor latch depends on).
+        const retainedVerdict = retainedChildIdentities.size > 0 ? retainedIdentityVerdict(retainedChildIdentities, observedIdentity) : 'first';
+        if (retainedVerdict === 'changed') {
           childGenerationChanged = true;
           break;
         }
-        retainedChildIdentities.add(observedIdentity);
+        if (retainedVerdict !== 'uncertain') retainedChildIdentities.add(observedIdentity);
       }
       // (codex round 19) the contradiction flag ONLY for an actual nonce
       // VERIFICATION failure — a seen child whose nonce contradicted the
@@ -1259,11 +2301,29 @@ export async function emitSpawnAncestryWitness(input) {
       }
     }
     if (childVerified !== undefined) {
-      if (retainedChildIdentities.size > 0 && !retainedChildIdentities.has(childVerified.startIdentity)) {
+      // (codex gate round 7, Finding 3) the same membership rule on the
+      // success path — an only-uncertain verified identity does not join
+      // (inert here: the loop breaks below and the poll-scoped set is never
+      // consulted again, but the rule is uniform).
+      const retainedVerdict = retainedChildIdentities.size > 0 ? retainedIdentityVerdict(retainedChildIdentities, childVerified.startIdentity) : 'first';
+      if (retainedVerdict === 'changed') {
         childGenerationChanged = true;
         break;
       }
-      retainedChildIdentities.add(childVerified.startIdentity);
+      // (codex gate round 13, Finding 4 — the SUCCESS-PATH EXACT CARRY) a
+      // successful mixed-read downgrade returns the coarse identity but
+      // CARRIES the observed exact evidence separately — it is compared
+      // against the retained history too: definitively different from a
+      // retained exact generation fires the generation-change refusal (the
+      // replacement child is never certified through the downgrade's coarse
+      // acceptance); same ⇒ accept.
+      if (typeof /** @type {any} */ (childVerified).observedStartIdentity === 'string'
+        && retainedChildIdentities.size > 0
+        && retainedIdentityVerdict(retainedChildIdentities, /** @type {any} */ (childVerified).observedStartIdentity) === 'changed') {
+        childGenerationChanged = true;
+        break;
+      }
+      if (retainedVerdict !== 'uncertain') retainedChildIdentities.add(childVerified.startIdentity);
       break;
     }
     // The poll timer is INTENTIONALLY ref'd: the poll is the emitter's own
@@ -1341,6 +2401,8 @@ export async function emitSpawnAncestryWitness(input) {
     class: 'spawn-ancestry-witness',
     role,
     nonce,
+    startIdentityExact: isExactStartIdentity(childVerified.startIdentity)
+      && isExactStartIdentity(writerVerified.startIdentity),
     writerPid: process.pid,
     writerStartIdentity: writerVerified.startIdentity,
     childPid: childVerified.pid,
@@ -1619,7 +2681,7 @@ const LSTART_MONTHS = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, 
  * named-null start instant (never a guessed value).
  * @param {string} startIdentity @returns {number | null}
  */
-function parseLstartAsUtc(startIdentity) {
+export function parseLstartAsUtc(startIdentity) {
   // The global collapse matters: single-digit days render with a DOUBLE
   // space ('Sun Nov  2 ...') and a first-match-only replace left it in.
   // Groups: 1 month, 2 day, 3 hh, 4 mm, 5 ss, 6 year (the weekday is not
@@ -1628,6 +2690,139 @@ function parseLstartAsUtc(startIdentity) {
   if (!match) return null;
   const instant = Date.UTC(Number(match[6]), LSTART_MONTHS[/** @type {keyof typeof LSTART_MONTHS} */ (match[1])], Number(match[2]), Number(match[3]), Number(match[4]), Number(match[5]));
   return Number.isSafeInteger(instant) ? instant : null;
+}
+
+/**
+ * The production EXACT COMPOSITION agreement (shared by BOTH composition
+ * sites — the real readMacProcessStart path and the injected osSeams.ps +
+ * kinfoExact seam — codex gate round 11, Finding 2: the deterministic seam
+ * tests the real protocol and cannot certify contradictory generations):
+ * pair one exact kinfo answer with one ps text ONLY when the ps text's
+ * field-explicit UTC second agrees with the exact read's parsed sec field
+ * (the round-5-Finding-2 generation-agreement rule). A disagreement (or an
+ * unparseable ps text — the exact path's ps read is a pinned C-locale
+ * lstart, so garbage is torn evidence) throws the mid-read identity-change
+ * error carrying the exact observation as `observedStartIdentity` (the
+ * reuse latch's own class).
+ * (codex gate round 33 follow-up review-mwbdjsb7-nnobtl, Finding 2 — the
+ * LATER PS CARRY) the composition order is site-owned: on the REAL
+ * readMacProcessStart path the kinfo read comes FIRST, so a disagreement's
+ * proven later observation is the PS read — the caller may pass its identity
+ * and collection window as `laterPsCarry` and the refusal carries THAT
+ * (the round-25/27 later-read carry protocol: the later observation is the
+ * replacement evidence; carrying the first read's kinfo identity let the
+ * adjudicator discard the transition as the bound generation's own arrival
+ * and credit a following absence to it). An UNPARSEABLE ps text proven
+ * nothing — the exact kinfo carry stands there (uncertainty is never
+ * positive evidence), and the seam path (ps FIRST, kinfo second) keeps its
+ * existing kinfo carry unchanged: there the exact read IS the later one.
+ * (codex gate round 52 review-mwej5iux-tehmck, Finding 1 — the
+ * ERROR-VS-EVIDENCE rule for the UNPARSEABLE ps text) an unparseable ps
+ * timestamp is TORN evidence that proves no replacement: it is an ORDINARY
+ * query/parsing failure — its message deliberately carries no 'identity
+ * changed' (that phrase stays the mid-double-read reuse class the retry
+ * paths latch on) — riding the exact kinfo identity and, when the caller
+ * supplies them, the kinfo read's own collection bounds (`kinfoCarry`), so
+ * the bounded retry paths can recover; the generation-change classification
+ * is reserved for a SUCCESSFULLY PARSED ps identity that disagrees with the
+ * exact read's second (byte-identical throws below).
+ * @param {{ sec: number, usec: number }} exact
+ * @param {string} psStartIdentity
+ * @param {{ identity: string, takenEpochMs: number, completedEpochMs: number } | null} [laterPsCarry]
+ * @param {{ takenEpochMs: number, completedEpochMs: number } | null} [kinfoCarry]
+ * @returns {string} the composed exact identity (`kinfo:<sec>:<usec>`)
+ */
+function composedExactStartIdentity(exact, psStartIdentity, laterPsCarry = null, kinfoCarry = null) {
+  const psLstartMs = parseLstartAsUtc(psStartIdentity);
+  if (psLstartMs === null) {
+    // (codex gate round 52 review-mwej5iux-tehmck, Finding 1) torn ps
+    // evidence: the ordinary parsing failure rides the kinfo identity and
+    // its collection bounds — never the identity-change class.
+    throw Object.assign(new Error('the exact fake-ZCode process identity read failed to parse its ps lstart timestamp'), {
+      observedStartIdentity: `kinfo:${exact.sec}:${exact.usec}`,
+      ...(kinfoCarry !== null ? {
+        observedIdentityTakenEpochMs: kinfoCarry.takenEpochMs,
+        observedIdentityCompletedEpochMs: kinfoCarry.completedEpochMs,
+      } : {}),
+    });
+  }
+  if (Math.floor(psLstartMs / 1000) !== exact.sec) {
+    if (laterPsCarry !== null) {
+      throw Object.assign(new Error('the exact fake-ZCode process identity changed'), {
+        observedStartIdentity: laterPsCarry.identity,
+        observedIdentityTakenEpochMs: laterPsCarry.takenEpochMs,
+        observedIdentityCompletedEpochMs: laterPsCarry.completedEpochMs,
+      });
+    }
+    throw Object.assign(new Error('the exact fake-ZCode process identity changed'), {
+      observedStartIdentity: `kinfo:${exact.sec}:${exact.usec}`,
+    });
+  }
+  return `kinfo:${exact.sec}:${exact.usec}`;
+}
+
+
+/**
+ * The representation-aware GENERATION comparison (§32.12 Finding 2): do two
+ * start identities describe the SAME generation? When NEITHER side carries
+ * the exact kinfo form, the pre-existing raw-string semantics hold exactly
+ * (equal = same, unequal = different — every coarse/synthetic/Linux pair).
+ * When at least one side is the exact form, the comparison is
+ * representation-aware: both exact sides decide by their exact strings; an
+ * exact side and a ps-text side compare at the ps text's resolution (the
+ * exact side's own creation second against the parsed lstart second — the
+ * coarse representation is always derivable from the exact ms), so a
+ * degraded-to-MATCHING-ps observation is the SAME generation (never
+ * positive replacement evidence), a different-second ps text is DIFFERENT,
+ * and a pair whose forms cannot be resolved at any resolution is UNCERTAIN
+ * — never positive replacement evidence.
+ * @param {string} observedIdentity @param {string} boundIdentity
+ * @returns {'same' | 'different' | 'uncertain'}
+ */
+export function startIdentityGenerationRelation(observedIdentity, boundIdentity) {
+  if (observedIdentity === boundIdentity) return 'same';
+  const observedExact = parseExactStartIdentity(observedIdentity);
+  const boundExact = parseExactStartIdentity(boundIdentity);
+  // No exact form on either side: the raw-string semantics are the
+  // pre-existing contract (coarse, synthetic and Linux identities alike).
+  if (observedExact === null && boundExact === null) return 'different';
+  // BOTH sides exact: the EXACT STRINGS decide — the registered route-(c)
+  // semantic (distinct exact instants are DIFFERENT generations, the
+  // slice-2/round-27 resolution): the microsecond discrimination is never
+  // collapsed to the shared second, so a same-second successor stays
+  // demonstrably different at every consumer of this relation.
+  if (observedExact !== null && boundExact !== null) return 'different';
+  // Exactly ONE exact side: compare at the ps text's resolution (the exact
+  // side's own creation second — the coarse representation is always
+  // derivable from the exact ms), so a degraded-to-MATCHING-ps observation
+  // is the SAME generation (never positive replacement evidence), a
+  // different-second ps text is DIFFERENT.
+  const observedMs = observedExact !== null ? observedExact.ms : parseLstartAsUtc(observedIdentity);
+  const boundMs = boundExact !== null ? boundExact.ms : parseLstartAsUtc(boundIdentity);
+  // A recognized exact form against an unresolvable string is not
+  // comparable at any resolution — uncertainty, never positive evidence.
+  if (observedMs === null || boundMs === null) return 'uncertain';
+  // (§32.13 Finding 4) the exact side's SECOND is its PARSED sec FIELD —
+  // never floor(the rounded ms): the µs→ms rounding rounds UP into the next
+  // second for usec ≥ 999500, and flooring that value reports the process's
+  // ACTUAL creation second as a different generation (the reviewer's
+  // example: kinfo:1793855520:999500 vs the ps text of second 1793855520).
+  // The ps side's ms is itself whole-second, so flooring it is exact.
+  const observedSecond = observedExact !== null ? observedExact.sec : Math.floor(observedMs / 1000);
+  const boundSecond = boundExact !== null ? boundExact.sec : Math.floor(boundMs / 1000);
+  return observedSecond === boundSecond ? 'same' : 'different';
+}
+
+/**
+ * The positive-evidence gate over {@link startIdentityGenerationRelation}:
+ * the two identities are demonstrably DIFFERENT generations. Uncertainty is
+ * never positive replacement evidence — consumers treat it as the honest
+ * unverified/degradation class, never latching.
+ * @param {string} observedIdentity @param {string} boundIdentity
+ * @returns {boolean}
+ */
+export function startIdentitiesDefinitivelyDiffer(observedIdentity, boundIdentity) {
+  return startIdentityGenerationRelation(observedIdentity, boundIdentity) === 'different';
 }
 
 /**
@@ -1645,6 +2840,9 @@ function parseLstartAsUtc(startIdentity) {
  * @returns {Promise<number | null>}
  */
 async function resolveObservationStartInstantMs(startIdentity, deps = {}) {
+  // (route (c)) the EXACT identity form resolves to the EXACT ms (no floor).
+  const kinfo = parseExactStartIdentity(startIdentity);
+  if (kinfo !== null) return kinfo.ms;
   const linuxTicks = /^proc:(\d+)$/u.exec(startIdentity);
   if (linuxTicks) {
     const bootClock = await resolveLinuxBootClock(deps?.linuxClock ?? {});
@@ -1684,7 +2882,7 @@ async function resolveObservationStartInstantMs(startIdentity, deps = {}) {
  *   inspect?: (pid: number, nonce: string) => Promise<{ pid: number, ppid: number, startIdentity: string, nonce: string } | undefined>,
  *   absenceConfirmation?: (pid: number) => Promise<'absent' | 'unconfirmed'>,
  *   linuxClock?: { statText?: string, clkTick?: string, clock?: { btimeMs: number, hz: number } },
- *   osSeams?: { platform?: string, ps?: (pid: number) => Promise<{ pid: number, ppid: number, lstart: string }>, environ?: 'present' | 'mismatch' | 'gone', runProcess?: osSeamsRunProcess },
+ *   osSeams?: { platform?: string, ps?: (pid: number) => Promise<{ pid: number, ppid: number, lstart: string }>, kinfoExact?: (pid: number) => Promise<{ sec: number, usec: number } | { malformed: number } | null>, environ?: 'present' | 'mismatch' | 'gone', runProcess?: osSeamsRunProcess },
  * }} input
  * @returns {Promise<LocalProcessObservation>}
  */
@@ -1720,10 +2918,12 @@ export async function observeLocalProcess(input) {
     throw invalidLocalProcessInput('the abort signal must be an AbortSignal-shaped object.');
   }
   const windowClosed = () => input.abortSignal?.aborted === true;
+  /** The narrowed seam object (the kinfoExact member is the route-(c)
+   * exact-generation reader surface — see readDarwinKinfoExact). */
   const inspectSeams = input.osSeams || input.abortSignal
     ? { ...(input.osSeams ?? {}), ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}) }
     : input.osSeams;
-  const inspect = input.inspect ?? ((observedPid, observedNonce) => inspectVerifiedProcessIdentity(observedPid, observedNonce, nonceVariable, inspectSeams));
+  const inspect = input.inspect ?? ((observedPid, observedNonce) => inspectVerifiedProcessIdentity(observedPid, observedNonce, nonceVariable, /** @type {any} */ (inspectSeams)));
   if (!isInspectFunction(inspect)) throw invalidLocalProcessInput('the inspection seam must be a function.');
   if (input.absenceConfirmation !== undefined && typeof input.absenceConfirmation !== 'function') {
     throw invalidLocalProcessInput('the absence confirmation seam must be a function.');
@@ -1781,7 +2981,83 @@ export async function observeLocalProcess(input) {
   // the shared window — the NAMED unfinished fact, never the inspection's
   // own classification.
   if (windowClosed()) {
-    return observationVerdict('unestablished', 'observation-window-closed', sampleStampMs(), queried, readStartedEpochMs);
+    const windowClosedVerdict = observationVerdict('unestablished', 'observation-window-closed', sampleStampMs(), queried, readStartedEpochMs);
+    // (§32.12 Finding 3) the inner exact-read recheck throws the inspector's
+    // own window-closed error CARRYING the identity its exact read observed
+    // before the window closed: the read DID observe it, so the evidence
+    // rides the verdict (the uniform ride discipline — the same carriage the
+    // round-26/27 rides give a nonce failure's observed identity) and the
+    // exit adjudicator can still classify it against the bound generation
+    // (an equal carried identity stays non-deciding; a demonstrably
+    // different one still latches).
+    const carriedWindowError = /** @type {any} */ (inspectionError);
+    if (carriedWindowError !== null && typeof carriedWindowError.observedStartIdentity === 'string') {
+      /** @type {any} */ (windowClosedVerdict).observedStartIdentity = carriedWindowError.observedStartIdentity;
+      // (§32.14 Finding 2) the carried identity's OWN timing rides too — the
+      // SECOND read's dispatch bound is the truthful observation instant of
+      // the identity the error carries (the pre-fix flow lost the successor
+      // here: the plain window-closed verdict let a subsequent confirmed
+      // absence adjudicate the ORIGINAL generation's disappearance instead
+      // of latching the successor's reuse).
+      if (Number.isSafeInteger(carriedWindowError.observedIdentityReadEpochMs)) {
+        /** @type {any} */ (windowClosedVerdict).observedIdentityReadEpochMs = carriedWindowError.observedIdentityReadEpochMs;
+      }
+      // (codex gate round 7, Finding 1 — the INTERVAL-CARRIAGE rule) the
+      // uniform ride carries the FIRST read's true observation WINDOW
+      // (taken/completed) — the branch previously copied neither bound, so a
+      // carried predecessor was dated at the verdict's later completion and
+      // an old observation could latch against a newer presence baseline.
+      // The taken bound rides as observedIdentityReadEpochMs (the explicit
+      // §32.14-Finding-2 second-read dispatch bound takes precedence when
+      // present — the two shapes never co-occur on one error) and the
+      // completed bound rides as observedIdentityCompletedEpochMs: the
+      // round-14/17 interval classification then dates the carried evidence
+      // at its true window (stale or overlapping — never latched by the
+      // completion-sample accident).
+      if (!Number.isSafeInteger(windowClosedVerdict.observedIdentityReadEpochMs)
+        && Number.isSafeInteger(carriedWindowError.observedIdentityTakenEpochMs)) {
+        /** @type {any} */ (windowClosedVerdict).observedIdentityReadEpochMs = carriedWindowError.observedIdentityTakenEpochMs;
+      }
+      if (Number.isSafeInteger(carriedWindowError.observedIdentityCompletedEpochMs)) {
+        /** @type {any} */ (windowClosedVerdict).observedIdentityCompletedEpochMs = carriedWindowError.observedIdentityCompletedEpochMs;
+      }
+    } else if (inspectionError === null && observed !== null && typeof observed === 'object') {
+      // (codex gate round 31, Finding 2 — the SUCCESSFUL-RESULT EVIDENCE
+      // PRESERVATION; codex gate round 32, Finding 1 — the EXACT-IDENTITY
+      // FALLBACK) cancellation can arrive during the final ps query while
+      // that query SUCCEEDS, and the inspector then returns normally with
+      // whatever identity evidence it collected. The round-31 carriage
+      // required the SEPARATE `observedStartIdentity` carry (the
+      // mixed-resolution return), so a BOTH-EXACT inspection — whose exact
+      // identity IS the returned `startIdentity`, with no separate carry —
+      // was still discarded into an identity-free cancellation verdict, and
+      // a subsequent confirmed absence adjudicated the ORIGINAL generation's
+      // disappearance instead of the observed successor's reuse. The carried
+      // evidence is now resolved CARRY-FIRST: the separate
+      // `observedStartIdentity` carry when present, otherwise the successful
+      // result's OWN EXACT `startIdentity` (an exact form only — a degraded
+      // coarse result has no exact identity to preserve) — with the same
+      // collection bounds, the same fields and the same uniform ride
+      // discipline, so the exit adjudicator can classify the observed
+      // evidence against the bound generation.
+      const successfulResult = /** @type {any} */ (observed);
+      const carriedEvidence = typeof successfulResult.observedStartIdentity === 'string'
+        ? { identity: successfulResult.observedStartIdentity }
+        : (typeof successfulResult.startIdentity === 'string'
+          && parseExactStartIdentity(successfulResult.startIdentity) !== null)
+          ? { identity: successfulResult.startIdentity }
+          : null;
+      if (carriedEvidence !== null) {
+        /** @type {any} */ (windowClosedVerdict).observedStartIdentity = carriedEvidence.identity;
+        if (Number.isSafeInteger(successfulResult.observedIdentityTakenEpochMs)) {
+          /** @type {any} */ (windowClosedVerdict).observedIdentityReadEpochMs = successfulResult.observedIdentityTakenEpochMs;
+        }
+        if (Number.isSafeInteger(successfulResult.observedIdentityCompletedEpochMs)) {
+          /** @type {any} */ (windowClosedVerdict).observedIdentityCompletedEpochMs = successfulResult.observedIdentityCompletedEpochMs;
+        }
+      }
+    }
+    return windowClosedVerdict;
   }
   // The COMPLETION instant is sampled per path, only after ALL awaited
   // evidence work on that path has finished (the inspection, and on absence
@@ -1797,7 +3073,24 @@ export async function observeLocalProcess(input) {
     // generic torn class (the round-1 rule).
     const identityChanged = inspectionError instanceof Error && /identity changed/u.test(inspectionError.message);
     if (identityChanged) {
-      return observationVerdict('unestablished', 'start-identity-generation-changed', readEpochMs, queried, readStartedEpochMs);
+      const transitionVerdict = observationVerdict('unestablished', 'start-identity-generation-changed', readEpochMs, queried, readStartedEpochMs);
+      // (codex gate round 33, Finding 2 — the TRANSITION EVIDENCE RIDE) the
+      // A→B transition refusal carries its evidence (the SECOND read's exact
+      // identity and its collection bounds — the round-25 later-read carry
+      // the inspector already rides), so the exit adjudicator can bind the
+      // transition to the adjudicated generation instead of discarding it
+      // into a bare verdict.
+      const carriedTransitionIdentity = /** @type {any} */ (inspectionError).observedStartIdentity;
+      if (typeof carriedTransitionIdentity === 'string') {
+        /** @type {any} */ (transitionVerdict).observedStartIdentity = carriedTransitionIdentity;
+        if (Number.isSafeInteger(/** @type {any} */ (inspectionError).observedIdentityTakenEpochMs)) {
+          /** @type {any} */ (transitionVerdict).observedIdentityReadEpochMs = /** @type {any} */ (inspectionError).observedIdentityTakenEpochMs;
+        }
+        if (Number.isSafeInteger(/** @type {any} */ (inspectionError).observedIdentityCompletedEpochMs)) {
+          /** @type {any} */ (transitionVerdict).observedIdentityCompletedEpochMs = /** @type {any} */ (inspectionError).observedIdentityCompletedEpochMs;
+        }
+      }
+      return transitionVerdict;
     }
     // ROUND-28: the inspector VERIFIED an occupant start identity and the
     // pid vanished before the read completed (marker-gone / absent second
@@ -1812,7 +3105,7 @@ export async function observeLocalProcess(input) {
       && /** @type {any} */ (inspectionError).observedThenGone === true
       && typeof /** @type {any} */ (inspectionError).observedStartIdentity === 'string') {
       const goneAfterIdentity = /** @type {any} */ (inspectionError).observedStartIdentity;
-      if (input.expectedStartIdentity !== undefined && goneAfterIdentity !== input.expectedStartIdentity) {
+      if (input.expectedStartIdentity !== undefined && startIdentitiesDefinitivelyDiffer(goneAfterIdentity, input.expectedStartIdentity)) {
         return observationVerdict('unestablished', 'start-identity-generation-changed', sampleCompletion(), queried, readStartedEpochMs);
       }
       const absenceVerdict = await absenceOutcome();
@@ -1844,7 +3137,7 @@ export async function observeLocalProcess(input) {
     // failure.
     const observedStartIdentity = /** @type {any} */ (/** @type {any} */ (inspectionError)).observedStartIdentity;
     if (typeof observedStartIdentity === 'string' && input.expectedStartIdentity !== undefined
-      && observedStartIdentity !== input.expectedStartIdentity) {
+      && startIdentitiesDefinitivelyDiffer(observedStartIdentity, input.expectedStartIdentity)) {
       // (codex round 14) the IDENTITY-MISMATCH promotion consumes the
       // carried observation timing exactly like the generic path (the
       // round-13 rule): the generation-changed evidence is dated at its
@@ -1855,6 +3148,9 @@ export async function observeLocalProcess(input) {
       // disappeared outcome when definitively pre-baseline), not promoted
       // into apparent replacement evidence by its late completion.
       const promotedVerdict = observationVerdict('unestablished', 'start-identity-generation-changed', readEpochMs, queried, readStartedEpochMs);
+      // (codex gate round 15, Finding 2) the carried identity RIDES the
+      // promoted verdict — the adjudicator's carried rules consume it.
+      /** @type {any} */ (promotedVerdict).observedStartIdentity = observedStartIdentity;
       if (Number.isSafeInteger(/** @type {any} */ (inspectionError).observedIdentityTakenEpochMs)) {
         /** @type {any} */ (promotedVerdict).observedIdentityReadEpochMs = /** @type {any} */ (inspectionError).observedIdentityTakenEpochMs;
         if (Number.isSafeInteger(/** @type {any} */ (inspectionError).observedIdentityCompletedEpochMs)) {
@@ -1900,8 +3196,52 @@ export async function observeLocalProcess(input) {
   }
   // A reused start identity is a DIFFERENT process: never accepted as the
   // captured generation, and its facts are never exposed as ours.
-  if (input.expectedStartIdentity !== undefined && /** @type {any} */ (observed).startIdentity !== input.expectedStartIdentity) {
-    return observationVerdict('unestablished', 'start-identity-generation-changed', sampleCompletion(), queried, readStartedEpochMs);
+  // (codex gate round 31, Finding 1 — the MIXED-READ CARRY GUARD) the
+  // jointly verified coarse identity is not the only generation evidence a
+  // mixed-resolution inspection returns: its separately preserved exact
+  // carry is compared against the expected generation too. A carry that
+  // definitively differs from the expected generation (a same-second
+  // successor's exact instant against an exact bound — the both-exact
+  // relation) is explicit successor evidence, and accepting the read as
+  // `established` let the runtime bind the ancestry/duty hops across
+  // generations on the matching coarse text alone. The carry refusal walks
+  // the existing named class and RIDES the carried evidence + bounds (the
+  // uniform ride discipline — the same carriage the round-26 promotion
+  // uses) so the exit adjudicator can still classify it; a carry in the
+  // expected generation (an exact match, or a coarse same-second carry
+  // against an exact bound) keeps the lawful established classification.
+  if (input.expectedStartIdentity !== undefined && startIdentitiesDefinitivelyDiffer(/** @type {any} */ (observed).startIdentity, input.expectedStartIdentity)) {
+    // (codex gate round 46 review-mwdq8hy0-vxnoc5, Finding 1 — the PRIMARY
+    // MISMATCH RIDE) the rejection preserves the observed identity and its
+    // COLLECTION bounds (the kernel window — `observedIdentityTaken/Completed`
+    // mapped to the read/completed verdict fields), exactly like the adjacent
+    // carried-identity refusal: without the ride, an exact read whose kernel
+    // collection predates a newer verified presence but whose trailing ps
+    // query completes afterward dated the mismatch at the DELAYED completion
+    // (`identityReadEpochMs` fallback) and adjudicateLocalExit latched
+    // `pid-start-identity-reused` with `expectedStartIdentity` supplied
+    // versus the lawful `disappeared` for identical evidence without it.
+    const primaryMismatchVerdict = observationVerdict('unestablished', 'start-identity-generation-changed', sampleCompletion(), queried, readStartedEpochMs);
+    /** @type {any} */ (primaryMismatchVerdict).observedStartIdentity = /** @type {any} */ (observed).startIdentity;
+    if (Number.isSafeInteger(/** @type {any} */ (observed).observedIdentityTakenEpochMs)) {
+      /** @type {any} */ (primaryMismatchVerdict).observedIdentityReadEpochMs = /** @type {any} */ (observed).observedIdentityTakenEpochMs;
+    }
+    if (Number.isSafeInteger(/** @type {any} */ (observed).observedIdentityCompletedEpochMs)) {
+      /** @type {any} */ (primaryMismatchVerdict).observedIdentityCompletedEpochMs = /** @type {any} */ (observed).observedIdentityCompletedEpochMs;
+    }
+    return primaryMismatchVerdict;
+  }
+  if (input.expectedStartIdentity !== undefined && typeof /** @type {any} */ (observed).observedStartIdentity === 'string'
+    && startIdentitiesDefinitivelyDiffer(/** @type {any} */ (observed).observedStartIdentity, input.expectedStartIdentity)) {
+    const carriedGenerationVerdict = observationVerdict('unestablished', 'start-identity-generation-changed', sampleCompletion(), queried, readStartedEpochMs);
+    /** @type {any} */ (carriedGenerationVerdict).observedStartIdentity = /** @type {any} */ (observed).observedStartIdentity;
+    if (Number.isSafeInteger(/** @type {any} */ (observed).observedIdentityTakenEpochMs)) {
+      /** @type {any} */ (carriedGenerationVerdict).observedIdentityReadEpochMs = /** @type {any} */ (observed).observedIdentityTakenEpochMs;
+    }
+    if (Number.isSafeInteger(/** @type {any} */ (observed).observedIdentityCompletedEpochMs)) {
+      /** @type {any} */ (carriedGenerationVerdict).observedIdentityCompletedEpochMs = /** @type {any} */ (observed).observedIdentityCompletedEpochMs;
+    }
+    return carriedGenerationVerdict;
   }
   // The inspect seam owns its result: a returned observation carrying a
   // DIFFERENT nonce is foreign-scope evidence and is never relabeled to the
@@ -1952,11 +3292,31 @@ export async function observeLocalProcess(input) {
     identityReadEpochMs,
     readEpochMs,
     absenceConfirmed: null,
+    // (codex gate round 12, Finding 1 — the EXACT-EVIDENCE CARRY) the
+    // mixed-read downgrade's separately preserved exact observation rides
+    // the ESTABLISHED verdict through the whitelisted carried-identity
+    // fields: the jointly verified coarse identity remains the returned
+    // observation, and the adjudicator consumes the carried exact evidence
+    // for replacement detection. No new persisted shape — the same fields
+    // the carried-identity rides use.
+    ...(typeof /** @type {any} */ (observed).observedStartIdentity === 'string'
+      ? { observedStartIdentity: /** @type {any} */ (observed).observedStartIdentity } : {}),
+    ...(Number.isSafeInteger(/** @type {any} */ (observed).observedIdentityTakenEpochMs)
+      ? { observedIdentityReadEpochMs: /** @type {any} */ (observed).observedIdentityTakenEpochMs } : {}),
+    ...(Number.isSafeInteger(/** @type {any} */ (observed).observedIdentityCompletedEpochMs)
+      ? { observedIdentityCompletedEpochMs: /** @type {any} */ (observed).observedIdentityCompletedEpochMs } : {}),
   };
 }
 
 // ---------------------------------------------------------------------------
 // The exit/absence adjudication (§25.4 item 6): termination of the
+// previously established generation = verified presence EARLIER + verified
+// absence of the SAME pid and start identity LATER. A reused PID, a failed
+// read, a changed parent, and a later same-generation re-observation are
+// each their own named fact. The exit meta corroborates a lawful exit ONLY
+// on an established disappearance — it never proves death and never covers
+// uncatchable termination.
+// ---------------------------------------------------------------------------
 // previously established generation = verified presence EARLIER + verified
 // absence of the SAME pid and start identity LATER. A reused PID, a failed
 // read, a changed parent, and a later same-generation re-observation are
@@ -2099,7 +3459,11 @@ export function adjudicateLocalExit(input) {
   // Reads without an interval upper bound stay LEGACY (the round-15/16
   // carried-instant recency guard applies); a presence without a dispatch
   // bound keeps the round-16 instant rules.
-  const carriedIdentityIntervalClass = (/** @type {any} */ read) => {
+  // (codex gate round 16, Finding 4) the horizon the classification
+  // compares against is PARAMETERIZED (defaulting to the current closure
+  // values) — the learned cross-comparison classifies against the horizon
+  // AS IT STOOD before the read advanced it.
+  const carriedIdentityIntervalClass = (/** @type {any} */ read, /** @type {number} */ horizonEpochMs = lastPresenceEpochMs, /** @type {number | null} */ horizonStartedEpochMs = lastPresenceStartedEpochMs) => {
     // (codex round 23 — THREE-STATE BOUND RESOLUTION) the bounds resolve
     // into THREE states, never two: ABSENT (undefined/null — the genuine
     // legacy shape; the round-15/16 instant rules apply unchanged),
@@ -2142,11 +3506,11 @@ export function adjudicateLocalExit(input) {
     // sound; the reviewer's inverted schedule [3500, 500] is caught by it.)
     const ordered = Number.isSafeInteger(lower) && lower <= upper;
     if (!ordered) return 'inconsistent';
-    if (lastPresenceStartedEpochMs === null) {
-      return upper < lastPresenceEpochMs ? 'stale' : 'post';
+    if (horizonStartedEpochMs === null) {
+      return upper < horizonEpochMs ? 'stale' : 'post';
     }
-    if (upper < lastPresenceStartedEpochMs) return 'stale';
-    if (lower >= lastPresenceEpochMs) return 'post';
+    if (upper < horizonStartedEpochMs) return 'stale';
+    if (lower >= horizonEpochMs) return 'post';
     return 'overlap';
   };
   // ROUND-29: reads order by their DECISION instant — identity-bearing reads
@@ -2174,6 +3538,40 @@ export function adjudicateLocalExit(input) {
   let state = 'unknown';
   let finalAbsenceRunStart = null;
   let sawUnestablished = false;
+  // (codex gate round 15, Finding 1 — the LEARNED EXACT GENERATION) a
+  // coarse bound cannot discriminate same-second exact successors:
+  // successive exact observations both compare 'same' against it while
+  // their exact strings prove PID reuse. The FIRST exact observation
+  // learned during the sequence becomes the carried exact reference;
+  // subsequent exact observations are checked against IT (equal exact
+  // instants stay the same generation — the tie convention).
+  let learnedExactReference = /** @type {string | null} */ (null);
+  // (codex gate round 17, Finding 2 — the BASELINE SEEDING) a
+  // mixed-resolution baseline can already carry an exact identity in
+  // observedStartIdentity while its observation.startIdentity remains
+  // coarse: the reference is SEEDED from that admissible carry, so a later
+  // same-second exact successor is compared against the BASELINE's
+  // generation, never learned as the first.
+  if (typeof /** @type {any} */ (presence).observedStartIdentity === 'string'
+    && parseExactStartIdentity(/** @type {any} */ (presence).observedStartIdentity) !== null) {
+    learnedExactReference = /** @type {any} */ (presence).observedStartIdentity;
+  } else if (isPlainObject(/** @type {any} */ (presence).observation)
+    && typeof /** @type {any} */ (presence).observation.startIdentity === 'string'
+    && parseExactStartIdentity(/** @type {any} */ (presence).observation.startIdentity) !== null) {
+    // (codex gate round 25, Finding 4 — the OWN-IDENTITY SEEDING) a FULLY
+    // EXACT baseline supplies generation A in presence.observation.startId-
+    // entity without a separate carry: the reference seeds from the
+    // baseline's OWN exact identity too (the carry keeps its precedence when
+    // both exist — the runtime's carried-first learning order). Without the
+    // seed an established mixed-resolution read TIED with the baseline's
+    // identity timestamp returned matching coarse text while carrying
+    // successor B; its pre-filter comparison found no learned reference and
+    // the tie branch LEARNED B, letting a subsequent confirmed absence
+    // credit the original generation's disappearance. With the seed the
+    // tied carry latches against A before the tie skip. A coarse-only
+    // baseline keeps the current learning order (nothing seeds).
+    learnedExactReference = /** @type {any} */ (presence).observation.startIdentity;
+  }
   // The LATEST verified same-generation survival instant: later verified
   // live reads move it forward, so both live and disappeared verdicts report
   // when this generation was LAST seen, never just its first capture.
@@ -2208,13 +3606,21 @@ export function adjudicateLocalExit(input) {
     // unreachable defensive fallbacks for these shapes.
     const earlyQueried = /** @type {any} */ (read).queried;
     const earlySameScope = isPlainObject(earlyQueried) && earlyQueried.pid === bound.pid && earlyQueried.nonce === bound.nonce;
+    // (codex gate round 33, Finding 2 — the TRANSITION GENERATION BINDING) a
+    // named read CARRYING its transition's later identity is replacement
+    // evidence only when that carried identity definitively differs from the
+    // bound generation: a carried identity in the bound generation itself
+    // describes the A→B transition whose B is bound (the read spanned B's
+    // baseline) — the bound generation's own arrival, never its replacement.
+    const earlyCarriedForeign = typeof /** @type {any} */ (read).observedStartIdentity === 'string'
+      && startIdentitiesDefinitivelyDiffer(/** @type {any} */ (read).observedStartIdentity, bound.startIdentity);
     const earlyIsCarriedReplacement = earlySameScope && read.status === 'unestablished'
-      && ((typeof /** @type {any} */ (read).observedStartIdentity === 'string'
-        && /** @type {any} */ (read).observedStartIdentity !== bound.startIdentity)
-        || read.reason === 'start-identity-generation-changed');
+      && (earlyCarriedForeign
+        || (read.reason === 'start-identity-generation-changed'
+          && typeof /** @type {any} */ (read).observedStartIdentity !== 'string'));
     const earlyIsIdentityBearingAbsence = earlySameScope && read.status === 'absent'
       && typeof /** @type {any} */ (read).observedStartIdentity === 'string'
-      && /** @type {any} */ (read).observedStartIdentity !== bound.startIdentity;
+      && startIdentitiesDefinitivelyDiffer(/** @type {any} */ (read).observedStartIdentity, bound.startIdentity);
     // (codex round 24 — VALIDATE-FIRST extended to the three-state
     // validator) the hoist fires whenever ANY bound is SUPPLIED (present,
     // non-null) — not only when the upper bound is a safe integer: a
@@ -2284,11 +3690,113 @@ export function adjudicateLocalExit(input) {
       if (sameScope && read.status === 'established') {
         const candidate = /** @type {any} */ (read).observation;
         if (isPlainObject(candidate) && candidate.pid === bound.pid
-          && candidate.startIdentity !== bound.startIdentity) {
-          replacementDetected = true;
+          && startIdentitiesDefinitivelyDiffer(/** @type {string} */ (candidate.startIdentity), bound.startIdentity)) {
+          // (codex gate round 39 review-mwcrgo5m-8t4hr1, Finding 2 — the
+          // COLLECTION-BOUNDS CLASSIFICATION BEFORE THE RAW-RELATION LATCH) a
+          // successful exact inspection can finish its KERNEL reads before
+          // the presence baseline while its final ps query completes later —
+          // the observer then returns the EARLIER exact identity with its
+          // kernel bounds and a LATER identityReadEpochMs, and the gate's
+          // evidence premise (the read instant at/after the horizon) fired
+          // on the DELAYED completion. The raw different-generation latch
+          // previously fired without any interval check, turning the
+          // subprocess latency into a false replacement refusal. The read's
+          // COLLECTION interval (the kernel bounds — the same resolution
+          // every carried classification uses) now classifies against the
+          // presence horizon BEFORE the latch: definitively stale
+          // (completed strictly before the horizon's collection start) is
+          // old-era evidence that never latches; an overlapping window is
+          // the named ambiguous fact; a malformed window refuses by name;
+          // every other class (post, legacy) keeps the raw latch.
+          const rawRelationClass = carriedIdentityIntervalClass(read, lastPresenceEpochMs, lastPresenceStartedEpochMs);
+          if (rawRelationClass === 'stale') {
+            // old evidence — the raw-relation latch never fires on it.
+          } else if (rawRelationClass === 'overlap') {
+            replacementAmbiguous = true;
+          } else if (rawRelationClass === 'inconsistent') {
+            return { ...unestablished('pid-start-identity-interval-inconsistent'), boundIdentity, lastVerifiedPresenceEpochMs: lastPresenceEpochMs };
+          } else {
+            replacementDetected = true;
+          }
+        }
+        // (codex gate round 21, Finding 4 — the LEARNED-GENERATION CHECK
+        // BEFORE THE TIE FILTER) a coarse bound cannot discriminate
+        // same-second exact successors: an established read whose OWN exact
+        // identity definitively differs from the LEARNED reference is
+        // generation-changed evidence even when the strict recency filter is
+        // about to skip it — exact reads A and B sharing the identity-read
+        // millisecond both match the baseline's second, the first read
+        // advances the horizon, and the second TIED with it (previously
+        // skipped before the learned-reference comparison could execute, so
+        // a subsequent confirmed absence returned disappeared despite the
+        // distinct exact generations). The check runs HERE — before the
+        // recency filter — with the applicable interval classification (the
+        // in-branch learned-cross-comparison's own rules): an overlapping
+        // window is the ambiguous fact, a malformed window refuses by name,
+        // a definitively stale window is old evidence (the recency filter
+        // still governs), every other class latches the reuse.
+        if (!replacementDetected && !replacementAmbiguous) {
+          const tieOwnExact = isPlainObject(candidate) && candidate.pid === bound.pid
+            && typeof /** @type {any} */ (candidate).startIdentity === 'string'
+            && parseExactStartIdentity(/** @type {any} */ (candidate).startIdentity) !== null
+            ? /** @type {any} */ (candidate).startIdentity : null;
+          if (tieOwnExact !== null && learnedExactReference !== null
+            && startIdentitiesDefinitivelyDiffer(tieOwnExact, learnedExactReference)) {
+            const tieIntervalClass = carriedIdentityIntervalClass(read, lastPresenceEpochMs, lastPresenceStartedEpochMs);
+            if (tieIntervalClass === 'overlap') {
+              replacementAmbiguous = true;
+            } else if (tieIntervalClass === 'inconsistent') {
+              return { ...unestablished('pid-start-identity-interval-inconsistent'), boundIdentity, lastVerifiedPresenceEpochMs: lastPresenceEpochMs };
+            } else if (tieIntervalClass !== 'stale') {
+              replacementDetected = true;
+            }
+          }
         }
       } else if (sameScope && read.status === 'unestablished'
         && read.reason === 'start-identity-generation-changed') {
+        // (codex gate round 33, Finding 2 — the TRANSITION GENERATION
+        // BINDING) a named read CARRYING its transition's later identity that
+        // does NOT definitively differ from the bound generation describes
+        // the A→B transition whose B is bound — the bound generation's own
+        // arrival (the read spanned B's baseline), never its replacement.
+        // The transition is non-deciding old-era evidence: skipped, and the
+        // bound generation's lawful confirmed absence governs below. A bare
+        // named read and a foreign-carried named read keep their existing
+        // interval rules unchanged.
+        // (codex gate round 33 follow-up review-mwbdjsb7-nnobtl, Finding 1 —
+        // the RETAINED EXACT REFERENCE BEFORE THE SKIP) a MIXED-RESOLUTION
+        // baseline carries its exact generation alongside the coarse start
+        // identity, so a same-second exact transition carry passes the
+        // coarse-resolution comparison above while its exact string proves
+        // the PID reuse: the skip now fires only when the carry is
+        // same-generation at EVERY retained resolution — an exact carry that
+        // definitively differs from the LEARNED exact reference is NOT
+        // skipped and falls through to the named-read interval rules below
+        // (the existing foreign-carry path). A coarse carry and an exact
+        // carry equal to the learned reference keep the skip unchanged.
+        if (typeof /** @type {any} */ (read).observedStartIdentity === 'string'
+          && !startIdentitiesDefinitivelyDiffer(/** @type {any} */ (read).observedStartIdentity, bound.startIdentity)) {
+          const skipExactCarry = parseExactStartIdentity(/** @type {any} */ (read).observedStartIdentity) !== null
+            ? /** @type {any} */ (read).observedStartIdentity : null;
+          if (!(skipExactCarry !== null && learnedExactReference !== null
+            && startIdentitiesDefinitivelyDiffer(skipExactCarry, learnedExactReference))) {
+            // (codex gate round 34 review-mwbhnnxl-21lsyh, Finding 2 — the
+            // ARRIVAL-WINDOW EVIDENCE) the arrival reading carries its own
+            // window requirement: a transition whose carried interval
+            // classifies POST against the presence horizon (tie-inclusive —
+            // the collection started at/after the horizon's completion) lies
+            // ENTIRELY after the baseline and cannot describe the bound
+            // generation's earlier arrival — the existing replacement
+            // classification governs below (post latches, overlap is the
+            // ambiguous fact, stale is old evidence). Every other class
+            // (overlap, stale, legacy, malformed) keeps the
+            // transition-generation-binding exemption unchanged.
+            if (carriedIdentityIntervalClass(read) !== 'post') {
+              sawUnestablished = true;
+              continue;
+            }
+          }
+        }
         // (codex round 14) the promotion's carried interval governs: an
         // interval overlapping the presence baseline is AMBIGUOUS evidence
         // (never definitive replacement), an interval that completed at or
@@ -2315,7 +3823,7 @@ export function adjudicateLocalExit(input) {
         // is old evidence — never latching.
       } else if (sameScope && read.status === 'unestablished'
         && typeof /** @type {any} */ (read).observedStartIdentity === 'string'
-        && /** @type {any} */ (read).observedStartIdentity !== bound.startIdentity) {
+        && startIdentitiesDefinitivelyDiffer(/** @type {any} */ (read).observedStartIdentity, bound.startIdentity)) {
         // ROUND-27/30/31 (codex round 14 interval-aware): a read CARRYING an
         // observed start identity that differs from the BOUND generation is
         // positive replacement evidence INDEPENDENTLY of its named failure
@@ -2351,6 +3859,37 @@ export function adjudicateLocalExit(input) {
         // stale (completed strictly before the presence's collection start)
         // is old evidence — never latching.
       }
+      // (codex gate round 22, Finding 2 — the CARRIED IDENTITY IN THE
+      // PRE-FILTER CHECK) the learned-reference comparison above considers
+      // only the observation's OWN identity: a tied MIXED-resolution read
+      // can return matching coarse startIdentity while CARRYING a different
+      // exact generation in observedStartIdentity — the tied read was
+      // skipped by the recency filter before its carry was checked, and a
+      // subsequent confirmed absence returned disappeared despite the
+      // distinct exact generations. The pre-filter learned-reference
+      // comparison applies to the CARRIED identity too — established carries
+      // AND failed-read carries alike (the round-16 F1 mirror's pre-filter
+      // version) — with the applicable interval classification (the same
+      // rules the in-branch carried comparisons apply): an overlapping
+      // window is the ambiguous fact, a malformed window refuses by name, a
+      // definitively stale window is old evidence (the recency filter still
+      // governs), every other class latches the reuse.
+      if (sameScope && !replacementDetected && !replacementAmbiguous) {
+        const tieCarriedExact = typeof /** @type {any} */ (read).observedStartIdentity === 'string'
+          && parseExactStartIdentity(/** @type {any} */ (read).observedStartIdentity) !== null
+          ? /** @type {any} */ (read).observedStartIdentity : null;
+        if (tieCarriedExact !== null && learnedExactReference !== null
+          && startIdentitiesDefinitivelyDiffer(tieCarriedExact, learnedExactReference)) {
+          const tieCarriedClass = carriedIdentityIntervalClass(read, lastPresenceEpochMs, lastPresenceStartedEpochMs);
+          if (tieCarriedClass === 'overlap') {
+            replacementAmbiguous = true;
+          } else if (tieCarriedClass === 'inconsistent') {
+            return { ...unestablished('pid-start-identity-interval-inconsistent'), boundIdentity, lastVerifiedPresenceEpochMs: lastPresenceEpochMs };
+          } else if (tieCarriedClass !== 'stale') {
+            replacementDetected = true;
+          }
+        }
+      }
       if (replacementDetected) {
         state = 'reused';
         reuseLatched = true;
@@ -2373,7 +3912,115 @@ export function adjudicateLocalExit(input) {
     // whose identity evidence is not after the last verified presence never
     // decides.
     const evidenceEpochMs = read.status === 'absent' ? readEpochMs : identityEvidenceEpochMs(read);
-    if (evidenceEpochMs <= lastPresenceEpochMs) continue;
+    if (evidenceEpochMs <= lastPresenceEpochMs) {
+      // (codex gate round 23, Finding 2 — the TIED EXACT OBSERVATION
+      // RETENTION) an established same-scope read whose identity evidence
+      // TIES the presence horizon still carries decisive exact EVIDENCE even
+      // though it never decides: with a coarse baseline the first exact read
+      // tied with the baseline's identity-read millisecond was skipped here
+      // WITHOUT initializing the learned reference, so a subsequent
+      // same-second exact successor was learned as the original generation
+      // and a confirmed absence returned disappeared despite the distinct
+      // exact identities. The tied read's exact evidence is PRESERVED — the
+      // carried identity first (the runtime's learning order, with the same
+      // stale-carry learning exclusion), then the observation's own — while
+      // the horizon ADVANCE and the recency SKIP remain byte-identically
+      // (only the evidence is retained; the skip itself never admits the
+      // read).
+      if (read.status === 'established' && evidenceEpochMs === lastPresenceEpochMs) {
+        const tiedQueried = /** @type {any} */ (read).queried;
+        const tiedSameScope = isPlainObject(tiedQueried) && tiedQueried.pid === bound.pid && tiedQueried.nonce === bound.nonce;
+        const tiedObservation = /** @type {any} */ (read).observation;
+        if (tiedSameScope && isPlainObject(tiedObservation) && tiedObservation.pid === bound.pid) {
+          const tiedCarriedExact = typeof /** @type {any} */ (read).observedStartIdentity === 'string'
+            && parseExactStartIdentity(/** @type {any} */ (read).observedStartIdentity) !== null
+            ? /** @type {any} */ (read).observedStartIdentity : null;
+          if (tiedCarriedExact !== null && learnedExactReference === null) {
+            const tiedCarryClass = carriedIdentityIntervalClass(read);
+            if (tiedCarryClass !== 'stale') {
+              learnedExactReference = tiedCarriedExact;
+            }
+          }
+          const tiedOwnExact = typeof tiedObservation.startIdentity === 'string'
+            && parseExactStartIdentity(tiedObservation.startIdentity) !== null
+            ? tiedObservation.startIdentity : null;
+          if (tiedOwnExact !== null && learnedExactReference === null) {
+            // (codex gate round 41 review-mwd6thjb-oppqxc, Finding 2 — the
+            // TIED OWN-IDENTITY STALE EXCLUSION) the fallback takes the SAME
+            // stale-window exclusion its adjacent carried-identity branch
+            // above applies: a tied read whose kernel window completed
+            // strictly before the horizon's dispatch is old-era evidence and
+            // never initializes the reference — the delayed final-ps
+            // completion that produced the tie (identityReadEpochMs equal to
+            // the baseline's identity-read instant) must not let discarded
+            // predecessor evidence cause a later false replacement refusal.
+            // Non-stale and legacy windows keep the existing learning.
+            const tiedOwnClass = carriedIdentityIntervalClass(read);
+            if (tiedOwnClass !== 'stale') {
+              learnedExactReference = tiedOwnExact;
+            }
+          }
+        }
+      }
+      // (codex gate round 37 review-mwc4sfh6-fx3ggt, Finding 1 — the
+      // PRE-SKIP EXACT-EVIDENCE COMPARISON) OVERLAPPING observations can
+      // retain an exact generation A (collected in an earlier window) while
+      // a mixed-resolution read advances the COARSE presence horizon past a
+      // separate exact observation of successor B: the strict recency skip
+      // discarded B without ever comparing its exact evidence against the
+      // retained exact reference, and a confirmed absence returned
+      // disappeared despite both exact generations being observed. Before a
+      // STRICTLY-BEFORE read is discarded, its exact evidence (its own exact
+      // observation identity and its exact carried identity) is compared
+      // against the retained exact reference with the established
+      // representation-aware relation: a definitive difference does NOT skip
+      // — the read falls through to the existing branch/interval paths
+      // (post latches, overlap is the named ambiguous fact, stale stays old
+      // evidence). Same-generation exact evidence, coarse evidence, ties (the
+      // round-23 tie retention above), absent reads and reads without a
+      // reference keep the existing skip byte-identically.
+      const skipQueried = /** @type {any} */ (read).queried;
+      const skipReference = learnedExactReference;
+      if (evidenceEpochMs < lastPresenceEpochMs
+        && read.status !== 'absent'
+        && skipReference !== null
+        && isPlainObject(skipQueried) && skipQueried.pid === bound.pid && skipQueried.nonce === bound.nonce) {
+        const skipExactCandidates = [];
+        if (typeof /** @type {any} */ (read).observedStartIdentity === 'string'
+          && parseExactStartIdentity(/** @type {any} */ (read).observedStartIdentity) !== null) {
+          skipExactCandidates.push(/** @type {any} */ (read).observedStartIdentity);
+        }
+        const skipObservation = /** @type {any} */ (read).observation;
+        if (isPlainObject(skipObservation) && typeof skipObservation.startIdentity === 'string'
+          && parseExactStartIdentity(skipObservation.startIdentity) !== null) {
+          skipExactCandidates.push(skipObservation.startIdentity);
+        }
+        if (skipExactCandidates.some((candidate) => startIdentitiesDefinitivelyDiffer(candidate, skipReference))) {
+          // (codex gate round 38 review-mwc95z19-zdq893, Finding 2 — the
+          // STALE-READ EXCLUSION BEFORE THE BYPASS) definitively STALE
+          // evidence keeps its exclusion: a read whose collection interval
+          // completed entirely before the presence horizon's own collection
+          // start (the established stale classification) is old-era evidence
+          // the raw-relation branch would otherwise latch without any
+          // interval check — an exact baseline plus an established
+          // PREDECESSOR collected in an earlier window (completing before the
+          // baseline's dispatch) must never manufacture reuse. Non-stale
+          // windows (overlap, post, legacy) keep the round-37 bypass and its
+          // branch/interval semantics.
+          const skipIntervalClass = carriedIdentityIntervalClass(read);
+          if (skipIntervalClass === 'stale') {
+            continue;
+          }
+          // The retained exact evidence proves a different generation — the
+          // coarse horizon never discards it. Fall through to the branches
+          // below.
+        } else {
+          continue;
+        }
+      } else {
+        continue;
+      }
+    }
     // A read is evidence about the identity it QUERIED, nothing else: a read
     // that queried another PID or another scope nonce is foreign evidence and
     // never decides this generation's fate (no absence, no reuse, no failure).
@@ -2383,14 +4030,204 @@ export function adjudicateLocalExit(input) {
     if (read.status === 'established') {
       const observation = /** @type {any} */ (read).observation;
       if (!isPlainObject(observation) || observation.pid !== bound.pid) continue;
-      if (observation.startIdentity === bound.startIdentity) {
-        state = 'live';
-        lastPresenceEpochMs = identityEvidenceEpochMs(read);
-        // (codex round 17) the horizon's collection start advances with it.
-        if (Number.isSafeInteger(read.readStartedEpochMs)) {
-          lastPresenceStartedEpochMs = read.readStartedEpochMs;
+      // (§32.12 Finding 2) the representation-aware relation: same → the
+      // presence horizon advances; demonstrably different → the reuse latch;
+      // UNCERTAIN (an exact form against an unresolvable string) is
+      // non-deciding — the read neither advances the horizon nor latches,
+      // because uncertainty is never positive replacement evidence.
+      // (codex gate round 12, Finding 1 — the EXACT-EVIDENCE REPLACEMENT
+      // DETECTION; codex gate round 14, Finding 2 — the INTERVAL
+      // CLASSIFICATION) an established read whose SEPARATELY PRESERVED exact
+      // carry definitively differs from the bound is replacement evidence
+      // ONLY through the interval classification computed below: the jointly
+      // verified coarse identity is same-generation at its resolution, but
+      // the preserved exact observation proves the PID was reused only when
+      // its window is genuinely post-baseline — the later confirmed absence
+      // is never credited as the original generation's disappearance.
+      // (codex gate round 14, Finding 2 — the CARRIED-INTERVAL
+      // CLASSIFICATION on established carries) the separately preserved
+      // exact carry was observed DURING this read — the comparison baseline
+      // is the horizon AS IT STOOD before this read advances it: a stale
+      // carried window (completed strictly before the presence's own
+      // collection start) is old evidence that never latches, an overlapping
+      // window is the lawful ambiguous fact, and only a genuinely
+      // post-baseline window is replacement evidence.
+      let carriedReplacement = false;
+      let carriedAmbiguous = false;
+      let carriedInconsistent = false;
+      const carriedExact = typeof /** @type {any} */ (read).observedStartIdentity === 'string'
+        && parseExactStartIdentity(/** @type {any} */ (read).observedStartIdentity) !== null
+        ? /** @type {any} */ (read).observedStartIdentity
+        : null;
+      if (carriedExact !== null
+        && ((learnedExactReference !== null && startIdentitiesDefinitivelyDiffer(carriedExact, learnedExactReference))
+          || startIdentitiesDefinitivelyDiffer(carriedExact, bound.startIdentity))) {
+        const carriedIntervalClass = carriedIdentityIntervalClass(read);
+        if (carriedIntervalClass === 'overlap') {
+          carriedAmbiguous = true;
+        } else if (carriedIntervalClass === 'inconsistent') {
+          carriedInconsistent = true;
+        } else if (carriedIntervalClass === 'post'
+          || (carriedIntervalClass === 'legacy' && carriedIdentityEpochMs(read) >= lastPresenceEpochMs)) {
+          carriedReplacement = true;
+        }
+        // stale: old evidence — never latching.
+      }
+      if (carriedExact !== null && learnedExactReference === null) {
+        // (codex gate round 17, Finding 5 — the STALE-CARRY LEARNING
+        // EXCLUSION) the carry's own collection interval is checked against
+        // the PRE-READ presence horizon BEFORE learning it: an established
+        // mixed read can finish after the baseline while carrying an exact
+        // identity collected entirely before the baseline window — that
+        // stale identity is never the reference (the check runs regardless
+        // of whether the carry appears foreign).
+        const carryLearnClass = carriedIdentityIntervalClass(read);
+        if (carryLearnClass !== 'stale') {
+          learnedExactReference = carriedExact;
+        }
+      }
+      // (codex gate round 16, Finding 4 — the PREVIOUS-HORIZON capture) the
+      // learned cross-comparison classifies against the horizon AS IT STOOD
+      // before this read advances it — captured here, never after.
+      const previousHorizonEpochMs = lastPresenceEpochMs;
+      const previousHorizonStartedEpochMs = lastPresenceStartedEpochMs;
+      const presenceRelation = startIdentityGenerationRelation(/** @type {string} */ (observation.startIdentity), bound.startIdentity);
+      if (presenceRelation === 'same') {
+        // (codex gate round 41 review-mwd6thjb-oppqxc, Finding 1 — the
+        // STALE-WINDOW EXCLUSION BEFORE ADVANCING THE HORIZON) the read's
+        // KERNEL collection window is classified before the presence state
+        // or horizon updates (the previous-horizon capture above, the
+        // round-40 pattern): a read whose window completed strictly before
+        // the presence horizon's dispatch is definitively STALE old-era
+        // evidence — the delayed final-ps completion that carried it past
+        // the evidence premise never turns it into FRESH presence. Without
+        // the exclusion a stale predecessor advanced the horizon to its
+        // delayed completion instant, and a confirmed absence collected
+        // after the BASELINE (but before that fabricated horizon) was
+        // rejected as overlapping, returning `live` despite the proven
+        // disappearance. Non-stale windows keep the advance byte-identically.
+        const sameArmClass = carriedIdentityIntervalClass(read, previousHorizonEpochMs, previousHorizonStartedEpochMs);
+        // (codex gate round 64 review-mwg28yk8-ds4mtv, Finding 1 — the
+        // MONOTONIC HORIZON FOR OLDER CONFLICTING EVIDENCE) the round-37
+        // pre-skip exact-evidence bypass routes OLDER conflicting reads —
+        // their identity evidence is strictly below the horizon the bypass
+        // compared against (the bypass's own premise at the recency filter) —
+        // into the branch paths, and this same-generation arm then ASSIGNED
+        // the horizon backward: with the coarse baseline carrying exact
+        // identity B at 6250, the older mixed-resolution presence carrying
+        // exact A at 6200 with an absent carried completion bound moved the
+        // verified presence horizon to 6200, and a confirmed absence
+        // collected over [6200, 6300] — overlapping the ACTUAL baseline — was
+        // credited as `disappeared` instead of the ROUND-36 unestablished
+        // rejection (6200 < 6250). Older conflicting evidence takes the stale
+        // arm's treatment: non-advancing, never an advancing presence — the
+        // horizon pair keeps its previous values. The normal advance is
+        // byte-identical for reads whose evidence is at/after the horizon
+        // (they never pass through the bypass), and tied reads never reach
+        // this arm at all (the recency filter skips them; the
+        // latch-before-skip pre-filter owns their conflicts), so the guard's
+        // "older" key is exactly the runtime's `evidenceEpochMs` source
+        // (`identityReadEpochMs ?? readEpochMs`) compared against the
+        // PRE-READ horizon.
+        const sameArmEvidenceEpochMs = identityEvidenceEpochMs(read);
+        if (sameArmClass === 'stale'
+          || sameArmEvidenceEpochMs < previousHorizonEpochMs) {
+          sawUnestablished = true;
+        } else {
+          state = 'live';
+          lastPresenceEpochMs = sameArmEvidenceEpochMs;
+          // (codex round 17) the horizon's collection start advances with it.
+          if (Number.isSafeInteger(read.readStartedEpochMs)) {
+            lastPresenceStartedEpochMs = read.readStartedEpochMs;
+          }
+        }
+      } else if (presenceRelation === 'different') {
+        // (codex gate round 39 review-mwcrgo5m-8t4hr1, Finding 2 — the
+        // relation arm's own STALE exclusion) the raw different-generation
+        // latch takes the SAME collection-bounds classification the gate arm
+        // now applies: a read whose kernel window completed strictly before
+        // the presence horizon's collection start is old-era evidence — the
+        // delayed final-ps completion that carried it past the gate never
+        // turns it into a replacement. Non-stale classes keep the raw latch
+        // (the gate already routed overlapping windows to the ambiguous
+        // fact; post/legacy windows latch as before).
+        const relationArmClass = carriedIdentityIntervalClass(read, previousHorizonEpochMs, previousHorizonStartedEpochMs);
+        if (relationArmClass === 'stale') {
+          sawUnestablished = true;
+        } else {
+          state = 'reused';
+          reuseLatched = true;
         }
       } else {
+        sawUnestablished = true;
+      }
+      // (codex gate round 15, Finding 1 — the LEARNED EXACT GENERATION
+      // cross-comparison; codex gate round 16, Finding 4 — classified
+      // against the PREVIOUS horizon) the read's OWN exact identity is
+      // checked against the learned reference: two exact observations in
+      // the same second with different usec are definitively different
+      // generations — the reuse latch (classified by the read's own
+      // collection window against the previous horizon); identical exact
+      // instants keep the same-generation path (the tie convention).
+      const observationExact = typeof observation.startIdentity === 'string' && parseExactStartIdentity(observation.startIdentity) !== null ? observation.startIdentity : null;
+      if (observationExact !== null) {
+        if (learnedExactReference === null) {
+          // (codex gate round 40 review-mwcuom0y-o3kamz, Finding 1 — the
+          // STALE-WINDOW EXCLUSION BEFORE THE OWN-IDENTITY SEEDING) the
+          // read's COLLECTION window is classified BEFORE its own exact
+          // identity initializes the learned reference (the same
+          // established rule the carry learning applies — round 17, Finding
+          // 5): a read whose kernel window completed strictly before the
+          // presence horizon's dispatch is definitively STALE old-era
+          // evidence and never becomes the reference. Without the exclusion
+          // a coarse baseline plus a stale predecessor (collected in an
+          // earlier window, its final ps query completing later so the read
+          // still passed the gate) initialized the reference to the
+          // predecessor's generation, and a later current same-second
+          // observation was detected as its replacement — a false
+          // `pid-start-identity-reused` refusal built from discarded
+          // predecessor evidence. Non-stale classes (overlap, post, legacy)
+          // keep the existing seeding byte-identically. The classification
+          // runs against the PREVIOUS horizon — the same-generation relation
+          // arm above already advanced the horizon with THIS read, and the
+          // stale question is about the window as it stood when the read
+          // arrived.
+          const ownLearnClass = carriedIdentityIntervalClass(read, previousHorizonEpochMs, previousHorizonStartedEpochMs);
+          if (ownLearnClass !== 'stale') {
+            learnedExactReference = observationExact;
+          }
+        } else if (startIdentitiesDefinitivelyDiffer(observationExact, learnedExactReference) && !reuseLatched) {
+          const ownIntervalClass = carriedIdentityIntervalClass(read, previousHorizonEpochMs, previousHorizonStartedEpochMs);
+          if (ownIntervalClass === 'overlap') {
+            return { ...unestablished('pid-start-identity-ambiguous'), boundIdentity, lastVerifiedPresenceEpochMs: lastPresenceEpochMs };
+          }
+          if (ownIntervalClass === 'inconsistent') {
+            return { ...unestablished('pid-start-identity-interval-inconsistent'), boundIdentity, lastVerifiedPresenceEpochMs: lastPresenceEpochMs };
+          }
+          if (ownIntervalClass === 'stale') {
+            // old evidence — never latching.
+          } else {
+            state = 'reused';
+            reuseLatched = true;
+          }
+        }
+      }
+      // (codex gate round 12, Finding 1 — the EXACT-EVIDENCE REPLACEMENT
+      // DETECTION; codex gate round 14, Finding 2 — the INTERVAL
+      // CLASSIFICATION) an established read whose SEPARATELY PRESERVED exact
+      // carry definitively differs from the bound is replacement evidence
+      // ONLY through the interval classification computed above: the jointly
+      // verified coarse identity is same-generation at its resolution, but
+      // the preserved exact observation proves the PID was reused only when
+      // its window is genuinely post-baseline — the later confirmed absence
+      // is never credited as the original generation's disappearance.
+      if (!reuseLatched && carriedInconsistent) {
+        return { ...unestablished('pid-start-identity-interval-inconsistent'), boundIdentity, lastVerifiedPresenceEpochMs: lastPresenceEpochMs };
+      }
+      if (!reuseLatched && carriedAmbiguous) {
+        return { ...unestablished('pid-start-identity-ambiguous'), boundIdentity, lastVerifiedPresenceEpochMs: lastPresenceEpochMs };
+      }
+      if (!reuseLatched && carriedReplacement) {
         state = 'reused';
         reuseLatched = true;
       }
@@ -2409,7 +4246,15 @@ export function adjudicateLocalExit(input) {
       // baseline's lawful disappearance. Carried-equal (or no carried
       // identity) admits the absence normally.
       const carriedIdentity = /** @type {any} */ (read).observedStartIdentity;
-      if (typeof carriedIdentity === 'string' && carriedIdentity !== bound.startIdentity) {
+      if (typeof carriedIdentity === 'string'
+        && (startIdentitiesDefinitivelyDiffer(carriedIdentity, bound.startIdentity)
+          // (codex gate round 16, Finding 1 — the ABSENT-CARRY LEARNED
+          // REFERENCE) the carried exact identity is also compared against
+          // the LEARNED exact reference (the interval classification below
+          // is preserved identically).
+          || (learnedExactReference !== null
+            && parseExactStartIdentity(carriedIdentity) !== null
+            && startIdentitiesDefinitivelyDiffer(carriedIdentity, learnedExactReference)))) {
         // (codex rounds 15+17) the interval classification applies to
         // IDENTITY-BEARING ABSENT verdicts exactly like the unestablished
         // ones, INTERVAL-TO-INTERVAL: a collection window OVERLAPPING the
@@ -2435,6 +4280,23 @@ export function adjudicateLocalExit(input) {
           continue;
         }
         // definitively stale: the absence admits normally below.
+      }
+      // (codex gate round 18, Finding 2 — the ABSENT-CARRY RETENTION) an
+      // identity-bearing absent read RETAINS its admissible exact carry
+      // into the learned reference (the established and failed-read
+      // branches already do): with a coarse baseline, an absent read
+      // carrying exact generation A followed by an established read of
+      // same-second generation B proves the reuse — B is compared against
+      // the retained A. A carry inadmissible by the recency rules (stale —
+      // collected strictly before the horizon's collection start) is not
+      // retained.
+      if (learnedExactReference === null
+        && typeof carriedIdentity === 'string'
+        && parseExactStartIdentity(carriedIdentity) !== null) {
+        const absentCarryLearnClass = carriedIdentityIntervalClass(read);
+        if (absentCarryLearnClass !== 'stale') {
+          learnedExactReference = carriedIdentity;
+        }
       }
       // ROUND-36: an absence whose COLLECTION overlaps the presence
       // evidence (its read START predates the presence evidence's
@@ -2498,7 +4360,17 @@ export function adjudicateLocalExit(input) {
     // latches it. A carried identity EQUAL to the bound one is the
     // same-generation failure and stays a non-deciding unestablished fact.
     if (typeof /** @type {any} */ (read).observedStartIdentity === 'string'
-      && /** @type {any} */ (read).observedStartIdentity !== bound.startIdentity) {
+      && (startIdentitiesDefinitivelyDiffer(/** @type {any} */ (read).observedStartIdentity, bound.startIdentity)
+        // (codex gate round 16, Finding 1 — the FAILED-CARRY LEARNED
+        // REFERENCE) the carried exact identity is also compared against
+        // the LEARNED exact reference: a coarse bound cannot discriminate
+        // same-second exact successors, so a carried identity matching the
+        // bound at coarse resolution may still definitively differ from the
+        // generation the sequence learned. The interval classification below
+        // is preserved identically.
+        || (learnedExactReference !== null
+          && parseExactStartIdentity(/** @type {any} */ (read).observedStartIdentity) !== null
+          && startIdentitiesDefinitivelyDiffer(/** @type {any} */ (read).observedStartIdentity, learnedExactReference)))) {
       // (codex round 14) interval-aware: overlapping collection intervals
       // are the ambiguous fact; definitively stale intervals never decide;
       // definitively post-baseline collections latch.
@@ -2523,6 +4395,23 @@ export function adjudicateLocalExit(input) {
         state = 'reused';
         reuseLatched = true;
         continue;
+      }
+    }
+    // (codex gate round 17, Finding 3 — the FAILED-CARRY RETENTION) an
+    // ADMISSIBLE first exact carry from a failed read is RETAINED as the
+    // learned reference (not only checked): a later established exact
+    // generation in the same second is then compared against it. A carry
+    // inadmissible by the recency rules (stale — collected strictly before
+    // the horizon's collection start) is not retained (the Finding-3-style
+    // discipline). The learning sits at the UNESTABLISHED-BRANCH level: a
+    // coarse bound cannot discriminate same-second exact successors, so the
+    // differ-vs-bound gate must never gate the retention.
+    if (learnedExactReference === null
+      && typeof /** @type {any} */ (read).observedStartIdentity === 'string'
+      && parseExactStartIdentity(/** @type {any} */ (read).observedStartIdentity) !== null) {
+      const failedCarryClass = carriedIdentityIntervalClass(read);
+      if (failedCarryClass !== 'stale') {
+        learnedExactReference = /** @type {any} */ (read).observedStartIdentity;
       }
     }
     sawUnestablished = true;
@@ -2647,6 +4536,56 @@ function validatedSpawnWitnessInput(verdict, label) {
 }
 
 /**
+ * The EXACT-MODE predicate of the witness establishment (§32 two-mode
+ * discipline; §32.10 Findings 1–2): true only when EVERY side the comparison
+ * consumes is exact. The record must DECLARE exactness (v3
+ * `startIdentityExact: true`), carry the closed kinfo form for BOTH its
+ * captured identities, and carry a numeric child instant that resolves from
+ * that child identity; the read-time writer endpoint's identity and numeric
+ * instant must agree on the same exact form; and, when the hop also binds a
+ * read-time CHILD endpoint (hop 1: `childOsStartInstant` supplied), that
+ * identity and numeric instant must be exact too. When the hop binds the
+ * marker's CAPTURED start identity instead (hop 2: `childStartIdentity` is
+ * the marker's captured identity, no endpoint numeric), that identity must
+ * be the exact form — its GENERATION binding is the child-foreign equality
+ * conjunct. EstablishThroughSpawnWitness additionally refuses exact mode
+ * when a marker binding is consumed without any captured child identity
+ * (the tuple is INCOMPLETE — exact mode never credits an unbound marker).
+ * Mixed exactness (either side coarse, a lying declaration, or a
+ * numeric/identity disagreement) falls back to the registered coarse
+ * windows — it never borrows resolution it does not have.
+ * @param {SpawnAncestryWitnessIdentity} facts
+ * @param {{ childStartIdentity: string | null, childOsStartInstant?: number, writerStartIdentity: string, writerOsStartInstant?: number }} expected
+ * @returns {boolean}
+ */
+function spawnWitnessExactMode(facts, expected) {
+  if (facts.startIdentityExact !== true) return false;
+  const childExact = parseExactStartIdentity(facts.childStartIdentity);
+  const writerExact = parseExactStartIdentity(facts.writerStartIdentity);
+  const endpointWriterExact = parseExactStartIdentity(expected.writerStartIdentity);
+  if (childExact === null || writerExact === null || endpointWriterExact === null) return false;
+  if (!Number.isSafeInteger(facts.childOsStartInstantMs)
+    || /** @type {number} */ (facts.childOsStartInstantMs) !== childExact.ms) return false;
+  if (!Number.isSafeInteger(expected.writerOsStartInstant)
+    || /** @type {number} */ (expected.writerOsStartInstant) !== endpointWriterExact.ms) return false;
+  if (expected.childStartIdentity !== null && expected.childStartIdentity !== undefined) {
+    const endpointChildExact = parseExactStartIdentity(expected.childStartIdentity);
+    if (endpointChildExact === null) return false;
+    if (Number.isSafeInteger(expected.childOsStartInstant)) {
+      // Hop 1's read-time child endpoint: the endpoint's numeric instant
+      // must agree with its own exact identity.
+      if (/** @type {number} */ (expected.childOsStartInstant) !== endpointChildExact.ms) return false;
+    }
+    // (§32.10 Finding 1) Hop 2's CAPTURED marker identity: the exact FORM is
+    // required here; the GENERATION binding itself is the child-foreign
+    // equality conjunct in establishThroughSpawnWitness (a different exact
+    // identity is a different generation — refused there, never silently
+    // demoted to coarse mode).
+  }
+  return true;
+}
+
+/**
  * Route-(b) application (the §26.6 freeze; §26.7 item 3 witnesses): a
  * positively captured spawn-boundary witness ESTABLISHES the hop only when
  * it binds the writer's established generation, the child's capture-time
@@ -2664,7 +4603,7 @@ function validatedSpawnWitnessInput(verdict, label) {
  *   childReadStartedEpochMs?: number, writerReadStartedEpochMs?: number,
  *   scopeNonce?: string, expectedRole?: IdentityRole,
  * }} expected
- * @returns {{ status: 'established', reason: null, witnessClass: 'spawn-boundary-capture' } | { status: 'unestablished', reason: string, detail?: string | null }}
+ * @returns {{ status: 'established', reason: null, witnessClass: 'spawn-boundary-capture', exact: boolean } | { status: 'unestablished', reason: string, detail?: string | null }}
  */
 function establishThroughSpawnWitness(witness, expected) {
   if (witness === undefined) return { status: 'unestablished', reason: 'spawn-witness-absent' };
@@ -2678,6 +4617,22 @@ function establishThroughSpawnWitness(witness, expected) {
   const facts = /** @type {SpawnAncestryWitnessIdentity} */ (witness.identity);
   /** @param {string} reason @returns {{ status: 'unestablished', reason: string, detail: null }} */
   const mismatch = (reason) => ({ status: 'unestablished', reason, detail: null });
+  // (route (c), §32.10 Finding 2) the EXACT-MODE tuple is computed FIRST so
+  // the identity binding and the round-4 proximity conjunct can be gated on
+  // it (pure function of the record + the hop's expected facts — hoisting it
+  // changes nothing else).
+  // (§32.10 Finding 1) an exact tuple WITHOUT the marker's captured start
+  // identity is INCOMPLETE: whenever a marker generation binding is consumed
+  // (childMarkerEpochMs present) on a hop with no read-time child identity,
+  // the marker's captured identity is the required exact child side. Without
+  // it exact mode must not engage — the coarse adjudication applies (which on
+  // the bound-window route refuses with the registered labels and can never
+  // credit). Hops with a read-time child identity (hop 1: childOsStartInstant
+  // supplied) are unaffected.
+  const exactMode = spawnWitnessExactMode(facts, expected)
+    && (typeof expected.childStartIdentity === 'string'
+      || Number.isSafeInteger(expected.childOsStartInstant)
+      || !Number.isSafeInteger(expected.childMarkerEpochMs));
   // The PARENT presence interval: the witness capture window must ride
   // inside the parent's verified presence — the establishing read of the
   // writer's own generation must POSTDATE the boundary and the write.
@@ -2696,17 +4651,23 @@ function establishThroughSpawnWitness(witness, expected) {
   // observed at the boundary must be the child generation this hop binds —
   // a same-pid reused successor can never ride the witness. When the hop
   // binds an externally observed child start identity (the Companion→daemon
-  // hop's refreshed daemon read), it must EQUAL the witnessed one. When the
-  // caller has NO external child start identity (the daemon→transport hop:
-  // the marker carries kernel pid/ppid facts only), the witness's OWN
-  // captured childStartIdentity — validated non-empty from the writer's
-  // OS-verified boundary double read — is the positively captured generation
-  // binding (the §26.6 anti-reuse argument: the witness binds the child's
-  // own start identity and the parent's capture-time presence interval; a
-  // reused PID cannot forge a parent relationship it never observed).
+  // hop's refreshed daemon read — childOsStartInstant supplied; or the
+  // daemon→transport hop's marker CAPTURED start identity in exact mode,
+  // §32.10 Finding 1), it must EQUAL the witnessed one. When the caller has
+  // NO external child start identity (the coarse daemon→transport hop: the
+  // marker carries kernel pid/ppid facts only), the witness's OWN captured
+  // childStartIdentity — validated non-empty from the writer's OS-verified
+  // boundary double read — is the positively captured generation binding
+  // (the §26.6 anti-reuse argument: the witness binds the child's own start
+  // identity and the parent's capture-time presence interval; a reused PID
+  // cannot forge a parent relationship it never observed). The gate keeps
+  // the coarse marker path byte-identical: a captured marker identity is
+  // consumed only in exact mode or on a read-time-child hop.
   if (expected.childPid === null) return mismatch('spawn-witness-child-foreign');
   if (facts.childPid !== expected.childPid) return mismatch('spawn-witness-child-foreign');
-  if (typeof expected.childStartIdentity === 'string' && facts.childStartIdentity !== expected.childStartIdentity) {
+  if (typeof expected.childStartIdentity === 'string'
+    && (exactMode || Number.isSafeInteger(expected.childOsStartInstant))
+    && facts.childStartIdentity !== expected.childStartIdentity) {
     return mismatch('spawn-witness-child-foreign');
   }
   // The CAPTURE-TIME kernel parent link: the child's OS ppid observed at the
@@ -2756,6 +4717,25 @@ function establishThroughSpawnWitness(witness, expected) {
   // witnessed daemon floor; hop 2: the daemon's floor vs the witnessed
   // transport floor); an absent member stays absent (the v1-replay/named-
   // absent conjuncts upstream).
+  // (codex gate round 48 review-mwe17z6i-3cs22y, Finding 2 — the
+  // child/parent UNROUNDED creation order) in exact mode the inversion
+  // compares the kernel's UNROUNDED creations (`sec * 1000 + usec / 1000`),
+  // never the rounded persisted instants: a child `kinfo:1:200` (created
+  // 1000.2) and a writer `kinfo:1:300` (created 1000.3) both round to 1000,
+  // so the rounded comparison credited an inverted spawn order — the
+  // kernel's own fork order contradicted by the exact identities. The
+  // rounded values remain only the persisted representation (the exact-mode
+  // tuple's agreement gates above); the coarse comparison below is
+  // byte-identical.
+  if (exactMode) {
+    const exactChildCreation = parseExactStartIdentity(facts.childStartIdentity);
+    const exactWriterCreation = parseExactStartIdentity(/** @type {string} */ (expected.writerStartIdentity));
+    if (exactChildCreation !== null && exactWriterCreation !== null
+      && exactChildCreation.sec * 1000 + exactChildCreation.usec / 1000
+        < exactWriterCreation.sec * 1000 + exactWriterCreation.usec / 1000) {
+      return mismatch('spawn-witness-creation-order-inverted');
+    }
+  }
   if (Number.isSafeInteger(expected.writerOsStartInstant)
     && Number.isSafeInteger(facts.childOsStartInstantMs)
     && /** @type {number} */ (facts.childOsStartInstantMs) < /** @type {number} */ (expected.writerOsStartInstant)) {
@@ -2792,8 +4772,11 @@ function establishThroughSpawnWitness(witness, expected) {
   // attempt it witnesses), so the marker's generation is NOT bound to the
   // witnessed child and the upgrade refuses. Coarse-vs-coarse: the
   // uniform whole-second bound is the join's registered uncertainty, never
-  // a new precision claim.
-  if (Number.isSafeInteger(expected.childMarkerEpochMs)
+  // a new precision claim. (§32.10 Finding 2: the conjunct is a COARSE
+  // conjunct — gated on !exactMode. In exact mode the marker's generation
+  // is bound by the captured start identity plus the exact ordering below,
+  // and a capture window more than a second after the marker never refuses.)
+  if (!exactMode && Number.isSafeInteger(expected.childMarkerEpochMs)
     && facts.boundaryEpochMs - /** @type {number} */ (expected.childMarkerEpochMs) > LINUX_BTIME_UNCERTAINTY_MS) {
     return mismatch('spawn-witness-marker-generation-unbound');
   }
@@ -2830,12 +4813,62 @@ function establishThroughSpawnWitness(witness, expected) {
   // same-second chains keep the carried refusal (the witness's OTHER
   // positive bindings — parent generation, role, argv/scope, nonce, capture
   // relationship — are unaffected).
+  // (route (c), §32 — the EXACT MODE) when the record's captured start
+  // identities and the endpoint's start identities are BOTH the exact
+  // kinfo form, the numeric instants are EXACT (same clock domain as the
+  // wall clock) and the ±1000 uncertainty windows collapse to exact
+  // orderings: the marker must simply POSTDATE the witnessed child's
+  // creation (markerTime ≥ childExactStart) — no window, no ambiguity
+  // band. The exact mode never changes coarse outcomes: coarse records/
+  // endpoints keep the registered windows byte-identically. The BOTH-SIDES
+  // discipline (the §32 two-mode rule): exact mode requires the RECORD's
+  // declared flag, the record's own two identities and numeric instant to
+  // agree with the closed exact form, AND every PRESENT endpoint identity
+  // (writer always; the read-time child on hop 1; the marker's CAPTURED
+  // start identity on hop 2 — §32.10 Finding 1, bound by the child-foreign
+  // conjunct) to be exact. A marker without a captured identity leaves the
+  // exact tuple INCOMPLETE (§32.10 Finding 1: exact mode never engages; the
+  // coarse adjudication applies). Mixed exactness falls back to the coarse
+  // windows; it never borrows exactness it does not have.
+  // (exactMode itself is hoisted to the top of this function — §32.10
+  // Finding 2 — so the proximity conjunct above could be gated on it.)
   if (Number.isSafeInteger(expected.childMarkerEpochMs)) {
     if (!Number.isSafeInteger(facts.childOsStartInstantMs)
       || /** @type {number} */ (expected.childMarkerEpochMs) < /** @type {number} */ (facts.childOsStartInstantMs)) {
       return mismatch('spawn-witness-marker-generation-unbound');
     }
-    if (/** @type {number} */ (expected.childMarkerEpochMs) < /** @type {number} */ (facts.childOsStartInstantMs) + LINUX_BTIME_UNCERTAINTY_MS) {
+    // (codex gate round 50 review-mwe9xpn0-7mhztk, Finding 1 — the
+    // OVERLAPPING QUANTIZED TIE; corrected by codex gate round 51
+    // review-mwed42xp-tf84jm, Finding 1 — the TRUE ROUNDING INTERVAL;
+    // completed by codex gate round 63 review-mwfxlzpe-0fve20, Finding 1 —
+    // the ALIGNED-CHILD TIE) the marker producer persists
+    // `Math.round(markerStats.mtimeMs)`, so a persisted marker time M
+    // represents the true write window [M - 0.5, M + 0.5) — not [M, M + 1).
+    // The child's TRUE creation is C = sec * 1000 + usec / 1000 (the exact
+    // identity's unrounded instant; its persisted R = round(C) is only the
+    // representation). A marker TIED with R carries the true write window
+    // [R - 0.5, R + 0.5), so the tie is exact evidence ONLY when the whole
+    // window lies at/after C — window lower bound R - 0.5 >= C, left edge
+    // INCLUDED. The exact HALF (usec % 1000 === 500, C = R - 0.5 exactly) is
+    // the one establishing tie: every true write is at/after the creation
+    // (the demonstrable-ordering convention). EVERY other tie — the
+    // quantize-down and quantize-up fractions AND the millisecond-ALIGNED
+    // child (C = R, so R - 0.5 < C) — has possible writes strictly before
+    // the child existed: ambiguous, never resolved as true (the module's
+    // convention; the coarse band below refuses the same overlap as
+    // ambiguous). A marker strictly AFTER R has its whole window at/after C
+    // under every quantization direction (unchanged). The aligned exemption
+    // the round-50/51 rule carried is RETIRED: the persisted marker time is
+    // rounded even when the child's creation is millisecond-aligned.
+    const markerExactChild = exactMode ? parseExactStartIdentity(facts.childStartIdentity) : null;
+    if (exactMode && markerExactChild !== null
+      && /** @type {number} */ (expected.childMarkerEpochMs) === /** @type {number} */ (facts.childOsStartInstantMs)) {
+      const markerExactChildCreationMs = markerExactChild.sec * 1000 + markerExactChild.usec / 1000;
+      if (/** @type {number} */ (expected.childMarkerEpochMs) - 0.5 < markerExactChildCreationMs) {
+        return mismatch('spawn-witness-marker-generation-ambiguous');
+      }
+    }
+    if (!exactMode && /** @type {number} */ (expected.childMarkerEpochMs) < /** @type {number} */ (facts.childOsStartInstantMs) + LINUX_BTIME_UNCERTAINTY_MS) {
       return mismatch('spawn-witness-marker-generation-ambiguous');
     }
   }
@@ -2860,8 +4893,9 @@ function establishThroughSpawnWitness(witness, expected) {
   // refuses `spawn-witness-parent-generation-ambiguous` (the §26.7 item-5
   // fresh-label discipline; the marker family's round-6 rule applied
   // symmetrically — no establishment conclusion may exceed what the coarse
-  // facts prove; route (c)'s higher-resolution generation evidence stays
-  // NAMED UNAVAILABLE, §28.1, so the ambiguity cannot be resolved).
+  // facts prove; route (c)'s higher-resolution generation evidence RESOLVES
+  // this ambiguity in the exact mode below, §32, and the coarse windows
+  // apply only to coarse data).
   // Demonstrably-different identities keep `spawn-witness-writer-foreign`
   // above. Honest consequence: a witness written inside the parent's first
   // possible second — the real chain's typical shape — cannot establish the
@@ -2873,7 +4907,28 @@ function establishThroughSpawnWitness(witness, expected) {
     // all (absent facts stay absent, §26.7 item 3/5).
     return mismatch('spawn-witness-capture-unbounded');
   }
-  if (/** @type {number} */ (facts.firstWriteEpochMs) < /** @type {number} */ (expected.writerOsStartInstant) + LINUX_BTIME_UNCERTAINTY_MS) {
+  // (route (c) exact mode) the writer continuity exact ordering: the write
+  // must postdate the writer's EXACT creation (no +1000 window).
+  // (codex gate round 48 review-mwe17z6i-3cs22y, Finding 2 — the UNROUNDED
+  // CREATION vs the PRECISE WRITE) the ordering consumes the kernel's
+  // UNROUNDED creation (`sec * 1000 + usec / 1000`) against the witness's
+  // PRECISE write (`firstWritePreciseMs` when carried, the rounded
+  // `firstWriteEpochMs` otherwise), never the ROUNDED pair: a writer
+  // identity `kinfo:1:300` (creation 1000.3) rounds to 1000, so a witness
+  // written at 1000.2 passed the rounded comparison although the writer did
+  // not exist when the witness was written — the Companion→daemon hop
+  // established on contradictory evidence. The rounded values remain only
+  // the persisted representation (the exact-mode tuple's agreement gates
+  // above); the coarse arm below is byte-identical.
+  const exactWriterCreation = exactMode
+    ? parseExactStartIdentity(/** @type {string} */ (expected.writerStartIdentity)) : null;
+  const witnessWritePreciseMs = typeof facts.firstWritePreciseMs === 'number'
+    ? facts.firstWritePreciseMs : facts.firstWriteEpochMs;
+  if (exactMode && exactWriterCreation !== null
+    && /** @type {number} */ (witnessWritePreciseMs) < exactWriterCreation.sec * 1000 + exactWriterCreation.usec / 1000) {
+    return mismatch('spawn-witness-parent-generation-ambiguous');
+  }
+  if (!exactMode && /** @type {number} */ (facts.firstWriteEpochMs) < /** @type {number} */ (expected.writerOsStartInstant) + LINUX_BTIME_UNCERTAINTY_MS) {
     return mismatch('spawn-witness-parent-generation-ambiguous');
   }
   // (codex round 12 — the parent-side mirror of the round-11 collection
@@ -2905,6 +4960,30 @@ function establishThroughSpawnWitness(witness, expected) {
     || /** @type {number} */ (expected.writerReadStartedEpochMs) < /** @type {number} */ (facts.firstWriteEpochMs)) {
     return mismatch('spawn-witness-parent-generation-ambiguous');
   }
+  // (codex gate round 58 review-mwfb8x00-exyttv, Finding 1 — the EXACT
+  // CHILD-CREATION ORDERING INDEPENDENT OF THE OPTIONAL ENDPOINT INSTANT)
+  // the exact child-continuity write ordering below was nested under the
+  // read-time-child endpoint conjunct (`Number.isSafeInteger(
+  // expected.childOsStartInstant)`), but the daemon→transport hop supplies
+  // NO endpoint numeric — its child side is the marker's CAPTURED exact
+  // identity and the record's own `childStartIdentity`. The unrounded
+  // creation vs precise write comparison therefore consumed only the record
+  // and the optional endpoint instant is NOT part of it: a writer
+  // `kinfo:1:100` (1000.1), child `kinfo:1:300` (1000.3), boundary/write
+  // 1000, precise write 1000.2 and marker 1001 established the hop although
+  // the child did not exist when the witness was written. The comparison is
+  // hoisted here, identical in both hops: the kernel's UNROUNDED creation
+  // (from the record's captured exact child identity) against the PRECISE
+  // write (the R57/R48 convention — `firstWritePreciseMs` when carried, the
+  // rounded `firstWriteEpochMs` otherwise); a strictly earlier write
+  // refuses the existing child-continuity label, a same-instant tie keeps
+  // the tie convention, and the coarse arm never engages (exactMode only).
+  const exactWitnessedChildCreation = exactMode
+    ? parseExactStartIdentity(facts.childStartIdentity) : null;
+  if (exactWitnessedChildCreation !== null
+    && /** @type {number} */ (witnessWritePreciseMs) < exactWitnessedChildCreation.sec * 1000 + exactWitnessedChildCreation.usec / 1000) {
+    return mismatch('spawn-witness-child-generation-ambiguous');
+  }
   // The CHILD-GENERATION continuity binding (codex round 8 — the child-side
   // sibling of the rounds 6–7 adjudications): the identity-equality conjunct
   // above (witness childStartIdentity vs the READ-TIME child endpoint) is
@@ -2926,8 +5005,9 @@ function establishThroughSpawnWitness(witness, expected) {
   // boundary INSIDE the window refuses
   // `spawn-witness-child-generation-ambiguous` (the §26.7 item-5 fresh-label
   // discipline; no establishment conclusion beyond what the coarse facts
-  // prove; route (c)'s higher-resolution generation evidence stays NAMED
-  // UNAVAILABLE, §28.1). Only hops that bind a READ-TIME child endpoint
+  // prove; route (c)'s higher-resolution generation evidence RESOLVES this
+  // ambiguity in the exact mode below, §32). Only hops that bind a
+  // READ-TIME child endpoint
   // (childOsStartInstant supplied — the Companion→daemon hop) consume this;
   // the daemon→transport hop binds the witness record's own captured child
   // generation and has no read-time comparison to contradict.
@@ -2952,13 +5032,41 @@ function establishThroughSpawnWitness(witness, expected) {
   // structure and stays refused (the collection bound is always supplied by
   // the Companion→daemon call site).
   if (Number.isSafeInteger(expected.childOsStartInstant)) {
-    if (/** @type {number} */ (facts.boundaryEpochMs) < /** @type {number} */ (expected.childOsStartInstant) + LINUX_BTIME_UNCERTAINTY_MS
-      || !Number.isSafeInteger(expected.childReadStartedEpochMs)
+    // (route (c) exact mode) the child continuity exact ordering: the
+    // boundary must postdate the child's EXACT creation (no +1000 window)
+    // and the child endpoint read must follow the boundary.
+    if (!exactMode && /** @type {number} */ (facts.boundaryEpochMs) < /** @type {number} */ (expected.childOsStartInstant) + LINUX_BTIME_UNCERTAINTY_MS) {
+      return mismatch('spawn-witness-child-generation-ambiguous');
+    }
+    if (exactMode && /** @type {number} */ (facts.boundaryEpochMs) < /** @type {number} */ (expected.childOsStartInstant)) {
+      return mismatch('spawn-witness-child-generation-ambiguous');
+    }
+    // (codex gate round 57 review-mwf7zc16-j6y8je, Finding 1 — the CHILD
+    // CONTINUITY'S UNROUNDED CREATION vs the PRECISE WRITE, the child-side
+    // sibling of the round-48 writer ordering above) in exact mode the
+    // witnessed child must have existed when the witness was WRITTEN: a
+    // child `kinfo:1:300` (true creation 1000.3) rounds to 1000, so a
+    // witness with `boundaryEpochMs`/`firstWriteEpochMs` 1000 and
+    // `firstWritePreciseMs` 1000.2 passed the rounded boundary comparison
+    // although the child did not exist at the write — the Companion→daemon
+    // hop established on contradictory evidence. The exact ordering consumes
+    // the kernel's UNROUNDED creation (`sec * 1000 + usec / 1000`) against
+    // the PRECISE write (`firstWritePreciseMs` when carried, the rounded
+    // `firstWriteEpochMs` otherwise): a strictly earlier write refuses the
+    // existing child-continuity label; the same-instant tie keeps the
+    // module's convention (ties establish) and the coarse arm is
+    // byte-identical.
+    // (codex gate round 58 review-mwfb8x00-exyttv, Finding 1) the check is
+    // HOISTED above this block — it consumes the record's captured exact
+    // child identity, never the optional endpoint instant — so it applies
+    // identically to this read-time-child hop and the marker-only
+    // daemon→transport hop.
+    if (!Number.isSafeInteger(expected.childReadStartedEpochMs)
       || /** @type {number} */ (expected.childReadStartedEpochMs) < /** @type {number} */ (facts.boundaryEpochMs)) {
       return mismatch('spawn-witness-child-generation-ambiguous');
     }
   }
-  return ({ status: 'established', reason: null, witnessClass: 'spawn-boundary-capture' });
+  return ({ status: 'established', reason: null, witnessClass: 'spawn-boundary-capture', exact: exactMode });
 }
 
 /**
@@ -3013,7 +5121,7 @@ function joinEndpointFacts(observation, label) {
  *   nonce: string,
  *   companionObservation: LocalProcessObservation | null,
  *   daemonObservation: LocalProcessObservation | null,
- *   transportMarker: { pid: number, ppid: number, nonce: string },
+ *   transportMarker: { pid: number, ppid: number, nonce: string, startIdentity?: string },
  *   expectedTransportNonce?: string,
  *   markerEpochMs?: number,
  *   daemonCaptureParentPid?: number,
@@ -3253,11 +5361,24 @@ export function joinAncestryHops(input) {
     // read window) stays witness-resolvable.
     const markerDemonstrablyAfterRead = markerTimeOk && !markerDemonstrablyBeforeRead;
     const boundWindowRefused = markerTimeOk && !markerDemonstrablyAfterRead && !markerDemonstrablyAfterDaemon;
+    // (§32.10 Finding 1) the marker's CAPTURED start identity rides the
+    // transportMarker (schema-additive; the runtime composes it from the
+    // captured transport identity). In exact mode it is BOUND to the
+    // record's childStartIdentity via the child-foreign conjunct — a
+    // same-pid successor's marker (its own captured identity) can never
+    // ride the witnessed child's generation. A marker WITHOUT the captured
+    // identity leaves the exact tuple INCOMPLETE: exact mode never engages
+    // (the hoisted predicate requires the string whenever a marker binding
+    // is consumed on this hop) and the coarse adjudication applies. The
+    // coarse path is byte-identical: without exactMode the identity
+    // conjunct's gate stays closed.
+    const markerCapturedIdentity = typeof marker.startIdentity === 'string' && marker.startIdentity.length > 0
+      ? marker.startIdentity : null;
     const witnessOutcome = daemonSpawnWitness === undefined || !boundWindowRefused ? null : establishThroughSpawnWitness(daemonSpawnWitness, {
       writerPid: daemonFacts.pid,
       writerStartIdentity: daemonFacts.startIdentity,
       childPid: marker.pid,
-      childStartIdentity: null,
+      childStartIdentity: markerCapturedIdentity,
       childPpid: marker.ppid,
       childNonce: expectedTransportNonce ?? marker.nonce,
       writerReadEpochMs: daemonRead,
@@ -3280,25 +5401,30 @@ export function joinAncestryHops(input) {
       // Holds only via the daemon's btime uncertainty — named ambiguity.
       daemonToTransport = hopVerdict('unestablished', 'generation-lifetime-unverifiable', null);
     } else if (witnessOutcome !== null && witnessOutcome.status === 'established') {
-      // (codex round 16 — EXPLICIT UNSATISFIABILITY, §28.22) This branch is
-      // UNREACHABLE by construction: the route is entered only when
-      // `markerTime < daemonStart + LINUX_BTIME_UNCERTAINTY_MS` (the bound
-      // window above), while the establishment predicate requires
-      // `markerTime >= childOsStartInstantMs + LINUX_BTIME_UNCERTAINTY_MS`
-      // (the positive marker-to-generation binding) under
-      // `childOsStartInstantMs >= daemonStart` (the creation-order binding)
-      // — jointly `markerTime >= daemonStart + LINUX_BTIME_UNCERTAINTY_MS`,
-      // contradicting the entry condition. With a marker epoch present
-      // (guaranteed on this route), EVERY witness outcome here is one of the
-      // named refusals below; establishment can never occur, and no bound
-      // may be weakened to make it satisfiable (the §26.7 freeze). The
-      // branch is therefore the NAMED unavailable classification — fail-
-      // closed: if a future change ever made it reachable, the hop refuses
-      // with `spawn-witness-route-unsatisfiable` instead of crediting a
-      // witnessClass establishment. The route's sound contributions remain
-      // its REFUSAL evidence (the labels below), and the hop's positives
-      // stay ARITHMETIC-only.
-      daemonToTransport = hopVerdict('unestablished', 'spawn-witness-route-unsatisfiable', null);
+      // (codex round 16 — EXPLICIT UNSATISFIABILITY, §28.22 — SUPERSEDED FOR
+      // EXACT DATA, §32) The COARSE route is unreachable by construction:
+      // it is entered only when `markerTime < daemonStart +
+      // LINUX_BTIME_UNCERTAINTY_MS` (the bound window above), while the
+      // coarse establishment predicate requires `markerTime >=
+      // childOsStartInstantMs + LINUX_BTIME_UNCERTAINTY_MS` (the positive
+      // marker-to-generation binding) under `childOsStartInstantMs >=
+      // daemonStart` (the creation-order binding) — jointly `markerTime >=
+      // daemonStart + LINUX_BTIME_UNCERTAINTY_MS`, contradicting the entry
+      // condition. That classification is UNCHANGED for coarse records/
+      // endpoints: if a coarse establishment ever reached this branch the hop
+      // REFUSES with `spawn-witness-route-unsatisfiable` instead of crediting
+      // a witnessClass establishment (fail-closed).
+      // (route (c), §32) The EXACT-MODE outcome is the registered bounded
+      // repair §28.22 itself proposed: when the record and the daemon
+      // endpoint carry the closed exact forms, the marker binding collapses
+      // to `markerTime >= childExactStart` (no +1000 window), so the
+      // contradiction genuinely disappears and the witness establishes the
+      // same-second daemon→transport hop with its named witnessClass. The
+      // coarse refusals below stay byte-identical; only an outcome whose
+      // `exact` flag proves every consumed side exact may credit.
+      daemonToTransport = witnessOutcome.exact === true
+        ? { status: 'established', reason: null, witnessClass: /** @type {const} */ ('spawn-boundary-capture') }
+        : hopVerdict('unestablished', 'spawn-witness-route-unsatisfiable', null);
     } else if (witnessOutcome !== null) {
       daemonToTransport = hopVerdict('unestablished', witnessOutcome.reason, witnessOutcome.detail ?? null);
     } else {
@@ -3463,6 +5589,40 @@ function joinLocalDuty(duty, fact, requireStartupRecord, label, requiredStartupR
         } else if (recordWrite < startInstant + LINUX_BTIME_UNCERTAINTY_MS) {
           reasons.push('generation-start-ambiguous');
         }
+      } else if (parseExactStartIdentity(observation.startIdentity) !== null) {
+        // (§32.12 Finding 1) Route (c) exact darwin: the kinfo identity
+        // carries its own EXACT ms creation — compared against the
+        // write-time expectation by EXACT arithmetic, never floor-to-second
+        // equality (a valid NON-second-aligned start such as 1793855520123
+        // must settle, never trip the coarse second-equality).
+        // (§32.13 Finding 1) the UPPER bound derives from the record's OWN
+        // write evidence, never a blanket +1000 over recordStart: a creation
+        // after the record's write (firstWritePreciseMs) did not exist when
+        // the record was written — a PROVABLE successor the round-2 bound
+        // admitted (the reviewer's schedule: startOriginMs 1900, write 1920,
+        // creation 2100 settled). Ties establish (the module's convention —
+        // the round-6-era positive: a write just after the child's exact
+        // start); the lower arm keeps the fork-before-boundary tolerance.
+        // (codex gate round 47 review-mwdue8eb-56vwlf, Finding 1 — the
+        // UNROUNDED KERNEL CREATION) the upper comparison uses the kernel's
+        // UNROUNDED creation (sec/usec against the precise write), never the
+        // ROUNDED `startInstant`: a sub-millisecond window (`usec` under 500)
+        // collapses to the write's whole millisecond under rounding, and a
+        // record written AFTER the true creation but BEFORE the next whole
+        // millisecond established successfully. The lower arm keeps the
+        // rounded `startInstant` — the fork-before-boundary tolerance is a
+        // whole-second comparison by its own documented semantics.
+        const exactCreation = parseExactStartIdentity(/** @type {string} */ (observation.startIdentity));
+        // (the branch condition above proved the identity exact — the null
+        // fallback is unreachable and falls back to the prior rounded upper
+        // arm byte-identically)
+        const kernelCreationPreciseMs = exactCreation !== null
+          ? exactCreation.sec * 1000 + exactCreation.usec / 1000
+          : startInstant;
+        if (kernelCreationPreciseMs > recordWrite
+          || startInstant < Math.floor(recordStart / 1000) * 1000 - LINUX_BTIME_UNCERTAINTY_MS) {
+          reasons.push('generation-start-second-mismatch');
+        }
       } else {
         // Darwin: whole-second lstart. The OS creation second must contain
         // the record's precise start OR be the immediately preceding second
@@ -3474,6 +5634,35 @@ function joinLocalDuty(duty, fact, requireStartupRecord, label, requiredStartupR
         if (startInstant !== startSecond && startInstant !== startSecond - 1000) {
           reasons.push('generation-start-second-mismatch');
         }
+      }
+      // (codex gate round 20, Finding 3 — the CARRIED EXACT CREATION CHECK)
+      // for a MIXED-resolution observation the exact creation evidence
+      // resides in os.observedStartIdentity while observation.startIdentity
+      // stayed coarse: the branch chain above consumed only the coarse
+      // second and a broker startup written inside that second accepted a
+      // carried occupant created AFTER the startup record. The exact
+      // creation-versus-write check applies to the admissible carried
+      // identity too (the same two-sided rule the exact branch applies to
+      // its own identity — the upper bound derives from the record's OWN
+      // write evidence, ties establish, the lower arm keeps the
+      // fork-before-boundary tolerance): a carried occupant created after
+      // the write (or before the record's start tolerance) is the same
+      // named mismatch, never credited.
+      const carriedExactCreation = typeof /** @type {any} */ (os).observedStartIdentity === 'string'
+        ? parseExactStartIdentity(/** @type {any} */ (os).observedStartIdentity) : null;
+      // (codex gate round 47 review-mwdue8eb-56vwlf, Finding 1 — the
+      // CARRIED-EXACT CHECK'S UNROUNDED CREATION) the carried exact identity
+      // takes the SAME unrounded upper comparison as the exact branch above:
+      // its kernel seconds/microseconds are compared against the precise
+      // write, never the rounded `ms`. The lower arm keeps the rounded
+      // second-boundary tolerance (the two-second fork window).
+      const carriedExactCreationPreciseMs = carriedExactCreation !== null
+        ? carriedExactCreation.sec * 1000 + carriedExactCreation.usec / 1000
+        : null;
+      if (reasons.length === 0 && carriedExactCreation !== null && carriedExactCreationPreciseMs !== null
+        && (carriedExactCreationPreciseMs > recordWrite
+          || carriedExactCreation.ms < Math.floor(recordStart / 1000) * 1000 - LINUX_BTIME_UNCERTAINTY_MS)) {
+        reasons.push('generation-start-second-mismatch');
       }
       // GENERATION CONTINUITY (review rounds 26/27): the observation's
       // IDENTITY-READ completion must POSTDATE the record writer's startup.

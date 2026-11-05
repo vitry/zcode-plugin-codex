@@ -131,8 +131,572 @@ const localProcessEntry = 'tests/shell-wait-local-process.test.mjs';
 // (the direct runner spawn on the converged bytes) is 393 + 100 + 1 =
 // 494 after gate rounds 1–2 (487 = 386 + 100 + 1 at the pre-round bytes; 491 after round 1's four join-invariant tests) — so a wrong
 // selection (an extra or missing entry) or a silently
-// skipped contract test still breaks them.
-const shellSuiteSpawnedTestTotal = 497;
+// skipped contract test still breaks them. The §31.7 close re-derived the
+// pin to 497 (396 + 100 + 1); §31.8's registry fix added four local rows
+// (preflight typing + both Set-injected refusals + the real default path)
+// but deliberately did NOT re-run the spawned battery, so the pin rode
+// STALE at HEAD (actual 501 = 400 + 100 + 1). Route (c)/§32 nets TWELVE
+// local rows (MEASURED by diff: 15 test() rows added, 3 removed — the
+// interrupted draft's four exact-reader/hop-1 rows, the completion round's
+// clock-domain guard, admission exact-vs-raw, hop-2 exact establishment,
+// the coarse/exact replay split (+1 net), and the exact hop-1/hop-2/
+// v2-on-v4/replay-exact-vs-raw rows), and the pinned
+// total is the MEASURED guarded-run aggregate on these bytes:
+// 412 + 100 + 1 = 513 (the direct guarded-runner measurement, 149.8 s).
+// §32.10's six-finding correction adds TWO local rows (the successor and
+// missing-captured-identity hop-2 negatives) → the pin moves to
+// 414 + 100 + 1 = 515 (re-measured on the amended bytes). §32.11's three
+// gate-round-1 fixes add THREE local rows (the version-ungated numeric
+// regression pin, the replay strict-boolean/version-ungated pin, and the
+// representation-stability row) → the pin moves to
+// 417 + 100 + 1 = 518 (re-measured on the amended bytes). §32.12's three
+// gate-round-2 fixes add FOUR local rows (the non-second-aligned exact
+// startup-duty binding row, its integration-completion replay mirror row,
+// the representation-aware-consumers row, and the cancellation-recheck row)
+// → the pin moves to 421 + 100 + 1 = 522 (re-measured on the amended
+// bytes). §32.13's four gate-round-3 fixes add FOUR local rows (the
+// exact-write-window row, the representation-aware-replay row, the
+// emitter-retained-history row and the exact-second-comparison row) → the
+// pin moves to 425 + 100 + 1 = 526 (re-measured on the amended bytes).
+// §32.14's four gate-round-4 fixes add FOUR local rows (the mixed-resolution
+// joint-verification row, the window-closed ride-preservation row, the
+// termination-guard representation row and the integration-completion
+// endpoint-binding row) → the pin moves to 429 + 100 + 1 = 530 (re-measured
+// on the amended bytes). §32.15's four gate-round-5 fixes add EIGHT local
+// rows (two per finding: the fail-closed termination guard row + its
+// escalation-control row, the combination generation-agreement row + its
+// agreeing-seconds control row, the representation-aware marker binding row
+// + its foreign-marker control row, and the representation-aware invocation
+// replay row + its foreign-refresh control row) → the pin moves to
+// 437 + 100 + 1 = 538 (re-measured on the amended bytes). §32.16's two
+// gate-round-6 fixes add FOUR local rows (the deleted-endpoint-identity
+// fail-closed row, the unresolvable-vs-exact row with its positively-same
+// control, the contradictory-numeric instant row, and the consistent-numeric
+// + both-coarse control row) → the pin moves to 441 + 100 + 1 = 542
+// (re-measured on the amended bytes). §32.17's three gate-round-7 fixes add
+// THREE local rows (the window-closed interval-carriage row with its
+// equal-carried and in-window controls, the transport horizon positive-same
+// row with its positively-same-advance control, and the retained-set
+// membership row with its genuine-successor control) → the pin moves to
+// 444 + 100 + 1 = 545 (re-measured on the amended bytes). §32.18's two
+// gate-round-8 fixes add FOUR local rows (the exact observed-then-gone RED
+// row, its genuinely-gone-original control row, the second-read completion
+// carriage RED row, and its pre-baseline-stale control row) → the pin moves
+// to 448 + 100 + 1 = 549 (re-measured on the amended bytes). §32.19's three
+// gate-round-9 fixes add SIX local rows (the ps-throw observed-then-gone RED
+// row + its empty-ps control row, the first-read cancellation bounds RED row
+// + its outside-window control row, and the coarse-side self-consistency RED
+// row + its consistent-numeric/round-6 control row) → the pin moves to
+// 454 + 100 + 1 = 555 (re-measured on the amended bytes). §32.20's two
+// gate-round-10 fixes add FOUR local rows (the ps-throw carry
+// generation-comparison RED row + its same-generation control row, and the
+// kinfo-window dating RED row + its kinfo-overlap control row) → the pin
+// moves to 458 + 100 + 1 = 559 (re-measured on the amended bytes).
+// §32.21's two gate-round-11 fixes add FOUR local rows (the ps-throw
+// error-vs-absence distinction RED row + its termination-consumer/empty-shape
+// control row, and the injected-path agreement RED row + its same-second
+// control row) → the pin moves to 462 + 100 + 1 = 563 (re-measured on the
+// amended bytes). §32.22's two gate-round-12 fixes add FOUR local rows (the
+// mixed-read downgrade exact-carry RED row + its different-second/unchanged
+// control row, and the composed-read kernel-bounds RED row + its
+// overlap/post-baseline control row) → the pin moves to 466 + 100 + 1 = 567
+// (re-measured on the amended bytes). §32.23's five gate-round-13 fixes
+// add TEN local rows — a RED row and a controls row per finding: the
+// termination carried-successor guard row + its
+// positively-matching/real-different-generation controls row, the
+// first-exact downgrade carry row + its second-exact control row, the
+// replay established-carry row + its same-generation control row, the
+// emitter success-path exact-carry row + its matching control row, and the
+// nonce-mismatch kernel-bounds row + its ordinary-error/overlap controls
+// row — exactly 10 test declarations added, 0 removed → the pin moves to
+// 476 + 100 + 1 = 577 (re-measured on the amended bytes; the instruction
+// anticipated ~475 — the honest re-measured local SOLO is 476 = 466 prior
+// + 10 new rows). §32.24's two gate-round-14 fixes add FOUR local rows (the
+// driver-reader carried-successor guard RED row + its positively-matching
+// control row, and the established-carry interval-classification RED row +
+// its overlap/post-baseline controls row) → the pin moves to
+// 480 + 100 + 1 = 581 (re-measured on the amended bytes). §32.25's two
+// gate-round-15 fixes add FIVE local rows (the learned-exact-generation RED
+// row (its runtime arm) + the replay-mirror row, the identical-exact/
+// coarse-only controls row, the PPID-failure exact-carry RED row, and its
+// matching-coarse control row) → the pin moves to 485 + 100 + 1 = 586
+// (re-measured on the amended bytes). §32.26's four gate-round-16 fixes add
+// EIGHT local rows (the failed/absent-carry learned-reference row + its
+// matching-carry control row, the replay learns-carries row + its matching
+// control row, the recency-ordered learning row + its admitted control
+// row, and the previous-horizon classification row + its overlap control
+// row) → the pin moves to 493 + 100 + 1 = 594 (re-measured on the amended
+// bytes). §32.26's proactive-mirror fix (the R16 self-review's flagged gap)
+// adds TWO local rows (the failed/absent carries vs the replay learned
+// reference row — its runtime/replay agreement arms — and the matching-carry
+// control row) → the pin moves to 495 + 100 + 1 = 596 (re-measured on the
+// amended bytes). §32.27's six gate-round-17 fixes add TWELVE local rows
+// (the transport-retry exact-generations runtime RED row, the replay mirror
+// row with its matching-control arm, the baseline-seeding RED row + its
+// coarse-only control row, the failed-carry retention RED row + its
+// inadmissible control row, the within-read cross-check RED row + its
+// agreeing control row, the stale-carry learning-exclusion RED row + its
+// in-window control row, and the replay strict-admission RED row + its
+// strictly-after control row) → the pin moves to 507 + 100 + 1 = 608
+// (re-measured on the amended bytes; exactly 12 new test declarations, 0
+// deleted — re-derived from the measured 507 = 495 + 12). §32.27's R17
+// self-review fix adds FOUR local rows (the failed-carry retention replay
+// row — its runtime/replay agreement arms —, the baseline seeding replay
+// row — its seed arm and its without-the-seed control arm —, and the
+// two-issue narrative/debug corrections that add no rows) → the pin moves
+// to 509 + 100 + 1 = 610 (re-measured on the amended bytes). §32.28's four
+// gate-round-18 fixes add FIVE local rows (the capture-carry termination
+// guard row with its two controls inline, the absent-carry retention row +
+// its inadmissible control row, the transport tracking seeding row, and the
+// transport seeding replay row — the Finding-3 replay mirror) → the pin
+// moved to 514 + 100 + 1 = 615 (re-measured on those bytes; the instruction
+// anticipated ~517 — the honest measured local SOLO was 514 = 509 prior + 5
+// new rows: exactly 5 new test declarations, 0 deleted — re-derived from
+// the measured count). §32.28's R18 self-review coverage repair adds TWO
+// more local rows (the Finding-4 ISOLATING terminal-exit cross-check RED
+// row — the seeded reference A, NO generation-differing retry, the foreign
+// exit carry, the persisted latch missing — and its matching-carry control
+// row; the shared replay row's committed transportExitOverride
+// parameterization was a no-op, so the Finding-4 conjunct had no committed
+// row coverage and its claimed CONTROL existed nowhere on the bytes) → the
+// pin moves to 516 + 100 + 1 = 617 (re-measured on the amended bytes;
+// exactly 7 new test declarations total, 0 deleted — re-derived from the
+// measured 516 local SOLO). §32.29's three gate-round-19 fixes add SIX local
+// rows (the driver-reader capture-carry guard RED row + its two-arm control
+// row, the transport seeding from the phase-3 observation's OWN exact
+// identity RED row + its coarse-only control row, and the replay separated
+// learning admission RED row + its stale/overlap controls row) → the pin
+// moves to 522 + 100 + 1 = 623 (re-measured on the amended bytes; exactly 6
+// new test declarations, 0 deleted — re-derived from the measured 522 local
+// SOLO and 100 native SOLO). §32.30's three gate-round-20 fixes add SIX
+// local rows (the termination learned-reference retention RED row + its
+// two-control row, the ancestry endpoint carried-evidence binding RED row +
+// its matching-carry control row, and the startup-duty carried exact
+// creation runtime row + its replay-mirror row — the replay row carries the
+// runtime/replay agreement arm) → the pin moves to
+// 528 + 100 + 1 = 629 (re-measured on the amended bytes; exactly 6 new test
+// declarations, 0 deleted — re-derived from the measured 528 local SOLO and
+// 100 native SOLO). §32.31's four gate-round-21 fixes add EIGHT local rows
+// (the capture-seeding RED row + its control row, the supplied-polling
+// tracker-feed RED row + its control row, the latch-terminal RED row + its
+// control row, and the learned-generation tie-filter RED row + its control
+// row) → the pin moves to 536 + 100 + 1 = 637 (re-measured on the amended
+// bytes; exactly 8 new test declarations, 0 deleted — re-derived from the
+// measured 536 local SOLO and 100 native SOLO). §32.32's three gate-round-22
+// fixes add SIX local rows (the held-turn reader lifetime retention RED row
+// + its two-control row, the pre-filter carried-identity comparison RED row
+// + its control row, and the endpoint own-vs-baseline-carry RED row + its
+// control row) → the pin moves to 542 + 100 + 1 = 643 (re-measured on the
+// amended bytes; exactly 6 new test declarations, 0 deleted — re-derived
+// from the measured 542 local SOLO and 100 native SOLO). §32.33's three
+// gate-round-23 fixes add NINE local rows (the termination error-carried
+// identity consumption RED row + its same-generation control row, the tied
+// exact observation retention RED row + its coarse-only control row, the
+// tied-retention replay mirror row, the transport captured-marker carry
+// admission RED row + its matching-carry control row, and the
+// marker-vs-carry binding replay row + its matching-carry control row; the
+// re-adjudicated round-17 Finding-6 row is a REWRITE — it adds no
+// declaration) → the pin moves to 551 + 100 + 1 = 652 (re-measured on the
+// amended bytes; exactly 9 new test declarations, 0 deleted — re-derived
+// from the measured 551 local SOLO and 100 native SOLO). §32.34's two
+// gate-round-24 fixes add FIVE local rows (the default-reader refusal carry
+// RED row + its same-generation control row, the transport mixed-capture
+// carry seeding RED row + its two-arm control row, and the mixed-capture
+// marker carry replay row — its coarse-marker and matching-carry control
+// arms inline) → the pin moves to 556 + 100 + 1 = 657 (re-measured on the
+// amended bytes; exactly 5 new test declarations, 0 deleted — re-derived
+// from the measured 556 local SOLO and 100 native SOLO). §32.35's four
+// gate-round-25 fixes add EIGHT local rows (the double-read mismatch
+// later-read carry RED row + its matching-double-read control arm inline,
+// the double-read tracker-latch RED row + its matching arm inline, the
+// terminal-turn latch RED row + its no-change control row, the
+// failed-inspection error feed RED row + its no-carry control row, and the
+// exit-tracker own-identity seeding RED row + its coarse-baseline control
+// row) → the pin moves to 564 + 100 + 1 = 665 (re-measured on the
+// amended bytes; exactly 8 new test declarations, 0 deleted — re-derived
+// from the measured 564 local SOLO and 100 native SOLO). §32.36's three
+// gate-round-26 fixes add SIX local rows (the early-refusal latch RED row +
+// its positively-matching control row, the observed-then-gone consumption
+// RED row + its matching-carry control row, and the endpoint stale-window
+// RED row + its non-stale control row) → the pin moves to 570 + 100 + 1 =
+// 671 (re-measured on the amended bytes; exactly 6 new test declarations,
+// 0 deleted — re-derived from the measured 570 local SOLO and 100 native
+// SOLO). §32.37's two gate-round-27 fixes add FOUR local rows (the
+// second-read ps-FAILURE later-read carry RED row + its genuinely-matching
+// failing-second-read control arm inline, the second-read-failure
+// tracker-latch RED row + its matching arm inline, and the termination
+// default-reader consume-before-absence RED row + its matching-carry and
+// carry-less-absence control row) → the pin moves to 574 + 100 + 1 =
+// 675 (re-measured on the amended bytes; exactly 4 new test declarations,
+// 0 deleted — re-derived from the measured 574 local SOLO and 100 native
+// SOLO). §32.38's two gate-round-28 fixes add FOUR local rows (the
+// termination escalation post-read latch recheck RED row + its
+// matching-carry and carry-less-absence control row, and the held-turn
+// first-read observed-then-gone capture cross-check RED row + its
+// matching-carry and coarse-capture control row) → the pin moves to 578 +
+// 100 + 1 = 679 (re-measured on the amended bytes; exactly 4 new test
+// declarations, 0 deleted — re-derived from the measured 578 local SOLO and
+// 100 native SOLO). §32.39's two gate-round-29 fixes add FOUR local rows (the
+// signal-throw catch post-read latch recheck RED row + its matching-carry and
+// plain-gone control row, and the held-turn COARSE-carry capture cross-check
+// RED row + its coarse same-second and coarse-only-capture control row) → the
+// pin moves to 582 + 100 + 1 = 683 (re-measured on the amended bytes; exactly
+// 4 new test declarations, 0 deleted — re-derived from the measured 582 local
+// SOLO and 100 native SOLO). §32.40's gate-round-30 fix adds TWO local rows
+// (the termination tracker coarse-carry comparison RED row + its coarse
+// same-second, matching-carry and plain-gone control row) → the pin moves to
+// 584 + 100 + 1 = 685 (re-measured on the amended bytes; exactly 2 new test
+// declarations, 0 deleted — re-derived from the measured 584 local SOLO and
+// 100 native SOLO; the first probe SOLO attempt measured all EIGHT spawn rows
+// failing on this re-derivation attempt's own arithmetic slip — the pin was
+// initially written as 686, but 584 + 100 + 1 is 685 — and the corrected pin
+// was asserted green inside the re-run probe SOLO). §32.41's two gate-round-31
+// fixes add FOUR local rows (the mixed-read carry generation guard RED row +
+// its exact-matching and coarse-bound control row, and the window-closed
+// successful-carry preservation RED row + its identity-free and
+// same-generation control row) → the pin moves to 588 + 100 + 1 = 689
+// (re-measured on the amended bytes; exactly 4 new test declarations, 0
+// deleted — re-derived from the measured 588 local SOLO and 100 native SOLO;
+// 584 + 4 = 588, 588 + 100 = 688, 688 + 1 = 689). §32.42's gate-round-32 fix
+// adds TWO local rows (the window-closed exact-identity fallback RED row + its
+// kinfo-failure and no-cancellation control row) → the pin moves to 590 + 100
+// + 1 = 691 (re-measured on the amended bytes; exactly 2 new test
+// declarations, 0 deleted — re-derived from the measured 590 local SOLO and
+// 100 native SOLO; 588 + 2 = 590, 590 + 100 = 690, 690 + 1 = 691).
+// §32.43's two gate-round-33 fixes add FOUR local rows (the transport
+// failed-retry persistence runtime row, the torn-record replay row, the A→B
+// transition generation-binding RED row, and its foreign-carried/bare/
+// success-path control row) → the pin moves to 594 + 100 + 1 = 695
+// (re-measured on the amended bytes; exactly 4 new test declarations, 0
+// deleted — re-derived from the measured 594 local SOLO and 100 native SOLO;
+// 590 + 4 = 594, 594 + 100 = 694, 694 + 1 = 695).
+// §32.44's three gate-round-33 follow-up fixes (review-mwbdjsb7-nnobtl) add
+// FIVE local rows (the retained-reference skip guard RED row, its
+// coarse-carry/exact-same-generation control row, the real-path later-ps-carry
+// RED row, its agreement/seam-path control row, and the replay exemption
+// mirror row with its runtime pair and foreign/plain control arms) → the pin
+// moves to 599 + 100 + 1 = 700 (re-measured on the amended bytes; exactly 5
+// new test declarations, 0 deleted — re-derived from the measured 599 local
+// SOLO and 100 native SOLO; 594 + 5 = 599, 599 + 100 = 699, 699 + 1 = 700).
+// §32.45's two gate-round-34 fixes (review-mwbhnnxl-21lsyh) add FOUR local
+// rows (the within-read transition termination-latch RED row, its
+// plain-exact-seeding/plain-gone control row, the post-baseline transition
+// RED row with its runtime pair and plain-replay arm, and the
+// overlapping/stale-window control row) → the pin moves to 603 + 100 + 1 =
+// 704 (re-measured on the amended bytes; exactly 4 new test declarations, 0
+// deleted — re-derived from the measured 603 local SOLO and 100 native SOLO;
+// 599 + 4 = 603, 603 + 100 = 703, 703 + 1 = 704).
+// §32.46's round-34 self-review P3 fix (the replay exemption's supplied-
+// validity short-circuit) adds TWO local rows (the malformed-lower-bound RED
+// row and its four-arm control row: valid post, valid overlap, supplied-
+// invalid completed bound, plain settled record) → the pin moves to 603 + 2 =
+// 605 local and 605 + 100 + 1 = 706 total (re-measured on the amended bytes;
+// exactly 2 new test declarations, 0 deleted — re-derived from the measured
+// 605 local SOLO and 100 native SOLO; 603 + 2 = 605, 605 + 100 = 705, 705 +
+// 1 = 706).
+// §32.47's gate-round-35 P1 fix (the held-turn default reader's within-read
+// transition latch) adds TWO local rows (the held-turn A→B transition RED row
+// and its plain-exact-seeding/with-reference control row) → the pin moves to
+// 605 + 2 = 607 local and 607 + 100 + 1 = 708 total (re-measured on the
+// amended bytes; exactly 2 new test declarations, 0 deleted — re-derived from
+// the measured 607 local SOLO and 100 native SOLO; 605 + 2 = 607, 607 + 100 =
+// 707, 707 + 1 = 708).
+// §32.48's two gate-round-36 P2 fixes (the coarse error-carry comparison in
+// the termination tracker/held-turn guards, and the persisted marker
+// identity's type validation) add FOUR local rows (the coarse-carry
+// termination RED row, its same-second/no-reference control row, the numeric/
+// null marker RED row, and the legal-marker/absent-field control row) → the
+// pin moves to 607 + 4 = 611 local and 611 + 100 + 1 = 712 total (re-measured
+// on the amended bytes; exactly 4 new test declarations, 0 deleted —
+// re-derived from the measured 611 local SOLO and 100 native SOLO; 607 + 4 =
+// 611, 611 + 100 = 711, 711 + 1 = 712).
+// §32.49's three gate-round-37 P2 fixes (the pre-skip exact-evidence
+// comparison, the selected refresh in the replay retention, and the
+// observed-then-gone coarse-capture comparison) add FIVE local rows (the
+// pre-skip exact RED row with its overlapping/post arms, its
+// same-generation/coarse control row, the selected-refresh replay RED row with
+// the runtime pair, its carry-less/same-generation control row, and the
+// observed-then-gone coarse-capture RED row with its same-second/exact-capture
+// arms) → the pin moves to 611 + 5 = 616 local and 616 + 100 + 1 = 717 total
+// (re-measured on the amended bytes; exactly 5 new test declarations, 0
+// deleted — re-derived from the measured 616 local SOLO and 100 native SOLO;
+// 611 + 5 = 616, 616 + 100 = 716, 716 + 1 = 717).
+// §32.50's two gate-round-38 P2 fixes (the held-turn observed-then-gone
+// coarse-capture comparison, and the stale-read exclusion before the recency
+// bypass) add FOUR local rows (the held-turn coarse-capture RED row, its
+// same-second/exact-capture control row, the stale-predecessor RED row with
+// the predecessor-free arm, and the post/overlap successor control row) → the
+// pin moves to 616 + 4 = 620 local and 620 + 100 + 1 = 721 total (re-measured
+// on the amended bytes; exactly 4 new test declarations, 0 deleted —
+// re-derived from the measured 620 local SOLO and 100 native SOLO; 616 + 4 =
+// 620, 620 + 100 = 720, 720 + 1 = 721).
+// §32.51's two gate-round-39 P2 fixes (the error-carry capture comparison
+// before the reference seeding, and the collection-bounds classification
+// before the raw-relation replacement latch) add FOUR local rows (the
+// ps-throw carry RED row, its same-second/exact-capture control row, the
+// stale-predecessor RED row with the predecessor-free arm, and the post/
+// ambiguous successor control row) → the pin moves to 620 + 4 = 624 local and
+// 624 + 100 + 1 = 725 total (re-measured on the amended bytes; exactly 4 new
+// test declarations, 0 deleted — re-derived from the measured 624 local SOLO
+// and 100 native SOLO; 620 + 4 = 624, 624 + 100 = 724, 724 + 1 = 725).
+// §32.52's gate-round-40 P2 fix (the stale-window exclusion before the
+// own-identity reference seeding) adds TWO local rows (the stale-predecessor
+// RED row with the predecessor-free arm, and the post/legacy control row) →
+// the pin moves to 624 + 2 = 626 local and 626 + 100 + 1 = 727 total
+// (re-measured on the amended bytes; exactly 2 new test declarations, 0
+// deleted — re-derived from the measured 626 local SOLO and 100 native SOLO;
+// 624 + 2 = 626, 626 + 100 = 726, 726 + 1 = 727).
+// §32.53's two gate-round-41 P2 fixes (the stale-window exclusion before the
+// presence horizon advance, and the tied own-identity fallback's stale
+// exclusion) add THREE local rows (the stale-horizon RED row with the
+// predecessor-free arm, its fresh same-generation control row, and the
+// tied-stale RED row carrying the predecessor-free/fresh/legacy arms) → the
+// pin moves to 626 + 3 = 629 local and 629 + 100 + 1 = 730 total (re-measured
+// on the amended bytes; exactly 3 new test declarations, 0 deleted —
+// re-derived from the measured 629 local SOLO and 100 native SOLO; 626 + 3 =
+// 629, 629 + 100 = 729, 729 + 1 = 730).
+// §32.54's two gate-round-42 P2 fixes (the returned coarse identity compared
+// against the retained reference, and the replay horizon/supersession
+// stale-kernel mirror) add FOUR local rows (the coarse-return RED row, its
+// same-second/no-reference control row, the stale-kernel replay RED row with
+// the runtime pair and plain arm, and the non-stale advance control row) →
+// the pin moves to 629 + 4 = 633 local and 633 + 100 + 1 = 734 total
+// (re-measured on the amended bytes; exactly 4 new test declarations, 0
+// deleted — re-derived from the measured 633 local SOLO and 100 native SOLO;
+// 629 + 4 = 633, 633 + 100 = 733, 733 + 1 = 734).
+// §32.55's gate-round-43 P2 fix (the held-turn error carry compared against
+// the capture before seeding) adds TWO local rows (the composition-
+// disagreement RED row, and its same-generation/unresolvable-capture/normal
+// control row) → the pin moves to 633 + 2 = 635 local and 635 + 100 + 1 = 736
+// total (re-measured on the amended bytes; exactly 2 new test declarations, 0
+// deleted — re-derived from the measured 635 local SOLO and 100 native SOLO;
+// 633 + 2 = 635, 635 + 100 = 735, 735 + 1 = 736).
+// §32.56's two gate-round-44 P2 fixes (the successful exact read compared
+// against the captured generation before seeding, and the replay own-identity
+// stale-window exclusion) add FOUR local rows (the recovered-exact RED row,
+// its same-second/matching-capture control row, the stale-own-identity replay
+// RED row with the runtime pair and plain arm, and the non-stale own-identity
+// control row) → the pin moves to 635 + 4 = 639 local and 639 + 100 + 1 = 740
+// total (re-measured on the amended bytes; exactly 4 new test declarations, 0
+// deleted — re-derived from the measured 639 local SOLO and 100 native SOLO;
+// 635 + 4 = 639, 639 + 100 = 739, 739 + 1 = 740).
+// §32.57's gate-round-45 P2 fix (the coarse error carry compared against the
+// captured generation when no reference exists) adds TWO local rows (the
+// coarse-carry RED row, and its same-generation/matching-capture/plain-absence
+// control row) → the pin moves to 639 + 2 = 641 local and 641 + 100 + 1 = 742
+// total (re-measured on the amended bytes; exactly 2 new test declarations, 0
+// deleted — re-derived from the measured 641 local SOLO and 100 native SOLO;
+// 639 + 2 = 641, 641 + 100 = 741, 741 + 1 = 742 — the first probe-SOLO attempt
+// measured the spawn rows failing on an initially mis-written 743 pin, the
+// arithmetic corrected to 742 and the re-run asserted green).
+// §32.58's gate-round-47 P2 fix (the primary mismatch rejection rides the
+// identity and kernel bounds) adds TWO local rows (the delayed-read RED row,
+// and its no-expected/replacement/equal-window control row) → the pin moves
+// to 641 + 2 = 643 local and 643 + 100 + 1 = 744 total (re-measured on the
+// amended bytes; exactly 2 new test declarations, 0 deleted — re-derived from
+// the measured 643 local SOLO and 100 native SOLO; 641 + 2 = 643, 643 + 100 =
+// 743, 743 + 1 = 744).
+// §32.59's two gate-round-47 P2 fixes (the unrounded kernel creation compared
+// against the precise write in the exact binding and the carried-exact check,
+// and the evidence-time sort of the replay retention sequence) add THREE
+// local rows (the unrounded RED row with the carried arm, its
+// creation-before/tie/write-after/carried-before controls, and the
+// persisted-order replay row with the plain arm) → the pin moves to 643 + 3
+// = 646 local and 646 + 100 + 1 = 747 total (re-measured on the amended
+// bytes; exactly 3 new test declarations, 0 deleted — rg counted 646 `test(`
+// declarations vs HEAD's 643, the local SOLO measured ℹ tests 646 and the
+// native SOLO measured 100; 643 + 3 = 646, 646 + 100 = 746, 746 + 1 = 747).
+// §32.60's two gate-round-48 P2 fixes (the runtime evidence-time horizon
+// order before the stateful stale-kernel filter, and the unrounded kernel
+// creation in the exact spawn-witness orderings and their replay mirror)
+// add FOUR local rows (the horizon-order RED row with its two persisted
+// orders, its chronological/plain controls row, the exact witness ordering
+// row with its lawful/inversion/coarse controls, and the replay witness
+// mirror row with its lawful control) → the pin moves to 646 + 4 = 650
+// local and 650 + 100 + 1 = 751 total (re-measured on the amended bytes;
+// exactly 4 new test declarations, 0 deleted — rg counted 650 `test(`
+// declarations vs HEAD's 646; 646 + 4 = 650, 650 + 100 = 750, 750 + 1 =
+// 751).
+// §32.61's one gate-round-49 P2 fix (the admission replay's exact branch and
+// its adjacent carried-exact check consuming the kernel's UNROUNDED creation
+// against the precise write — the runtime round-48 binding's replay mirror)
+// adds TWO local rows (the unrounded RED row with the exact and carried
+// arms, and its lawful/tie/carried-before-write controls row) → the pin
+// moves to 650 + 2 = 652 local and 652 + 100 + 1 = 753 total (re-measured
+// on the amended bytes; exactly 2 new test declarations, 0 deleted — rg
+// counted 652 `test(` declarations vs HEAD's 650; 650 + 2 = 652, 652 + 100
+// = 752, 752 + 1 = 753).
+// §32.62's two gate-round-50 P2 fixes (the exact marker binding refusing the
+// overlapping quantized tie of a downward-quantized child creation, and the
+// transport replay seeding latching the contradictory carried/own exact
+// identities) add FOUR local rows (the exact-marker RED row with its lawful
+// control, its aligned-tie/coarse controls row, the transport seeding RED
+// row with its same-generation control, and its carry-only/own-only/plain
+// controls row) → the pin moves to 652 + 4 = 656 local and 656 + 100 + 1 =
+// 757 total (re-measured on the amended bytes; exactly 4 new test
+// declarations, 0 deleted — rg counted 656 `test(` declarations vs HEAD's
+// 652; 652 + 4 = 656, 656 + 100 = 756, 756 + 1 = 757).
+// §32.63's one gate-round-51 P2 fix (the exact marker binding accounting for
+// the marker's TRUE rounding interval [M - 0.5, M + 0.5) — the rounded-up
+// quantized tie joins the refused overlap; only the exact half
+// usec % 1000 === 500 keeps its credit) adds TWO local rows (the rounded-up
+// RED row with its post-window control, and its downward/aligned/half-exact/
+// rounds-up-post-window controls row) → the pin moves to 656 + 2 = 658
+// local and 658 + 100 + 1 = 759 total (re-measured on the amended bytes;
+// exactly 2 new test declarations, 0 deleted — rg counted 658 `test(`
+// declarations vs HEAD's 656; 656 + 2 = 658, 658 + 100 = 758, 758 + 1 =
+// 759).
+// §32.64's one gate-round-52 P2 fix (the exact composition treating an
+// UNPARSEABLE ps timestamp as an ORDINARY query/parsing failure riding the
+// kinfo identity and its collection bounds — the generation-change class
+// reserved for successfully parsed disagreements; the emitter's bounded
+// poll retries and recovers) adds TWO local rows (the unparseable RED/retry
+// row and its parsed-disagreement/lawful/kinfo-degrade controls row) → the
+// pin moves to 658 + 2 = 660 local and 660 + 100 + 1 = 761 total
+// (re-measured on the amended bytes; exactly 2 new test declarations, 0
+// deleted — rg counted 660 `test(` declarations vs HEAD's 658; 658 + 2 =
+// 660, 660 + 100 = 760, 760 + 1 = 761).
+// §32.65's two gate-round-53 findings (the F1 PPID rejection comparing the
+// capture's EXACT carry and the learned reference before throwing — the
+// mixed-capture same-second successor latches before the rejection — and the
+// F2 replay reference learning consuming the ORDERED, ADVANCING presence
+// horizon instead of the initial baseline) add FOUR local rows (the F1
+// RED row + its same-generation/no-exact-carry/unresolvable controls row,
+// and the F2 replay RED row + its non-stale-learning/plain-settled controls
+// row) → the pin moves to 660 + 4 = 664 local and 664 + 100 + 1 = 765 total
+// (re-measured on the amended bytes; exactly 4 new test declarations, 0
+// deleted — rg counted 664 `test(` declarations vs HEAD's 660; 660 + 4 =
+// 664, 664 + 100 = 764, 764 + 1 = 765).
+// §32.65's residual independent re-review (finding 1 — the PURE exact
+// capture's own `startIdentity` joining the PPID rejection's exact-form
+// comparison set; finding 3 — the mixed read's exact carry riding the
+// rejection and retained as the lifetime reference; finding 2 — the control
+// (c) arm corrected to a TRUE uncertain schedule, with the pure-exact
+// same-generation control added) adds ONE local row: the residual PURE
+// exact RED row. The controls row was corrected IN PLACE (same declaration
+// count; the previous 'unresolvable' arm measured a same-generation/torn-
+// parse schedule and never reached the uncertain relation). → the pin moves
+// to 664 + 1 = 665 local and 665 + 100 + 1 = 766 total (re-measured on the
+// amended bytes; exactly 1 new test declaration, 0 deleted — rg counted 665
+// `test(` declarations vs HEAD's 664; 664 + 1 = 665, 665 + 100 = 765,
+// 765 + 1 = 766).
+// §32.66's one gate-round-55 P2 fix (the replacement classification consuming
+// the ORDERED, ADVANCING presence horizon — delayed identity reads no longer
+// lose the runtime's advanced window to the stateless `mirrorWindowAt`
+// reset) adds TWO local rows (the delayed exact-B RED row and its
+// aligned/stale/post controls row) → the pin moves to 665 + 2 = 667 local
+// and 667 + 100 + 1 = 768 total (re-measured on the amended bytes; exactly 2
+// new test declarations, 0 deleted — rg counted 667 `test(` declarations vs
+// HEAD's 665; 665 + 2 = 667, 667 + 100 = 767, 767 + 1 = 768).
+// §32.67's one gate-round-56 P2 fix (the round-34 transition exemption
+// consuming the SAME ordered, advancing presence horizon — a delayed
+// exact-B presence collected [5500,6250] with its identity read completing
+// at 7400 no longer lets the retired stateless scan classify the bound-
+// carried transition [6500,6600] as post against the stale baseline) adds
+// TWO local rows (the delayed-horizon RED/settled row and its
+// overlap/post controls row) → the pin moves to 667 + 2 = 669 local and
+// 669 + 100 + 1 = 770 total (re-measured on the amended bytes; exactly 2
+// new test declarations, 0 deleted — rg counted 669 `test(` declarations vs
+// HEAD's 667; 667 + 2 = 669, 669 + 100 = 769, 769 + 1 = 770).
+// §32.68's two gate-round-57 P2 fixes (the exact child-continuity ordering
+// comparing the child's UNROUNDED creation against the precise witness write
+// in BOTH the runtime and the replay, and the replay's absence recency
+// exclusion before the learned-reference comparison) add FOUR local rows
+// (the runtime RED/controls row, the replay RED/lawful row, and the two
+// stale-absence rows) → the pin moves to 669 + 4 = 673 local and
+// 673 + 100 + 1 = 774 total (re-measured on the amended bytes; exactly 4
+// new test declarations, 0 deleted — rg counted 673 `test(` declarations vs
+// HEAD's 669; 669 + 4 = 673, 673 + 100 = 773, 773 + 1 = 774).
+// §32.69's three gate-round-58 P2 fixes (the exact child-creation ordering
+// hoisted out of the optional endpoint instant on BOTH hops and in the
+// replay, the tied absence carry compared before the replay recency
+// exclusion, and the same-generation supersession filter on retained reads)
+// add SIX local rows in three new describe blocks (one RED row and one
+// controls row per finding; the F1 pair covers the runtime and the replay)
+// → the pin moves to 673 + 6 = 679 local and 679 + 100 + 1 = 780 total
+// (re-measured on the amended bytes; exactly 6 new test declarations,
+// 0 deleted — rg counted 679 `test(` declarations vs HEAD's 673;
+// 673 + 6 = 679, 679 + 100 = 779, 779 + 1 = 780).
+// §32.70's two gate-round-59 fixes (the PPID-only rejection retaining its
+// first exact generation observation so the cleanup cannot learn and signal
+// a different same-second successor, and the replay recency skip mirroring
+// `adjudicateLocalExit`'s conflicting-exact-evidence bypass) add FOUR local
+// rows in two new describe blocks (one RED row and one controls row per
+// finding; the F1 controls carry three arms and the F2 controls four arms —
+// the fourth arm is the carried-only scope pin)
+// → the pin moves to 679 + 4 = 683 local and 683 + 100 + 1 = 784 total
+// (re-measured on the amended bytes; exactly 4 new test declarations,
+// 0 deleted — rg counted 683 `test(` declarations vs HEAD's 679;
+// 679 + 4 = 683, 683 + 100 = 783, 783 + 1 = 784).
+// §32.71's gate-round-60 repair adds ONE local row (the F2
+// conflicting-transition RED row in the round-59 replay describe; the
+// existing F2 controls row gains the same-generation-transition and
+// stale-transition arms without a new declaration, and the F1 change is
+// test hygiene inside the existing round-59/35/38/43/53 rows) → the pin
+// moves to 683 + 1 = 684 local and 684 + 100 + 1 = 785 total (re-measured
+// on the amended bytes; exactly 1 new test declaration, 0 deleted — rg
+// counted 684 `test(` declarations vs HEAD's 683; 683 + 1 = 684,
+// 684 + 100 = 784, 784 + 1 = 785).
+// §32.72's gate-round-61 repair adds ONE local row (the ordinary
+// conflicting-failed-read RED row in the round-59 replay describe; the
+// existing F2 controls row gains the same-generation failed-read, the
+// no-reference failed-read, the unchanged transition-exception and the
+// unchanged established-exception arms without a new declaration) → the pin
+// moves to 684 + 1 = 685 local and 685 + 100 + 1 = 786 total (re-measured
+// on the amended bytes; exactly 1 new test declaration, 0 deleted — rg
+// counted 685 `test(` declarations vs HEAD's 684; 684 + 1 = 685,
+// 685 + 100 = 785, 785 + 1 = 786).
+// §32.73's gate-round-62 self-review repair adds ONE local row (the
+// two-phase ordinary failed-read RED row with the counterexample and both
+// boundary arms in the round-59 replay describe; the existing F2 controls
+// row is unchanged and the round-59/60/61 rows keep their measured
+// outcomes) → the pin moved to 685 + 1 = 686 local and 686 + 100 + 1 = 787
+// total (re-measured on the amended bytes; exactly 1 new test declaration,
+// 0 deleted — rg counted 686 `test(` declarations vs HEAD's 685;
+// 685 + 1 = 686, 686 + 100 = 786, 786 + 1 = 787).
+// §32.74's two gate-round-63 P2 fixes (the exact marker binding applying the
+// true write window [M - 0.5, M + 0.5) to millisecond-ALIGNED children — the
+// aligned exemption retired, the half-exact window edge still establishing —
+// and the replay recency bypass covering identity-bearing ABSENT reads whose
+// carried exact identity conflicts with the learned reference at/after the
+// horizon) add FIVE local rows: one RED row and one controls row for F1, one
+// RED row and one controls row for F2 in a new round-63 describe, plus one
+// F1 replay-mirror row in the integration-completion describe. → the pin
+// moves to 686 + 5 = 691 local and 691 + 100 + 1 = 792 total (re-measured on
+// the amended bytes; exactly 5 new test declarations, 0 deleted — rg counted
+// 691 `test(` declarations vs HEAD's 686; 686 + 5 = 691, 691 + 100 = 791,
+// 791 + 1 = 792).
+// §32.75's two gate-round-64 P2 fixes (the presence horizon staying monotonic
+// when the round-37 pre-skip exact-evidence bypass routes an OLDER
+// conflicting read into the same-generation arm — the horizon pair keeps its
+// previous values instead of moving backward, and the replay recency filter
+// preserving the round-17 within-read exact contradiction (own observation vs
+// own carry) independently of the learned reference under the runtime's
+// own-recency and stale-carry premises) add FIVE local rows in a new round-64
+// describe: the F1 RED row (the codex schedule plus the preserved-6250
+// horizon probe) and its six-arm controls row, the F1 integration-completion
+// replay-mirror row, the F2 RED row and its six-arm controls row. → the pin
+// moves to 691 + 5 = 696 local and 696 + 100 + 1 = 797 total (re-measured on
+// the amended bytes; exactly 5 new test declarations, 0 deleted — rg counted
+// 696 `test(` declarations vs HEAD's 691; 691 + 5 = 696, 696 + 100 = 796,
+// 796 + 1 = 797).
+// §32.76's gate-round-65 P2 fix (the replay recency filter preserving an
+// established read's carried-exact conflict against the learned reference
+// when the read's primary identity is coarse — the runtime's round-22
+// pre-filter generic carried-exact comparison premise set) adds TWO local
+// rows in a new round-65 describe: the F2 RED row (the codex schedule —
+// the mixed-resolution baseline carrying `kinfo:1:0` at 6250, the
+// matching-coarse read completing its identity check at 6400 while
+// carrying `kinfo:1:400000` dated 6000 without a completion bound, the
+// confirmed absence at 7600) and its eight-arm controls row (the
+// same-generation carry, the old-evidence premise, the stale carry
+// window, the no-reference schedule, the own-exact and absent channels,
+// the tied same-generation read and the post-bounded carry). → the pin
+// moves to 696 + 2 = 698 local and 698 + 100 + 1 = 799 total (re-measured
+// on the amended bytes; exactly 2 new test declarations, 0 deleted — rg
+// counted 698 `test(` declarations vs HEAD's 696; 696 + 2 = 698,
+// 698 + 100 = 798, 798 + 1 = 799).
+const shellSuiteSpawnedTestTotal = 799;
 /** @param {number} count */
 const suiteCountPattern = (count) => new RegExp(`ℹ tests ${count}\\r?\\n`);
 /** @param {number} count */
@@ -28013,7 +28577,7 @@ describe('cleanup-boundary attribution for exit-code settlements (round-9 review
     }
 
     test('the join carries its own versioned identity (the §19.9 v1/v2 precedent mechanism)', () => {
-      assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 38, 'join v38 (2026-10-30 local-settlement Task 3 review round 37): a pre-request baseline witness owes the §25.7 completion fence (provesPreFenceCompletion — a post-fence or unprovable-completion witness is no witness, the runtime postFence naming honored);  a pre-request baseline witness must postdate the admitted generation record start (the admission-observation-stale lower bound — a carried instant before the process existed is temporally impossible cached evidence and is no witness);  (the observed pid and nonce digest must match the admitted invocation — a query addressed to the invocation never witnesses it, the round-20 queried-binding rule mirrored on the observed side);  the pre-interruption baseline owes a VERIFIED presence witness collected before the admitted request (at least one interval-valid same-generation presence instant strictly earlier than the request — an earlier process start alone never settles; the same conservative-strict ordering refuses companion-baseline-unestablished);  the refreshed ancestry endpoint creation instant must AGREE with its admission-backed observation (a conflicting instant refuses ancestry-endpoint-instant-foreign) and the preflight requires PRIVATE capture-directory permissions (exactly 0700 on POSIX — the record readers reject every startup record otherwise);  the retained invocation presence reads validate like the transport replay (the round-24/25 pattern — a torn interval or unprovable timestamps refuse by name before the horizon and supersession walks) and the preflight requires a usable capture directory;  the observed Companion generation must demonstrably predate the interrupt request (the admitted request timestamp/bounds bind the baseline — ordering that cannot be established refuses companion-baseline-unestablished) and the NODE_OPTIONS tokenizer rejects unfinished quoting states (an unterminated double-quote or a dangling escape refuses by name — the host would exit before loading the observer);  the fence echoes compare symmetrically (a missing-versus-present mismatch refuses cleanup-boundary-echo-mismatch / cutoff-echo-mismatch in both directions — cleanup-time evidence never credits across a missing echo) and the NODE_OPTIONS tokenizer matches Node exactly (apostrophes are ordinary characters, backslash escapes only inside double quotes — the inherited-apostrophe run passes, the apostrophe-quoted path refuses); v29 (round 27): a replacement-claiming retained invocation read owes a valid completion timestamp (a missing or malformed one refuses exit-reuse-read-instant-unprovable instead of being silently discarded by the recency filter), and the NODE_OPTIONS preflight parses the string into shell-ish option tokens (a --require fragment inside another option value never counts as loading the declared preload); v28 (round 26): the retained transport reads validate their completion stamps (a missing or nonnumeric completion refuses observation-instant-unprovable — torn evidence is never silently excluded from the presence horizon) and the transport exit validates its supplied carried identity instants (in-interval + safe integer, else transport-exit-carried-instant-outside-interval — the invocation-absence pattern);  a retained transport retry read with an INVALID collection interval refuses explicitly (a true inversion is observation-interval-inverted, a missing start when credit depends on it is observation-start-unprovable) — torn evidence cannot turn an otherwise contradictory replay into a credited local-process layer;  the retained transport retry reads validate their identity instants (the duty-observation/ancestry-endpoint pattern — malformed instants refuse by name, supplied instants must sit inside the validated collection interval) and the captured transport start identity persists with the marker (schema-additive) binding the replayed transport observation — a successor generation cannot settle the original transport duty;  a supplied carried identity instant is validated against its read collection interval BEFORE the reuse latch recency filtering — an out-of-interval or malformed carried instant is torn replacement evidence refusing by name (exit-reuse-carried-instant-outside-interval), never old evidence;  every credited observation binds its queried pid/scope digest to the observed identity (the duty echoes and the ancestry endpoints) and a present-but-malformed identity-read instant refuses by name instead of falling back to the completion;  the persisted transport retry sequence latches replacement evidence (any generation-bound read carrying a different start identity) and absence timestamps must be safe integers before crediting (nonnumeric instants refuse by name);  a live same-generation transport retry advances the presence horizon and persists the full presence sequence for replay, and the exit supersession compares the identity-read instant (an async completion never re-wins);  the correlated absence validates its collection interval (inverted intervals are torn evidence), the SELECTED daemon endpoint re-verifies its parentage against the presence/record rule and a tied transport absence keeps the retry loop sampling; v20 (round 16) = the duty-observation identity-read containment, the contradictory invocation-absence shape refusal and the runtime latest-same-generation-presence tie continuation; v19 (round 15) = the declared-scope binding, the identity-bearing absence reuse latch and the walked presence horizon; v18 (round 14) = the tied-absence collection continuation, the transport-exit recency/carried-identity re-adjudication and the incomplete-interval start refusals; v17 (round 13) = the identity-read containment check, the FROZEN argv selector enforced over mere persisted agreement, and the persisted block-version gate; v16 (round 12) = the collection-interval validity for every fence-crediting read + the consistent materialization-unavailable provenance fallback; v15 (round 11) = the invocation-absence strict tie, the contradictory-duplicate-duty-slot refusal and the selected-endpoint parentage rule covering a failed refresh; v14 (round 10) = the transport PID-reuse latch + the strict transport-absence tie rule; v13 (round 9) = the transport-exit recency/carried-identity re-adjudication; v12 (round 8) = the generation-bound PRE-FENCE transport-exit conjunct, the refreshed-presence horizon/supersession and the admitted-record capture-time parentage; v38 (2026-11-04 evidence-completion Task 4, report §29): the offline join consumes the persisted digest-only spawn-witness projections (block.spawnWitnesses — schema-additive; the §28.25 replay-agreement clause): a hop-1 witnessClass claim re-verifies from its own fields and an omitted/stale/contradictory witness refuses by the named route family; a persisted daemon-to-transport witnessClass claim refuses spawn-witness-route-unsatisfiable (§28.22 — the route is UNSATISFIABLE, the hop’s positives stay arithmetic-only)');
+      assert.equal(NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 38, 'join v38 (2026-10-30 local-settlement Task 3 review round 37): a pre-request baseline witness owes the §25.7 completion fence (provesPreFenceCompletion — a post-fence or unprovable-completion witness is no witness, the runtime postFence naming honored);  a pre-request baseline witness must postdate the admitted generation record start (the admission-observation-stale lower bound — a carried instant before the process existed is temporally impossible cached evidence and is no witness);  (the observed pid and nonce digest must match the admitted invocation — a query addressed to the invocation never witnesses it, the round-20 queried-binding rule mirrored on the observed side);  the pre-interruption baseline owes a VERIFIED presence witness collected before the admitted request (at least one interval-valid same-generation presence instant strictly earlier than the request — an earlier process start alone never settles; the same conservative-strict ordering refuses companion-baseline-unestablished);  the refreshed ancestry endpoint creation instant must AGREE with its admission-backed observation (a conflicting instant refuses ancestry-endpoint-instant-foreign) and the preflight requires PRIVATE capture-directory permissions (exactly 0700 on POSIX — the record readers reject every startup record otherwise);  the retained invocation presence reads validate like the transport replay (the round-24/25 pattern — a torn interval or unprovable timestamps refuse by name before the horizon and supersession walks) and the preflight requires a usable capture directory;  the observed Companion generation must demonstrably predate the interrupt request (the admitted request timestamp/bounds bind the baseline — ordering that cannot be established refuses companion-baseline-unestablished) and the NODE_OPTIONS tokenizer rejects unfinished quoting states (an unterminated double-quote or a dangling escape refuses by name — the host would exit before loading the observer);  the fence echoes compare symmetrically (a missing-versus-present mismatch refuses cleanup-boundary-echo-mismatch / cutoff-echo-mismatch in both directions — cleanup-time evidence never credits across a missing echo) and the NODE_OPTIONS tokenizer matches Node exactly (apostrophes are ordinary characters, backslash escapes only inside double quotes — the inherited-apostrophe run passes, the apostrophe-quoted path refuses); v29 (round 27): a replacement-claiming retained invocation read owes a valid completion timestamp (a missing or malformed one refuses exit-reuse-read-instant-unprovable instead of being silently discarded by the recency filter), and the NODE_OPTIONS preflight parses the string into shell-ish option tokens (a --require fragment inside another option value never counts as loading the declared preload); v28 (round 26): the retained transport reads validate their completion stamps (a missing or nonnumeric completion refuses observation-instant-unprovable — torn evidence is never silently excluded from the presence horizon) and the transport exit validates its supplied carried identity instants (in-interval + safe integer, else transport-exit-carried-instant-outside-interval — the invocation-absence pattern);  a retained transport retry read with an INVALID collection interval refuses explicitly (a true inversion is observation-interval-inverted, a missing start when credit depends on it is observation-start-unprovable) — torn evidence cannot turn an otherwise contradictory replay into a credited local-process layer;  the retained transport retry reads validate their identity instants (the duty-observation/ancestry-endpoint pattern — malformed instants refuse by name, supplied instants must sit inside the validated collection interval) and the captured transport start identity persists with the marker (schema-additive) binding the replayed transport observation — a successor generation cannot settle the original transport duty;  a supplied carried identity instant is validated against its read collection interval BEFORE the reuse latch recency filtering — an out-of-interval or malformed carried instant is torn replacement evidence refusing by name (exit-reuse-carried-instant-outside-interval), never old evidence;  every credited observation binds its queried pid/scope digest to the observed identity (the duty echoes and the ancestry endpoints) and a present-but-malformed identity-read instant refuses by name instead of falling back to the completion;  the persisted transport retry sequence latches replacement evidence (any generation-bound read carrying a different start identity) and absence timestamps must be safe integers before crediting (nonnumeric instants refuse by name);  a live same-generation transport retry advances the presence horizon and persists the full presence sequence for replay, and the exit supersession compares the identity-read instant (an async completion never re-wins);  the correlated absence validates its collection interval (inverted intervals are torn evidence), the SELECTED daemon endpoint re-verifies its parentage against the presence/record rule and a tied transport absence keeps the retry loop sampling; v20 (round 16) = the duty-observation identity-read containment, the contradictory invocation-absence shape refusal and the runtime latest-same-generation-presence tie continuation; v19 (round 15) = the declared-scope binding, the identity-bearing absence reuse latch and the walked presence horizon; v18 (round 14) = the tied-absence collection continuation, the transport-exit recency/carried-identity re-adjudication and the incomplete-interval start refusals; v17 (round 13) = the identity-read containment check, the FROZEN argv selector enforced over mere persisted agreement, and the persisted block-version gate; v16 (round 12) = the collection-interval validity for every fence-crediting read + the consistent materialization-unavailable provenance fallback; v15 (round 11) = the invocation-absence strict tie, the contradictory-duplicate-duty-slot refusal and the selected-endpoint parentage rule covering a failed refresh; v14 (round 10) = the transport PID-reuse latch + the strict transport-absence tie rule; v13 (round 9) = the transport-exit recency/carried-identity re-adjudication; v12 (round 8) = the generation-bound PRE-FENCE transport-exit conjunct, the refreshed-presence horizon/supersession and the admitted-record capture-time parentage; v38 (2026-11-04 evidence-completion Task 4, report §29): the offline join consumes the persisted digest-only spawn-witness projections (block.spawnWitnesses — schema-additive; the §28.25 replay-agreement clause): a hop-1 witnessClass claim re-verifies from its own fields and an omitted/stale/contradictory witness refuses by the named route family; a persisted daemon-to-transport witnessClass claim re-verifies through the mirrored exact/coarse marker and continuity windows — the v3 route-(c) exact tuple may establish (report §32 supersedes §28.22 for exact data), while a coarse claim keeps the named refusals and never credits');
       assert.equal(NATIVE_INTERRUPTION_ORACLE_VERSION, 5, 'oracle v5 (2026-10-30 local-settlement Task 3, report §25.10) = the local-duty conjunct composes the §25.5 applicable local duties into the final acceptance (legacy shapes fail closed by name)');
       const joined = nativeInterruptionGateDInput(fix2Record());
       assert.equal(joined.gateDJoinVersion, NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION, 'the join output marks its own version');

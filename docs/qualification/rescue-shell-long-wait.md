@@ -25466,3 +25466,7363 @@ seam's semantics), the decision's precise content:
 - **The regressions (the honest forms chosen; all in the local-process entry's preflight describe):** (a) the TYPE-STRUCTURE row — both defaults are `instanceof Set`, the helper returns false for both frozen-empty defaults, true for a Set containing the case, true for the array shape, and false for a foreign registry value (never a skip); (b) a SET-injected refusal test PER gate (daemon-witness AND wrapped-interrupt) — the reviewer's exact gap (the prior tests exercised only the Array shape against a Set-defaulted gate); (c) the REAL DEFAULT registration path — the un-injected `evaluateLiveLaunchPreflight` invocation asserting `{ok: true}` for a case named in neither frozen-empty default (the arms consulted, nothing refused), pinned together with the helper's Set-membership assertions. **RED→GREEN:** the three behavioral rows RED on the pre-fix bytes (the helper-typing row on the missing export; both Set-injected refusals because the Array guard skipped Set input — the reproduced defect), GREEN after the helper + both arms; the un-injected default-path row passes in BOTH states by design (observable-identical before/after — it pins the structure with the helper assertions, never a behavior claim).
 - **The scoping decision (honest):** the touched surface is exactly the two membership checks plus the helper — the full `npm run test:shell-research` battery is NOT re-run for this fix; the verification is the focused families below plus the two entry SOLO runs. No focused test, lint or typecheck result contradicted the scoping.
 - **The gate battery on the amended bytes (2026-11-05):** `node --test tests/test-selection.test.mjs` 6/6 exit 0; `npm run lint` exit 0; `npm run typecheck` exit 0; `git diff --check` exit 0; the preflight family focused = 8 tests, 8 pass; the probe entry's wrapped rows focused = 10 tests, 10 pass; tests/shell-wait-local-process.test.mjs SOLO = the full entry with the new rows (count in the gate line); tests/shell-wait-native-interruption.test.mjs SOLO = 100 tests, 100 pass, 0 fail, 0 skipped, exit 0. Prohibited-path diff vs `f3c9503a8124efd1f3e88d44f303e3ad6b4f42cb` EMPTY. The fix lands as a NEW dedicated commit on the PR branch (message exactly "research: unify the reliance-registry membership checks for Set defaults (user review)") — NOT an amend of any task commit (the fix-attribution rule).
+
+## 32. 2026-11-05 user-directed route-(c) landing: the darwin exact-generation surface implemented and re-verified, the same-second daemon-hop ancestry attributed by the exact mode, the fixture-boundary capture re-scoped and the OBSERVER-BLOCKED decision superseded (offline; zero model turns, zero live launches)
+
+### 32.1 The route-(c) investigation adjudication (the measured evidence; supersedes §28.1's named-unavailable and the exact-data face of §28.22)
+
+- **The mechanism: route (c) is AVAILABLE on darwin.** `sysctl(3)` with the MIB `{CTL_KERN, KERN_PROC,
+  KERN_PROC_PID, pid}` into a `kinfo_proc` returns the process's `p_starttime` as `tv_sec` (int64 LE, offset 0)
+  plus `tv_usec` (int32 LE, offset 8). The reachable bridge is an inline ctypes program on
+  `/usr/bin/python3 -S` (via the module's `runProcess` helper — a direct
+  `spawn` with the shell disabled; static script text, the numeric pid as
+  the only argv; JSON on stdout; 44 ms round trip in the re-run; the earlier investigation
+  measured ~57 ms). The `kinfo_proc` layout is the FIXED
+  648-byte shape (extern_proc 64 + eproc 584) — the evidence files live in `/tmp/pipm-probe`
+  (`kinfo-probe.c`, `node-py-bridge.mjs`, `pairs.mjs`, `sizeq.c`, `failmodes.c`; not repository bytes).
+- **The measurement re-run on 2026-11-05 (this worktree):** ten same-second back-to-back `sleep` spawn pairs →
+  **10/10 pairs distinguished** at the microsecond field (deltas **484–1427 µs** in this re-run; the earlier
+  investigation recorded 460–2905 µs over its ten pairs); the bridge's `tv_sec` equals `ps -o lstart=`'s wall
+  second exactly and `usec`/`Date.now()` agree within the read latency (measured 66 ms after the bridge read);
+  the C probe and the process-info path agree exactly on the same pid; a dead pid returns `len 0` (gone); an
+  undersized buffer returns `-1`/`ENOMEM` (errno 12) ATOMICALLY — never a torn read; the NULL-buffer size query
+  is UNSTABLE (the earlier investigation observed 648 / 3888 / 3240 across runs; this re-run observed 3888 for
+  the live pid and 3240 for the dead pid), so the discipline is a FIXED 648-byte read:
+  `len == 648` accepted, `len == 0` gone, `0 < len < 648` malformed/fail-closed; the size query is never used
+  to size the read.
+- **The sysctl CLI is not a substitute:** `sysctl -n kern.proc.pid.<pid>` cannot address dynamic per-pid leaves;
+  the inline ctypes bridge is the measured interface.
+- **The supersessions registered here (explicit, never silent):** (i) §28.1's "route (c) stays NAMED
+  UNAVAILABLE / no new OS API was probed" is **WITHDRAWN** — the mechanism exists, was probed, and is measured
+  as above; (ii) §28.22's UNSATISFIABLE classification **remains true for the COARSE tuple** and is
+  **SUPERSEDED for exact data** by the exact-mode establishment it itself proposed as the bounded repair
+  (§32.3); (iii) §29.7's readiness verdict and §31.5's OBSERVER-BLOCKED decision wording are re-adjudicated in
+  §32.7; (iv) §29.9 Finding 1's capture-boundary wording is narrowed in §32.6. Every earlier section stands as
+  history with its supersession named — none is rewritten.
+
+### 32.2 Slice 1 — the exact reader, the closed identity form, the version events, and the degrade discipline
+
+- **Version events.** `LOCAL_PROCESS_OBSERVATION_VERSION` **3 → 4** (local-process-observation.mjs:90): the
+  observation contract now consumes the exact start identity/instant (the additive `kinfo:<sec>:<usec>` form and
+  its exact millisecond instant), so every fresh verdict carries v4.
+  `SPAWN_ANCESTRY_WITNESS_VERSION` **2 → 3** (local-process-observation.mjs:1157): v3 adds the additive
+  `startIdentityExact` boolean. The gate-D join version is **UNCHANGED at 38** (a consumption-side mirror
+  change — §29.9 Finding 2's precedent: the projection already carried every field the replay consumes; the
+  record-version event above is the owning persisted-shape version event).
+- **The reader.** `parseExactStartIdentity` (local-process-observation.mjs:266) is the ONE closed parser
+  (`kinfo:<sec>:<usec>`; positive safe-integer seconds; integer microseconds in `[0, 1000000)`; the millisecond
+  instant ROUNDS the microsecond field — never floors, which would reintroduce the whole-second uncertainty exact
+  mode removes). `isPlausibleExactStartMs`/`classifyKinfoAnswer` (:288/:297) apply the clock-domain guard and the
+  closed answer shapes; `readDarwinKinfoExact` (:333) owns the seam and the real bridge;
+  `readMacProcessStart` (:395) upgrades the effective-darwin path to the exact identity + exact ms while keeping
+  the ps read for the kernel parent link. `resolveObservationStartInstantMs` resolves the closed form to the
+  exact ms; the ps whole-second parse is untouched.
+- **The deterministic seam.** The `kinfoExact` seam fully owns the read when injected; its answers flow through
+  the same strict classifier. The injected seam composes with the existing `ps` seam in
+  `inspectVerifiedProcessIdentity` (local-process-observation.mjs:530): ps owns pid/ppid, the exact reader owns
+  the identity form and the exact instant; unavailable/malformed degrades to the ps identity; `null` (gone) is
+  the process-left answer.
+- **The emitter.** `emitSpawnAncestryWitness` records `startIdentityExact` only when BOTH the writer's own
+  verified identity and the child's captured identity are exact (local-process-observation.mjs:1543) — the
+  declaration is truthful by construction.
+- **The admission's exact-vs-raw self-consistency** (local-process-observation.mjs:1252): a v3 record declaring
+  `startIdentityExact: true` must carry both captured identities in the closed exact form AND a numeric
+  `childOsStartInstantMs` equal to the instant the child identity resolves to (the emitter derives both from the
+  same boundary read). A lying flag, a coarse identity, or an inconsistent numeric refuses
+  `spawn-witness-shape-invalid` — exact evidence never rides an inconsistent record. v1/v2 records keep their
+  recorded shapes and replay coarse-only.
+- **The degrade discipline (NEVER a duty-establishing precondition).** Any exact-read unavailability — no
+  `/usr/bin/python3`/CLT shim, a bridge failure, a malformed/undersized/torn answer, an implausible clock
+  domain — keeps the existing ps whole-second path byte-identically. The real bridge is additionally opt-in
+  (`ZCODE_SHELL_WAIT_KINFO_EXACT=1`); plain unit/real-chain runs keep the ps bytes unchanged. **No production
+  call site sets that variable today** — enabling the exact route at the installed-host boundary remains the
+  §28.6 live-trial wiring question (§32.6), never a requirement for the existing duties.
+
+### 32.3 Slice 2 — the two-mode establishment discipline (coarse pins byte-identical; exact mode adds resolution)
+
+- **The exact-mode predicate.** `spawnWitnessExactMode` (local-process-observation.mjs:2874) is the single
+  gate: the record must DECLARE exactness (v3 `startIdentityExact: true`), carry both captured identities in the
+  closed exact form, carry a numeric child instant that resolves from its own child identity, and every PRESENT
+  endpoint side the comparison consumes must be exact with its numeric instant (the read-time writer always; the
+  read-time child on hop 1; the marker's CAPTURED start identity on hop 2 — §32.10 Finding 1: an exact tuple
+  whose marker lacks the captured identity is INCOMPLETE and exact mode never engages, so the marker's wall-clock
+  mtime alone is never "the other exact side"; the captured identity bound via the child-foreign conjunct is what
+  makes the mtime exact evidence). Mixed exactness (either side coarse, a lying declaration, or a numeric/identity
+  disagreement) falls back to the registered coarse windows — exactness is never borrowed.
+- **What collapses in exact mode (the three establishment windows):** with the closed exact tuple, the marker
+  must simply POSTDATE the witnessed child's exact creation (`markerTime >= childExactStart`) — no ±1000 band and
+  no ambiguity label; the writer continuity requires `firstWriteEpochMs >= writerExactStart`; the child
+  continuity requires `boundaryEpochMs >= childExactStart`. **Ties are SAME generation** (marker/boundary/write
+  equality establishes); **strict inequality is DIFFERENT generation** and refuses with the EXISTING labels
+  (`spawn-witness-marker-generation-unbound`, `…-parent-generation-ambiguous`, `…-child-generation-ambiguous`, the
+  creation-order/boundary contradictions). The ±1000 windows apply ONLY to coarse data.
+- **Hop 2's exact establishment** (local-process-observation.mjs:3580): when the witness outcome is
+  `established` AND its `exact` flag proves every consumed side exact, the daemon→transport hop establishes with
+  `witnessClass: 'spawn-boundary-capture'`. A non-exact established outcome (unreachable under the coarse
+  contradiction) keeps the fail-closed `spawn-witness-route-unsatisfiable` label. The coarse refusal labels below
+  that branch are untouched.
+- **The coarse half is byte-identical.** The exact branch is reachable only through the exact predicate; every
+  coarse fixture (including §28.22's three refusal schedules — ambiguous/unbound/v1 — and the standing
+  §28.9–§28.33/§29.9–§29.10 pins) takes the coarse path and produces its recorded label. The new focused controls
+  (tests/shell-wait-local-process.test.mjs:3274) pin the SAME schedule in three modes: exact → established with
+  `witnessClass` (strict order and the tie schedule), mixed (flag false) → the coarse
+  `spawn-witness-marker-generation-ambiguous`, coarse record + coarse endpoint → the same coarse label, and an
+  exact record against a coarse endpoint → `spawn-witness-writer-foreign` (a different identity is refused, never
+  silently demoted).
+
+### 32.4 Slice 3 — the complete negative family (each its own test; every label from the registered family)
+
+1. **Missing python3 / bridge failure** — a throwing exact seam degrades to the ps whole-second identity; no
+   exact instant is fabricated (tests/shell-wait-local-process.test.mjs:597).
+2. **Malformed kinfo answer** — an undersized-buffer answer (`{ malformed: 3240 }`) degrades likewise; torn
+   evidence never becomes exact (same test).
+3. **Dead pid** — `len == 0` = gone; the absence flow answers as the ps absence path would (same test).
+4. **Clock-domain guard** — a future start, zero/non-integer seconds, or an out-of-range microsecond field is
+   implausible/malformed and degrades to ps; the degraded coarse identity/instant stay byte-identical
+   (tests/shell-wait-local-process.test.mjs:641).
+5. **Exact-vs-raw contradiction at admission** — flag true with coarse identities → `spawn-witness-shape-invalid`;
+   flag true with exact identities but a mismatched numeric → the same label; the honest matching record admits
+   (tests/shell-wait-local-process.test.mjs:15379).
+6. **Mixed exactness** — exact identities with the declaration false use the coarse windows (the ambiguity label);
+   exact record vs coarse endpoint is `spawn-witness-writer-foreign` (§32.3's controls).
+7. **Hop-2 strict ordering** — a marker strictly before the exact child creation refuses
+   `spawn-witness-marker-generation-unbound`; the exact tie establishes (tests/shell-wait-local-process.test.mjs:3274).
+8. **v2-on-v4 replay compatibility** — a retained v2 projection (no exact member) replays coarse-only and the
+   local layer credits; exactness is never inferred for a record that did not declare it
+   (tests/shell-wait-local-process.test.mjs:16713).
+9. **Exact-vs-raw at the replay** — a v3 projection claiming exactness on coarse identities refuses
+   `spawn-witness-shape-invalid`, the mirrored admission label
+   (tests/shell-wait-local-process.test.mjs:16733).
+10. **Coarse daemon claims** — a coarse daemon-hop witnessClass claim re-verifies through the mirrored coarse
+    windows and refuses its own label (the same-second bound-window schedule → `…-marker-generation-ambiguous`);
+    a claim where the runtime would never consult the witness refuses
+    `spawn-witness-route-unsatisfiable` (the two coarse replay rows before the exact hop-2 replay).
+11. **Unsupported record version / closed key set**, the capture-before-writer, creation-order, write-before-
+    capture and child-start-after-capture families: unchanged, all still green (the standing table).
+
+No new refusal labels were introduced; the exact additions are the `kinfo:` identity form, the `startIdentityExact`
+member, and the `exact` mode — refusals keep the registered named family.
+
+### 32.5 Slice 4 — the replay mirror (runtime/replay agreement; v2 acceptance repaired)
+
+- **A discovered draft bug, fixed:** the replay's version gate accepted only `1` and the current witness version;
+  after the 2 → 3 bump a RETAINED v2 record was rejected. The gate now accepts `1 | 2 | 3`
+  (tools/shell-wait-probe/driver.mjs:5093) and the versioned closed key sets are unchanged per version
+  (`projectedV1/V2/V3Keys`); the v2-on-v4 row (§32.4 item 8) proves it.
+- **The exact-vs-raw mirror** (driver.mjs:5126) reproduces the admission's self-consistency on the digest-only
+  projection before any binding.
+- **The exact-mode mirror** (driver.mjs:5225 onward): the same `spawnWitnessExactMode` discipline, the marker
+  proximity/ordering pair, the writer-continuity exact ordering, and the child-continuity exact ordering. The
+  cross-record numeric equality, the creation-order and the capture bounds are unchanged.
+- **Hop-2 verification** (driver.mjs:5965): a persisted daemon-hop witnessClass claim now re-verifies from
+  `block.spawnWitnesses.daemon` when the runtime would consult the witness (the coarse bound window still
+  refused); a claim outside that window stays the named contradictory classification. The replay's strict
+  lifetime refusals remain UNCONDITIONAL and precede every witness consultation.
+- **No join version bump:** consumption-side only (§29.9 Finding 2 precedent); old records replay under their
+  recorded versions, and the v38 description pin in the probe contract now states the exact/coarse split in
+  place (the number stays 38).
+
+### 32.6 Slice 5 — the fixture-boundary capture re-scope (§29.9 Finding 1 narrowly narrowed)
+
+- **What was already wired and proven:** the fixture-owned parent emitters write the boundary witness at their OWN
+  spawn boundary through the observer module by absolute URL. The registered REAL spawn-boundary tests are green
+  on these bytes: hop 1 (tests/shell-wait-local-process.test.mjs:15531 — the actual fixture-owned parent writes the
+  invocation-boundary witness; the join consumes it) and the full chain with the grandchild hop
+  (:15629 — each real parent writes its own witness, the runtime composition attributes end to end, and the duty
+  aggregate matches the measured platform bounds). This is the fixture boundary the task refers to; the
+  production installed-host boundary is NOT what these tests exercise.
+- **What stays unwired:** the emission at the REAL installed-host launch boundary remains unwired and stays
+  exactly where §28.6 placed it — the live-trial question. Nothing here claims production capture. §29.9's
+  Finding 1 wording ("hop-1 capture mechanism … NOT WIRED") is narrowed to that production boundary only; the
+  fixture-side capture path was and is wired.
+- **The exact reader's production activation** is likewise unwired and opt-in (§32.2's degrade discipline); the
+  fixture capture proves the mechanism, not a production activation.
+
+### 32.7 The readiness re-adjudication (what now establishes; the remaining E launch blockers; the §31.5 supersession)
+
+- **What now establishes — the same-second daemon-hop ancestry:** with route (c)'s exact instants on both sides
+  (a v3 witness record captured under the exact reader + the daemon endpoint read exact), the daemon→transport
+  hop's marker binding collapses to `markerTime >= childExactStart`; a marker inside the daemon's creation
+  second therefore establishes the hop with `witnessClass: 'spawn-boundary-capture'`, and the replay
+  re-verifies it from its own persisted fields. The Companion→daemon hop likewise resolves its two continuity
+  windows exactly (or, when its coarse bound window is not refused, the existing arithmetic path stands). The
+  offline proof is the exact hop-2 runtime test (:3274), the exact hop-2 replay (:16626) and the exact hop-1
+  replay (:16681); the coarse mode remains the registered fallback and is byte-identical.
+- **The observer is no longer the blocker.** §29.7's OBSERVER-BLOCKED verdict rested on a mechanism absence
+  (route (c) unavailable + the coarse daemon-witness contradiction). Both facts are repaired: the mechanism
+  exists and the exact mode establishes the previously blocked hop. **The remaining E launch blockers are:** (1)
+  the **0.163.0 binary re-provisioning/re-pin** required by §30.4 (an artifact/observer fail-close matter, not a
+  mechanism absence; §30.4's frozen package already registers the byte-identical re-provision obligation), (2)
+  **the production capture/activation wiring** (§32.6: the emission at the installed-host launch boundary is not
+  wired and `ZCODE_SHELL_WAIT_KINFO_EXACT` has no production call site — E acceptance on the same-second
+  daemon-hop conjunct DEPENDS on that wiring being present and activated at launch time, an explicit
+  launch-time activation obligation, without which the local layer still settles only through the coarse
+  refusals), and (3) **new user launch authority** for the finite E launch. The E slot remains UNSPENT; no
+  launch is claimed by this section.
+- **The honest caveat kept:** the production installed-host boundary wiring (§32.6) and the exact reader's
+  production activation are the live-trial questions; the observer mechanism is implemented and offline-proven,
+  but no production call site enables it yet. This is a WIRING fact, not the observer-capability absence §29.7
+  named — and it is carried IN the remaining-blockers list above, never separated from it.
+- **The §31.5 supersession:** the decision record's OBSERVER-BLOCKED wording — specifically its "route (c)
+  NAMED UNAVAILABLE / hop-2 cannot be positively established by any implemented mechanism" clause — is
+  SUPERSEDED by this section. The decision's other clauses stand unchanged: no Skill/config/cache enablement, no
+  reduced acceptance requirement, no separately released island, no production adoption, `do-not-adopt-yet` still
+  carried, the E slot unspent.
+
+### 32.8 The gate battery (executed 2026-11-05 in this worktree on the exact pre-commit bytes)
+
+- **Focused families:** `same-second-completion` + `integration-completion` = **103 tests, 103 pass, 0 fail,
+  0 skipped** (by-name visible; includes the hop-2 exact establishment and every replay row). The route-(c) rows
+  NAMED outside those two families (the exact reader, its degrade controls, the clock-domain guard and the
+  admission exact-vs-raw row) are covered by the full local entry below.
+- **Entry SOLO runs:** tests/shell-wait-local-process.test.mjs = **412 tests, 412 pass, 0 fail, 0 skipped,
+  exit 0**; tests/shell-wait-native-interruption.test.mjs = **100 tests, 100 pass, 0 fail, 0 skipped, exit 0**;
+  tests/shell-wait-probe.test.mjs = **968 tests, 968 pass, 0 fail, 0 skipped, exit 0**.
+- **The spawned-suite pin honestly re-derived:** the guarded runner was measured directly on these bytes =
+  **513 tests, 513 pass, 0 fail** (local 412 + native 100 + the guarded probe row 1; 149.8 s). The pin moved
+  497 → 513 with the derivation registered in the pin comment: §31.8's four registry rows were added WITHOUT
+  re-running the spawned battery (HEAD's actual was 501, the pin rode stale at 497), and route (c) nets TWELVE
+  local rows — MEASURED by diff at the time of writing: **15 `test()` rows added, 3 removed** (the interrupted
+  draft's four rows plus the completion round's additions) — 400 + 12 = 412, so 412 + 100 + 1 = 513. No
+  selection is weakened; the contract still proves the exact three
+  entries and the guarded re-entry.
+- **Full shell-research suite (`npm run test:shell-research`, SOLO):** **1480 tests, 1480 pass, 0 fail,
+  0 cancelled, 0 skipped, exit 0** (1401.2 s). One earlier SOLO run on the same bytes reported 1480/1479/1 — the
+  one failure was the probe entry's nested-spawn row `an underscore alias of the reporter flag is replaced`
+  (its spawned suite exited 1 once); the row passed on its isolated re-run (149.3 s) and the clean full re-run
+  above passed 1480/1480. Disclosed as a concurrency/load flake, not a change-contradicting result: no test
+  touching the route-(c) behavior failed in either run.
+- **Other gates:** `node --test tests/test-selection.test.mjs` = **6/6, exit 0**; `npm run lint` exit 0;
+  `npm run typecheck` exit 0; `git diff --check` exit 0.
+
+### 32.9 Prohibited paths and commit
+
+The prohibited-path diff (`git diff 9c337403658ed8cb5319e5da75635154ba4aa851 --stat -- scripts/ hooks/ skills/
+agents/ .codex-plugin/ prompts/ schemas/ marketplace/ docs/superpowers/specs/ package.json npm-shrinkwrap.json`)
+is EMPTY. One NEW commit lands on the PR branch (no amend), staging exactly the four touched files — the observer,
+the driver replay, the local-process suite, the probe suite's re-derived spawned-count pin — and this report.
+Message exactly: `research: implement the exact-generation route and re-adjudicate readiness (user review)`.
+No push.
+
+### 32.10 Self-review corrections (2026-11-06, six findings on this section's own bytes; §31.7/§31.8 style — add-only; the amended route-(c) commit carries them; message unchanged)
+
+- **Finding 1 [P1 — the exact-mode hop-2 credited a same-pid successor's marker] — FIXED by the captured-identity
+  binding.** The reviewer's reproduction: witnessed child `kinfo:1000:400000` (1000400 ms), a same-pid successor's
+  marker whose CAPTURED start identity is `kinfo:1000:700000` (1000700 ms) with mtime 1000750 — the hop-2 witness
+  route ESTABLISHED with `witnessClass` before this fix, crediting the successor's marker as the witnessed
+  child's. **The rule:** the persisted marker's captured start identity (schema-additive, driver.mjs:2313) now
+  RIDES both the runtime transportMarker and the offline digest projection (the runtime composition previously
+  omitted it despite persisting it — the §32.3 premise "the marker carries kernel pid/ppid facts only" was FALSE
+  for the persisted projection and is corrected in place); in exact mode that captured identity is BOUND to the
+  record's `childStartIdentity` through the existing `spawn-witness-child-foreign` equality conjunct, so a
+  different exact identity is a DIFFERENT generation and refuses. **The incomplete-tuple rule:** a marker
+  WITHOUT a captured start identity leaves the exact tuple INCOMPLETE — exact mode NEVER engages (the hoisted
+  predicate requires the captured identity whenever a marker binding is consumed on a hop with no read-time
+  child numeric) and the COARSE adjudication applies; per the standing label discipline the named answer is the
+  coarse refusal (for the reviewer's schedule: `spawn-witness-marker-generation-ambiguous` — the marker sits
+  inside the witnessed child's coarse window), which can never credit. The exact child instant is carried by the
+  captured identity itself (it resolves through the closed parser); no read-time collection bound exists for a
+  marker, so the child-continuity read-ordering conjunct does not apply — the captured-identity equality plus
+  the exact marker ordering are the binding. **Coarse mode is byte-identical:** the equality conjunct is gated
+  (`exactMode || childOsStartInstant present`), so a captured coarse identity is consumed only in exact mode or
+  on hop 1. **RED→GREEN:** the successor schedule refused `spawn-witness-child-foreign` / the missing-identity
+  schedule refused `spawn-witness-marker-generation-ambiguous` (both RED as established+witnessClass before the
+  fix; the new rows are tests/shell-wait-local-process.test.mjs "route (c) negative: a same-pid SUCCESSOR's
+  marker…" and "…WITHOUT a captured start identity…"); the matching captured identity keeps establishing (the
+  updated exact hop-2 test carries it). **Replay mirror:** the digest projection passes `marker.startIdentity`
+  into the hop-2 verification; the replay's successor block (a coherent successor generation — its own captured
+  identity on the marker AND the transport observation, same pid + nonce digest) refuses
+  `spawn-witness-child-foreign` and the local layer stays false; the replay ppid-chain rule (marker.startIdentity
+  vs the transport observation) is untouched and coherent in the new fixtures.
+- **Finding 2 [P2 — a ±1000 coarse window survived in the exact path] — FIXED by gating the round-4 proximity
+  conjunct on `!exactMode`.** The conjunct (`boundaryEpochMs − childMarkerEpochMs > LINUX_BTIME_UNCERTAINTY_MS →
+  spawn-witness-marker-generation-unbound`, runtime + replay mirror) ran UNCONDITIONALLY because the exactMode
+  computation sat below it; reproduced: the same exact tuple established at boundary−marker = 1000 ms and refused
+  at 1050 ms, contradicting §32.3's "no ±1000 band". **The rule:** the proximity conjunct is a COARSE conjunct —
+  exactMode is hoisted above it (runtime, local-process-observation.mjs) and above the identity conjuncts
+  (replay, driver.mjs — pure derivations of the hop's expected facts; hoisting changes nothing else), and in
+  exact mode the marker generation is bound by the captured identity plus the exact ordering
+  (`markerTime >= childExactStart`). **RED→GREEN:** a new exact-mode control with boundary−marker = 9600 ms
+  ESTABLISHES with `witnessClass` (RED as `…-unbound` before the fix), while the COARSE control on the same
+  late-capture schedule still refuses `spawn-witness-marker-generation-unbound` — the windows are coarse-only,
+  pinned on both sides.
+- **Finding 3 [P3 — the real bridge mapped every sysctl failure to "gone", not degrade] — FIXED by the rc
+  split.** The shipped bridge folded `rc != 0` and `len == 0` into one `None` answer; the measured failure modes
+  are dead pid → rc=0, len=0 (correctly gone) and UNDERSIZED buffer → rc=-1, errno 12, len=0 — so any rc != 0
+  kernel answer read a LIVE process as gone → `readMacProcessStart` returned undefined instead of degrading to
+  ps (a live process reading as `ZCODE_SHELL_WAIT_PROCESS_EXITED`). **The split:** the bridge now returns
+  `{"failed": true}` on `rc != 0` (classified malformed → DEGRADE to ps) and `None` only on `rc == 0 && len == 0`
+  (gone); `classifyKinfoAnswer` maps the failed marker accordingly, and the negative-family row was corrected to
+  cover the real failure shape — the rc=-1 injection pins the ps-degrade outcome, and a SOURCE-LEVEL pin asserts
+  the failed branch precedes the gone branch with the pre-fix folded mapping absent. **RED→GREEN:** the source
+  pin RED on the pre-fix bytes (the folded mapping present); a direct python demonstration of the forced rc=-1
+  case shows OLD → `None` (gone) vs NEW → `{"failed": true}`; GREEN after the fix (the failed injection keeps the
+  established ps identity — never gone, never fabricated). The `{ malformed: 3240 }` seam row remains valid for
+  the bridge's REAL undersized branch (`0 < len < 648`); the §32.2/§32.4 degrade wording now holds for the
+  bridge, not only for the seam.
+- **Finding 4 [P3 — the +12 narrative] — CORRECTED.** The §32.8/pin wording said "this round adds eight local
+  rows"; the MEASURED diff is **15 `test()` rows added, 3 removed → net +12** (400 + 12 = 412; the interrupted
+  draft's four rows plus the completion round's additions). The pin comment and §32.8 now state the measured
+  derivation; the 513 = 412 + 100 + 1 pin itself was correct and verified.
+- **Finding 5 [P3 — the remaining-E-blockers list omitted the production wiring] — CORRECTED.** §32.7's blocker
+  list now carries THREE entries: the 0.163.0 binary re-provisioning/re-pin (§30.4), **the production
+  capture/activation wiring** (the installed-host launch-boundary emission is not wired and
+  `ZCODE_SHELL_WAIT_KINFO_EXACT` has no production call site — E acceptance on the same-second daemon-hop
+  conjunct DEPENDS on that wiring being present and activated at launch time, an explicit launch-time activation
+  obligation), and new user launch authority. The caveat bullet now states the wiring fact is carried IN the
+  blockers list, never separated from it.
+- **Finding 6 [P3 — the bridge call described as "execFile"] — CORRECTED.** §32.1 now describes the actual call:
+  the module's `runProcess` helper — a direct `spawn` with the shell disabled, static script text and the numeric
+  pid as the only argv (the security property holds and is now stated accurately). No code change.
+- **Prior-counterexample re-run:** the focused `same-second-completion` + `integration-completion` families on
+  the amended bytes = **105 tests, 105 pass, 0 fail, 0 skipped** (103 prior + the two new hop-2 negatives; by-name
+  visible). **Movement enumeration (honest):** NO prior-row verdict changed. The only expectation edits are
+  INSIDE this section's own exact rows — the hop-2 exact runtime test's marker now carries its (matching)
+  captured start identity (every prior row inside it keeps its verdict, and it gains the late-capture
+  exact/coarse no-window controls), and the exact hop-2 replay row gains the successor and no-window blocks in
+  the same row. The standing coarse table — §28.22's three refusal schedules, the route-(b) positives, the
+  coarse hop-2 controls (ambiguous/unbound/v1 and the late-capture coarse control), the junction and preflight
+  rows — is byte-identical, all green inside the focused families and the full local entry.
+- **Battery (executed 2026-11-06 on the exact amended bytes):** local SOLO = **414 tests, 414 pass, 0 fail,
+  0 skipped, exit 0**; native SOLO = **100 tests, 100 pass, 0 fail, 0 skipped, exit 0**; probe SOLO = **968
+  tests, 968 pass, 0 fail, 0 skipped, exit 0**; the guarded spawned runner measured directly = **515 tests,
+  515 pass, 0 fail** (414 + 100 + 1; the pin moved 513 → 515 with the +2 registered in the pin comment);
+  full `npm run test:shell-research` SOLO = **1482 tests, 1482 pass, 0 fail, 0 cancelled, 0 skipped, exit 0**
+  (1380.3 s; no flake); `node --test tests/test-selection.test.mjs` = 6/6 exit 0; `npm run lint` exit 0;
+  `npm run typecheck` exit 0; `git diff --check` exit 0. Prohibited-path diff vs
+  `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY. The six fixes amend the EXISTING route-(c) commit (message
+  unchanged) — no push.
+
+### 32.11 Codex-review gate round 1 (2026-11-06, three P2 findings, all pre-existing in this commit; §32.10 style — add-only; the amended route-(c) commit carries them; message unchanged)
+
+- **Finding 1 [P2 — the v2 numeric-start validation was lost after the version bump] — FIXED, runtime AND replay.**
+  The reviewer's finding verbatim: "For retained v2 witnesses, the numeric validation still checks only
+  SPAWN_ANCESTRY_WITNESS_VERSION, which is now 3. Consequently, a v2 record with childOsStartInstantMs: 'garbage'
+  is admitted and can establish the companion-to-daemon hop because subsequent numeric checks skip it; the base
+  commit rejected this record. The replay has the same regression. Apply the positive-integer-or-null validation
+  to both v2 and v3." Confirmed exactly: the gate sat on `record.version === SPAWN_ANCESTRY_WITNESS_VERSION`
+  (now 3), so the 2 → 3 bump silently LOOSENED v2's existing validation. **The fix:** the
+  positive-integer-or-null validation is VERSION-UNGATED across `version === 2 || version ===
+  SPAWN_ANCESTRY_WITNESS_VERSION` (runtime, local-process-observation.mjs validateSpawnWitnessRecord; replay,
+  driver.mjs verifyPersistedSpawnWitnessEstablishment — the same gate form). **RED→GREEN:** a new regression pin
+  (runtime: tests/shell-wait-local-process.test.mjs "route (c) regression pin: the numeric childOsStartInstantMs
+  validation is VERSION-UNGATED across v2 and v3") — the v2 garbage-string record RED as ADMITTED with the
+  garbage riding the admitted identity (exactly the reviewer's reproduction), GREEN as
+  `spawn-witness-shape-invalid` after; the v2-valid control admits; the v3-garbage variant refuses; the v3-valid
+  control admits. The replay pin (tests/shell-wait-local-process.test.mjs "integration-completion replay
+  regression pin (§32.11 Findings 1–2)") — the v2-garbage projection RED as settled with ZERO refusals (the
+  later numeric checks silently skipped it), GREEN refusing `spawn-witness-shape-invalid`.
+- **Finding 2 [P2 — the replay did not validate the exactness flag's type] — FIXED.** The reviewer's finding
+  verbatim: "For a v3 projection containing startIdentityExact: null or 'false', this check falls through to
+  coarse verification instead of rejecting the malformed record. An otherwise valid invocation witness then
+  returns no replay refusal, although runtime admission rejects the identical flag with
+  spawn-witness-shape-invalid. Require a strict boolean before evaluating exact-mode self-consistency so
+  persisted evidence cannot receive credit when runtime admission would refuse it." Confirmed exactly: the
+  replay's exact-vs-raw block keyed on `startIdentityExact === true`, so null/'false' silently fell to coarse.
+  **The fix:** the replay now mirrors the runtime admission's strict-boolean shape check verbatim
+  (`startIdentityExact !== true && !== false → spawn-witness-shape-invalid` for v3, driver.mjs, immediately
+  before the exact-vs-raw self-consistency). **RED→GREEN:** the replay pin's null and 'false' variants RED as
+  settled with zero refusals (the coarse fall-through the reviewer described), GREEN refusing
+  `spawn-witness-shape-invalid`; the RUNTIME side of the same variants was already refusing before the fix
+  (pinned in the runtime regression pin's row (e) — runtime/replay agreement now holds both directions).
+- **Finding 3 [P2 — an exact-read degradation was misclassified as PID reuse] — FIXED by design (a),
+  representation-stable comparison.** The reviewer's finding verbatim: "With exact reads enabled, a transient
+  bridge failure can change an unchanged process's identity representation from kinfo:... to ps text between the
+  inspector's two reads. The raw-string comparison then throws identity changed, which becomes
+  start-identity-generation-changed and can terminally latch reuse in exit adjudication. This is reproducible
+  with identical PID/PPID and a successful exact read followed by a throwing exact seam. Preserve comparable
+  representations or classify lost exactness as an unverified read, not positive generation-change evidence."
+  Confirmed exactly: the inspector's raw `before.startIdentity !== after.startIdentity` string comparison threw
+  'identity changed' → `start-identity-generation-changed` (the terminal reuse latch) for a process whose PID
+  and PPID never changed. **The design choice: (a), preserve comparable representations — with the verified
+  basis that the ps-text form is ALWAYS derivable alongside the kinfo form at zero extra cost:** the exact path
+  already runs `psIdentityRead` for the kernel parent link (local-process-observation.mjs readMacProcessStart),
+  so every exact read result now carries `coarseStartIdentity` — the ps text of the SAME read (the seam
+  composition path carries it identically from the ps seam result; the ps path carries its own text). The
+  double-read comparison is then representation-stable: when BOTH reads carry the exact form, the exact strings
+  decide (the microsecond discrimination is RETAINED — a same-second successor is still caught); otherwise the
+  COARSE representations decide, and a form-only difference with equal coarse representations is the SAME
+  generation at this comparison's resolution — never positive change evidence. This matches the all-coarse
+  path's pre-existing discrimination exactly, so no resolution is claimed beyond what the degraded read proves.
+  (Design (b) — classifying a form-only change as an unverified read — was rejected as weaker: it would
+  RETRY-flap on a persistently degraded reader and burn the attempt budget, while (a) resolves the comparison
+  honestly at the coarse level with no resolution overclaim.) The extra member stays an internal read-result
+  field: the observation constructor whitelists its fields, so no persisted shape, digest or projection changes.
+  **RED→GREEN:** the new test (tests/shell-wait-local-process.test.mjs "route (c) representation stability
+  (§32.11 Finding 3)") — the reviewer's exact reproduction (identical PID/PPID; a successful exact read then a
+  throwing exact seam) RED as the 'identity changed' throw reaching `start-identity-generation-changed`, GREEN
+  after: the inspector resolves with the second read's honest ps-text representation, the observation is
+  ESTABLISHED, and the terminal reuse class never fires; THE CONTROL — a real generation change (both reads
+  coarse, the ps text actually differs) still throws and still latches
+  `['unestablished', 'start-identity-generation-changed']`.
+- **Scope note kept honest:** the representation-stable comparison covers the INSPECTOR's double read (the
+  finding's reproduction surface — it is the same inspector every observeLocalProcess and witness-emitter
+  boundary read runs through). The exit adjudicator's cross-observation comparisons still bind a generation by
+  the identity form it captured; a degraded LATER observation there compares by its own form and is classified
+  by the existing carried-identity rules — the exact route remains env-opt-in (`ZCODE_SHELL_WAIT_KINFO_EXACT`),
+  so no coarse-mode byte changes.
+- **Prior-counterexample re-run:** the focused `same-second-completion` + `integration-completion` families on
+  the amended bytes = **106 tests, 106 pass, 0 fail, 0 skipped** (105 prior + the replay regression pin; the
+  runtime regression pin and the representation-stability row are named outside those families and are covered
+  by the full local entry). **Movement enumeration (honest):** NO prior-row verdict changed — the three new rows
+  are pure additions; the local entry grew 414 → 417 (+3) and the spawned-suite pin moved 515 → 518
+  (417 + 100 + 1), re-measured on the amended bytes.
+- **Battery (executed 2026-11-06 on the exact amended bytes):** local SOLO = **417 tests, 417 pass, 0 fail,
+  0 skipped, exit 0**; native SOLO = **100 tests, 100 pass, 0 fail, 0 skipped, exit 0**; probe SOLO = **968
+  tests, 968 pass, 0 fail, 0 skipped, exit 0** (a clean re-run; the FIRST probe solo on these bytes reported
+  968/960/8 — ALL eight failures were the probe entry's nested-spawn rows, caused by MY OWN spawned-count pin
+  arithmetic slip: the pin was set to 517 while the three new rows move the aggregate to 417 + 100 + 1 = 518;
+  the pin was corrected, the guarded runner re-measured directly = **518 tests, 518 pass, 0 fail**, and the
+  clean probe re-run above passed 968/968. Disclosed as MY OWN arithmetic error — not a code flake and not a
+  change-contradicting result; no test touching the three findings' behavior failed); the guarded spawned
+  runner measured directly = **518 tests, 518 pass, 0 fail** (417 + 100 + 1); full
+  `npm run test:shell-research` SOLO = **1485 tests, 1485 pass, 0 fail, 0 cancelled, 0 skipped, exit 0**;
+  `node --test tests/test-selection.test.mjs` = 6/6 exit 0; `npm run lint` exit 0; `npm run typecheck` exit 0;
+  `git diff --check` exit 0. Prohibited-path diff vs `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY. The
+  three fixes amend the EXISTING route-(c) commit (message unchanged) — no push.
+### 32.12 Codex-review gate round 2 (2026-11-06, three P2 findings on §32.11's amended bytes; §32.11 style — add-only; the amended route-(c) commit carries them; message unchanged)
+
+- **Finding 1 [P2 — startup-duty generation binding rejects exact timestamps] — FIXED, runtime AND replay.**
+  The reviewer's finding verbatim: "When the exact reader is enabled on Darwin, ordinary non-second-aligned
+  starts now produce timestamps such as 1793855520123. However, joinLocalDuty still treats every non-proc:
+  identity as whole-second lstart evidence and requires equality with a second boundary. Consequently, valid
+  invocation and broker observations fail with generation-start-second-mismatch, preventing local settlement.
+  Add exact-form handling to the startup-duty binding and its replay mirror; the current replay tests use
+  second-aligned exact identities that conceal this failure." Confirmed exactly: the committed darwin arm
+  required `startInstant === startSecond || startInstant === startSecond - 1000`, so any NON-second-aligned
+  exact ms refused a valid writer. **The fix:** a dedicated exact-form arm before the whole-second arm in BOTH
+  layers, byte-mirrored — the runtime joinLocalDuty (local-process-observation.mjs) and the replay mirror
+  joinRecordLocalProcessDuties (driver.mjs, refusing `admission-start-mismatch`): the kinfo identity's own
+  EXACT ms is compared against the write-time expectation by EXACT arithmetic over the registered magnitudes —
+  creation KNOWN LATER than the record's precise start (startOriginMs) by more than
+  LINUX_BTIME_UNCERTAINTY_MS (1000) is DEMONSTRABLY a successor (a resolution the whole-second floor could
+  never prove — the exact rule resolves the documented same-second residual rather than widening any bound);
+  creation earlier than the record's own start second by more than the same tolerance keeps the
+  fork-before-boundary refusal arm; within the bounds the binding settles. The COARSE form keeps the
+  second-boundary equality byte-identically (the arm is entered only when parseExactStartIdentity matches,
+  which is exported for exactly this mirror plus the Finding 2 consumers). **RED→GREEN:** two new rows —
+  runtime ("route (c) startup-duty exact binding (§32.12 Finding 1)"): the reviewer's 1793855520123 shape RED
+  as `generation-start-second-mismatch`, GREEN settled `['established', []]`; the successor control (an exact
+  creation +1500 ms after the record's precise start) still refuses with the same label; the COARSE controls
+  keep the aligned-equality settle and the non-matching refusal byte-identically. Replay
+  ("integration-completion startup-duty exact binding (§32.12 Finding 1)"): kinfo:1:500000 (= 1500 ms,
+  NON-second-aligned) at BOTH admission slots RED as `["admission-start-mismatch","admission-start-mismatch"]`,
+  GREEN settled with the local layer crediting the exact-bound duties; the coarse control keeps the registered
+  containment refusal.
+- **Finding 2 [P2 — representation stability only covers one inspection's two reads] — FIXED by design (a),
+  representation-stable comparison extended to every cross-observation consumer.** The reviewer's finding
+  verbatim: "This normalization only covers the two reads inside one inspection. If an earlier observation
+  captured kinfo:<sec>:<usec> and a later inspection degrades to matching ps text, observeLocalProcess still
+  compares the returned string directly with expectedStartIdentity and reports
+  start-identity-generation-changed. The exit adjudicator can latch that as PID reuse, while cleanup
+  verification also rejects the unchanged process. Carry representation-aware comparison through these
+  consumers, treating unavailable exact evidence as uncertainty rather than positive replacement evidence."
+  Confirmed exactly at all three consumer surfaces. **The design statement (the F2 representation rule):** the
+  new relation helper startIdentityGenerationRelation(observed, bound) returns 'same' | 'different' |
+  'uncertain' — identical strings are 'same'; NEITHER side exact → the pre-existing raw-string semantics
+  byte-identically ('S1' vs 'S2' is 'different' — every coarse/synthetic/Linux pair); BOTH sides exact → the
+  EXACT STRINGS decide (the registered route-(c) slice-2 semantic: distinct exact instants are DIFFERENT
+  generations — the microsecond discrimination is never collapsed to the shared second, so a same-second
+  P0/P1 successor stays demonstrably different at every consumer); exactly ONE side exact → the comparison
+  runs at the ps text's resolution (the coarse representation is always derivable from the exact ms — the
+  §32.11 Finding 3 basis): the exact side's own creation second against the parsed lstart second — MATCHING →
+  'same' (the honest degradation: the degraded read verifies the same generation at its available resolution,
+  never positive replacement evidence — chosen over the 'uncertain' classification for coherence with
+  §32.11's design (a), which already resolves the identical degradation inside one inspection as the SAME
+  generation; calling the same pair uncertain one layer up would make every degraded read retriable-flap
+  against an established baseline and burn the attempt budget); DIFFERENT second → 'different' (positive
+  replacement evidence); an exact form against an unresolvable string → 'uncertain' — NEVER positive
+  replacement evidence. The gate helper startIdentitiesDefinitivelyDiffer (relation === 'different') carries
+  exactly the positive-evidence semantics to the consumers, so uncertainty can never latch. **The consumers:**
+  (a) observeLocalProcess — the observedThenGone ride, the round-26 identity-mismatch promotion and the
+  established-observation expectedStartIdentity gate all consume the gate helper; (b) adjudicateLocalExit —
+  all seven carried/candidate identity comparisons including the presence-relation loop (same → the presence
+  horizon advances; different → the reuse latch; uncertain → the non-deciding unestablished class, never
+  latching); (c) cleanup verification (driver.mjs readProcessIdentity) and the transport-exit generation latch
+  consume the relation/gate — an unresolvable pair still refuses the cleanup BY NAME (uncertainty cannot
+  verify the cleanup's target) and never latches a transport generation change. No persisted shape changes:
+  the relation consumes only the already-carried identity strings (the observation verdicts keep their
+  whitelisted constructor fields). **RED→GREEN:** the new row ("route (c) representation-aware consumers
+  (§32.12 Finding 2)") — the reviewer's sequence (an earlier kinfo:1793855520:123000 observation bound; a
+  later inspection degraded — the exact read malformed — to the MATCHING ps text) RED as
+  `['unestablished', 'start-identity-generation-changed']` from observeLocalProcess, GREEN as
+  `['established', null]` with the observation carrying what was observed, honestly; the exit-adjudicator arms
+  (a carried matching-ps identity never latches; a carried different-second identity latches; a carried
+  same-second distinct-exact identity LATCHES — the slice-2 semantic held at this consumer layer too); the
+  relation contract pins (matching pair 'same'; different-second 'different'; raw string pairs
+  byte-identical; kinfo-vs-kinfo distinct instants 'different'). The REAL-successor controls (a
+  different-second ps text; a same-second distinct exact identity) still refuse/latch at every layer.
+  **Amendment during this round (honest):** the inherited draft's relation implemented the BOTH-exact arm as
+  the second-floor fall-through, contradicting its own docstring and the registered slice-2 semantic — the new
+  pin RED (relation returned 'same' for kinfo:1793855520:456000 vs kinfo:1793855520:123000), then fixed to the
+  exact-string decision, GREEN; the exit-adjudicator same-second-successor latch pin added in the same row.
+- **Finding 3 [P2 — cancellation not rechecked between the exact and ps reads] — FIXED.** The reviewer's
+  finding verbatim: "If the observation signal aborts while the exact read is in flight, this code still
+  starts a new ps query after the window closes. The inspector's cancellation checks surround the combined
+  readStart operation, so they cannot prevent this additional subprocess, which can extend teardown by its
+  two-second timeout. Recheck cancellation between the exact query and the ps query, including the degradation
+  path." Confirmed exactly. **The fix:** readMacProcessStart rechecks the observation's abort signal between
+  the exact query and the ps query, and again on the degradation path before the fall-through ps read: an
+  aborted observation never starts the subsequent subprocess. The recheck throws the inspector's own
+  window-closed error shape (observationWindowClosed) carrying the exact read's observed identity when it DID
+  observe one (evidence preservation — never 'gone', never a fabricated identity); observeLocalProcess's
+  window-closed return carries that identity on the verdict (the uniform ride discipline — the same carriage
+  the round-26/27 rides give), so the exit adjudicator can still classify it against the bound generation
+  (equal → non-deciding; demonstrably different → the latch). **RED→GREEN:** the new row ("route (c)
+  cancellation recheck (§32.12 Finding 3)") — the abort fired inside the exact seam (the window closes while
+  the exact read is in flight) RED with the ps query count 1 (the post-abort subprocess the reviewer named),
+  GREEN with the count 0 on BOTH the exact path and the degradation path, the verdict unestablished carrying
+  the observed identity 'kinfo:1793855520:123000'; the CONTROL (a non-aborted double read) issues both queries
+  as today (exact 2 + ps 2) and settles.
+- **Inherited-draft disposition (this round resumed an uncommitted ~412-line partial draft left by a
+  quota-killed predecessor; every piece was re-verified on HEAD bytes and completed):**
+  local-process-observation.mjs — the F1 exact arm, the F2 relation plus the consumer rewires and the F3
+  inner recheck were present, with THREE gaps: (i) the F3 window-closed verdict DROPPED the carried
+  observedStartIdentity (the recheck threw it, the verdict lost it — completed: the ride now lands on the
+  verdict); (ii) the F2 relation's BOTH-exact arm fell through to the second-floor comparison against its own
+  docstring and the registered slice-2 semantic (fixed to the exact-string decision, RED→GREEN pinned); (iii)
+  two `unknown`-narrowing type errors at the adjudicator candidate/observation comparisons (fixed with string
+  casts; typecheck clean). driver.mjs — the F1 replay mirror and both F2 consumer hunks were present and
+  correct (kept). tests/shell-wait-local-process.test.mjs — all four finding rows were present and kept (the
+  F2 row extended with the exact-vs-exact pins), but the frozen public-surface pin ("the public surface of the
+  observer module is the frozen contract") was NOT updated for the three new exports — the full local run RED
+  ("the observer exposes exactly the admission/adjudication/provenance surface": +parseExactStartIdentity,
+  +startIdentitiesDefinitivelyDiffer, +startIdentityGenerationRelation) — completed: the three pure
+  comparison/parsing helpers joined the frozen list (they are required by the replay-mirror import and the
+  rows themselves; the no-stop-authority/no-lifecycle contract is unchanged). tests/shell-wait-probe.test.mjs
+  — the spawned-suite pin rode STALE at 518: re-derived honestly for the four new local rows (417 → 421),
+  421 + 100 + 1 = 522, with the derivation comment extended in the file's own style. The interim solo runs on
+  the mid-fix bytes (before the frozen-surface and pin completions) reported exactly those two failure
+  signatures — local 420/421 with the frozen-surface row, probe 960/968 with all eight failures the
+  spawned-count rows on the stale pin — both superseded by the final battery below.
+- **RED (on committed HEAD bytes, verified before any fix — the draft's four new rows run against the HEAD
+  implementation with the sources reverted, then restored and md5-verified):** all four rows fail with the
+  reviewers' exact signatures — F2: `start-identity-generation-changed` on the degraded-to-matching-ps pair;
+  F3: the ps query count 1 after the in-flight abort; F1 runtime: `generation-start-second-mismatch` on the
+  1793855520123 shape; F1 replay: `["admission-start-mismatch","admission-start-mismatch"]` — then GREEN
+  after the fixes. The five-row focused GREEN (the four rows plus the route-c slice-2 exact-vs-exact control)
+  = 5 tests, 5 pass, 0 fail.
+- **Focused re-run (same-second-completion + integration-completion families, by name):** **107 tests, 107
+  pass, 0 fail, 0 skipped** on the final bytes (§32.11 measured 106 = 105 prior + its replay pin; the +1 is
+  this round's integration-completion exact-binding row — the other three new rows are named "route (c) …"
+  outside these families and are covered by the full local entry). **Movement enumeration (honest):** NO
+  prior-row verdict changed — all 106 prior family rows still pass; the only movement is the +1 addition
+  (106 → 107). The local entry grew 417 → 421 (+4) and the spawned-suite pin 518 → 522 (421 + 100 + 1),
+  re-derived on the amended bytes.
+- **Battery (executed 2026-11-06 on the final amended bytes):** local SOLO = **421 tests, 421 pass, 0 fail,
+  0 skipped, exit 0**; focused families = 107/107 (above); native SOLO = **100 tests, 100 pass, 0 fail,
+  0 skipped, exit 0**; probe SOLO = **968 tests, 967 pass, 1 fail** — the ONE failure is the real-network
+  marketplace-build row ("the real marketplace build and plugin install path yields an installable isolated
+  fixture") failing with npm ECONNRESET, an environmental network error unrelated to these bytes: the SAME
+  row passed inside the full-suite run minutes later AND in a dedicated solo re-run (1 test, 1 pass) —
+  honest flake, not relabeled; full `npm run test:shell-research` SOLO = **1489 tests, 1489 pass, 0 fail,
+  0 cancelled, 0 skipped, exit 0** (1485 prior + 4 = 421 + 100 + 968, honestly re-derived);
+  `node --test tests/test-selection.test.mjs` = **6 tests / 6 pass / 0 fail** exit 0; `npm run lint` exit 0;
+  `npm run typecheck` exit 0 (after the two string casts); `git diff --check` exit 0. Prohibited-path diff vs
+  `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY.
+- The three fixes amend the EXISTING route-(c) commit (message unchanged) — no push.
+
+### 32.13 Codex-review gate round 3 (2026-11-06, four P2 findings on §32.12's amended bytes; §32.12 style — add-only; the amended route-(c) commit carries them; message unchanged)
+
+- **Finding 1 [P2 — the exact upper bound admitted provable successors] — FIXED (runtime + replay mirror).** The
+  reviewer's finding verbatim: "The new upper bound accepts provable successors in the following second. For
+  example, a record with startOriginMs=1900 and firstWritePreciseMs=1920 accepts kinfo:2:100000 (creation at
+  2100) as established, although that process did not exist when the record was written. The previous coarse rule
+  rejects this next-second generation. Reject this provable successor rather than granting an extra second after
+  recordStart, and mirror the correction in the replay." Confirmed exactly: the §32.12 bound
+  (`startInstant > recordStart + LINUX_BTIME_UNCERTAINTY_MS`) granted a full second of unearned tolerance AFTER
+  recordStart. **The fix — the upper-bound derivation rule:** the exact-mode binding's upper bound is now the
+  record's OWN write evidence (`startInstant > recordWrite`, i.e. firstWritePreciseMs): a creation AFTER the
+  write did not exist when the record was written — a provable successor, refused with the standing label
+  `generation-start-second-mismatch` (trigger widened, label kept — the §28-line precedent). **Ties establish**
+  (the module's convention — the reviewer's required legitimate case: a write just after the child's exact start
+  still establishes), the lower arm keeps the fork-before-boundary tolerance unchanged, and the coarse branch is
+  byte-identical. The replay mirror (driver.mjs admission-start containment) applies the identical
+  `startInstant > recordWrite` bound (runtime/replay agreement). **RED→GREEN:** the reviewer's exact schedule RED
+  as established (the successor credited), GREEN refusing `generation-start-second-mismatch`; the round-6-era
+  positive control (write 1920, creation 1900) keeps establishing; a creation slightly BEFORE the record's start
+  keeps settling; the coarse controls (§32.12's rows) unchanged.
+- **Finding 2 [P2 — the replay's transport checks were not representation-aware] — FIXED (four comparisons).**
+  The reviewer's finding verbatim: "When an exact transport observation is followed by a retry degraded to
+  matching ps text, the runtime now correctly avoids latching replacement. However, joinRecordLocalProcessDuties
+  still compares transport retry and carried identities using raw inequality. Replaying the same successful
+  sequence therefore produces transport-exit-generation-foreign and rejects the local layer. Apply the generation
+  relation to the replay's replacement and presence-horizon checks too; a persistence/replay regression should
+  cover this fallback sequence." Confirmed exactly. **The fix (driver.mjs joinRecordLocalProcessDuties):** all
+  four transport identity comparisons apply `startIdentitiesDefinitivelyDiffer` — the exit-shape latch, the
+  retained-sequence latch (both the established-read and the carried-identity disjuncts), the
+  presence-horizon-contributor binding (a matching-ps retained read now CONTRIBUTES its instant to the horizon —
+  the raw inequality had been shrinking the horizon the exit is judged against; an unresolvable pair stays
+  excluded, uncertainty contributes nothing), and the exit's carried-identity foreign check (uncertainty is never
+  foreign). **RED→GREEN:** the exact-then-degraded fallback sequence through the persisted block RED as
+  `transport-exit-generation-foreign` (settled false), GREEN with ZERO refusals and settled true (the local layer
+  credits); the CONTROL — a retained retry whose ps text is a genuinely different second — still latches
+  `transport-exit-generation-foreign` and refuses. Runtime/replay agreement holds both directions (the runtime
+  latch was made representation-aware in §32.12).
+- **Finding 3 [P2 — the emitter's retained comparisons compared spellings] — FIXED (retained-set semantics
+  stated).** The reviewer's finding verbatim: "Exact identities also reach the emitter's retry history, but its
+  two retainedChildIdentities.has(...) checks still compare spellings. If one child inspection observes an exact
+  identity and then suffers an ordinary I/O failure, a successful retry degraded to matching ps text incorrectly
+  returns spawn-witness-child-generation-changed without writing a witness. This is reproducible with an
+  unchanged PID, PPID, nonce and creation time. Use the generation relation for both retained-history comparisons
+  while preserving genuine replacement latching." Confirmed exactly. **The fix
+  (local-process-observation.mjs emitSpawnAncestryWitness):** a `retainedIdentityVerdict` helper evaluates the
+  candidate against EVERY retained prior through `startIdentityGenerationRelation`: ANY definitively-different
+  prior latches the terminal `spawn-witness-child-generation-changed` (genuine replacement latching preserved);
+  any same-generation prior RETAINS (the candidate joins the retained spellings — the degraded-to-matching-ps
+  read of an unchanged child proceeds to the witness write); an ALL-uncertain candidate is NON-DECIDING — neither
+  latch nor retain (the spelling proves nothing and must not poison later comparisons). Both comparisons (the
+  error-carried ride and the successful read) consume the helper. **RED→GREEN (the fix demonstrably reverted for
+  the RED run, restored md5-verified):** the flapping-seam schedule (attempt 1 observes the exact identity;
+  ordinary I/O failures ride it on attempts 1–2; attempt 3 degrades to the MATCHING ps text) RED as
+  `spawn-witness-child-generation-changed` with NO witness written, GREEN established with the witness written
+  carrying the final read's honest ps-text form (`startIdentityExact` false — the flag declares what was
+  captured); the CONTROL — a retry observing a different-second ps text — still latches and never writes.
+- **Finding 4 [P2 — the rounding edge reported the actual creation second as foreign] — FIXED.** The reviewer's
+  finding verbatim: "For microseconds from 999500 through 999999, the parsed millisecond value rounds into the
+  next second. Flooring that rounded value here consequently reports a different generation against ps text for
+  the process's actual creation second. For example, kinfo:1793855520:999500 versus Thu Nov 5 05:12:00 2026
+  returns different, causing observeLocalProcess to report replacement and potentially block cleanup of the
+  unchanged process. Compare the parsed exact sec field directly with the ps second instead." Confirmed exactly
+  (the pre-fix arithmetic demonstrated: floor(1793855521000/1000) = 1793855521 ≠ 1793855520). **The fix
+  (startIdentityGenerationRelation's one-exact-side branch):** the exact side's second is its PARSED sec FIELD —
+  never floor(the rounded ms); the ps side's ms is itself whole-second so flooring it is exact. This flows
+  through `startIdentitiesDefinitivelyDiffer` to every consumer of the relation (the observation's
+  expectedStartIdentity comparison, the exit adjudicator, cleanup verification, the driver replay, the emitter's
+  retained set). **RED→GREEN:** the reviewer's pair RED as 'different', GREEN 'same'
+  (startIdentitiesDefinitivelyDiffer → false — the unchanged process is never positive replacement evidence and
+  cleanup verification proceeds); the symmetric form (ps text first) pinned; the CONTROLS — a genuinely
+  next-second exact instant stays 'different', a rounding-edge identity against the NEXT second's ps text stays
+  'different', the both-exact path keeps its exact-string discrimination, and the non-exact raw pair keeps its
+  pre-existing semantics.
+- **Prior-counterexample re-run:** the focused `same-second-completion` + `integration-completion` families on
+  the amended bytes = **108 tests, 108 pass, 0 fail, 0 skipped** (106 prior + the exact-write-window row and the
+  representation-aware-replay row; the emitter-retained-history and exact-second-comparison rows are named
+  outside those families and are covered by the full local entry). **Movement enumeration (honest):** NO
+  prior-row verdict changed — the four new rows are pure additions. The §32.12 rows' internal assertions are
+  UNAFFECTED by the Finding-1 bound change (their exact schedules keep startInstant ≤ recordWrite — the
+  write-postdates-start precondition the binding already enforced); the local entry grew 421 → 425 (+4) and the
+  spawned-suite pin moved 522 → 526 (425 + 100 + 1), re-measured on the amended bytes.
+- **Battery (executed 2026-11-06 on the exact amended bytes):** local SOLO = **425 tests, 425 pass, 0 fail,
+  0 skipped, exit 0**; native SOLO = **100 tests, 100 pass, 0 fail, 0 skipped, exit 0**; probe SOLO = **968
+  tests, 968 pass, 0 fail, 0 skipped, exit 0**; the guarded spawned runner measured directly = **526 tests,
+  526 pass, 0 fail** (425 + 100 + 1; the pin moved 522 → 526 with the +4 registered in the pin comment);
+  full `npm run test:shell-research` SOLO = **1493 tests, 1493 pass, 0 fail, 0 cancelled, 0 skipped, exit 0**
+  (1489 prior + 4 = 425 + 100 + 968, honestly re-derived); `node --test tests/test-selection.test.mjs` = 6/6
+  exit 0; `npm run lint` exit 0 (after the unused-variable removal); `npm run typecheck` exit 0;
+  `git diff --check` exit 0. Prohibited-path diff vs `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY. The four
+  fixes amend the EXISTING route-(c) commit (message unchanged) — no push.
+
+### 32.14 Codex-review gate round 4 (2026-11-06, four P2 findings on §32.13's amended bytes; §32.13 style — add-only; the amended route-(c) commit carries them; message unchanged)
+
+- **Finding 1 [P2 — mixed-resolution read returns an unverified exact identity] — FIXED (the return is the
+  JOINTLY VERIFIED resolution).** The reviewer's finding verbatim: "If the first exact query fails but the second
+  succeeds, this comparison verifies only the coarse identities, yet the function still returns after with its
+  exact identity. A same-second PID replacement between nonce verification and the second read can therefore
+  return the successor's exact identity with the predecessor's verified nonce. emitSpawnAncestryWitness
+  subsequently marks that result exact. Return only the jointly verified resolution, or require another exact
+  verification before granting exact evidence." Confirmed exactly (RED measured the successor's exact identity
+  `kinfo:1793855520:125000` returning from a mixed-resolution double read). **The fix
+  (local-process-observation.mjs inspectVerifiedProcessIdentity):** the RESOLUTION-CHOICE — when the two reads'
+  resolutions MIX (one exact, one degraded), the returned result is the COARSE form both reads verified (the
+  second read's own ps shape, `startIdentity` = `coarseStartIdentity` = the ps text — the ps path's own shape,
+  so no consumer change is needed), never the exact identity only one read saw; the downgrade is structurally
+  always possible without re-verification because the exact path's ps read already supplies the coarse
+  representation of the SAME read (`coarseStartIdentity`, §32.11 Finding 3); both-reads-exact agreement keeps the
+  exact identity unchanged (the CONTROL). The function's JSDoc return grew the second (coarse) arm honestly —
+  the type now declares the two possible return shapes. **RED→GREEN:** the reviewer's schedule (first exact
+  query fails transiently, second succeeds with a same-second successor) RED returning the unverified exact
+  identity, GREEN returning the jointly verified coarse form with the exact identity absent; the CONTROL — both
+  reads exact-agreeing — keeps the exact identity (`kinfo:1793855520:123000`, two kinfo calls).
+- **Finding 2 [P2 — cancellation overwrite loses the second observation] — FIXED (the second observation is
+  PRESERVED).** The reviewer's finding verbatim: "If cancellation occurs during the second exact query after it
+  observes a successor, this error carries the successor's identity, but the caller's rideObservedIdentity
+  overwrites it with the first read's identity. The resulting window-closed verdict loses positive replacement
+  evidence. Reproducing this sequence followed by confirmed absence makes adjudicateLocalExit report disappeared;
+  preserving the successor instead correctly produces pid-start-identity-reused. Preserve the second observation
+  and its timing rather than overwriting it." Confirmed exactly (RED measured the verdict carrying the
+  PREDECESSOR's identity `kinfo:1793855520:123000` — the overwrite). **The PRESERVATION RULE — the
+  window-closed error path preserves the SECOND read's observed identity and its timing (the LATER observation),
+  never overwriting it with the first read's ride:** in inspectVerifiedProcessIdentity's second-read catch, an
+  error that already CARRIES an observed identity (the §32.12 Finding-3 inner recheck shape — the window closed
+  over a successor the exact query had observed) is rethrown as-is with the second read's own dispatch bound
+  attached (`observedIdentityReadEpochMs` = the second read's taken instant) — reconciled with the round-13/14
+  carried-identity rules as {identity, taken/completed bounds}, where the SECOND observation's bounds are the
+  truthful ones; only errors that observed nothing inherit the uniform first-read ride (unchanged). The verdict
+  hop (observeLocalProcess's window-closed branch) carries the timing alongside the identity it already rode,
+  and the standing adjudicator rules classify the carried successor against the bound generation.
+  **RED→GREEN:** the reviewer's reproduction (cancellation during the second exact query after it observes the
+  successor, then confirmed absence) RED adjudicating `disappeared`, GREEN latching
+  `pid-start-identity-reused` with the second observation's dispatch bound riding the verdict; the CONTROL — a
+  cancellation during the FIRST read (no successor ever observed) keeps the plain window-closed verdict with the
+  FIRST identity's ride.
+- **Finding 3 [P2 — the termination guard bypasses the representation policy] — FIXED (the policy reaches
+  verifyUnchanged).** The reviewer's finding verbatim: "When capture obtains a kinfo identity and cleanup
+  degrades to matching ps text, this wrapper now accepts the observation, but the default termination path still
+  calls terminateVerifiedProcess, whose verifyUnchanged compares the raw identity strings. Cleanup consequently
+  returns attempted: false with an identity-change failure and sends no signal to the still-live target. Apply
+  the intended representation policy at the actual termination guard and test that complete path." Confirmed
+  exactly (RED measured `attempted: false` with the identity-change failure and zero kill calls).
+  **The fix (local-process-observation.mjs verifyUnchanged):** the termination guard's representation check is
+  `startIdentitiesDefinitivelyDiffer(record.startIdentity, identity.startIdentity)` — a kinfo capture vs a
+  degraded-to-MATCHING-ps verification is the SAME generation and the guard signals; a demonstrably different
+  generation and an unresolvable pair still fail fail-closed (the pid/ppid/nonce checks are unchanged).
+  **RED→GREEN (the complete default termination path through terminateVerifiedProcess):** the kinfo-captured
+  identity vs the matching-ps verification RED `attempted: false` + no signal, GREEN `attempted: true`,
+  `signalled: 'SIGTERM'` via the driver's default termination path semantics (the same function the driver's
+  cleanup calls at driver.mjs terminateVerifiedProcess call site), `exited: true`; the CONTROLS — a
+  different-second ps text (a REAL successor) still fails verification fail-closed (`attempted: false`, the
+  identity-change failure, the kill seam never invoked).
+- **Finding 4 [P2 — ancestry replay requires raw/numeric endpoint equality] — FIXED (resolution-aware endpoint
+  binding, runtime/replay agreement).** The reviewer's finding verbatim: "When an initial Companion or daemon
+  observation is exact and its refresh degrades to matching ps text, this new check accepts the refresh and the
+  runtime selects it as the ancestry endpoint. However, joinRecordLocalProcessDuties still requires raw
+  endpoint/base identity equality, and exact numeric equality even when resolution changes. A previously settled
+  fixture with kinfo:1:0 refreshed as Thu Jan 1 00:00:01 1970 now fails replay with
+  ancestry-endpoint-generation-foreign. Make endpoint replay use resolution-aware verification so accepted
+  runtime evidence replays consistently." Confirmed exactly (RED measured `ancestry-endpoint-generation-foreign`
+  on the reviewer's fixture). **The fix (driver.mjs joinRecordLocalProcessDuties, the companion/daemon endpoint
+  binding):** the generation check compares through `startIdentitiesDefinitivelyDiffer` (exact-vs-exact → exact
+  equality; resolution-mixed → the coarse-second comparison per the §32.13 Finding-4 sec-field rule; both-coarse
+  → the raw equality) and the round-33 instant agreement is RESOLUTION-AWARE: both-exact pairs keep exact
+  numeric equality, both-coarse pairs keep the round-33 raw numeric equality (a conflicting instant within one
+  resolution is contradictory evidence — unchanged), and ONLY a resolution mix compares at the coarse SECOND
+  (the exact side's parsed sec field — never floor(the rounded ms)); the runtime side already selects the
+  endpoint through the same relation (§32.12/§32.13), so runtime/replay agree both directions. **RED→GREEN:**
+  the reviewer's fixture (kinfo:1:0 refreshed as 'Thu Jan  1 00:00:01 1970') RED refusing
+  `ancestry-endpoint-generation-foreign`, GREEN with ZERO refusals and the local layer crediting; the CONTROLS —
+  a genuinely different generation ('Thu Jan  1 00:00:02 1970') still refuses
+  `ancestry-endpoint-generation-foreign`, and a resolution-mixed pair whose endpoint instant CONFLICTS with the
+  base (the endpoint's identity text matching the base's second while its observed instant field is a whole
+  second away) refuses `ancestry-endpoint-instant-foreign`.
+- **Inherited-draft disposition (the round-4 fixer died mid-fix; the continuation completed it — honest
+  accounting):** the observer hunks (Findings 1/2/3) and the driver mirror hunk (Finding 4) survived intact and
+  were kept; the four test rows survived and were kept EXCEPT the Finding-4 instant control, which was
+  UNREACHABLE as drafted (its fixture overrode the endpoint identity text to a different second AND moved the
+  shared start instant — the generation check refuses and breaks before the instant check can ever fire, so
+  `ancestry-endpoint-instant-foreign` could never be observed); the witness-block helper gained an
+  `companionEndpointStartEpochMs` parameterization (defaults to the shared instant — every other fixture is
+  byte-identical) and the control now conflicts on the INSTANT while the identity text matches the base's
+  second. Two gate-completions the interrupted draft had not reached: `npm run lint` flagged the mirror's
+  unused `endpointsBothExact` (removed — the disjunct it would serve is expressed by the mixed/exact branches
+  directly) and `npm run typecheck` flagged the Finding-1 return's `coarseStartIdentity` against the
+  function's JSDoc (the return type grew the honest second arm, above). The spawned-suite pin moved
+  526 → 530 (429 + 100 + 1), re-derived on the amended bytes and registered in the pin comment.
+- **RED verification (honest, on HEAD bytes):** the draft was stashed (all three files), the four rows run
+  against the committed code — all four RED with the predicted signatures (F1 measured the unverified exact
+  successor identity; F2 measured the predecessor's identity riding the verdict; F3 measured
+  `attempted: false` + the identity-change failure; F4 measured `ancestry-endpoint-generation-foreign`) — and
+  the draft restored byte-identically (md5 verified on all three files, stash dropped).
+- **Prior-counterexample re-run:** the focused `same-second-completion` + `integration-completion` families on
+  the amended bytes = **70 + 39 tests, 109 pass, 0 fail** (70 prior unchanged; integration-completion 38 → 39
+  with the new endpoint-binding row). **Movement enumeration (honest):** NO prior-row verdict changed — the
+  same-second-completion family is byte-for-byte 70/70 on both the HEAD and amended bytes; the
+  integration-completion family is +1 (the new row) with all 38 prior rows still passing. The three
+  observer-family rows (Findings 1/2/3) are named in the broker-daemon-hop describe outside these families and
+  are covered by the full local entry; the local entry grew 425 → 429 (+4).
+- **Battery (executed 2026-11-06 on the exact amended bytes):** local SOLO = **429 tests, 429 pass, 0 fail,
+  0 skipped, exit 0** (425 prior + 4); native SOLO = **100 tests, 100 pass, 0 fail, 0 skipped, exit 0**; probe
+  SOLO = **968 tests, 968 pass, 0 fail, 0 skipped, exit 0** (the re-derived pin 530 = 429 + 100 + 1 asserted
+  inside); full `npm run test:shell-research` SOLO = **1497 tests, 1497 pass, 0 fail, 0 cancelled, 0 skipped,
+  exit 0** (1493 prior + 4 = 429 + 100 + 968, honestly re-derived; duration 1404.9 s); `node --test
+  tests/test-selection.test.mjs` = **6 tests / 6 pass / 0 fail** exit 0; `npm run lint` exit 0 (after the
+  unused-variable removal); `npm run typecheck` exit 0 (after the JSDoc return-arm widening); `git diff
+  --check` exit 0. Prohibited-path diff vs `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY. The four fixes
+  amend the EXISTING route-(c) commit (message unchanged) — no push.
+
+### 32.15 Codex-review gate round 5 (2026-11-07, four P2 findings on §32.14's amended bytes; §32.14 style — add-only; the amended route-(c) commit carries them; message unchanged)
+
+- **Finding 1 [P2 — the termination guard permits signalling on `uncertain`] — FIXED (the guard requires the
+  POSITIVELY same generation; the fail-closed rule).** The reviewer's finding verbatim: "When the termination
+  reader returns an unresolvable identity for a kinfo-bound target, the generation relation is uncertain, so this
+  check permits signalling. A reproduction with matching pid/ppid/nonce and startIdentity: 'unparseable' sends
+  SIGTERM and reports successful termination. Require the relation to be same, rather than merely not demonstrably
+  different, so an unverifiable target remains unsignalled." Confirmed exactly (RED measured
+  `{"attempted":true,"signalled":"SIGTERM","exited":true,"failure":null}`). **The fix
+  (local-process-observation.mjs verifyUnchanged):** the termination guard requires
+  `startIdentityGenerationRelation(record.startIdentity, identity.startIdentity) === 'same'` — the FAIL-CLOSED
+  POSITIVE-SAME RULE: 'same' signals; 'different' blocks with the identity-change failure (unchanged); 'uncertain'
+  blocks with the HONEST UNVERIFIED classification ("the exact fake-ZCode process identity could not be verified
+  before/during signalling" — uncertainty never permits signalling, and it is never reported as an observed
+  identity change); a non-string observed identity classifies unverifiable too (the relation is never handed a
+  non-string). BOTH verifyUnchanged call sites consume the tri-state verdict: the pre-signal guard and the
+  pre-SIGKILL escalation guard (a verification that turns unresolvable after the SIGTERM never escalates).
+  **RED→GREEN:** (a) the reviewer's reproduction (matching pid/ppid/nonce, startIdentity 'unparseable') RED
+  SIGTERM + successful termination, GREEN `attempted:false`, zero kill calls, `signalled:null`, `exited:false`,
+  the could-not-be-verified failure; (b) the escalation schedule (the pre-signal reads verify the matching ps
+  text, SIGTERM is taken, waitForExit throws, the pre-escalation read turns unresolvable) RED
+  `["SIGTERM","SIGKILL"]`, GREEN `["SIGTERM"]` + the during-termination could-not-be-verified failure,
+  `exited:false`; the CONTROLS — the positively-same matching-ps verification still signals (the §32.14 Finding-3
+  row re-run green, unchanged) and still escalates exactly as before (`["SIGTERM","SIGKILL"]`, `exited:true`,
+  `failure:null`).
+- **Finding 2 [P2 — the mixed-resolution reader combines unverified kinfo+ps snapshots] — FIXED (the
+  GENERATION-AGREEMENT rule; the refusal label stated).** The reviewer's finding verbatim: "The kinfo query and
+  subsequent ps query are separate snapshots, but this return combines them without checking their creation
+  seconds. If kinfo observes generation P0, ps observes a different-second successor P1, and the second kinfo
+  query degrades, the inspector compares P1's two coarse identities and successfully returns P1 despite having
+  observed contradictory P0 evidence. Verify the exact/coarse identities agree before treating the ps result as
+  the exact identity's alternate representation." Confirmed exactly (RED measured the inspector RESOLVING with P1
+  — "Missing expected rejection"). **The fix (local-process-observation.mjs readMacProcessStart, the exact-path
+  combination):** before the kinfo and ps reads combine into one returned identity, the ps result's creation
+  second (`parseLstartAsUtc` → `floor(ms/1000)`) must AGREE with the exact read's parsed sec field; a
+  disagreement — an unparseable ps text included, which on the exact path's pinned C-locale read is torn
+  evidence — refuses as the MID-READ IDENTITY CHANGE (the reuse latch's own class, matching the inspector's
+  coarse-mismatch behavior between the double reads): the error message is
+  "the exact fake-ZCode process identity changed", the exact P0 identity RIDES it as `observedStartIdentity`
+  (the uniform ride discipline — the contradictory P0 evidence is never discarded), and the standing layers
+  classify it (`start-identity-generation-changed` at observeLocalProcess,
+  `spawn-witness-child-generation-changed` at the witness poll). The ps result is NEVER returned as the exact
+  identity's alternate representation. Agreeing seconds keep the §32.11 Finding-3 combination unchanged.
+  **SCOPE (stated per the finding's "state which label"):** the gate sits on the REAL ps query path
+  (readMacProcessStart's psIdentityRead — an actual OS snapshot of the live pid that claims a creation second);
+  the inspector's ps-SEAM composition keeps its documented seam contract ("ps owns pid/ppid; the exact reader
+  owns the identity form and the exact ms") — the seam's lstart text is the representation stand-in, not a
+  second-claiming snapshot, so the slice-1/§32.11 seam fixtures are untouched. **RED→GREEN:** the reviewer's
+  schedule (kinfo P0 exact; ps a different-second successor; the second kinfo degrades) RED returning P1, GREEN
+  rejecting with the identity-change class + the P0 ride after exactly one kinfo call and one ps query (the
+  refusal fires at the COMBINATION — the degraded second kinfo query is never consulted); the CONTROL — agreeing
+  seconds keep the combination (the exact identity with its own read's coarse representation, two kinfo + two ps
+  queries). **Fixture alignment (the enumerated movement):** FOUR prior real-path rows paired kinfo sec
+  1793855520 with the 'Sun Nov  2 01:30:00 2025' text (second 1762047000 — exactly the contradictory combination
+  the gate now correctly refuses): the §32.14 Finding-1 row and its both-exact control, the §32.14 Finding-2
+  row's real-path fixture and the §32.12 Finding-3 row's non-aborted control — each ps text re-aligned to
+  second 1793855520's own rendering ('Thu Nov  5 05:12:00 2026'); every assertion in those rows is unchanged and
+  all four rows still pass (their semantics never depended on the misalignment; the §32.14 Finding-1 row's
+  "same-second successor" comment is now actually true).
+- **Finding 3 [P2 — the replay marker binding compares spellings] — FIXED (the REPRESENTATION-AWARE marker
+  binding).** The reviewer's finding verbatim: "transport capture obtains a kinfo identity but its initial
+  observation degrades to matching ps text, this check now accepts the observation. However,
+  joinRecordLocalProcessDuties still compares marker.startIdentity with the transport observation using raw
+  inequality, rejecting that same generation as ancestry-ppid-chain-foreign. A retained-retry test does not cover
+  this capture-to-initial-observation transition; apply representation-aware matching to the persisted marker
+  binding too." Confirmed exactly (RED measured `ancestry-ppid-chain-foreign` on the capture-kinfo +
+  degraded-matching-ps echo). **The fix (driver.mjs joinRecordLocalProcessDuties, the ppid-chain conjunct):** the
+  persisted marker binding compares GENERATIONS through `startIdentitiesDefinitivelyDiffer` — same ⇒ bound (a
+  kinfo capture vs its degraded-to-MATCHING-ps initial observation replays clean); definitively different ⇒ the
+  refusal stands; uncertain ⇒ non-deciding (the replay's established uncertain semantics — the endpoint and
+  transport checks' definitively-differ-only pattern); a present marker identity against an echo carrying NO
+  start identity keeps the raw fail-closed refusal. **RED→GREEN:** the capture-to-initial-observation transition
+  (marker 'kinfo:2:400000', the echo 'Thu Jan  1 00:00:02 1970' — the same creation second) RED
+  ancestry-ppid-chain-foreign, GREEN zero refusals, settled, and the local layer crediting; the CONTROL — a
+  different-second ps echo ('Fri Jan  2 00:00:02 1970') still refuses ancestry-ppid-chain-foreign.
+- **Finding 4 [P2 — the invocation replay's horizon/replacement comparisons are raw] — FIXED (the
+  representation-aware invocation replay).** The reviewer's finding verbatim: "an exact invocation baseline
+  followed by a matching-ps refresh, the runtime now advances the presence horizon and can correctly report
+  disappeared. The invocation replay still uses raw identity comparisons in its horizon walk and replacement
+  detection, so retaining that refresh in block.reads instead produces exit-reuse-latched. This also occurs on
+  the actual driver path, which retains the differently spelled refresh. Update the invocation replay
+  comparisons, not only the ancestry endpoint and transport replay checks." Confirmed exactly (RED measured
+  `exit-reuse-latched` on the retained matching-ps refresh). **The fix (driver.mjs joinRecordLocalProcessDuties,
+  the invocation exit replay):** a relation-helper pair (`sameGenerationAsBound` — relation === 'same';
+  `carriedDefinitivelyForeign` — the definitively-differ gate) now drives EVERY identity comparison the runtime
+  adjudicator makes representation-aware: the retained-presence validation loop's generation gate (so a
+  same-generation refresh is timestamp-validated exactly like a same-spelling read), the horizon-walk gate, the
+  refreshed-companion horizon-source inclusion, the replacement detection over established observations,
+  unestablished carried identities and absent carried identities (definitively-different-only — uncertain is
+  non-deciding, never positive replacement evidence, exactly the runtime's §32.12 semantics; a malformed
+  established observation without a start identity stays fail-closed), the ordered horizon mirror's source gates
+  (scanning the SAME sources as the horizon walk) and the supersession source inclusion. **RED→GREEN:** an exact
+  baseline ('kinfo:1:0') + the matching-ps refresh ('Thu Jan  1 00:00:01 1970', sec 1) retained in block.reads
+  RED `exit-reuse-latched`, GREEN zero refusals, settled, local layer crediting, with the RUNTIME/REPLAY
+  AGREEMENT arm on the same row (`adjudicateLocalExit` on the identical read sequence adjudicates
+  `disappeared` — the refresh advances the horizon per §32.12); the CONTROL — a genuinely different-generation
+  refresh ('Thu Jan  1 00:00:02 1970') still latches `exit-reuse-latched`. The witnessBlock helper gained an
+  `appendBlockReads` parameterization (defaults absent — every other fixture is byte-identical).
+- **Focused prior-counterexample re-run (2026-11-07, the amended bytes):** the `same-second-completion` family =
+  **70 tests, 70 pass, 0 fail** (byte-for-byte unchanged from §32.14); the `integration-completion` family =
+  **43 tests, 43 pass, 0 fail** (39 prior + the four new round-5 rows — the marker binding row + control and the
+  invocation replay row + control; all 39 prior rows still passing). **Movement enumeration (honest):** NO
+  prior-row verdict changed in either family. Outside the families, the four Finding-2 fixture-aligned rows
+  (enumerated above) still pass with unchanged assertions, and the §32.12 Finding-3 / §32.14 Finding-1/Finding-2
+  rows were re-run green by name after the alignment.
+- **Battery (executed 2026-11-07 on the exact amended bytes):** local SOLO = **437 tests, 437 pass, 0 fail,
+  0 cancelled, 0 skipped, exit 0** (429 prior + 8 — two rows per finding: each RED row with its control row);
+  native SOLO = **100 tests, 100 pass, 0 fail, 0 cancelled, 0 skipped, exit 0**; probe SOLO = **968 tests, 968
+  pass, 0 fail, 0 cancelled, 0 skipped, exit 0** (the re-derived spawned-suite pin 538 = 437 + 100 + 1
+  registered in the pin comment and asserted green inside); full `npm run test:shell-research` SOLO = **1505
+  tests, 1504 pass, 1 fail, 0 cancelled, 0 skipped, exit 1** (1497 prior + 8 = 1505, honestly re-derived;
+  duration 1409.3 s) — the ONE failure is `a quoted underscore reporter alias is replaced`
+  (tests/shell-wait-probe.test.mjs, a spawned ~150 s CLI-argument timing row whose nested suite crossed its
+  window under the sequential battery's load, `1 !== 0`): HONEST-FLAKE ATTRIBUTION, never relabelled — the row
+  re-run SOLO in isolation = **1 test, 1 pass, 0 fail, exit 0**, it touches no route-(c) code, and its two
+  sibling timing rows passed in the same battery run; `node --test tests/test-selection.test.mjs` = **6 tests /
+  6 pass / 0 fail** exit 0; `npm run lint` exit 0; `npm run typecheck` exit 0; `git diff --check` exit 0.
+  Prohibited-path diff vs `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY. The four fixes amend the EXISTING
+  route-(c) commit (message unchanged) — no push.
+
+### 32.16 Codex-review gate round 6 (2026-11-07, two P2 fail-closed tightenings on §32.15's amended bytes — endpoint replay validation completeness; §32.15 style — add-only; the amended route-(c) commit carries them; message unchanged)
+
+- **Finding 1 [P2 — the endpoint generation check skips on missing/unresolvable identities] — FIXED (the
+  fail-closed endpoint generation binding).** The reviewer's finding verbatim: "For an otherwise valid persisted
+  block, deleting ancestryEndpoints.companion.observation.startIdentity now leaves localProcessDuties.settled ===
+  true with no refusals: the string guards skip the comparison entirely. An unresolvable string against an exact
+  identity also passes because it is not definitively different. The previous inequality rejected missing
+  identities. Require nonempty identity strings and a positively same generation relation before crediting the
+  endpoint." Confirmed exactly (RED measured `settled:true` with `refusals:[]` on both schedules — the deleted
+  identity and the unresolvable-vs-exact variant). **The fix (driver.mjs joinRecordLocalProcessDuties, the
+  companion/daemon endpoint generation check):** the binding requires (a) a NONEMPTY identity string on BOTH
+  sides — a deleted/missing identity refuses `ancestry-endpoint-generation-foreign` (the pre-representation raw
+  inequality rejected the missing identity and that protection is restored, never skipped again); and (b) the
+  generation relation POSITIVELY `'same'` (`startIdentityGenerationRelation(...) !== 'same'` refuses) — an
+  unresolvable pair (the uncertain relation) is never positive generation evidence. The positively-same pairs
+  keep binding: both-exact equality, both-coarse equality, and the resolution mix (an exact identity vs its
+  degraded-to-MATCHING-ps representation — the §32.14 Finding-4 and round-5 rows). **RED→GREEN:** the
+  deleted-endpoint-identity schedule RED settled with no refusals, GREEN refusing
+  `ancestry-endpoint-generation-foreign`; the unresolvable-vs-exact schedule ('S-UNRESOLVABLE' beside
+  'kinfo:1:0') RED settled, GREEN refusing `ancestry-endpoint-generation-foreign`; the CONTROL — the
+  positively-same resolution mix ('Thu Jan  1 00:00:01 1970' beside 'kinfo:1:0', the round-5 shape) keeps
+  settling with zero refusals, and the round-5 kinfo-refresh/matching-ps rows re-run green in the family.
+- **Finding 2 [P2 — exact numeric instants unvalidated before resolution comparison] — FIXED (the exact-side
+  self-consistency gate).** The reviewer's finding verbatim: "When the base observation is coarse and the
+  refreshed endpoint is exact, endpointSecond comes exclusively from the identity, so the endpoint's numeric
+  creation instant need only be a safe integer. A matching coarse base with endpoint identity kinfo:1:500000 and
+  startInstantEpochMs: -5000 currently replays as settled with no refusals. That contradictory timestamp
+  subsequently feeds the ancestry lifetime checks. Verify that each exact side's numeric instant equals its
+  parsed exact instant before applying the mixed-resolution comparison." Confirmed exactly (RED measured
+  `settled:true` with `refusals:[]` on the -5000 schedule). **The fix (driver.mjs joinRecordLocalProcessDuties,
+  the endpoint instant check):** before the resolution comparison runs, each EXACT side's persisted numeric
+  instant must EQUAL its own parsed exact instant (`startInstantEpochMs == parseExactStartIdentity(identity).ms`
+  — the Required clause's literal formula; the round-20-era self-consistency discipline: same-domain same-source
+  numerics must agree) — a contradictory numeric refuses `ancestry-endpoint-instant-foreign` fail-closed, so it
+  can never ride its identity's second through the mixed comparison into the ancestry lifetime checks. A
+  both-coarse pair has no exact side to validate and keeps the round-33 raw numeric comparison unchanged.
+  **Honest note on the instruction's control parenthetical:** the Required clause's ms-level formula makes
+  kinfo:1:500000's consistent numeric 1500 (its parsed ms), not the parenthetical's "1000" (which is internally
+  inconsistent with that identity — floor-level agreement alone would still admit a sub-second contradiction
+  into the lifetime checks); the consistent-numeric control is realized at 1500 per the Required formula.
+  **RED→GREEN:** the reviewer's schedule (coarse ps-text base at second 1 + endpoint 'kinfo:1:500000' +
+  `startInstantEpochMs: -5000`) RED settled with no refusals, GREEN refusing `ancestry-endpoint-instant-foreign`;
+  the CONTROLS — the same mixed pair with the consistent numeric 1500 keeps settling (zero refusals), and a
+  both-coarse pair with a conflicting numeric (2000 vs 1000) still refuses `ancestry-endpoint-instant-foreign`
+  through the raw comparison (unchanged).
+- **Fixture alignment (the enumerated movement):** the two round-5 marker-binding rows (§32.15 Finding 3 and its
+  control) paired `daemonIdentity: 'kinfo:2:500000'` with `daemonStartEpochMs: 2000` — a contradictory numeric
+  (the identity's parsed ms is 2500) that the new self-consistency gate correctly refuses; both rows' daemon
+  start is re-aligned to 2500 (the proven §32.12/§32.14 base values, every read stamp still postdating it) —
+  the rows' marker-binding semantics and verdicts are unchanged (one settles, one refuses
+  ancestry-ppid-chain-foreign) and both still pass. NO other prior row moved: every other exact-identity fixture
+  already pairs self-consistent numerics (kinfo:1:0 ↔ 1000, kinfo:1:500000 ↔ 1500, kinfo:2:500000 ↔ 2500,
+  kinfo:2:0 ↔ 2000).
+- **Focused prior-counterexample re-run (2026-11-07, the amended bytes):** the `same-second-completion` family =
+  **70 tests, 70 pass, 0 fail** (byte-for-byte unchanged from §32.15); the `integration-completion` family =
+  **47 tests, 47 pass, 0 fail** (43 prior + the four new round-6 rows — the deleted-identity row, the
+  unresolvable-vs-exact row with its inline positively-same control, the contradictory-numeric row, and the
+  consistent-numeric + both-coarse control row; all 43 prior rows still passing, including the two re-aligned
+  round-5 rows). **Movement enumeration (honest):** NO prior-row verdict changed in either family.
+- **Battery (executed 2026-11-07 on the exact amended bytes):** local SOLO = **441 tests, 441 pass, 0 fail,
+  0 cancelled, 0 skipped, exit 0** (437 prior + 4); native SOLO = **100 tests, 100 pass, 0 fail, 0 cancelled,
+  0 skipped, exit 0**; probe SOLO = **968 tests, 968 pass, 0 fail, 0 cancelled, 0 skipped, exit 0** (the
+  re-derived spawned-suite pin 542 = 441 + 100 + 1 registered in the pin comment and asserted green inside);
+  full `npm run test:shell-research` SOLO = **1509 tests, 1509 pass, 0 fail, 0 cancelled, 0 skipped, exit 0**
+  (1505 prior + 4 = 1509, honestly re-derived; duration 1405.4 s — no timing-row flake this battery);
+  `node --test tests/test-selection.test.mjs` = **6 tests / 6 pass / 0 fail** exit 0; `npm run lint` exit 0;
+  `npm run typecheck` exit 0; `git diff --check` exit 0. Prohibited-path diff vs
+  `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY. The two fixes amend the EXISTING route-(c) commit (message
+  unchanged) — no push.
+
+### 32.17 Codex-review gate round 7 (2026-11-07, three P2 uncertain-identity consumption gaps on §32.16's amended bytes — all reproduced by the reviewer; §32.16 style — add-only; the amended route-(c) commit carries them; message unchanged)
+
+- **Finding 1 [P2 — the cancellation branch drops the carried interval bounds] — FIXED (the INTERVAL-CARRIAGE
+  rule).** The reviewer's finding verbatim: "When cancellation occurs during the environment read,
+  rideObservedIdentity supplies observedIdentityTakenEpochMs and observedIdentityCompletedEpochMs, but this
+  branch copies neither. The carried identity is consequently dated at the verdict's later completion. A
+  predecessor observed during [1000, 1200], followed by a newer presence baseline at 2000 and cancellation at
+  3500, incorrectly latches pid-start-identity-reused. Preserve the taken bound as observedIdentityReadEpochMs
+  and retain the completed bound so stale or overlapping evidence is classified correctly." Confirmed exactly
+  (RED measured the window-closed verdict carrying `observedIdentityReadEpochMs: undefined`). **The fix
+  (local-process-observation.mjs observeLocalProcess, the window-closed branch):** the branch preserves the
+  uniform ride's BOTH interval bounds — the taken bound rides as `observedIdentityReadEpochMs` (the explicit
+  §32.14-Finding-2 second-read dispatch bound keeps precedence; the two shapes never co-occur on one error) and
+  the completed bound rides as `observedIdentityCompletedEpochMs` — so the round-14/17 interval classification
+  dates the carried evidence at its TRUE observation window instead of the completion sample: a stale carried
+  predecessor (its collection completing strictly before the newer presence's dispatch) is non-deciding, an
+  overlapping window classifies as the lawful ambiguous fact, and only a genuinely post-baseline window latches.
+  **RED→GREEN:** the reviewer's schedule on the REAL cancellation path (the ps eww environment seam sleeps 80 ms
+  then aborts — the faithful environment shape — so the ride's true window ends ~80 ms before the verdict
+  completion; the adjudication places the newer presence baseline strictly between the two): RED
+  `pid-start-identity-reused` (the predecessor dated at the completion), GREEN the lawful `disappeared` (the
+  stale predecessor non-deciding, the confirmed absence correlating); the CONTROLS — a cancellation carrying the
+  BOUND generation's own identity stays non-deciding (disappeared, unchanged), and an IN-WINDOW cancellation
+  (the carried interval overlapping the presence's own collection window) classifies
+  `pid-start-identity-ambiguous` (the interval rules governing the TRUE window, never reuse).
+- **Finding 2 [P2 — the transport horizon admits uncertain contributors] — FIXED (the POSITIVE-SAME horizon
+  rule).** The reviewer's finding verbatim: "For an exact transport baseline and a retained retry with an
+  unresolvable identity, startIdentitiesDefinitivelyDiffer returns false because the relation is uncertain. This
+  admits the retry into the presence horizon despite the documented non-deciding behavior. A retry at 5450 then
+  makes a confirmed absence at 5400 incorrectly refuse with transport-exit-overlaps-presence. Require the
+  generation relation to be same before advancing the horizon, matching the runtime adjudicator." Confirmed
+  exactly (RED measured `transport-exit-overlaps-presence` on the retained unresolvable retry at 5450 against
+  the confirmed absence at 5400). **The fix (driver.mjs joinRecordLocalProcessDuties, the transport replay's
+  horizon-contributor gate):** the walk requires the generation relation POSITIVELY `'same'`
+  (`startIdentityGenerationRelation(...) !== 'same'` skips) before a read advances the transport presence
+  horizon, matching the runtime adjudicator — uncertain contributors are SKIPPED, never admitted; a retained
+  read carrying no identity contributes nothing either (fail-closed; the old gate's shape admitted everything
+  when the echo identity was missing). **RED→GREEN:** the exact transport baseline (kinfo:2:400000, identity
+  read 1170) + the unresolvable retained retry at 5450 + the confirmed absence at 5400: RED
+  `transport-exit-overlaps-presence`, GREEN zero refusals and the lawful settlement (the horizon stays at the
+  baseline); the CONTROL — a positively-same retained retry (the matching ps text of the baseline's own second)
+  at the same instant still advances the horizon (the confirmed absence at 5400 then overlaps and refuses
+  `transport-exit-overlaps-presence` exactly as before).
+- **Finding 3 [P2 — uncertain candidates poison the retained child history] — FIXED (the RETAINED-SET MEMBERSHIP
+  rule).** The reviewer's finding verbatim: "An uncertain verdict passes this check and is then unconditionally
+  added to the retained set. This poisons subsequent comparisons: an exact child identity retained after an I/O
+  failure, followed by an unparseable coarse identity on another failed retry, causes a final matching-ps retry
+  to refuse spawn-witness-child-generation-changed. The final coarse identity differs from the unparseable
+  string even though it matches the original exact generation. Do not retain candidates classified as
+  uncertain." Confirmed exactly (RED measured `spawn-witness-child-generation-changed` without a written
+  witness on the poisoned history). **The fix (local-process-observation.mjs emitSpawnAncestryWitness, BOTH
+  retained-set add sites):** candidates whose `retainedIdentityVerdict` is `'uncertain'` do NOT join the
+  retained set — the set holds only decision-grade observations (positively-same generations and the
+  definitively-different latch); the FIRST observation still grounds the history (an empty set retains — the
+  §26.6 grounding the successor latch depends on; a vacuous uncertain classification never blocks retention).
+  The code now matches the §32.13 Finding-3 comment's own documented contract ("only-uncertain … neither latch
+  nor retain"), which the unconditional add had silently violated; the success-path add applies the same rule
+  (inert there — the loop breaks and the poll-scoped set is never consulted again — kept uniform).
+  **RED→GREEN:** the reviewer's schedule (attempt 1 rides the exact identity after an I/O failure; attempt 2
+  rides the unparseable coarse identity on another failed retry; attempt 3 succeeds with the MATCHING ps text):
+  RED `spawn-witness-child-generation-changed` without a witness (the final coarse identity spelling-differs
+  from the retained unparseable string), GREEN `established` with the witness written (the unparseable
+  non-retained candidate cannot poison); the CONTROL — a genuinely different successor on the failed retry
+  still latches (`spawn-witness-child-generation-changed`, no witness written), and a matching generation still
+  retains (the §32.13 Finding-3 row re-runs green in the family).
+- **Focused prior-counterexample re-run (2026-11-07, the amended bytes):** the `same-second-completion` family =
+  **70 tests, 70 pass, 0 fail** (byte-for-byte unchanged from §32.16); the `integration-completion` family =
+  **48 tests, 48 pass, 0 fail** (47 prior + the new round-7 transport-horizon row; all 47 prior rows still
+  passing). **Movement enumeration (honest):** NO prior-row verdict changed in either family. Honest row-count
+  note: the instruction anticipated ~441+6 local rows; the three round-7 fixes land as THREE rows (each RED row
+  carries its controls inline — two controls on Finding 1, one on Finding 2, one on Finding 3), so the local
+  entry grows 441 → 444 (+3), re-derived honestly.
+- **Battery (executed 2026-11-07 on the exact amended bytes):** local SOLO = **444 tests, 444 pass, 0 fail,
+  0 cancelled, 0 skipped, exit 0** (441 prior + 3); native SOLO = **100 tests, 100 pass, 0 fail, 0 cancelled,
+  0 skipped, exit 0**; probe SOLO = **968 tests, 968 pass, 0 fail, 0 cancelled, 0 skipped, exit 0** (the
+  re-derived spawned-suite pin 545 = 444 + 100 + 1 registered in the pin comment and asserted green inside);
+  full `npm run test:shell-research` SOLO = **1512 tests, 1512 pass, 0 fail, 0 cancelled, 0 skipped, exit 0**
+  (1509 prior + 3 = 1512, honestly re-derived; no timing-row flake this battery); `node --test
+  tests/test-selection.test.mjs` = **6 tests / 6 pass / 0 fail** exit 0; `npm run lint` exit 0; `npm run
+  typecheck` exit 0; `git diff --check` exit 0. Prohibited-path diff vs `9c337403658ed8cb5319e5da75635154ba4aa851`
+  EMPTY. The three fixes amend the EXISTING route-(c) commit (message unchanged) — no push.
+
+### 32.18 Codex-review gate round 8 (2026-11-07, two P2 exact-read partial-read scenarios on §32.17's amended bytes — both reproduced by the reviewer; §32.17 style — add-only; the amended route-(c) commit carries them; message unchanged)
+
+- **Finding 1 [P2 — exact mode discards the successor identity when the following ps read finds absence] — FIXED
+  (the exact OBSERVED-THEN-GONE carry).** The reviewer's finding verbatim: "With Darwin exact mode enabled, kinfo
+  can observe a reused PID's successor before that process exits ahead of the subsequent ps query. Returning
+  undefined discards the successor's exact identity, so observeLocalProcess produces a confirmed absence and
+  adjudicateLocalExit incorrectly reports the original generation as disappeared. Surface an observed-then-gone
+  error carrying the exact identity instead, preserving the replacement evidence." Confirmed exactly (RED
+  measured the observation resolving to the plain confirmed absence — `['absent', 'process-absent']` — with the
+  successor's exact identity discarded, and the adjudication crediting the original generation's
+  `disappeared`). **The fix (local-process-observation.mjs readMacProcessStart, the exact-path ps query):** when
+  the exact (kinfo) read observed THIS pid's live occupant (on a reused PID: the successor) and the subsequent
+  ps query finds the pid gone, the reader surfaces the coarse path's own OBSERVED-THEN-GONE error CARRYING the
+  observed exact identity (`observedThenGoneError` with the successor's `kinfo:<sec>:<usec>` and the ps-query
+  window as the taken/completed bounds) instead of the bare undefined — the inspector's §32.14-Finding-2
+  second-read carriage and the observation layer's ROUND-28 branch then classify the carried evidence: a
+  demonstrably different carried identity is the generation change (`start-identity-generation-changed`) and
+  the exit adjudicator latches the reuse; an equal carried identity keeps the lawful absence (a
+  genuinely-exiting unchanged original is never relabelled). **RED→GREEN:** the reviewer's schedule on the REAL
+  darwin path (kinfo call 1 observes the original, call 2 observes the reused PID's same-second successor; the
+  ps row is empty — the successor exited before the ps snapshot): RED `['absent', 'process-absent']` +
+  `disappeared`, GREEN `['unestablished', 'start-identity-generation-changed']` +
+  `pid-start-identity-reused`; the CONTROL — the second kinfo query answering the kernel's GONE (rc == 0, len
+  == 0; no successor was ever observed) keeps the plain absence (`['absent', 'process-absent']`) and the
+  lawful `disappeared` at the adjudication (unchanged, and structurally untouched — the gone answer resolves
+  before the ps query).
+- **Finding 2 [P2 — failed second exact reads carry only the taken bound] — FIXED (the BOTH-BOUNDS carry).** The
+  reviewer's finding verbatim: "If the second kinfo query starts before a concurrent presence baseline but
+  observes a successor after it, saving only takenEpochMs incorrectly dates that evidence before the baseline.
+  Without observedIdentityCompletedEpochMs, the exit adjudicator uses its legacy recency check, discards the
+  successor as stale, and credits a later confirmed absence as disappeared. Carry the read's completion bound
+  too, so the overlapping collection interval remains ambiguous rather than establishing disappearance."
+  Confirmed exactly (RED measured the window-closed verdict carrying `observedIdentityCompletedEpochMs:
+  undefined` and the adjudication crediting `disappeared`). **The fix (local-process-observation.mjs
+  inspectVerifiedProcessIdentity, the §32.14-Finding-2 second-read catch):** the identity-carrying second-read
+  error is stamped with the read's COMPLETION bound (`observedIdentityCompletedEpochMs = Date.now()`) alongside
+  the existing taken bound — through the round-7 interval-carriage the verdict then carries BOTH bounds, and the
+  exit adjudicator's round-14/17 interval-to-interval classification consumes the TRUE collection window: an
+  interval overlapping the concurrent presence baseline is the AMBIGUOUS fact (never establishing
+  disappearance), a genuinely pre-baseline-completed read stays stale (non-deciding old evidence), and only a
+  post-baseline window latches. **RED→GREEN:** the reviewer's schedule (the second kinfo query sleeps 80 ms —
+  its taken bound predates the concurrent baseline while its completion postdates it — observes the successor,
+  and the window closes over it): RED `disappeared` via the legacy recency discard, GREEN
+  `pid-start-identity-ambiguous` (the overlapping interval never establishes disappearance); the CONTROL — a
+  genuinely pre-baseline-COMPLETED second read (observing the successor immediately, the baseline strictly
+  after) keeps its lawful stale classification (`disappeared`, never ambiguous).
+- **Focused prior-counterexample re-run (2026-11-07, the amended bytes):** the `same-second-completion` family =
+  **70 tests, 70 pass, 0 fail** (byte-for-byte unchanged from §32.17); the `integration-completion` family =
+  **48 tests, 48 pass, 0 fail** (unchanged from §32.17 — the round-8 rows live in the observer families outside
+  these two). **Movement enumeration (honest):** NO prior-row verdict changed in either family; the local entry
+  grows 444 → 448 (+4 — a RED row and a control row per finding, exactly the instruction's anticipated ~448).
+- **Battery (executed 2026-11-07 on the exact amended bytes):** local SOLO = **448 tests, 448 pass, 0 fail,
+  0 cancelled, 0 skipped, exit 0** (444 prior + 4); native SOLO = **100 tests, 100 pass, 0 fail, 0 cancelled,
+  0 skipped, exit 0**; probe SOLO = **968 tests, 968 pass, 0 fail, 0 cancelled, 0 skipped, exit 0** (the
+  re-derived spawned-suite pin 549 = 448 + 100 + 1 registered in the pin comment and asserted green inside);
+  full `npm run test:shell-research` SOLO = **1516 tests, 1516 pass, 0 fail, 0 cancelled, 0 skipped, exit 0**
+  (1512 prior + 4 = 1516, honestly re-derived; no timing-row flake this battery); `node --test
+  tests/test-selection.test.mjs` = **6 tests / 6 pass / 0 fail** exit 0; `npm run lint` exit 0; `npm run
+  typecheck` exit 0; `git diff --check` exit 0. Prohibited-path diff vs `9c337403658ed8cb5319e5da75635154ba4aa851`
+  EMPTY. The two fixes amend the EXISTING route-(c) commit (message unchanged) — no push.
+
+### 32.19 Codex-review gate round 9 (2026-11-07, three P2 symmetric completions of the established preservation/validation mechanisms on §32.18's amended bytes — all reproduced by the reviewer; §32.18 style — add-only; the amended route-(c) commit carries them; message unchanged)
+
+- **Finding 1 [P2 — ps execution/parsing failures also lose the successor identity] — FIXED (the ps-FAILURE
+  carry).** The reviewer's finding verbatim: "If the second kinfo read observes a successor but psIdentityRead
+  throws, that successor identity is lost. The inspector instead attaches the first read's original identity, so
+  a subsequent confirmed absence makes adjudicateLocalExit report disappeared despite having observed PID reuse.
+  Preserve the exact identity and its collection bounds on ps execution and parsing failures, not just on an
+  empty ps result." Confirmed exactly (RED measured the observation falling to the first read's uniform ride —
+  the successor's exact identity discarded). **The fix (local-process-observation.mjs readMacProcessStart, the
+  exact-path ps query):** the round-8 observed-then-gone carry now extends to the ps EXECUTION/PARSING failure
+  path — the psIdentityRead call is wrapped and any throw surfaces the same observedThenGoneError carrying the
+  observed exact identity and its collection bounds (the ps-query window), so the successor is preserved on
+  EVERY ps-failure shape (execution throw, parse throw, empty result) and the carried successor classifies per
+  the interval/round-28 rules: a demonstrably different carried identity is the generation change and the exit
+  adjudicator latches the reuse; an equal carried identity keeps the lawful absence. **RED→GREEN:** the
+  reviewer's schedule (the second kinfo read observes the reused PID's same-second successor; the second ps
+  query THROWS an ordinary I/O failure; a later confirmed absence): RED the first read's ride (the verdict fell
+  to the first-identity fallthrough and the adjudication credited `disappeared`), GREEN
+  `['unestablished', 'start-identity-generation-changed']` + `pid-start-identity-reused`; the CONTROL — the
+  round-8 EMPTY-ps-result schedule re-run inline keeps its round-8 behavior (generation-changed + the reuse
+  latch, unchanged).
+- **Finding 2 [P2 — first-read cancellation errors carry no bounds] — FIXED (the FIRST-READ bounds carry).**
+  The reviewer's finding verbatim: "When cancellation occurs during the first kinfo query, this error carries an
+  identity but no observation timestamps; only second-read errors receive bounds later. Consequently, a query
+  overlapping a newer presence baseline is dated at cancellation completion and incorrectly produces
+  pid-start-identity-reused rather than pid-start-identity-ambiguous. Capture and carry the exact query's
+  dispatch and completion bounds for the first-read path too." Confirmed exactly (RED measured the window-closed
+  verdict carrying `observedIdentityReadEpochMs: undefined / observedIdentityCompletedEpochMs: undefined` and
+  the adjudication latching `pid-start-identity-reused`). **The fix (local-process-observation.mjs
+  readMacProcessStart, the inner cancellation recheck):** the exact query's dispatch and completion bounds are
+  captured AROUND the readDarwinKinfoExact call itself (taken before dispatch, completed on return), and the
+  cancellation error carries the full {identity, taken, completed} unit — through the round-7 interval-carriage
+  the verdict then carries the TRUE query window, and the exit adjudicator's interval-to-interval rules
+  classify it: an overlap with the concurrent baseline is the AMBIGUOUS fact, a genuinely pre-baseline-completed
+  query stays stale, only a post-baseline window latches. (The same bounds now also enrich the second-read
+  instance of the recheck error; the inspector's catch stamps still take precedence on their keys.) **RED→GREEN:**
+  the reviewer's schedule (the FIRST kinfo query sleeps 80 ms — its taken bound predates the concurrent baseline
+  while its completion postdates it — observes the successor, and the window closes over it): RED
+  `pid-start-identity-reused` (cancellation-completion dating), GREEN `pid-start-identity-ambiguous` (the true
+  window); the CONTROL — a first-read cancellation whose query completes IMMEDIATELY (the baseline strictly
+  after) keeps its lawful stale classification (`disappeared`, never ambiguous).
+- **Finding 3 [P2 — the coarse side of mixed-resolution pairs is unvalidated] — FIXED (the COARSE-SIDE
+  SELF-CONSISTENCY gate).** The reviewer's finding verbatim: "For mixed-resolution endpoints, flooring the
+  coarse numeric instant accepts contradictory subsecond values. An exact baseline kinfo:1:0 paired with ps
+  identity Thu Jan 1 00:00:01 1970 and numeric instant 1500 currently settles with no refusals, although that ps
+  identity resolves to 1000. The unchecked value then feeds ancestry lifetime checks. Validate the coarse side
+  against its parsed identity, just as the exact side is checked against its parsed instant." Confirmed exactly
+  (RED measured the schedule settling with `refusals: []`). **The fix (driver.mjs joinRecordLocalProcessDuties,
+  the endpoint instant check):** symmetric with the exact side's round-6 ms check, a COARSE side whose identity
+  PARSES as an lstart text has its persisted numeric validated against its OWN parsed identity (exact equality
+  with the whole-second parsed ms — the runtime's own coarse derivation, so runtime-produced evidence always
+  satisfies it); a contradictory coarse numeric refuses `ancestry-endpoint-instant-foreign` fail-closed instead
+  of feeding the ancestry lifetime checks. Synthetic/unparseable coarse identities keep the raw comparison (no
+  derivable instant to validate). `parseLstartAsUtc` is now an EXPORT of the observer module (the replay
+  mirror parses persisted ps texts through the SAME field-explicit UTC derivation the runtime uses) — the
+  frozen public-surface contract registered the deliberate addition with its round-9 note (a pure parser, never
+  stop/lifecycle authority). **RED→GREEN:** the reviewer's schedule (exact baseline kinfo:1:0 at 1000; endpoint
+  ps identity 'Thu Jan  1 00:00:01 1970' resolving to ms 1000; endpoint numeric 1500): RED settled with no
+  refusals, GREEN refusing `ancestry-endpoint-instant-foreign`; the CONTROLS — the consistent coarse numeric
+  (1000) keeps settling, and the round-6 exact-side check is unchanged (an exact endpoint whose numeric
+  contradicts its own parsed identity still refuses).
+- **Focused prior-counterexample re-run (2026-11-07, the amended bytes):** the `same-second-completion` family =
+  **70 tests, 70 pass, 0 fail** (byte-for-byte unchanged from §32.18); the `integration-completion` family =
+  **50 tests, 50 pass, 0 fail** (48 prior + the two round-9 endpoint rows; all 48 prior rows still passing).
+  **Movement enumeration (honest):** NO prior-row verdict changed in either family; the local entry grows
+  448 → 454 (+6 — a RED row and a control row per finding, exactly the instruction's anticipated ~454).
+- **Battery (executed 2026-11-07 on the exact amended bytes):** local SOLO = **454 tests, 454 pass, 0 fail,
+  0 cancelled, 0 skipped, exit 0**; native SOLO = **100 tests, 100 pass, 0 fail, 0 cancelled, 0 skipped,
+  exit 0**; probe SOLO = **968 tests, 968 pass, 0 fail, 0 cancelled, 0 skipped, exit 0** (the re-derived
+  spawned-suite pin 555 = 454 + 100 + 1 registered in the pin comment and asserted green inside); full
+  `npm run test:shell-research` SOLO = **1522 tests, 1522 pass, 0 fail, 0 cancelled, 0 skipped, exit 0**
+  (1516 prior + 6 = 1522, honestly re-derived). HONEST PROCESS NOTE: the first battery pass caught one REAL
+  defect the focused runs had missed — the new `parseLstartAsUtc` export tripped the frozen public-surface
+  contract row (the export was then deliberately registered in that contract's pin with its round-9 note) —
+  and two probe timing rows plus the local row in THAT pass ran against bytes edited mid-battery (the surface
+  fix landed while their nested spawns were reading the files); the affected phases were RE-RUN SOLO on the
+  exact final bytes and the counts above are those final-bytes runs (the full suite's own phase started after
+  the fix landed and passed 1522/1522 first-try). `node --test tests/test-selection.test.mjs` = **6 tests /
+  6 pass / 0 fail** exit 0; `npm run lint` exit 0; `npm run typecheck` exit 0; `git diff --check` exit 0.
+  Prohibited-path diff vs `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY. The three fixes amend the EXISTING
+  route-(c) commit (message unchanged) — no push.
+
+### 32.20 Codex-review gate round 10 (2026-11-07, two P2 regressions in the round-8/9 carries on §32.19's amended bytes — both reproduced by the reviewer in-memory; §32.19 style — add-only; the amended route-(c) commit carries them; message unchanged)
+
+- **Finding 1 [P2 — the ps-throw carry skips the generation-change comparison] — FIXED (the
+  GENERATION-COMPARISON-BEFORE-RETHROW rule).** The reviewer's finding verbatim: "If the first exact read
+  observes V1, the second observes V2, and its subsequent ps query throws, this branch preserves only V2 without
+  comparing it with V1. emitSpawnAncestryWitness therefore retains V2 as its first observation, and a successful
+  retry of V2 emits an established witness for the replacement child. This is reproducible with the existing OS
+  seams. Compare the carried identity against before.startIdentity and retain the generation-change refusal
+  before rethrowing." Confirmed exactly (RED measured the witness poll EMITTING an established witness for the
+  replacement — the uncompared V2 carry grounded the retained history and the later V2 retry certified it).
+  **The fix (local-process-observation.mjs inspectVerifiedProcessIdentity, the §32.14-Finding-2 second-read
+  catch):** the OBSERVED-THEN-GONE carries (the ps-throw and empty-result shapes) are first COMPARED with
+  `before.startIdentity` through the generation relation — definitively different fires the generation-change
+  refusal (`the exact fake-ZCode process identity changed`, the round-1 ride shape) BEFORE the rethrow (the
+  witness poll latches `spawn-witness-child-generation-changed` and the observe layer classifies
+  `start-identity-generation-changed` — the replacement is never certified by a later same-successor retry);
+  same/uncertain keeps the round-9 carry. The window-closed carries keep their established classification
+  (their carried bounds feed the adjudicator's interval rules — the round-8-Finding-2 semantics are untouched).
+  **RED→GREEN:** the reviewer's schedule on the REAL darwin path (V1 observed, V2 observed, the second read's
+  ps query throws, then a successful V2 retry): RED `established` with the witness written for the replacement,
+  GREEN `spawn-witness-child-generation-changed` with NO witness written; the CONTROL — the carried
+  same-generation identity keeps the round-9 carry (the original child establishes with its witness written).
+- **Finding 2 [P2 — the carry misdates the kinfo-observed identity with the ps window] — FIXED (the
+  KINFO-BOUNDS DATING rule).** The reviewer's finding verbatim: "When ps fails or returns no process, the
+  carried identity was observed by kinfo, but this error dates it using the later ps query. For example, kinfo
+  collecting a predecessor during [1000,1100], followed by ps failing at 3000, produces [1100,3000]. Against a
+  newer presence baseline at [2000,2100], adjudicateLocalExit incorrectly reports pid-start-identity-ambiguous
+  instead of discarding the stale predecessor and accepting a later confirmed disappearance. Use the already
+  captured kinfo bounds in both failure branches, and preserve those bounds through the second-read catch path
+  as well." Confirmed exactly (RED measured the carried window width 1903 ms — the ps window — and the
+  adjudication returning `pid-start-identity-ambiguous`). **The fix (local-process-observation.mjs
+  readMacProcessStart, BOTH observed-then-gone branches + the inspector's second-read catch):** the carries date
+  the kinfo-observed identity with the KINFO query's own bounds (the taken/completed pair already captured for
+  the round-9 cancellation carry — never the later ps query's window), and the second-read catch PRESERVES those
+  bounds (the carried taken instant takes precedence over the inspector's dispatch stamp; the completion bound
+  is filled only when the error carries none) — through the round-7 carriage the verdict dates the carried
+  evidence truthfully, and the exit adjudicator's interval rules discard a genuinely stale predecessor and
+  accept the later confirmed disappearance. **RED→GREEN:** the reviewer's schedule (kinfo collects the
+  predecessor immediately; the ps query runs ~1900 ms later and throws; a newer presence baseline strictly
+  between; a later confirmed absence): RED the carried window `[psTaken, ps-failure]` (width 1903) classifying
+  `pid-start-identity-ambiguous`, GREEN the carried kinfo window (width ≤ 100) classifying the lawful
+  `disappeared`; the CONTROL — a kinfo window genuinely OVERLAPPING the baseline (the query itself spans it)
+  still classifies `pid-start-identity-ambiguous` (the dating fix never over-triggers staleness).
+- **Interaction verification (the two findings compose):** the 14-row rounds-8/9/10 suite re-run together =
+  **14 tests, 14 pass, 0 fail** — F1's comparison fires on the F2-dated carry (the generation comparison is
+  identity-based and dating-independent; the dating governs the carry that SURVIVES the comparison, and its
+  bounds now ride truthfully through the preserved catch path). ALL round-8/9 behaviors verified together: the
+  empty-ps carry (round 8), the throw carry WITH the comparison now added (rounds 9+10), the first-read bounds
+  (round 9), the window-closed carries and their adjudicator interval semantics (round 8 Finding 2) — no row
+  moved.
+- **Focused prior-counterexample re-run (2026-11-07, the amended bytes):** the `same-second-completion` family =
+  **70 tests, 70 pass, 0 fail** (byte-for-byte unchanged from §32.19); the `integration-completion` family =
+  **50 tests, 50 pass, 0 fail** (unchanged from §32.19 — the round-10 rows live in the observer/witness
+  families outside these two). **Movement enumeration (honest):** NO prior-row verdict changed in either
+  family; the local entry grows 454 → 458 (+4 — a RED row and a control row per finding, exactly the
+  instruction's anticipated ~458).
+- **Battery (executed 2026-11-07 on the exact amended bytes):** local SOLO = **458 tests, 458 pass, 0 fail,
+  0 cancelled, 0 skipped, exit 0** (454 prior + 4); native SOLO = **100 tests, 100 pass, 0 fail, 0 cancelled,
+  0 skipped, exit 0**; probe SOLO = **968 tests, 968 pass, 0 fail, 0 cancelled, 0 skipped, exit 0** (the
+  re-derived spawned-suite pin 559 = 458 + 100 + 1 registered in the pin comment and asserted green inside);
+  full `npm run test:shell-research` SOLO = **1526 tests, 1526 pass, 0 fail, 0 cancelled, 0 skipped, exit 0**
+  (1522 prior + 4 = 1526, honestly re-derived; no timing-row flake this battery); `node --test
+  tests/test-selection.test.mjs` = **6 tests / 6 pass / 0 fail** exit 0; `npm run lint` exit 0; `npm run
+  typecheck` exit 0; `git diff --check` exit 0. Prohibited-path diff vs `9c337403658ed8cb5319e5da75635154ba4aa851`
+  EMPTY. The two fixes amend the EXISTING route-(c) commit (message unchanged) — no push.
+
+### 32.21 Codex-review gate round 11 (2026-11-07, two P2 findings on §32.20's amended bytes — both reproduced by the reviewer in-memory; §32.20 style — add-only; the amended route-(c) commit carries them; message unchanged)
+
+- **Finding 1 [P2 — the ps-throw observedThenGone flag converts directly to exit in the default consumers] —
+  FIXED (the ERROR-VS-ABSENCE DISTINCTION).** The reviewer's finding verbatim: "With exact mode enabled, a
+  successful kinfo read followed by a thrown ps query now sets observedThenGone without observing any absence.
+  The default readers in terminateVerifiedProcess and runHeldHostTurn convert that flag directly to undefined,
+  so cleanup can report { attempted: false, exited: true } and skip signalling a still-live target. Preserve the
+  carried identity and timing on a non-absence error, or require absence confirmation before those consumers
+  report exit." Confirmed exactly (RED measured the observe layer producing the CONFIRMED-ABSENCE verdict
+  `['absent', 'process-absent']` for a ps EXECUTION throw — an absence no read ever observed). **The fix
+  (local-process-observation.mjs readMacProcessStart, the ps-throw carry):** the distinction is ps THREW (an
+  error — no absence was OBSERVED) versus ps RETURNED EMPTY (absence WAS observed). The thrown shape now carries
+  the DISTINCT `observedThenQueryFailed` marker and NO `observedThenGone` flag (with its identity and kinfo
+  bounds unchanged): every default reader's exit conversion (terminateVerifiedProcess's default readIdentity,
+  the driver's runHeldHostTurn readProcessIdentity, captureVerifiedProcessIdentity's exited code,
+  observeLocalProcess's ROUND-28 absence branch — all audited; each keys on the flag) naturally stops
+  converting the thrown shape, so it FLOWS AS AN ERROR with its carried evidence and an unchanged-process
+  classification stays non-exit; only the EMPTY-result shape (where absence WAS observed) keeps driving the
+  exit conversion (its round-8 behavior unchanged). The round-10 generation-comparison-before-rethrow was
+  extended to the new marker (the comparison is identity-based; the thrown shape's V2 carry is still compared
+  with before.startIdentity). **RED→GREEN:** the reviewer's schedule on the REAL darwin path (kinfo reads the
+  live target; the ps query THROWS): RED the confirmed-absence misreport `['absent', 'process-absent']`, GREEN
+  the error-class verdict `['unestablished', 'liveness-read-failed']` carrying the identity
+  (`kinfo:5:0`) and both collection bounds; the CONSUMER PIN — terminateVerifiedProcess with the thrown-shape
+  error propagating through the flow REJECTS with the carried identity/bounds and the kill authority never
+  reached (never `{exited: true}`); the CONTROL — the EMPTY-result shape keeps its lawful classification
+  (`['absent', 'process-absent']`, unchanged) and its lawful exit conversion (the observedThenGone-marked error
+  still converts to undefined → `{attempted: false, exited: true}` — a genuinely-gone target needs no signal).
+- **Finding 2 [P2 — the injected ps path skips the creation-second agreement check] — FIXED (the SHARED
+  COMPOSITION).** The reviewer's finding verbatim: "When both osSeams.ps and kinfoExact are supplied, this
+  branch runs ps first and attaches the exact identity without the creation-second agreement check in
+  readMacProcessStart. A kinfo identity for one second and a ps identity for the following second therefore
+  return successfully here, whereas the same snapshots supplied through runProcess correctly throw an
+  identity-change error. Share the production composition so the deterministic seam—and the new tests using
+  it—cannot certify contradictory generations." Confirmed exactly (RED measured the mismatched injected
+  composition returning successfully). **The fix — the SHARED choice (stated):** the production agreement was
+  EXTRACTED into `composedExactStartIdentity(exact, psStartIdentity)` and BOTH composition sites now call it —
+  the real readMacProcessStart path (unchanged behavior) and the injected osSeams.ps + kinfoExact seam lambda
+  (which previously attached the exact identity unchecked) — so the deterministic seam tests the real protocol
+  rather than duplicating the check: a kinfo identity and a ps identity from different seconds refuse with the
+  identical identity-change error CARRYING the exact identity (the established carry rules), never returning
+  successfully; agreeing seconds compose identically on both paths. **RED→GREEN:** the reviewer's schedule
+  (injected kinfo second X + injected ps text second X+1): RED returning successfully, GREEN rejecting with
+  `the exact fake-ZCode process identity changed` carrying `kinfo:1793855520:123000`; the CONTROL — the
+  SAME-second injected composition keeps returning the composed exact identity with the ps text as its
+  alternate representation, and the real-path agreement is unchanged. **Fixture alignment (the enumerated
+  movement):** TWO prior seam-path fixtures paired kinfo sec 1793849671 with the second-1762047000 text — the
+  slice-1 exact row and the §32.11 Finding-3 flapping row (PS_LSTART) — each ps text re-aligned to sec
+  1793849671's own rendering ('Thu Nov  5 03:34:31 2026'); every assertion in those rows is unchanged and both
+  still pass (the row semantics never depended on the misalignment). The §32.13 Finding-3 emitter harness's
+  WRITER reads (calls 1-2) were re-aligned the same way (the child retry reads keep their schedule text) — the
+  row's retained-history semantics and both arms unchanged.
+- **Focused prior-counterexample re-run (2026-11-07, the amended bytes):** the `same-second-completion` family =
+  **70 tests, 70 pass, 0 fail** (byte-for-byte unchanged from §32.20); the `integration-completion` family =
+  **50 tests, 50 pass, 0 fail** (unchanged from §32.20 — the round-11 rows live in the observer/termination
+  families outside these two). **Movement enumeration (honest):** NO prior-row verdict changed in either
+  family; the local entry grows 458 → 462 (+4 — a RED row and a consumer/control row per finding, exactly the
+  instruction's anticipated ~462). The rounds-8/9/10 interaction suite (14 rows) re-ran together = **14 pass,
+  0 fail** (the round-10 Finding-2 rows' OBSERVATION-level asserts moved honestly: the ps-throw shape now
+  flows as the error-class verdict `['unestablished', 'liveness-read-failed']` carrying the identity/bounds
+  instead of the absence verdict — their adjudication outcomes are unchanged — enumerated as the direct
+  consequence of the error-vs-absence distinction).
+- **Battery (executed 2026-11-07 on the exact amended bytes):** local SOLO = **462 tests, 462 pass, 0 fail,
+  0 cancelled, 0 skipped, exit 0** (458 prior + 4); native SOLO = **100 tests, 100 pass, 0 fail, 0 cancelled,
+  0 skipped, exit 0**; probe SOLO = **968 tests, 968 pass, 0 fail, 0 cancelled, 0 skipped, exit 0** (the
+  re-derived spawned-suite pin 563 = 462 + 100 + 1 registered in the pin comment and asserted green inside);
+  full `npm run test:shell-research` SOLO = **1530 tests, 1530 pass, 0 fail, 0 cancelled, 0 skipped, exit 0**
+  (1526 prior + 4 = 1530, honestly re-derived; no timing-row flake this battery); `node --test
+  tests/test-selection.test.mjs` = **6 tests / 6 pass / 0 fail** exit 0; `npm run lint` exit 0; `npm run
+  typecheck` exit 0; `git diff --check` exit 0. Prohibited-path diff vs `9c337403658ed8cb5319e5da75635154ba4aa851`
+  EMPTY. The two fixes amend the EXISTING route-(c) commit (message unchanged) — no push.
+
+### 32.22 Codex-review gate round 12 (2026-11-07, two P2 evidence-preservation gaps in the round-4 mixed-read downgrade on §32.21's amended bytes — both reproduced by the reviewer; §32.21 style — add-only; the amended route-(c) commit carries them; message unchanged)
+
+- **Finding 1 [P2 — the mixed-read downgrade discards the successor's exact identity] — FIXED (the
+  EXACT-EVIDENCE CARRY on the downgrade).** The reviewer's finding verbatim: "When the first kernel read degrades
+  but the second observes an exact same-second successor, this return discards the successor's identity. With a
+  baseline of kinfo:1:100000 and a second read of kinfo:1:500000, observeLocalProcess accepts the returned
+  coarse identity, and a subsequent confirmed absence makes adjudicateLocalExit report disappeared instead of
+  detecting reuse. Keep the jointly verified coarse identity, but separately preserve the observed exact
+  identity and its bounds for replacement detection." Confirmed exactly (RED measured the downgrade verdict
+  carrying NO exact evidence and the adjudication crediting `disappeared`). **The fix
+  (local-process-observation.mjs inspectVerifiedProcessIdentity, the mixed-resolution return):** the jointly
+  verified coarse identity REMAINS the returned identity, but when the second read observed an EXACT identity
+  the downgrade separately preserves it (with its bounds — the kernel bounds the composition carries, falling
+  back to the second read's dispatch) as an internal carry (`observedStartIdentity` +
+  `observedIdentityTakenEpochMs`/`observedIdentityCompletedEpochMs` — the same pattern as the carried-identity
+  ride). observeLocalProcess maps the carry onto the ESTABLISHED verdict through the whitelisted
+  carried-identity fields (no new persisted shape), and adjudicateLocalExit's established branch consumes it:
+  an established read whose separately preserved exact carry definitively differs from the bound is replacement
+  evidence (the jointly verified coarse identity is same-generation at its resolution, but the preserved exact
+  observation proves the PID was reused) — the later confirmed absence is never credited as the original
+  generation's disappearance. **RED→GREEN:** the reviewer's schedule (kinfo call 1 degrades; call 2 observes
+  the exact same-second successor kinfo:1:500000; a later confirmed absence): RED no exact evidence on the
+  verdict + `disappeared`, GREEN the verdict carrying `observedStartIdentity: 'kinfo:1:500000'` + bounds and
+  the adjudication latching `pid-start-identity-reused`; the CONTROLS — a DIFFERENT-second successor is still
+  caught by the coarse comparison (the mid-read identity change → the reuse latch, unchanged), and a second
+  read observing the genuinely UNCHANGED original's exact identity preserves a same-generation carry that never
+  latches (the lawful disappearance holds).
+- **Finding 2 [P2 — successful composed reads lose the kinfo bounds] — FIXED (the KERNEL-BOUNDS CARRIAGE
+  through successful composition).** The reviewer's finding verbatim: "When kinfo succeeds, a slow ps query
+  succeeds, and the subsequent environment query fails, this return loses the kinfo collection bounds. The
+  inspector then dates the carried exact identity using the entire combined read. Reproducing kinfo at 1000, ps
+  completion at 3000, and a newer presence baseline at [2000,2100] produces pid-start-identity-ambiguous
+  instead of discarding the stale predecessor and accepting a later disappearance. Carry the kernel query's own
+  bounds through successful composition and use them on subsequent error rides." Confirmed exactly (RED
+  measured the carried window width 1902 ms — the entire combined read — and the adjudication returning
+  `pid-start-identity-ambiguous`). **The fix (local-process-observation.mjs readMacProcessStart, the
+  successful composition + the inspector's uniform ride):** the successful composition carries the KINFO
+  query's own bounds on the result (`observedIdentityTakenEpochMs`/`observedIdentityCompletedEpochMs` — the
+  pair already captured for the cancellation carry), and `rideObservedIdentity` prefers them: every subsequent
+  error ride (the environment failure, the ordinary I/O shapes) dates the carried exact identity with the
+  KERNEL window — never the entire combined read. Against a later baseline the truthful kernel window
+  classifies the stale predecessor stale (the lawful disappearance accepted) instead of the false ambiguous.
+  **RED→GREEN:** the reviewer's schedule (kinfo collects the predecessor immediately; the read's own ps query
+  runs ~1900 ms and SUCCEEDS; the environment query then fails; a newer presence baseline strictly between the
+  kinfo window and the combined-read end): RED the carried width 1902 + `pid-start-identity-ambiguous`, GREEN
+  the carried width ≤ 100 + the lawful `disappeared`; the CONTROLS — a kinfo window genuinely OVERLAPPING the
+  baseline still classifies `pid-start-identity-ambiguous` (the dating fix never over-triggers staleness), and
+  a kinfo window entirely POST-baseline still latches `pid-start-identity-reused`.
+- **Focused prior-counterexample re-run (2026-11-07, the amended bytes):** the `same-second-completion` family =
+  **70 tests, 70 pass, 0 fail** (byte-for-byte unchanged from §32.21); the `integration-completion` family =
+  **50 tests, 50 pass, 0 fail** (unchanged from §32.21 — the round-12 rows live in the observer/adjudication
+  families outside these two). **Movement enumeration (honest):** NO prior-row verdict changed in either
+  family; the local entry grows 462 → 466 (+4 — a RED row and a controls row per finding, exactly the
+  instruction's anticipated ~466).
+- **Battery (executed 2026-11-07 on the exact amended bytes):** local SOLO = **466 tests, 466 pass, 0 fail,
+  0 cancelled, 0 skipped, exit 0** (462 prior + 4); native SOLO = **100 tests, 100 pass, 0 fail, 0 cancelled,
+  0 skipped, exit 0**; probe SOLO = **968 tests, 968 pass, 0 fail, 0 cancelled, 0 skipped, exit 0** (the
+  re-derived spawned-suite pin 567 = 466 + 100 + 1 registered in the pin comment and asserted green inside);
+  full `npm run test:shell-research` SOLO = **1534 tests, 1534 pass, 0 fail, 0 cancelled, 0 skipped, exit 0**
+  (1530 prior + 4 = 1534, honestly re-derived; no timing-row flake this battery); `node --test
+  tests/test-selection.test.mjs` = **6 tests / 6 pass / 0 fail** exit 0; `npm run lint` exit 0; `npm run
+  typecheck` exit 0; `git diff --check` exit 0. Prohibited-path diff vs `9c337403658ed8cb5319e5da75635154ba4aa851`
+  EMPTY. The two fixes amend the EXISTING route-(c) commit (message unchanged) — no push.
+
+### 32.23 Codex-review gate round 13 (2026-11-07, five findings on §32.22's amended bytes — the consumer-completeness sweep for the round-12 separate exact-evidence carry `observedStartIdentity`, all reproduced by the reviewer; §32.22 style — add-only; the amended route-(c) commit carries them; message unchanged)
+
+- **Finding 1 [P1 — the termination guard authorizes signalling a carried successor] — FIXED (the
+  CARRIED-SUCCESSOR GUARD).** The reviewer's finding verbatim: "With exact reads enabled, a mixed-resolution
+  verification can return matching ps text alongside an observedStartIdentity that proves PID replacement. This
+  guard checks only record.startIdentity, so an original kinfo:1:100000 and a carried successor kinfo:1:500000
+  pass verification when their coarse second matches. A deterministic reproduction makes terminateVerifiedProcess
+  send SIGTERM to that successor. Check the carried exact identity before authorizing either signal." Confirmed
+  exactly (RED measured `{attempted: true, signalled: 'SIGTERM', exited: true}` — the signal reached the carried
+  successor). **The fix (local-process-observation.mjs verifyUnchanged):** after the coarse generation relation
+  passes, the guard checks the SEPARATELY PRESERVED carried exact identity (`record.observedStartIdentity`)
+  against the bound through the generation relation — a definitively different carried identity returns
+  `'changed'` (the honest identity-change failure, NO signal) before the nonce check and either signal.
+  **RED→GREEN:** RED `{attempted: true, signalled: 'SIGTERM'}` on the carried-successor schedule (the original
+  kinfo:1:100000, the carried successor kinfo:1:500000, the matching coarse second), GREEN `attempted: false`,
+  zero kill calls, `signalled: null`, the identity-change failure; the CONTROLS — a POSITIVELY-matching carried
+  identity (`observedStartIdentity: 'kinfo:1:100000'`) signals as before (attempted, one kill, exited), and a
+  REAL different-generation record (a different-second verification identity) still blocks.
+- **Finding 2 [P2 — the first-exact/second-degrades branch drops the first exact evidence] — FIXED
+  (READ-ORDER-AGNOSTIC preservation).** The reviewer's finding verbatim: "When the first read observes an exact
+  successor but the second read degrades to matching ps text, this branch drops the first read's exact evidence
+  because it preserves only after. For a bound kinfo:1:100000, first-read kinfo:1:500000, and second-read ps
+  text for second 1, observeLocalProcess returns established without a replacement carry; a subsequent confirmed
+  absence incorrectly adjudicates disappeared. Preserve the exact observation and its bounds regardless of which
+  read supplied it." Confirmed exactly (RED measured the established verdict carrying NO exact evidence and the
+  adjudication crediting `disappeared`). **The fix (local-process-observation.mjs inspectVerifiedProcessIdentity,
+  the mixed-resolution downgrade):** the preservation is READ-ORDER-AGNOSTIC — `exactSource = after if exact-form
+  else before`, and whichever read supplied the exact identity, that observation (with its bounds — read1's own
+  kernel bounds through the round-12 Finding-2 carriage) is preserved as the replacement-detection carry;
+  observeLocalProcess's whitelisted mapping and adjudicateLocalExit's carried-exact latch are already
+  read-order-agnostic (they consume the verdict fields). **RED→GREEN:** the reviewer's schedule (bound
+  kinfo:1:100000; the FIRST read observes kinfo:1:500000; the second read degrades to the matching ps text; a
+  later confirmed absence): RED no carry + `disappeared`, GREEN the verdict carrying
+  `observedStartIdentity: 'kinfo:1:500000'` + bounds and the adjudication latching `pid-start-identity-reused`;
+  the CONTROL — the SECOND-read-exact schedule keeps its round-12 behavior (the carry + the reuse latch,
+  unchanged).
+- **Finding 3 [P2 — the replay ignores the established read's carried exact identity] — FIXED (the replay
+  mirrors the carried replacement).** The reviewer's finding verbatim: "An established mixed-resolution read now
+  carries exact replacement evidence separately from its coarse observation.startIdentity, but this replay
+  branch ignores read.observedStartIdentity. Using matching ps text plus a foreign exact carry in block.reads
+  produces localProcessDuties.settled: true with no refusals, while adjudicateLocalExit on the same sequence
+  returns pid-start-identity-reused. Include the carried identity in established-read replacement detection and
+  apply the existing timing checks." Confirmed exactly (RED measured the replay settling with `refusals: []`).
+  **The fix (driver.mjs joinRecordLocalProcessDuties, the reuse latch's established branch):** the replacement
+  detection includes `carriedDefinitivelyForeign(read.observedStartIdentity)` — the carried identity compared
+  with the bound through the generation relation; the existing timing checks (the round-19/23 supplied-instant
+  validation, the ordered horizon mirror, the recency filter) apply to the carried detection identically.
+  **RED→GREEN:** the reviewer's schedule (matching ps text + the foreign exact carry `kinfo:2:0` in
+  block.reads): RED `settled: true` with no refusals, GREEN `exit-reuse-latched`; the RUNTIME/REPLAY
+  AGREEMENT — adjudicateLocalExit on the same sequence latches `pid-start-identity-reused` (the round-12
+  established-branch carry rule); the CONTROL — a carried identity MATCHING the bound (`kinfo:1:0`) keeps
+  settling with no refusals.
+- **Finding 4 [P2 — the emitter's successful mixed-read carry skips the retained history] — FIXED (the
+  SUCCESS-PATH EXACT CARRY).** The reviewer's finding verbatim: "If an earlier polling failure retains exact
+  generation A and the next successful inspection returns coarse ps text with an exact successor B in
+  observedStartIdentity, this comparison sees only the coarse identity and accepts it as matching A. A
+  deterministic reproduction emits an established witness for the replacement instead of refusing
+  spawn-witness-child-generation-changed. Compare the successful inspection's carried exact evidence against the
+  retained history before accepting the child." Confirmed exactly (RED measured the witness poll EMITTING an
+  established witness for the replacement). **The fix (local-process-observation.mjs emitSpawnAncestryWitness,
+  the success path):** the successful inspection's carried exact evidence (`childVerified.observedStartIdentity`)
+  is compared against the retained history through `retainedIdentityVerdict` — definitively different from a
+  retained exact generation fires the generation-change refusal BEFORE the child is accepted; same ⇒ accept (the
+  write proceeds for the original child). **RED→GREEN:** the reviewer's schedule (attempt 1's failure retains
+  the exact A kinfo:2:100000; attempt 2's successful mixed downgrade carries the exact successor B
+  kinfo:2:500000 in its coarse-accepted result): RED `established` + the witness written, GREEN
+  `spawn-witness-child-generation-changed` with NO witness; the CONTROL — attempt 2's downgrade carrying the
+  RETAINED generation's own exact identity (A) accepts the child (established, the witness written, the record
+  carrying the jointly verified coarse identity).
+- **Finding 5 [P2 — the nonce-mismatch/marker-gone/missing-second-read carries use the loose bounds] — FIXED
+  (the KERNEL-BOUND RESOLUTION hoisted).** The reviewer's finding verbatim: "The tighter kinfo bounds are
+  honored through this helper, but the nonce-mismatch, marker-gone, and missing-second-read branches still
+  construct carries using beforeTakenEpochMs and beforeResolvedEpochMs. With kinfo collected during
+  [20000,20100], ps completing at 23000, and a newer presence at [22000,22100], those branches incorrectly
+  report an overlapping identity interval and refuse pid-start-identity-ambiguous; the ordinary-error branch
+  correctly discards the stale predecessor. Route these failure carries through the same kernel-bound
+  resolution." Confirmed exactly (RED measured the nonce-mismatch carry width 2905 ms — the entire combined
+  read — and the adjudication returning `pid-start-identity-ambiguous`). **The fix
+  (local-process-observation.mjs inspectVerifiedProcessIdentity):** the kernel-bound resolution is hoisted right
+  after the first read returns (`carriedTakenEpochMs`/`carriedCompletedEpochMs` — preferring the successful
+  composition's kinfo bounds, falling back to the dispatch/resolution stamps), and ALL THREE first-read failure
+  branches route through it: the nonce-mismatch carry, the marker-gone observedThenGoneError, and the
+  missing-second-read observedThenGoneError (the ordinary-error ride already routed through the round-12
+  helper). **RED→GREEN:** the reviewer's schedule (kinfo collects the predecessor within ~100 ms; the read's ps
+  query completes ~2800 ms later; the marker read then reports a FOREIGN nonce — the mismatch; a newer presence
+  baseline strictly between the kinfo window and the ps completion): RED the carried width 2905 +
+  `pid-start-identity-ambiguous`, GREEN the carried kernel window (width ≤ 250) + the lawful `disappeared`;
+  the CONTROLS — the ORDINARY-error branch is unchanged (the round-12 ride helper keeps the kernel window and
+  the lawful disappearance), and a kinfo window GENUINELY SPANNING the newer presence still classifies
+  `pid-start-identity-ambiguous` (the resolution never over-triggers staleness).
+- **Focused prior-counterexample re-run (2026-11-07, the amended bytes):** the `same-second-completion` family =
+  **70 tests, 70 pass, 0 fail** (byte-for-byte unchanged from §32.22); the `integration-completion` family =
+  **52 tests, 52 pass, 0 fail** (50 prior rows still passing + the two round-13 Finding-3 replay rows, which
+  live INSIDE this describe). **Movement enumeration (honest):** NO prior-row verdict changed in either
+  family; the local entry grows 466 → 476 (+10 — a RED row and a control row per finding; the honest count is
+  +10, not the instruction's anticipated +9, because each finding's controls row is its own test — re-derived
+  from the measured count).
+- **Battery (executed 2026-11-07 on the exact amended bytes):** local SOLO = **476 tests, 476 pass, 0 fail,
+  0 cancelled, 0 skipped, exit 0** (466 prior + 10); native SOLO = **100 tests, 100 pass, 0 fail, 0 cancelled,
+  0 skipped, exit 0**; probe SOLO = **968 tests, 968 pass, 0 fail, 0 cancelled, 0 skipped, exit 0** (the
+  re-derived spawned-suite pin 577 = 476 + 100 + 1 registered in the pin comment and asserted green inside);
+  full `npm run test:shell-research` SOLO = **1544 tests, 1544 pass, 0 fail, 0 cancelled, 0 skipped, exit 0**
+  (1534 prior + 10 = 1544, honestly re-derived from the measured count — §32.22's full SOLO measured 1534 on
+  the same pre-round-13 bytes; no timing-row flake this battery);
+  `node --test tests/test-selection.test.mjs` = **6 tests / 6 pass / 0 fail** exit 0; `npm run lint` exit 0;
+  `npm run typecheck` exit 0; `git diff --check` exit 0. Prohibited-path diff vs
+  `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY. The five fixes amend the EXISTING route-(c) commit (message
+  unchanged) — no push.
+
+### 32.24 Codex-review gate round 14 (2026-11-07, two P2 findings on §32.23's amended bytes — the last two consumers of the round-12/13 exact-evidence carry, both reproduced by the reviewer; §32.23 style — add-only; the amended route-(c) commit carries them; message unchanged)
+
+- **Finding 1 [P2 — the driver's identity reader ignores the carried successor] — FIXED (the CARRIED-SUCCESSOR
+  GUARD on the driver's default identity reader).** The reviewer's finding verbatim: "With exact reads enabled, a
+  mixed-resolution inspection can return matching ps text alongside an observedStartIdentity proving replacement.
+  For example, a target kinfo:1:100000 passes this check when the returned ps text matches second 1 but the carry
+  is kinfo:1:500000. Consequently, processAliveWhileHeld can report the replacement as the target, and the
+  natural-exit watcher can accept its subsequent disappearance. Apply the carried-successor check here as well as
+  in verifyUnchanged." Confirmed exactly (RED measured `processAliveWhileHeld: true` — the replacement reported
+  as the alive target). **The honest return shape (stated per the finding's instruction):** the reader's OWN
+  named refusal — `throw new Error('the exact fake-ZCode process identity changed')`, the SAME named
+  classification the reader's raw-mismatch path uses ("a demonstrably different generation refuses by name") and
+  the same verdict verifyUnchanged's `'changed'` produces. `undefined` is explicitly WRONG here: it would make
+  the natural-exit watcher accept the replacement's disappearance as the target's exit — exactly what the
+  finding forbids. **The consumers verified per the standing classification rules** (line numbers re-verified on
+  the amended HEAD bytes): processAliveWhileHeld (driver.mjs :3357) — the throw propagates to the turn's outer
+  catch (:4079) and the failure shape records `processAliveWhileHeld: null`, never `true`; the natural-exit
+  watcher's re-check (:3867) and waitForProcessExit (:1537) — a throw rejects the wait (never accepting the
+  replacement's disappearance as the target's exit); safeTerminateExactProcess (:2668, the read at :2700) —
+  caught into `cleanup.errors` (the named failure recorded, the signal authority never reached with an
+  unverified target). **The fix (driver.mjs readProcessIdentity):** after the
+  existing raw/relation checks, the carried exact identity (`observed.observedStartIdentity`) is compared with
+  the bound through `startIdentitiesDefinitivelyDiffer` — a definitively different carried identity refuses by
+  name. **The enablement (stated):** the default reader was previously real-OS-only (untestable in memory); it
+  now honors the SAME observer seam options the observation layer honors
+  (`observerSeamOptions.osSeams` — the deterministic test surface reaches the reader's actual protocol).
+  **RED→GREEN:** the reviewer's schedule through runHeldHostTurn WITHOUT injecting readProcessIdentity (target
+  kinfo:1:100000 via the injected capture; the mixed inspection — r1 degrades, r2 observes the exact same-second
+  successor kinfo:1:500000 with the matching second-1 ps text): RED `processAliveWhileHeld: true`, GREEN the
+  turn REJECTING with the named identity-changed error (never reporting the replacement); the CONTROL — the
+  positively-matching carry (every exact read observes the bound's own kinfo:1:100000) keeps the target
+  identification (`processAliveWhileHeld: true`, unchanged).
+- **Finding 2 [P2 — established carries latch reuse without the interval classification] — FIXED (the
+  CARRIED-INTERVAL CLASSIFICATION on established carries).** The reviewer's finding verbatim: "When a mixed
+  inspection observes a predecessor during [1200,1300], then completes degraded reads after a newer presence at
+  [1600,1700], this branch unconditionally latches the stale predecessor as replacement evidence. A
+  deterministic reproduction through observeLocalProcess returns pid-start-identity-reused instead of accepting
+  the newer generation's later confirmed absence. Apply the carried-interval classification to established
+  carries too: discard stale evidence and classify overlapping evidence as ambiguous before advancing the
+  horizon or latching reuse." Confirmed exactly (RED measured `pid-start-identity-reused` on the reviewer's
+  schedule). **The fix (local-process-observation.mjs adjudicateLocalExit, the established branch):** the
+  carried evidence is classified BEFORE the horizon advancement — the carry was observed DURING this read, so
+  the comparison baseline is the horizon AS IT STOOD before this read advances it: `carriedIdentityIntervalClass`
+  governs (stale ⇒ discarded — old evidence never latching; overlap ⇒ the lawful
+  `pid-start-identity-ambiguous` return; inconsistent ⇒ the named interval-inconsistent return; post (and
+  legacy-at/after-the-horizon) ⇒ the reuse latch), and the classification's verdict applies AFTER the coarse
+  relation's own handling (a coarse 'different' still latches first). **RED→GREEN:** the reviewer's schedule
+  (observeLocalProcess with the NEWER generation kinfo:1:500000 bound; r1 observes the stale PREDECESSOR
+  kinfo:1:100000 during a tight kernel window; r2 degrades completing ~300 ms later — after the newer
+  presence's window; the adjudication with the newer presence at [carried+150, carried+250] and its confirmed
+  absence): RED `pid-start-identity-reused`, GREEN the lawful `disappeared` (the stale predecessor discarded);
+  the CONTROLS — a kinfo window genuinely SPANNING the newer presence's window classifies
+  `pid-start-identity-ambiguous` (never over-triggering staleness), and a carried window entirely AFTER the
+  bound's presence window still latches `pid-start-identity-reused`.
+- **Focused prior-counterexample re-run (2026-11-07, the amended bytes):** the `same-second-completion` family =
+  **70 tests, 70 pass, 0 fail** (byte-for-byte unchanged from §32.23); the `integration-completion` family =
+  **52 tests, 52 pass, 0 fail** (unchanged from §32.23). **Movement enumeration (honest):** NO prior-row
+  verdict changed in either family; the local entry grows 476 → 480 (+4 — a RED row and a controls row per
+  finding, exactly the instruction's anticipated ~480). The carry-consumer interaction re-run — the codex
+  rounds 8–14 gate rows PLUS the two adjacent families sharing these paths (the slice-1 seam-composition rows
+  and the emitter retained-history rows; 42 rows under that combined name pattern — the composition stated so
+  the count is reproducible: 36 rounds-8..14 rows + 4 slice-1 rows + 2 emitter-retained-history rows) — re-ran
+  together = **42 pass, 0 fail**; the broader round-8..14 coverage is subsumed in the 480 SOLO. The round-12/13
+  carry rows and the replay established-carry row are untouched by the interval classification (their
+  schedules' carried windows are genuinely post-baseline — the 'post' classification latches exactly as their
+  unconditional latches did).
+- **Battery (executed 2026-11-07 on the exact amended bytes):** local SOLO = **480 tests, 480 pass, 0 fail,
+  0 cancelled, 0 skipped, exit 0** (476 prior + 4); native SOLO = **100 tests, 100 pass, 0 fail, 0 cancelled,
+  0 skipped, exit 0**; probe SOLO = **968 tests, 968 pass, 0 fail, 0 cancelled, 0 skipped, exit 0** (the
+  re-derived spawned-suite pin 581 = 480 + 100 + 1 registered in the pin comment and asserted green inside);
+  full `npm run test:shell-research` SOLO = **1548 tests, 1547 pass, 1 fail, 0 cancelled, 0 skipped, exit 1**
+  (1544 prior + 4 = 1548, honestly re-derived; duration 1647.8 s) — the ONE failure is
+  `a space-separated underscore reporter alias is replaced with its value` (tests/shell-wait-probe.test.mjs, a
+  spawned ~178 s CLI-argument timing row whose nested suite crossed its window under the sequential battery's
+  load, `1 !== 0`): HONEST-FLAKE ATTRIBUTION, never relabelled — the row re-run SOLO in isolation = **1 test,
+  1 pass, 0 fail, exit 0**, it touches no route-(c) code, and its sibling timing rows passed in the same
+  battery run; `node --test tests/test-selection.test.mjs` = **6 tests / 6 pass / 0 fail** exit 0; `npm run
+  lint` exit 0; `npm run typecheck` exit 0 (the observer JSDoc's return arms grew the whitelisted carried fields
+  on BOTH arms — the mixed-resolution downgrade's internal carry and the composition's kernel-bounds carriage
+  are now declared); `git diff --check` exit 0. Prohibited-path diff vs
+  `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY. The two fixes amend the EXISTING route-(c) commit (message
+  unchanged) — no push.
+
+### 32.25 Codex-review gate round 15 (2026-11-07, two P2 findings on §32.24's amended bytes — two new exact-evidence consumption faces, both reproduced by the reviewer; §32.24 style — add-only; the amended route-(c) commit carries them; message unchanged)
+
+- **Finding 1 [P2 — exact generations learned after a coarse baseline are never cross-compared] — FIXED (the
+  LEARNED EXACT GENERATION retention rule, adjudicator + replay mirror).** The reviewer's finding verbatim:
+  "When the baseline is a whole-second ps identity, successive exact observations such as kinfo:1:100000 and
+  kinfo:1:200000 both compare as same against that baseline. Their exact identities prove PID reuse, but the
+  adjudicator never compares them with each other: a subsequent confirmed absence returns disappeared instead of
+  refusing reuse. Retain the exact generation learned during the sequence and check subsequent observations
+  against it, including in the replay mirror." Confirmed exactly (RED measured `disappeared` on the successive
+  exact schedule and the replay settling with no refusals). **The fix (local-process-observation.mjs
+  adjudicateLocalExit, the established branch + driver.mjs joinRecordLocalProcessDuties, the reuse latch's
+  established branch):** the adjudicator RETAINS the exact generation learned during the sequence — the first
+  exact observation after a coarse baseline (whether the read's own observation.startIdentity or the mixed
+  read's separately preserved carry) becomes the carried exact reference — and checks subsequent exact
+  observations against IT: two exact observations in the same second with different usec are definitively
+  different generations → the reuse latch; identical exact instants keep the same-generation path (the
+  established tie convention). The learned-reference check for the read's OWN exact identity classifies through
+  the read's own collection window (the carried-interval rules — stale never latching, overlap ambiguous,
+  post/legacy-at-or-after latching); the carried evidence's trigger extends to differ-vs-learned-reference
+  (the round-14 carried-interval classification applies unchanged). The replay mirror retains the same learned
+  reference over the persisted sequence (the candidate's exact identity checked against it — the existing
+  timing checks apply). **RED→GREEN:** the reviewer's schedule (the coarse ps bound 'Thu Jan  1 00:00:01 1970';
+  successive exact established reads kinfo:1:100000 then kinfo:1:200000 in the bound's second; the confirmed
+  absence): RED `disappeared`, GREEN `pid-start-identity-reused`; the REPLAY MIRROR — the same persisted
+  sequence RED settled with no refusals, GREEN `exit-reuse-latched`; the CONTROLS — successive IDENTICAL exact
+  observations keep the same-generation path (the lawful disappearance), and a coarse-only sequence keeps the
+  coarse behavior byte-identically (the learned reference never engages).
+- **Finding 2 [P2 — the PPID-failure path discards the second read's exact evidence] — FIXED (the PPID-FAILURE
+  EXACT CARRY).** The reviewer's finding verbatim: "When the first read degrades to ps and the second observes
+  an exact successor in the same second, this coarse comparison passes. If the PPID also changes, the following
+  failure calls rideObservedIdentity, carrying only the first read's coarse identity and discarding the
+  successor's exact identity. Reproducing this against an exact baseline yields liveness-read-failed, then
+  incorrectly returns disappeared after a confirmed absence. Preserve the second read's exact identity and
+  collection bounds on this error path, as the successful mixed-read path already does." Confirmed exactly (RED
+  measured `liveness-read-failed` carrying the first read's coarse identity). **The fix
+  (local-process-observation.mjs inspectVerifiedProcessIdentity, the PPID-failure path):** when the second read
+  observed an EXACT identity (the mixed downgrade shape), the reparenting failure preserves the SECOND read's
+  exact identity and its collection bounds (the same {identity, taken, completed} unit the successful
+  mixed-read path preserves — the kernel bounds through the composition carriage, falling back to the second
+  read's dispatch) instead of rideObservedIdentity's first-read coarse form; the message stays the ppid-changed
+  torn class (the round-1 rule — a ppid-only change is never the reuse class) and the carried exact evidence
+  classifies per the carried rules downstream. The observe layer's identity-mismatch promotion now carries the
+  promoted verdict's `observedStartIdentity` (the adjudicator's carried rules consume it — a natural completion:
+  the round-27 nonce-failure verdict already did). **RED→GREEN:** the reviewer's schedule (the exact bound
+  kinfo:1:100000; r1 degrades to the matching second-1 ps text; r2 observes the exact same-second successor
+  kinfo:1:500000; the PPID changes between the reads): RED `liveness-read-failed` carrying the coarse identity →
+  `disappeared` after the confirmed absence, GREEN the promoted `start-identity-generation-changed` verdict
+  carrying `kinfo:1:500000` + bounds → `pid-start-identity-reused`; the CONTROL — a genuinely MATCHING coarse
+  second read (BOTH reads degrade, the PPID changes) keeps the existing behavior: the ppid-changed torn class
+  carrying the first read's coarse identity, the observe layer non-deciding, and the lawful disappearance.
+- **Focused prior-counterexample re-run (2026-11-07, the amended bytes):** the `same-second-completion` family =
+  **70 tests, 70 pass, 0 fail** (byte-for-byte unchanged from §32.24); the `integration-completion` family =
+  **53 tests, 53 pass, 0 fail** (52 prior + the new replay-mirror row; all 52 prior rows still passing).
+  **Movement enumeration (honest):** NO prior-row verdict changed in either family; the local entry grows
+  480 → 485 (+5 — the Finding-1 RED row (its runtime arm), the dedicated replay-mirror row, the
+  identical-exact/coarse-only controls row, the Finding-2 RED row and its control row; the instruction
+  anticipated ~484 — the honest count is +5 because the replay mirror is its own row in the
+  integration-completion describe where the persisted-block helper lives, re-derived from the measured count).
+  The rounds-8..15 codex-gate interaction suite re-ran together = **47 pass, 0 fail** (36 rounds-8..14 rows +
+  the 11 round-15/adjacent rows under the combined pattern) — the round-12/13/14 carry rows are untouched (the
+  learned-reference check adds a second discrimination axis; their schedules' exact evidences match their
+  bounds/learned references).
+- **Battery (executed 2026-11-07 on the exact amended bytes):** local SOLO = **485 tests, 485 pass, 0 fail,
+  0 cancelled, 0 skipped, exit 0** (480 prior + 5); native SOLO = **100 tests, 100 pass, 0 fail, 0 cancelled,
+  0 skipped, exit 0**; probe SOLO = **968 tests, 968 pass, 0 fail, 0 cancelled, 0 skipped, exit 0** (the
+  re-derived spawned-suite pin 586 = 485 + 100 + 1 registered in the pin comment and asserted green inside);
+  full `npm run test:shell-research` SOLO = **1553 tests, 1553 pass, 0 fail, 0 cancelled, 0 skipped, exit 0**
+  (1548 prior + 5 = 1553, honestly re-derived; no timing-row flake this battery); `node --test
+  tests/test-selection.test.mjs` = **6 tests / 6 pass / 0 fail** exit 0; `npm run lint` exit 0; `npm run
+  typecheck` exit 0; `git diff --check` exit 0. Prohibited-path diff vs `9c337403658ed8cb5319e5da75635154ba4aa851`
+  EMPTY. The two fixes amend the EXISTING route-(c) commit (message unchanged) — no push.
+
+### 32.26 Codex-review gate round 16 (2026-11-08, four P2 findings on §32.25's amended bytes — the learnedExactReference semantic's own consumption/ordering completion, all reproduced by the reviewer; §32.25 style — add-only; the amended route-(c) commit carries them; message unchanged)
+
+- **Finding 1 [P2 — failed/absent carries skip the learned reference] — FIXED (the FAILED-CARRY and
+  ABSENT-CARRY LEARNED-REFERENCE rules).** The reviewer's finding verbatim: "With a coarse baseline, an
+  established kinfo:1:100000 read followed by a failed or identity-bearing absent read carrying kinfo:1:200000
+  proves a generation change. These branches compare only against the original coarse identity, so both exact
+  identities appear equivalent and a subsequent confirmed absence returns disappeared. Apply the learned exact
+  reference to failed and absent carries as well, preserving their interval classification." Confirmed exactly
+  (RED measured `disappeared` on both arms). **The fix (local-process-observation.mjs, the unestablished-carry
+  branch (:3346-3356) and the identity-bearing-absent branch (:3252-3258)):** both branches' triggers extend to
+  the LEARNED exact reference — a carried exact identity (an exact-form observedStartIdentity) that definitively
+  differs from `learnedExactReference` fires the same generation-change/reuse path, with the branches' existing
+  interval classifications preserved identically (the round-14/17 interval rules and the round-20/23
+  three-state bound resolution are untouched). **RED→GREEN:** the reviewer's schedule (the coarse ps bound;
+  the established exact kinfo:1:100000 read; the FAILED read carrying kinfo:1:200000 [bounds 2000-2010]; the
+  confirmed absence): RED `disappeared`, GREEN `pid-start-identity-reused`; the ABSENT-carry arm (the
+  identity-bearing absent read carrying kinfo:1:200000): RED `disappeared`, GREEN `pid-start-identity-reused`;
+  the CONTROL — the failed/absent carries carrying the LEARNED generation's own exact identity (kinfo:1:100000)
+  keep the lawful path (the comparison never fires for a matching carry; the lawful disappearance).
+- **Finding 2 [P2 — replay learns only from candidate.startIdentity] — FIXED (the replay learns the CARRIED
+  identities).** The reviewer's finding verbatim: "For a coarse baseline followed by two established
+  mixed-resolution reads, observation.startIdentity remains coarse while observedStartIdentity can contain
+  different exact generations. The runtime learns and compares these carries, but replay learns only from
+  candidate.startIdentity. Replaying this sequence with a claimed disappearance currently produces settled: true
+  with no refusals, although the runtime returns pid-start-identity-reused. Include the carried identities in
+  replay's learned-reference checks." Confirmed exactly (RED measured the replay settling with no refusals
+  while the runtime on the same sequence latched). **The fix (driver.mjs joinRecordLocalProcessDuties, the
+  reuse latch's established branch):** the replay's learned-reference comparisons include the carried exact
+  identities (`carriedExactReplay` — an exact-form observedStartIdentity, hoisted so the deferred learning
+  reaches it): a carried identity definitively differing from the learned reference sets replacementDetected
+  (the existing timing checks apply). **RED→GREEN:** the reviewer's schedule (the coarse bound; two established
+  mixed reads carrying kinfo:1:100000 then kinfo:1:200000; the claimed disappearance): RED settled with no
+  refusals, GREEN `exit-reuse-latched`, with the RUNTIME/REPLAY AGREEMENT arm on the same sequence
+  (`pid-start-identity-reused`); the CONTROL — two mixed reads carrying the SAME exact generation keep settling
+  (the tie convention; the comparison never fires for a matching carry).
+- **Finding 3 [P2 — the replay reference updates before the recency rules] — FIXED (the RECENCY-ORDERED
+  LEARNING).** The reviewer's finding verbatim: "The replay reference is updated before applying the read's
+  recency rules. Consequently, an exact observation collected before the coarse presence baseline becomes the
+  reference and causes a later exact observation to trigger exit-reuse-latched. The runtime skips that stale
+  observation and returns disappeared for the same sequence. Learn the reference only from evidence admitted by
+  the runtime's decision ordering and recency checks." Confirmed exactly (RED measured `exit-reuse-latched` on
+  the stale-pre-baseline schedule while the runtime returned disappeared). **The fix (driver.mjs, the reuse
+  latch loop):** the learning is DEFERRED to the admission check — the exact evidences (the carry first, then
+  the candidate's own — the runtime's learning order) learn into the reference only after the read passes the
+  mirrored recency check (`carried ≥ mirrorEnd`); a read the ordering/recency rules skip never becomes the
+  reference. **RED→GREEN:** the reviewer's schedule (the exact readX collected before the coarse presence
+  baseline [instant 1050 < the horizon 2000]; the later exact readY): RED `exit-reuse-latched`, GREEN settled
+  with no refusals, with the RUNTIME/REPLAY AGREEMENT arm (`disappeared` — the stale observation skipped by the
+  recency filter); the CONTROL — an ADMITTED (in-window) exact observation still becomes the learned reference
+  and catches a later definitively different exact observation (`exit-reuse-latched`).
+- **Finding 4 [P2 — the interval classification runs after the horizon advance] — FIXED (the PREVIOUS-HORIZON
+  classification).** The reviewer's finding verbatim: "When a coarse-bound sequence observes exact generation A
+  and then exact generation B, the preceding presenceRelation === 'same' branch advances the presence horizon to
+  B before this interval comparison. Real exact-reader results carry collection bounds, so B is compared against
+  its own newly installed presence window and incorrectly returns pid-start-identity-ambiguous, even when its
+  collection strictly follows A. Classify against the previous horizon before updating it; the existing
+  regression misses this because its exact observations omit those bounds." Confirmed exactly (RED measured
+  `pid-start-identity-ambiguous` on the real-bounds schedule). **The fix (local-process-observation.mjs):** the
+  established branch captures the PREVIOUS horizon (before the presenceRelation handling advances it) and the
+  learned cross-comparison classifies against it — `carriedIdentityIntervalClass` gained horizon parameters
+  (defaulting to the current closure values, so every other call site is unchanged); the round-14 carry
+  classification already ran before the advance (unchanged). **RED→GREEN:** the reviewer's schedule (real
+  bounds: A [1000, 1010], B [2000, 2010] strictly following; the coarse bound): RED
+  `pid-start-identity-ambiguous` (B compared against its own newly installed window), GREEN
+  `pid-start-identity-reused` (classified against the previous horizon); the CONTROL — a B window genuinely
+  overlapping the PREVIOUS presence ([1020, 1040] inside A's [990, 1050]) still classifies
+  `pid-start-identity-ambiguous` (the fix never over-triggers latching). **Honest note on the pre-fix RED
+  verification:** the F4a RED row initially measured `disappeared` because its B identity instant TIED with A's
+  advanced horizon (the recency filter skipped B before the classification could run) — the row's B identity
+  instant was corrected to strictly follow A's (the reviewer's "collection strictly follows A" premise), after
+  which the pre-fix RED measured the predicted `ambiguous`.
+- **Focused prior-counterexample re-run (2026-11-08, the amended bytes):** the `same-second-completion` family =
+  **70 tests, 70 pass, 0 fail** (byte-for-byte unchanged from §32.25); the `integration-completion` family =
+  **57 tests, 57 pass, 0 fail** (53 prior + the four new round-16 replay-side rows — the learns-carries row +
+  its matching control, the recency-ordered learning row + its admitted control; all 53 prior rows still
+  passing). **Movement enumeration (honest):** NO prior-row verdict changed in either family; the local entry
+  grows 485 → 493 (+8 — a RED row and a controls row per finding, exactly the instruction's anticipated ~493).
+  The rounds-8..16 codex-gate interaction suite re-ran together = **55 pass, 0 fail** (36 rounds-8..14 rows +
+  the 19 round-15/16/adjacent rows under the combined pattern) — the round-15 learned-reference rows were
+  HONESTLY REALIGNED: their exact observations must be ADMITTED by the recency checks to learn (the Finding-3
+  semantics — the round-15 rows' readA stamps moved after the presence horizon in both the runtime and replay
+  arms; the rows' intent — successive admitted exact observations catching a same-second successor — is
+  unchanged and both rows still pass).
+- **Battery (executed 2026-11-08 on the exact amended bytes):** local SOLO = **493 tests, 493 pass, 0 fail,
+  0 cancelled, 0 skipped, exit 0** (485 prior + 8); native SOLO = **100 tests, 100 pass, 0 fail, 0 cancelled,
+  0 skipped, exit 0**; probe SOLO = **968 tests, 968 pass, 0 fail, 0 cancelled, 0 skipped, exit 0** (the
+  re-derived spawned-suite pin 594 = 493 + 100 + 1 registered in the pin comment and asserted green inside);
+  full `npm run test:shell-research` SOLO = **1561 tests, 1561 pass, 0 fail, 0 cancelled, 0 skipped, exit 0**
+  (1553 prior + 8 = 1561, honestly re-derived; no timing-row flake this battery); `node --test
+  tests/test-selection.test.mjs` = **6 tests / 6 pass / 0 fail** exit 0; `npm run lint` exit 0; `npm run
+  typecheck` exit 0; `git diff --check` exit 0. Prohibited-path diff vs `9c337403658ed8cb5319e5da75635154ba4aa851`
+  EMPTY. The four fixes amend the EXISTING route-(c) commit (message unchanged) — no push.
+
+- **§32.26 ADDENDUM (2026-11-08, the R16 self-review's proactive fix before the codex gate — the cheaper-loop
+  rule; add-only):** the R16 self-review flagged its own gap, verbatim: "tools/shell-wait-probe/driver.mjs:6714
+  (unestablished branch) and :6723 (absent branch) set replacementDetected only via carriedDefinitivelyForeign(...)
+  vs the BOUND (startIdentitiesDefinitivelyDiffer → same-second exact-vs-coarse = 'same', not foreign). So a
+  persisted F1a-shaped sequence (coarse bound + established exact read learning the reference + a failed/absent
+  carry carrying the learned generation's same-second successor) replays to settled while the runtime now returns
+  pid-start-identity-reused — the runtime F1 fix has no replay mirror on the unestablished/absent-carry
+  branches." Confirmed exactly (RED measured the replay settling with no refusals on the failed-carry arm while
+  the runtime on the same sequence returned `pid-start-identity-reused`). **The fix (driver.mjs, the reuse
+  latch's unestablished branch and absent branch):** both branches' carried exact identities are also compared
+  against the replay's LEARNED exact reference (`replayLearnedExactReference`) — definitively different ⇒
+  replacementDetected (the existing timing checks apply); same/uncertain ⇒ non-deciding. The branches' existing
+  bounds/interval handling (the round-19/21/23 checks) are preserved identically, and the round-16 F2
+  established-branch mirror is untouched. **RED→GREEN:** the persisted F1a-shaped sequence (the coarse bound;
+  the established exact read learning the reference — admitted; the FAILED carry carrying the learned
+  generation's same-second successor kinfo:1:200000): RED settled with no refusals, GREEN `exit-reuse-latched`;
+  the ABSENT-carry arm: RED settled, GREEN `exit-reuse-latched`; the RUNTIME/REPLAY AGREEMENT arms on the same
+  sequences (`pid-start-identity-reused` on both — the runtime's round-16 F1 rule); the CONTROL — the
+  failed/absent carries carrying the LEARNED generation's own exact identity keep the lawful path (settled with
+  no refusals; the round-16 F2 established-branch mirror unchanged). **Rows:** TWO local rows (the RED row with
+  its runtime/replay agreement arms and the matching-carry control row) → the local entry grows 493 → 495.
+  **Focused re-run:** the `integration-completion` family = **59 tests, 59 pass, 0 fail** (57 prior + the two
+  new rows); the `same-second-completion` family = **70 tests, 70 pass, 0 fail** (unchanged); the
+  rounds-8..16 + proactive interaction suite = **57 pass, 0 fail**. **Gates (2026-11-08, the amended bytes):**
+  local SOLO = **495 tests, 495 pass, 0 fail, 0 cancelled, 0 skipped, exit 0**; native SOLO = **100 tests, 100
+  pass, 0 fail, 0 cancelled, 0 skipped, exit 0**; probe SOLO = **968 tests, 967 pass, 1 fail, exit 1** — the ONE
+  failure is `an underscore destination alias with a quoted spaced value is stripped` (a spawned ~177 s
+  CLI-argument timing row crossing its window under the battery's load): HONEST-FLAKE ATTRIBUTION, never
+  relabelled — the row re-run SOLO in isolation = **1 test, 1 pass, 0 fail, exit 0**; full
+  `npm run test:shell-research` SOLO = **1563 tests, 1562 pass, 1 fail, exit 1** — the ONE failure is
+  `a whole-token quoted reporter flag is replaced instead of duplicated` (the same spawned timing-row family
+  under the battery's load): HONEST-FLAKE ATTRIBUTION, never relabelled — the row re-run SOLO in isolation =
+  **1 test, 1 pass, 0 fail, exit 0**; both flaked rows touch no route-(c) code and their sibling timing rows
+  passed in the same battery runs; `node --test tests/test-selection.test.mjs` = **6 tests / 6 pass / 0 fail**
+  exit 0; `npm run lint` exit 0; `npm run typecheck` exit 0; `git diff --check` exit 0. Prohibited-path diff vs
+  `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY. The fix amends the EXISTING route-(c) commit (message
+  unchanged) — no push.
+
+### 32.27 Codex-review gate round 17 (2026-11-08, six P2 findings on §32.26's amended bytes — the learnedExactReference semantic's seeding/learning/retry completion, all reproduced by the reviewer; §32.26 style — add-only; the amended route-(c) commit carries them; message unchanged)
+
+- **Finding 1 [P2 — transport retries don't retain/cross-compare exact generations] — FIXED (the
+  TRANSPORT-RETRY EXACT GENERATIONS, runtime + replay mirror).** The reviewer's finding verbatim: "When the
+  captured transport identity is coarse, two retries observing different exact generations within that same
+  second both compare as unchanged against transportIdentity.startIdentity. Consequently, the reuse latch never
+  fires, and a subsequent absence can settle the replacement's exit as the original transport's exit. Retain and
+  cross-compare the exact identities learned across transport retries, as the invocation adjudicator now does,
+  and mirror that tracking in the persisted transport replay." Confirmed exactly (RED measured the latch never
+  firing through 10 retries). **The fix (driver.mjs, the transport exit retry loop + the transport replay's
+  sequence check):** the retries RETAIN and CROSS-COMPARE the exact generations they learn
+  (`transportLearnedExactReference` — the first exact identity observed becomes the reference; subsequent exact
+  identities definitively differing from it fire the generation-change latch; identical exact instants keep the
+  same-generation path — the tie convention), and the persisted transport replay's sequence check mirrors the
+  tracking (`transportReplayLearnedExactReference` over transportPresenceReads). **RED→GREEN:** the reviewer's
+  schedule through runHeldHostTurn (the coarse captured transport identity 'Thu Jan  1 00:00:01 1970'; the exit
+  retries observing kinfo:1:100000 then kinfo:1:200000): RED the latch never fired (10 retries, no
+  transportExitGenerationLatched), GREEN `transportExitGenerationLatched: true` with the generation-changing
+  read persisted as the transport's exit fact; the REPLAY MIRROR — the same persisted sequence RED settled,
+  GREEN `transport-exit-generation-foreign`; the CONTROL — MATCHING exact generations (kinfo:1:100000 twice)
+  keep the lawful path (no latch at runtime; the replay settles clean).
+- **Finding 2 [P2 — the learned reference isn't seeded from the presence's exact carry] — FIXED (the BASELINE
+  SEEDING, runtime + replay mirror).** The reviewer's finding verbatim: "A mixed-resolution baseline can already
+  carry an exact identity in presence.observedStartIdentity, while its observation.startIdentity remains coarse.
+  Initializing the reference to null discards that evidence: a later same-second exact successor becomes the
+  first learned generation, and its subsequent absence returns disappeared instead of refusing reuse. Seed the
+  reference from the baseline's admissible exact carry, and preserve the same behavior in replay." Confirmed
+  exactly (RED measured `disappeared` with G2 learned first). **The fix (local-process-observation.mjs, the
+  learnedExactReference declaration + driver.mjs, the replay reference declaration):** the reference is SEEDED
+  from the baseline's admissible exact carry (`presence.observedStartIdentity` when it parses as the exact form)
+  at initialization; the replay's reference is seeded from the persisted baseline's carried exact identity the
+  same way. **RED→GREEN:** the reviewer's schedule (the mixed baseline carrying exact G1 kinfo:1:100000; the
+  later same-second exact successor G2 kinfo:1:200000; the confirmed absence): RED `disappeared`, GREEN
+  `pid-start-identity-reused`; the REPLAY MIRROR — the same persisted sequence GREEN `exit-reuse-latched` (the
+  committed replay row `integration-completion baseline seeding replay` — its seed arm and its without-the-seed
+  control arm; the seeding code was verified on both sides when the row was added in the R17 self-review fix);
+  the CONTROL — a coarse-only baseline keeps the current learning order (the first exact observation in the
+  sequence learns as the reference; the single exact observation never cross-compares — the lawful disappearance).
+- **Finding 3 [P2 — failed reads carrying exact A don't retain A when no reference exists] — FIXED (the
+  FAILED-CARRY RETENTION).** The reviewer's finding verbatim: "With a coarse baseline and no learned reference, a
+  failed read carrying exact generation A passes this comparison without retaining A. A later established exact
+  generation B in the same second is then learned without comparison to A, allowing a subsequent absence to
+  return disappeared despite the observed replacement. Retain an admissible first exact carry from a failed read
+  instead of only checking it against references learned from established reads; apply the equivalent rule in
+  replay." Confirmed exactly (RED measured `disappeared`). **The fix (local-process-observation.mjs, the
+  unestablished-branch level — the learning sits OUTSIDE the differ-vs-bound gate, which a coarse bound can
+  never fire):** an ADMISSIBLE first exact carry from a failed read is RETAINED as the learned reference (the
+  carry's own collection interval checked against the pre-read horizon: a stale carry is not retained — the
+  Finding-3-style discipline). The replay mirror: the unestablished branch's carried exact identities set
+  `carriedExactReplay` (the deferred post-admission learning learns them). **RED→GREEN:** the reviewer's
+  schedule (the coarse bound; the failed read carrying exact A [admissible — post-baseline window]; the later
+  established exact B in the same second; the confirmed absence): RED `disappeared`, GREEN
+  `pid-start-identity-reused`; the REPLAY MIRROR — the same persisted sequence GREEN `exit-reuse-latched` (the
+  committed replay row `integration-completion failed-carry retention replay` — added in the R17 self-review
+  fix after the flagged gap: the unestablished branch's exact carry participates in the deferred learning; the
+  round-16 proactive mirror's learned-reference comparison consumes the retained reference); the CONTROL — a
+  failed carry INADMISSIBLE by the recency rules (stale — collected strictly before the horizon's collection
+  start) is not retained (the later B learns; the lawful disappearance).
+- **Finding 4 [P2 — the two exact identities within one persisted read aren't cross-checked] — FIXED (the
+  WITHIN-READ CROSS-CHECK, replay).** The reviewer's finding verbatim: "When no reference has been learned yet,
+  an established persisted read can carry exact generation A in observedStartIdentity and a different
+  same-second exact generation B in observation.startIdentity. This guard skips both comparisons, and the
+  learning loop subsequently retains only A. Reproducing that shape makes runtime return
+  pid-start-identity-reused, while replay accepts settled: true without refusals. Cross-check the two exact
+  identities within the read even when there is no previous reference." Confirmed exactly (RED measured the
+  replay accepting the shape while the runtime latched). **The fix (driver.mjs, the replay's established
+  branch):** the read's OWN two exact identities are cross-checked EVEN WHEN no reference has been learned (the
+  carry A vs the observation B — the runtime's in-read comparison mirrored: the carry learns first, the
+  observation is compared against it). **RED→GREEN:** the reviewer's shape (the persisted established read
+  carrying kinfo:1:100000 in observedStartIdentity and kinfo:1:200000 in observation.startIdentity): RED settled
+  with no refusals, GREEN `exit-reuse-latched`; the RUNTIME/REPLAY AGREEMENT arm (the runtime's in-read
+  comparison latches `pid-start-identity-reused`); the CONTROL — AGREEING within-read identities (the same
+  exact generation in both fields) keep the lawful path (settled clean).
+- **Finding 5 [P2 — stale carries are learned as references] — FIXED (the STALE-CARRY LEARNING EXCLUSION).**
+  The reviewer's finding verbatim: "An established mixed read can finish after the baseline while carrying an
+  exact identity collected entirely before the baseline window. This assignment nevertheless learns that stale
+  identity whenever no reference exists. A later exact observation of the current same-second generation then
+  falsely latches reuse, rejecting its lawful disappearance. Check the carry's own collection interval against
+  the pre-read presence horizon before learning it; currently that interval is classified only when the carry
+  already appears foreign." Confirmed exactly (RED measured the false `pid-start-identity-reused`). **The fix
+  (local-process-observation.mjs, the carry learning):** the carry's own collection interval is checked against
+  the PRE-READ presence horizon BEFORE learning it — a stale carry (collected entirely before the baseline
+  window) is never the reference; the check runs regardless of whether the carry appears foreign. **RED→GREEN:**
+  the reviewer's schedule (the mixed read finishing after the baseline [identity instant 2500 > the horizon
+  2000] carrying an exact identity collected entirely before the baseline window [1000, 1010]; a later exact
+  observation of the current same-second generation): RED the false `pid-start-identity-reused`, GREEN the
+  lawful `disappeared`; the CONTROL — an IN-WINDOW carry (collected inside the baseline's window) still learns
+  and catches a later definitively different exact observation (`pid-start-identity-reused`).
+- **Finding 6 [P2 — the replay admission rule differs from runtime's strict recency] — FIXED (the STRICT
+  ADMISSION).** The reviewer's finding verbatim: "An established exact read whose identity timestamp equals the
+  coarse baseline's presence horizon is skipped by runtime's evidenceEpochMs <= lastPresenceEpochMs rule, but
+  replay's preceding < mirrorEnd check admits it into this reference. A later different exact identity in the
+  same second therefore produces exit-reuse-latched only in replay. The tied-baseline reproduction returns
+  disappeared at runtime but settled: false offline. Apply the runtime's strict admission rule before learning
+  the reference." Confirmed exactly (RED measured `exit-reuse-latched` on the tied-baseline schedule while the
+  runtime returned disappeared). **The fix (driver.mjs, the learning block):** the learning admission applies
+  the runtime's STRICT recency rule — `carried > mirrorEnd` (equality is NOT admissible; the previous
+  `carried < mirrorEnd → continue` admitted ties). **RED→GREEN:** the reviewer's tied-baseline reproduction
+  (the exact read TIED with the coarse baseline's horizon; the later different exact identity in the same
+  second): RED `exit-reuse-latched`, GREEN settled with no refusals, with the RUNTIME/REPLAY AGREEMENT arm
+  (`disappeared` — the tied read skipped by the strict recency rule); the CONTROL — STRICTLY-AFTER evidence is
+  still admitted into the reference and catches a later definitively different exact observation
+  (`exit-reuse-latched`).
+- **Focused prior-counterexample re-run (2026-11-08, the amended bytes):** the `same-second-completion` family =
+  **70 tests, 70 pass, 0 fail** (byte-for-byte unchanged from §32.26); the `integration-completion` family =
+  **64 tests, 64 pass, 0 fail** (59 prior + the five new round-17 replay/observer-side rows — the transport
+  replay row, the within-read cross-check row + control, the strict-admission row + control; all 59 prior rows
+  still passing). **Movement enumeration (honest):** NO prior-row verdict changed in either family; the local
+  entry grows 495 → 507 (+12 rows by name pattern — exactly 12 new test declarations, 0 deleted: the Finding-1
+  runtime row, the Finding-1 replay row (its matching-control arm inside the same declaration), and TWO rows per
+  finding for Findings 2-6 — re-derived from the measured SOLO). The rounds-8..17 codex-gate interaction suite
+  re-ran together = **69 pass, 0 fail**.
+- **Battery (executed 2026-11-08 on the exact amended bytes):** local SOLO = **507 tests, 507 pass, 0 fail,
+  0 cancelled, 0 skipped, exit 0** (495 prior + 12); native SOLO = **100 tests, 100 pass, 0 fail, 0 cancelled,
+  0 skipped, exit 0**; probe SOLO = **968 tests, 968 pass, 0 fail, 0 cancelled, 0 skipped, exit 0** (the
+  re-derived spawned-suite pin 608 = 507 + 100 + 1 registered in the pin comment and asserted green inside;
+  the FIRST probe run measured the pin at 609 — an honest mis-derivation (~13 estimated vs the 12 declarations
+  the enumeration sums to), re-derived from the measured 507 and corrected to 608); full `npm run test:shell-research` SOLO = **1575
+  tests, 1575 pass, 0 fail, 0 cancelled, 0 skipped, exit 0** (1563 prior + 12 = 1575, honestly re-derived; no
+  timing-row flake this battery); `node --test tests/test-selection.test.mjs` = **6 tests / 6 pass / 0 fail**
+  exit 0; `npm run lint` exit 0; `npm run typecheck` exit 0; `git diff --check` exit 0. Prohibited-path diff vs
+  `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY. HONEST ENVIRONMENT NOTE: the first probe run also tripped
+  the suite's worktree-canary guard — a STALE canary worktree registration left by THIS battery's own
+  interrupted first attempt (the TaskStop during the probe's first pass; the registration pointed at a deleted
+  temp directory, `prunable`): the stale registration was pruned (`git worktree prune`) and the leftover temp
+  directory removed; the re-run on the identical bytes passed 968/968 first-try — environmental fallout, never
+  a code defect. The six fixes amend the EXISTING route-(c) commit (message unchanged) — no push.
+
+- **§32.27 ADDENDUM (2026-11-08, the R17 self-review's four fixes — two missing-mirror/coverage gaps, one false
+  narrative, one debug leftover; add-only):**
+  - **The F3 replay mirror was MISSING (HIGH — §32.27's claim was false on the bytes).** The R17 self-review
+    flagged, verbatim: "tools/shell-wait-probe/driver.mjs:6733-6763 + 6987-6994: carriedExactReplay is assigned
+    only inside the established branch (:6761); unestablished reads leave it null → the deferred post-admission
+    learning learns nothing from failed reads. The reviewer's experiment (the F3 persisted schedule: coarse
+    bound; failed read carrying exact A, admissible window [1200,1210] vs horizon 1150; established exact B
+    same-second; absence) → runtime pid-start-identity-reused, replay settled:true [] — divergence." Confirmed
+    exactly (RED measured the replay settled with no refusals while the runtime on the same sequence returned
+    `pid-start-identity-reused`). **The fix (driver.mjs, the reuse latch's unestablished and absent branches):**
+    both branches now SET `carriedExactReplay` from their exact observedStartIdentity (the deferred
+    post-admission learning consumes it — the runtime's retention rule at the unestablished-branch level,
+    mirrored); the branches' existing replacement-detection and timing handling are untouched. **RED→GREEN:**
+    the F3 persisted schedule RED replay settled/`[]` + runtime reused, GREEN both agreeing
+    (`exit-reuse-latched` / `pid-start-identity-reused`) — the committed row
+    `integration-completion failed-carry retention replay (codex gate round 17, Finding 3 mirror)`.
+  - **F2's claimed replay-mirror row did not exist (MEDIUM).** §32.27's Finding-2 bullet claimed "the REPLAY
+    MIRROR — the same persisted sequence GREEN exit-reuse-latched" but no committed row exercised the replay
+    seed (the seeding CODE was correct on both sides — verified by the reviewer's probe). **The fix:** the
+    committed row `integration-completion baseline seeding replay (codex gate round 17, Finding 2 mirror)` —
+    the witnessBlock's presence gained a `presenceObservedStartIdentity` parameterization (the verdict-level
+    whitelisted carried field, additive; absent by default): the seeded arm (the presence carrying
+    kinfo:1:100000 + the later exact successor kinfo:1:200000) GREEN `exit-reuse-latched`; the control arm
+    (WITHOUT the seed) settles clean — the current learning order preserved.
+  - **The honest-count narrative was false (MEDIUM).** §32.27 claimed "495 + 14 = 507" (arithmetically false)
+    and "fourteen test declarations" contradicting its own enumeration (which sums to 12) and the pin comment's
+    "THIRTEEN" label. **The correction:** the narrative, the pin comment's label, and the enumeration now read
+    exactly 12 new test declarations, 0 deleted (495 + 12 = 507 — re-derived from the measured SOLO); the
+    pinned VALUE 608 was and stays correct.
+  - **The debug leftover (LOW).** `console.error('R17DEBUG:', …)` committed in the Finding-1 runtime row
+    (tests/shell-wait-local-process.test.mjs) — removed.
+  - **Rows:** FOUR local rows added (the failed-carry retention replay row + the baseline seeding replay row —
+    each with its runtime/replay agreement or control arms — and the two-issue corrections that add no rows) →
+    the local entry grows 507 → 509; the re-derived spawned-suite pin 610 = 509 + 100 + 1 (registered in the
+    pin comment). **Focused re-run:** the `integration-completion` family = **66 tests, 66 pass, 0 fail** (64
+    prior + the two new rows; all 64 prior rows still passing); the `same-second-completion` family = **70
+    tests, 70 pass, 0 fail** (unchanged); the rounds-8..17 + proactive interaction suite = **71 pass, 0 fail**.
+  - **Battery (executed 2026-11-08 on the exact amended bytes):** local SOLO = **509 tests, 509 pass, 0 fail,
+    0 cancelled, 0 skipped, exit 0** (507 prior + 2); native SOLO = **100 tests, 100 pass, 0 fail, 0 cancelled,
+    0 skipped, exit 0**; probe SOLO = **968 tests, 968 pass, 0 fail, 0 cancelled, 0 skipped, exit 0** (the pin
+    610 asserted green inside); full `npm run test:shell-research` SOLO (run ONCE per the self-review
+    instruction) = **1577 tests, 1577 pass, 0 fail, 0 cancelled, 0 skipped, exit 0** (1575 prior + 2 = 1577,
+    honestly re-derived) — **the Finding-5 gate note's meta-row failure (the spawned child exit 1 with empty
+    stderr) did NOT reproduce**: the full suite passed 1577/1577 first-try on the amended bytes, including the
+    spawned guarded nested selection whose exit code drives that meta-row (the R17 failure was a
+    load-environment artifact, honestly attributed then and confirmed non-reproducing now).
+  Prohibited-path diff vs `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY. The fixes amend the EXISTING
+  route-(c) commit (message unchanged) — no push.
+
+### 32.28 Codex-review gate round 18 (2026-11-08, four findings on §32.27's amended bytes — 1×P1 + 3×P2, the carried-evidence consumption faces across the capture/absence/transport boundaries, all reproduced by the reviewer; §32.27 style — add-only; the amended route-(c) commit carries them; message unchanged)
+
+- **Finding 1 [P1 — cleanup checks ignore the capture's carried exact identity] — FIXED (the CAPTURE-CARRY
+  GUARD on the termination verification).** The reviewer's finding verbatim: "When capture returns a
+  mixed-resolution identity, identity.startIdentity is coarse but identity.observedStartIdentity preserves exact
+  generation A. A later exact generation B from the same second compares as same against that coarse identity,
+  and this guard ignores the capture's exact carry. Reproducing this with terminateVerifiedProcess signals B
+  with SIGTERM despite the available evidence proving replacement. Compare verification evidence against the
+  capture's carried exact identity before authorizing either signal." Confirmed exactly (RED measured SIGTERM
+  reaching B). **The fix (local-process-observation.mjs verifyUnchanged, after the round-13 carried-successor
+  guard):** when the CAPTURE carries an exact identity (`identity.observedStartIdentity` parsing as the exact
+  form), the verification evidence is compared against it — the returned `record.startIdentity` AND the
+  verification's own carried `record.observedStartIdentity`, either definitively differing from the capture's
+  carried exact generation ⇒ `'changed'` (no signal). The observer's `identity` JSDoc grew the whitelisted
+  carried field (both @param sites). **RED→GREEN:** the reviewer's schedule (the capture mixed-resolution:
+  coarse startIdentity + the carried exact A kinfo:1:100000; the verification observing exact B kinfo:1:200000
+  from the same second): RED SIGTERM sent, GREEN `attempted: false`, zero kills, `signalled: null`, the honest
+  identity-change classification; the CONTROLS — (a) a positively-matching verification (the capture's own
+  exact A observed as the verification's startIdentity) signals as before (attempted, one kill, exited), and
+  (b) a REAL different-generation verification (a different-second ps text) still blocks.
+- **Finding 2 [P2 — absent reads don't retain the first exact carry] — FIXED (the ABSENT-CARRY RETENTION).**
+  The reviewer's finding verbatim: "With a coarse baseline, an absent read carrying exact generation A does not
+  initialize learnedExactReference. A subsequent established read of same-second generation B therefore becomes
+  the first learned identity instead of triggering reuse. A later absence then produces disappeared; this is
+  reproducible with valid, chronologically ordered verdicts. Retain admissible exact carries from absent reads,
+  as the established and failed-read branches already do." Confirmed exactly (RED measured `disappeared` with B
+  learned first). **The fix (local-process-observation.mjs, the identity-bearing-absent branch):** an
+  identity-bearing absent read RETAINS its admissible exact carry into `learnedExactReference` (the carry's own
+  collection interval checked against the horizon: a stale carry is not retained — the same discipline the
+  established and failed-read branches apply). A subsequent established read of same-second generation B is
+  then compared against the retained A and latches. **RED→GREEN:** the reviewer's schedule (the coarse bound;
+  the absent read carrying exact A [admissible — post-baseline window]; the established read of same-second B;
+  the later absence): RED `disappeared`, GREEN `pid-start-identity-reused`; the CONTROL — an INADMISSIBLE
+  absent carry (stale — collected strictly before the horizon's collection start) is not retained (the later B
+  learns; the lawful disappearance holds).
+- **Finding 3 [P2 — transport tracking not seeded from the initial observation's exact carry] — FIXED (the
+  TRANSPORT TRACKING SEEDING, runtime + replay mirror).** The reviewer's finding verbatim: "When the phase-3
+  transport observation has a coarse identity plus an exact carry for generation A, initializing this reference
+  to null discards that existing evidence. The first exit retry can observe same-second generation B and learn B
+  without latching reuse; its subsequent absence is accepted. The replay mirror also starts from null and
+  returns settled: true with no refusals for this sequence. Seed both trackers from the initial transport
+  observation's admissible exact evidence." Confirmed exactly (RED measured the first exit retry learning B
+  without latching and the replay settling). **The fix (driver.mjs, the exit retry loop + the transport
+  replay's sequence check):** BOTH trackers are SEEDED from the phase-3 transport observation's admissible
+  exact carry (`transportObservation.observedStartIdentity` / the persisted echo's `observedStartIdentity`
+  when they parse as the exact form) — the first exit retry observing same-second B is compared against the
+  seeded A and latches. **RED→GREEN:** the reviewer's schedule through runHeldHostTurn (the phase-3 transport
+  observation: coarse startIdentity + the exact carry A; the first exit retry observing same-second B): RED B
+  learned without latching, GREEN `transportExitGenerationLatched: true` with the replacement persisted as the
+  transport's exit fact; the REPLAY MIRROR — the same persisted sequence (the transport observation's carried
+  exact A seeded into the reference; the exit retry B in transportPresenceReads; the terminal exit's carried
+  successor cross-checked per Finding 4) RED settled, GREEN `transport-exit-generation-foreign`; the CONTROL —
+  a coarse-only transport observation (no exact carry) keeps the current behavior (no
+  transport-exit-generation-foreign refusal). **R18 SELF-REVIEW SUPERSESSION (2026-11-08): the Finding-4
+  replay-row coverage as first committed was FAKE — the `transportExitOverride` parameterization was a no-op
+  (the ternary's two branches were byte-identical constants, so the override was silently dropped) and the row
+  was insensitive to the F4 conjunct (the RED arm's transport-exit-generation-foreign fired solely via the
+  round-17 sequence check; deleting the driver's F4 disjunct did not change the row's outcome). The coverage
+  repair: (a) the override actually replaces the exit (the branches differ); (b) the F4-ISOLATING arm added —
+  the seeded reference A + NO generation-differing retry (the single retry carries the learned A itself) + the
+  foreign exit carry + the persisted latch missing ⇒ `transport-exit-generation-foreign` (this arm FAILS if the
+  F4 conjunct is deleted — the delete-the-conjunct RED proof: removing the driver's F4 disjunct flipped the arm
+  to settled, the driver restored md5-verified); (c) the CONTROL added — the terminal exit carrying the MATCHING
+  exact generation keeps the lawful settlement (the row `integration-completion terminal-exit cross-check` —
+  its isolating RED arm and its matching control). The Finding-3/4 mirror row's title was also corrected from
+  'codex gate round 17' to 'codex gate round 18' (the collision with §32.27's genuinely different Findings 3/4
+  removed; the driver's seeding/cross-check comments retitled identically).
+- **Finding 4 [P2 — the terminal transport exit compared only against the coarse baseline] — FIXED (the
+  TERMINAL EXIT CROSS-CHECK).** The reviewer's finding verbatim: "For a coarse transport baseline, a retained
+  retry carrying exact generation A followed by transportExit carrying same-second generation B proves reuse.
+  However, the learned reference is checked only within transportPresenceSequence; the terminal exit is
+  compared only against the coarse baseline. If the persisted latch is missing or false, replay returns
+  settled: true with no refusals, although the runtime would latch this sequence. Cross-check the terminal
+  exit's exact carry against the learned reference before crediting its absence." Confirmed exactly (RED
+  measured the replay settling with the persisted latch missing). **The fix (driver.mjs, the transport exit's
+  refusal dispatch):** the terminal transport exit's exact carry (`transportExitEcho.observedStartIdentity` —
+  the observed-then-gone ride on the absence verdict) is cross-checked against `transportReplayLearnedExactReference`
+  — definitively different ⇒ `transport-exit-generation-foreign` fires even when the persisted latch flag is
+  missing or false. **RED→GREEN:** the reviewer's sequence (the seeded reference A; the exit retry B;
+  the terminal exit carrying the successor — the persisted latch missing): RED settled with no refusals, GREEN
+  `transport-exit-generation-foreign`; the CONTROL — a matching terminal exit keeps the lawful settlement
+  (as first committed this RED→GREEN/CONTROL story was FALSE on the bytes — the shared row's override was a
+  no-op and neither the F4-sensitive RED arm nor this CONTROL existed anywhere; SUPERSEDED by the R18
+  self-review coverage repair documented in the implementation note below).
+  **The implementation note:** Findings 3 and 4 share the replay row's schedules (the seeded reference is the
+  Finding-3 mirror; the terminal exit's carried successor is cross-checked by the Finding-4 mirror in the same
+  row) — the row's RED arm exercises both mirrors together. **R18 SELF-REVIEW SUPERSESSION (2026-11-08): the
+  shared-row implementation note above is superseded by the coverage repair — as first committed the shared
+  row's `transportExitOverride` parameterization was a NO-OP (the ternary's two branches were byte-identical
+  constants, so the override was silently dropped): the row's `transport-exit-generation-foreign` fired solely
+  via the round-17 sequence check (retry B `kinfo:1:200000` vs the seeded A `kinfo:1:100000`), the row was
+  INSENSITIVE to the F4 conjunct (deleting the driver's `transportExitExactForeign` disjunct did not change the
+  row's outcome), and the CONTROL claimed here (a matching terminal exit keeps the lawful settlement) existed
+  NOWHERE on the bytes. The coverage repair: (a) the override actually replaces the exit (the branches differ;
+  the RED arm's foreign exit carry `kinfo:1:300000` now reaches the join); (b) the dedicated F4-ISOLATING RED
+  row `integration-completion terminal-exit cross-check (codex gate round 18, Finding 4)` — the seeded
+  reference A + NO generation-differing retry (the single retained retry carries the learned A itself) + the
+  foreign terminal-exit carry + the persisted latch MISSING ⇒ `transport-exit-generation-foreign`, ISOLATION
+  PROVEN by the delete-the-conjunct cycle: with the driver's F4 disjunct deleted this row FAILS (settles — no
+  refusal) while the shared replay row still passes (the sequence check drives it) and the control still
+  passes; the driver restored md5-verified; (c) the dedicated CONTROL row `integration-completion
+  terminal-exit cross-check control (codex gate round 18, Finding 4)` — a MATCHING terminal-exit carry keeps
+  the lawful settlement (zero refusals, settled).
+- **Focused prior-counterexample re-run (2026-11-08, the amended bytes):** the `same-second-completion` family =
+  **70 tests, 70 pass, 0 fail** (byte-for-byte unchanged from §32.27); the `integration-completion` family =
+  **67 tests, 67 pass, 0 fail** (the prior was 66 per the §32.27 addendum; only the F3/F4 replay row joined
+  this family — the F2 rows live in the task-2 describe — 66 + 1 = 67; all 66 prior rows still passing; the two
+  errors in the first derivation canceled in the measured total). **Movement enumeration (honest):** NO
+  prior-row verdict changed in either family;
+  the local entry grows 509 → 514 (+5 — the Finding-1 capture-carry guard row (its two controls inline), the
+  Finding-2 RED + control rows, the Finding-3 runtime row, and the Finding-3/4 replay row (at this measurement
+  the Finding-4 terminal-exit cross-check was believed to share the replay row's schedules — SUPERSEDED by the
+  R18 self-review coverage repair, which found the shared-row claim false on the bytes and gave Finding 4 its
+  own two rows); the instruction anticipated ~509+8 ≈ 517 — the honest measured count at that step was +5,
+  re-derived from the measured SOLO). **The R18 self-review coverage repair adds TWO more local rows** (the
+  dedicated F4-isolating terminal-exit RED row + its matching CONTROL row) **→ the local entry grows
+  509 → 516 (+7 total; exactly 7 new test declarations, 0 deleted — re-derived from the measured 516 SOLO)**.
+  The rounds-8..18 codex-gate interaction suite
+  re-ran together = **76 pass, 0 fail**.
+- **Battery (executed 2026-11-08 on the exact amended bytes):** local SOLO = **514 tests, 514 pass, 0 fail,
+  0 cancelled, 0 skipped, exit 0** (509 prior + 5); native SOLO = **100 tests, 100 pass, 0 fail, 0 cancelled,
+  0 skipped, exit 0**; probe SOLO = **968 tests, 968 pass, 0 fail, 0 cancelled, 0 skipped, exit 0** (the
+  re-derived spawned-suite pin 615 = 514 + 100 + 1 registered in the pin comment and asserted green inside;
+  the FIRST probe run measured the pin at 618 — an honest mis-derivation (~8 estimated vs the 5 declarations
+  the row structure yields), re-derived from the measured 514 and corrected to 615); full
+  `npm run test:shell-research` SOLO = **1582 tests, 1581 pass, 1 fail, 0 cancelled, 0 skipped, exit 1**
+  (1577 prior + 5 = 1582, honestly re-derived; duration ~1760 s) — the ONE failure is `an underscore alias of
+  the reporter flag is replaced` (tests/shell-wait-probe.test.mjs, a spawned ~177 s CLI-argument timing row
+  crossing its window under the battery's load): HONEST-FLAKE ATTRIBUTION, never relabelled — the row re-run
+  SOLO in isolation = **1 test, 1 pass, 0 fail, exit 0**; it touches no route-(c) code and its sibling timing
+  rows passed in the same battery run; `node --test tests/test-selection.test.mjs` = **6 tests / 6 pass /
+  0 fail** exit 0; `npm run lint` exit 0; `npm run typecheck` exit 0 (the observer's `identity` JSDoc grew the
+  whitelisted carried field on both @param sites); `git diff --check` exit 0. Prohibited-path diff vs
+  `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY. The four fixes amend the EXISTING route-(c) commit
+  (message unchanged) — no push.
+- **R18 coverage-repair battery (executed 2026-11-08 on the coverage-repaired bytes — the two Finding-4 rows
+  added, the override parameterization fixed, the round-18 retitles applied; the paragraph above records the
+  pre-repair battery honestly):** the shared F3/F4 replay row + the F4-ISOLATING RED row + its CONTROL row
+  re-ran BY NAME = **3 tests, 3 pass, 0 fail**. **The delete-the-conjunct RED proof:** with the driver's
+  `transportExitExactForeign` disjunct deleted from the latch condition, the isolating RED row = **1 FAIL**
+  (the join settles — no refusal; the arm is genuinely F4-sensitive) while the shared replay row still PASSES
+  (its refusal is driven by the round-17 sequence check — proving the first-committed row was insensitive to
+  the F4 conjunct exactly as the self-review found) and the CONTROL row still passes; the driver restored
+  md5-verified (`7ea0b711d9c7f6bb133703c0a2091f12`) and all three rows re-ran green on the restored bytes. The
+  `integration-completion` family re-run = **69 tests, 69 pass, 0 fail** (67 prior + the 2 coverage-repair
+  rows; all 67 prior rows still passing). local SOLO = **516 tests, 516 pass, 0 fail, 0 cancelled, 0 skipped,
+  exit 0** (514 + 2 — exactly 7 new test declarations total since the pre-repair base 509, 0 deleted);
+  native SOLO = **100 tests, 100 pass, 0 fail, 0 cancelled, 0 skipped, exit 0**; probe SOLO = **968 tests,
+  968 pass, 0 fail, 0 cancelled, 0 skipped, exit 0** (duration ~1566 s; the re-derived spawned-suite pin
+  **617 = 516 + 100 + 1** registered in the pin comment and asserted green inside — the prior pin 615 was
+  correct for the pre-repair bytes and moved honestly with the two added rows). **Scoping decision (honest):**
+  the full `npm run test:shell-research` was NOT re-run for the coverage repair — the repair is
+  test-addition-only outside the shared replay row, whose only behavioral change is the previously-dead
+  override now applying within the three rows that pass `transportExitOverride` (all re-run green above); the
+  family that owns every touched row re-ran green in full (69/69), the probe — which spawns the whole
+  shell-research suite and asserts the pin — re-ran green SOLO, and the driver's behavioral bytes are
+  unchanged by the repair (comment-only retitles), so the remaining families' bytes are identical to the
+  pre-repair battery's green run. `node --test tests/test-selection.test.mjs` = **6 tests / 6 pass / 0 fail**
+  exit 0; `npm run lint` exit 0; `npm run typecheck` exit 0; `git diff --check` exit 0. Prohibited-path diff
+  vs `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY. The repair amends the EXISTING route-(c) commit
+  (message unchanged) — no push.
+
+### 32.29 Codex-review gate round 19 (2026-11-08, three P2 findings on §32.28's amended bytes — the exact-carry consumption faces across the default identity reader, the transport-retry tracking seed and the replay's carry-learning admission, all reproduced by the reviewer; §32.28 style — add-only; the amended route-(c) commit carries them; message unchanged)
+
+- **Finding 1 [P2 — the default identity reader ignores the expected exact carry] — FIXED (the CAPTURE-CARRY
+  GUARD on the default reader).** The reviewer's finding verbatim: "When capture returns a coarse
+  startIdentity plus exact generation A in expected.observedStartIdentity, this reader accepts same-second
+  exact generation B because both comparisons use only the coarse identity. Reproducing this through
+  runHeldHostTurn returns processAliveWhileHeld: true for B, and the natural-exit watcher can subsequently
+  accept B's disappearance. Compare verification evidence against the capture's exact carry, as
+  verifyUnchanged now does." Confirmed exactly (RED measured the missing rejection — the turn resolved with
+  processAliveWhileHeld: true for the same-second exact B). **The fix (driver.mjs, the default
+  readProcessIdentity):** the round-14 carried-successor refusal is factored into the SHARED
+  `throwIfCarriedSuccessor` helper (the same `startIdentitiesDefinitivelyDiffer` generation relation and the
+  same named 'the exact fake-ZCode process identity changed' classification — reused, never duplicated), and
+  — after the round-14 guard — when the CAPTURE carries an exact identity
+  (`expected.observedStartIdentity` parsing as the exact form) the read evidence is compared against it: the
+  returned `observed.startIdentity` AND its own carried `observed.observedStartIdentity`, either definitively
+  differing from the capture's carried exact generation ⇒ the named refusal — the same rule verifyUnchanged
+  applies to the capture's carry (its round-18 guard), so processAliveWhileHeld never reports the replacement
+  as the target and the natural-exit watcher never accepts its disappearance as the target's exit.
+  **RED→GREEN:** the reviewer's schedule through runHeldHostTurn with NO readProcessIdentity injection (the
+  mixed-resolution capture: the coarse startIdentity + the carried exact A kinfo:1:100000; the default
+  reader's observer seams observing the exact B kinfo:1:200000 from the same second on EVERY read): RED
+  missing expected rejection, GREEN the named /identity changed/ rejection; the CONTROLS — (a) a
+  positively-matching read (every read observing the capture's own carried exact A) keeps the target
+  identification (processAliveWhileHeld: true), and (b) a REAL foreign identity (the exact bridge unavailable
+  → the ps degrade; a different-second ps row) still refuses by name.
+- **Finding 2 [P2 — transport seeding ignores a fully exact phase-3 identity] — FIXED (the FULLY EXACT
+  PHASE-3 SEEDING).** The reviewer's finding verbatim: "With a coarse captured identity, a phase-3
+  observation can establish exact generation A directly in observation.startIdentity, without an
+  observedStartIdentity carry. This initialization ignores A, so the first exit retry observing same-second
+  generation B learns B instead of latching reuse. A reproduction with A, then B, then confirmed absence
+  returns transportExit.status: 'absent' without a generation latch. Seed the tracker from the phase-3
+  observation's own exact identity as well as its carry." Confirmed exactly (RED measured the absence
+  accepted without a generation latch). **The fix (driver.mjs, the transport-retry tracking seed):** the
+  seed accepts the phase-3 observation's OWN exact identity (`transportObservation.observation.startIdentity`
+  parsing as the exact form) as well as its carry — the carry keeps its existing seeding precedence (the
+  runtime's learning order: the carried identity first), and a coarse-only phase-3 still seeds nothing.
+  **RED→GREEN:** the reviewer's schedule through runHeldHostTurn (the coarse captured transport identity;
+  the phase-3 observation establishing the exact A kinfo:1:100000 directly in observation.startIdentity — no
+  carry; the first exit retry observing the same-second exact B kinfo:1:200000; the second retry returning
+  the confirmed absence): RED the absence accepted (transportExitGenerationLatched unset), GREEN
+  `transportExitGenerationLatched: true` with the generation-changing B read persisted as the transport's
+  exit fact; the CONTROL — a COARSE-ONLY phase-3 keeps the current behavior (the first retry's exact B
+  learned, no latch, the confirmed absence settles the transport's exit).
+- **Finding 3 [P2 — the replay learning admission differs from the runtime's established-read rules] — FIXED
+  (the SEPARATED LEARNING ADMISSION).** The reviewer's finding verbatim: "For a coarse baseline collected
+  during [1100,1150], an established mixed read at 1500 carrying exact A during [1125,1175] is admitted by
+  adjudicateLocalExit, which retains the non-stale carry. Replay instead skips learning A because its
+  carried dispatch precedes the horizon. A later same-second exact B followed by absence consequently
+  produces settled: true with no refusals in replay, while the runtime returns pid-start-identity-reused.
+  Apply the runtime's established-read recency and carry-interval rules separately rather than requiring the
+  carry's dispatch to exceed the horizon." Confirmed exactly (RED measured the replay settled: true with
+  refusals [] while the same schedule's runtime arm returned pid-start-identity-reused). **The fix
+  (driver.mjs, the invocation replay's reuse-latch walk):** the carry-learning admission mirrors the
+  runtime's established-read rules SEPARATELY — (a) the READ's own recency (the runtime's
+  identityEvidenceEpochMs resolution: the absence's completion, every other read's identityReadEpochMs ?? its
+  completion) strictly after the horizon — equality NOT admissible — and (b) the CARRY's own interval
+  classification (its collection window vs the baseline's own window at the pre-read horizon: a carry whose
+  collection completed strictly before the baseline's dispatch is STALE and discarded — the runtime's
+  stale-carry learning exclusion; every other well-formed class retained) — and the admission runs BEFORE
+  the walk's stale-skip continue (the skip is the LATCH admission; the runtime's LEARNING admission is
+  separate), replacing the single `carried dispatch > horizon` gate that conflated the two rules and ran
+  after the skip. The exact evidences learn in the runtime's order — the carried identity first, then the
+  candidate's own. **RED→GREEN:** the reviewer's schedule (the coarse baseline [1100,1150]; the established
+  mixed read completing at 1500 while carrying the exact A kinfo:1:100000 collected during [1125,1175]; the
+  established same-second exact B kinfo:1:200000; the later confirmed absence): RED replay settled: true with
+  refusals [], GREEN settled: false with `exit-reuse-latched`; the RUNTIME/REPLAY-AGREEMENT arm (the runtime
+  admits the mixed read at its own recency, retains the non-stale carry, and returns
+  pid-start-identity-reused) passes RED and GREEN unchanged. The CONTROLS — (a) a genuinely STALE carry
+  (collected [900,1050], fully before the baseline's collection start) is still discarded (the replay
+  settles with refusals []; the runtime agrees disappeared) and (b) an OVERLAPPING foreign carry (a
+  different-second exact generation, window [1125,1175]) still classifies ambiguous (the replay
+  `exit-reuse-interval-ambiguous`; the runtime pid-start-identity-ambiguous).
+- **Focused prior-counterexample re-run (2026-11-08, the amended bytes):** the `same-second-completion`
+  family = **70 tests, 70 pass, 0 fail** (byte-for-byte unchanged from §32.28); the `integration-completion`
+  family = **71 tests, 71 pass, 0 fail** (69 prior + the 2 new Finding-3 rows; all 69 prior rows still
+  passing — the only movement is the two new rows).
+- **Battery (executed 2026-11-08 on the amended bytes):** local SOLO = **522 tests, 522 pass, 0 fail,
+  0 cancelled, 0 skipped, exit 0** (516 prior + 6 — exactly 6 new test declarations, 0 deleted; ~114 s);
+  native SOLO = **100 tests, 100 pass, 0 fail, 0 cancelled, 0 skipped, exit 0** (~65 s); probe SOLO — the
+  FIRST run honestly measured **968 tests, 960 pass, 8 fail** (exit 1): ALL EIGHT failures are the
+  spawned-suite pin rows (the suite-selection contract row + the seven NODE_OPTIONS tokenizer rows), ONE
+  root cause — the pin rode STALE at 617 while the spawned run measured 623 (the 6 new local rows); the pin
+  was re-derived **623 = 522 (the measured local SOLO) + 100 (the measured native SOLO) + 1 (the guarded
+  re-entry test)** and registered in the pin comment, and the probe re-ran SOLO = **968 tests, 968 pass,
+  0 fail, 0 cancelled, 0 skipped, exit 0** (~1568 s; the corrected pin asserted green inside by the same
+  eight spawned rows); full `npm run test:shell-research` SOLO = **1590 tests, 1590 pass, 0 fail, 0
+  cancelled, 0 skipped, exit 0** (1584 prior + 6 = 1590, honestly re-derived; ~1681 s) — no timing-row
+  flake this battery; `node --test tests/test-selection.test.mjs` = **6 tests / 6 pass / 0 fail** exit 0;
+  `npm run lint` exit 0; `npm run typecheck` exit 0; `git diff --check` exit 0. Prohibited-path diff vs
+  `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY. The three fixes amend the EXISTING route-(c) commit
+  (message unchanged) — no push.
+
+### 32.30 Codex-review gate round 20 (2026-11-08, three findings on §32.29's amended bytes — 1×P1 + 2×P2, the carried-evidence consumption across the termination/ancestry-endpoint/startup-write boundaries, all reproduced by the reviewer; §32.29 style — add-only; the amended route-(c) commit carries them; message unchanged)
+
+- **Finding 1 [P1 — termination reads independently accept any exact generation from the coarse second] —
+  FIXED (the TERMINATION LEARNED-REFERENCE RETENTION).** The reviewer's finding verbatim: "When capture
+  returns only a coarse identity, each verification independently accepts any exact generation from that
+  second. Consequently, cleanup can observe exact generation A, send it SIGTERM, then observe same-second
+  successor B and send B SIGKILL. An injected reproduction returns successful cleanup after signalling both
+  generations. Retain and cross-check exact identities learned throughout termination, including exit
+  polling, rather than comparing every read only against the original coarse identity." Confirmed exactly
+  (RED measured the escalation sending SIGKILL to B — the signals sequence `["SIGTERM","SIGKILL"]`). **The
+  fix (local-process-observation.mjs terminateVerifiedProcess):** the termination sequence RETAINS the exact
+  identities learned across its reads — the established learned-reference pattern: the FIRST exact identity
+  observed during termination (the read's carried identity first, then the read's own — the runtime's
+  learning order) becomes the reference, and every subsequent read (the gone-check, the pre-signal
+  verification, the DEFAULT exit polling, the SIGTERM-catch recheck, the pre-kill verification and the
+  kill-phase polling — all through the tracking reader) is cross-checked against it; a later exact identity
+  definitively differing from the reference is the generation-changed fact (the reuse evidence preserved per
+  the round-14/28 carried rules). The flag fires at B's read and gates BOTH signal authorizations: the
+  pre-signal verification refuses before any signal, and the ESCALATION must not signal the successor — the
+  pid's disappearance after a proven replacement is never credited as the target's exit (the standing
+  changed-before/during-termination classifications). **RED→GREEN:** the reviewer's injected reproduction
+  (the capture coarse; reads 1-2 observing exact A `kinfo:1:100000` — the gone-check and the pre-signal
+  verification; reads 3+ observing the same-second exact B `kinfo:1:200000` through the DEFAULT exit
+  polling): RED `["SIGTERM","SIGKILL"]` signalled, GREEN `["SIGTERM"]` only — `attempted: true`,
+  `signalled: 'SIGTERM'`, `exited: false`, the named identity-change-during-termination failure; the
+  CONTROLS — (a) a consistently-same exact generation through all reads completes normally (the verified
+  exit with one signal) AND through the escalation (the pre-kill verification compares against the retained
+  reference and the SIGKILL still fires), and (b) a genuinely different-second generation still blocks
+  before any signal.
+- **Finding 2 [P2 — ancestry endpoints ignore carried exact identities] — FIXED (the CARRIED EXACT EVIDENCE
+  BINDING).** The reviewer's finding verbatim: "A broker baseline of kinfo:2:500000 currently accepts a
+  refreshed endpoint whose identity degraded to matching second-2 ps text but whose observedStartIdentity
+  carries kinfo:2:700000. The coarse comparison passes despite explicit evidence of PID replacement;
+  replaying this modification to the existing fixture returns settled: true with no refusals. Validate both
+  endpoints' carried exact evidence against the bound generation, with the applicable collection-window
+  checks, before crediting ancestry." Confirmed exactly (RED measured settled: true with refusals []).
+  **The fix (driver.mjs, the replay's ancestry endpoint binding loop — both the companion and the daemon
+  slots):** the endpoint's carried exact evidence (`observedStartIdentity` parsing as the exact form) is
+  validated against the bound generation (the duty slot's own identity) via the generation relation with the
+  applicable collection-window checks — the established branch's round-16 F2 rule mirrored: a carried
+  identity definitively differing from the bound refuses
+  (`ancestry-endpoint-generation-foreign`) unless its collection window is definitively STALE (completed
+  strictly before the base's own collection start — old evidence never latches), a legacy carry (no
+  completion bound) refuses only when its carried instant is tie-inclusively at/after the base's identity
+  horizon, and a malformed (supplied-invalid or inverted) window refuses fail-closed. **RED→GREEN:** the
+  reviewer's modification of the §32.14-F4 fixture (both endpoints degraded to their matching ps texts; the
+  daemon endpoint carrying kinfo:2:700000 against the kinfo:2:500000 baseline): RED settled: true with
+  refusals [], GREEN settled: false with `ancestry-endpoint-generation-foreign`; the RUNTIME/REPLAY
+  AGREEMENT arm — the runtime's round-16 F2 rule refuses the same evidence class (the presence bound
+  kinfo:2:500000; the established read degraded to the matching ps text carrying the post-baseline exact
+  kinfo:2:700000 → `pid-start-identity-reused`); the CONTROL — a carried identity MATCHING the bound keeps
+  crediting (no refusals, settled).
+- **Finding 3 [P2 — startup-write bounds ignore carried exact identities] — FIXED (the CARRIED EXACT
+  CREATION CHECK + the replay mirror).** The reviewer's finding verbatim: "For mixed-resolution
+  observations, the exact creation evidence resides in os.observedStartIdentity, while this branch checks
+  only observation.startIdentity. A broker startup written at 2500.6 ms therefore accepts a second-2 coarse
+  observation carrying kinfo:2:700000, even though that occupant was created after the startup record. Both
+  adjudicateLocalDuties and the persisted replay credit this case. Apply the exact creation-versus-write
+  check to admissible carried identities as well, and mirror that validation in the replay." Confirmed
+  exactly (RED measured the runtime duty `established` with no reasons and the replay settled: true).
+  **The fix (local-process-observation.mjs joinLocalDuty's generation binding + driver.mjs admissionReplay's
+  frozen startup-generation rules):** the exact creation-versus-write check applies to the admissible
+  carried identity too — the carried exact instant (`os.observedStartIdentity`) is compared against the
+  record's OWN write evidence by the same two-sided rule the exact branch applies to its own identity
+  (the upper bound derives from the write, ties establish, the lower arm keeps the fork-before-boundary
+  tolerance): a carried occupant created after the write (or before the record's start tolerance) is the
+  same named mismatch (`generation-start-second-mismatch` at the runtime; `admission-start-mismatch` in the
+  replay), never credited. **RED→GREEN:** the reviewer's schedule (the broker startup startOriginMs 2500,
+  firstWritePreciseMs 2500.6; the second-2 coarse observation `Thu Jan  1 00:00:02 1970` at instant 2000
+  carrying the verdict-level kinfo:2:700000 — exact ms 2700): RED the duty established with no reasons and
+  the replay settled: true, GREEN the duty unestablished with
+  `generation-start-second-mismatch` and the replay refusing `admission-start-mismatch` — runtime/replay
+  agreement; the CONTROL — a carried identity whose exact instant precedes the write (kinfo:2:300000, ms
+  2300) keeps crediting on both sides.
+- **Focused prior-counterexample re-run (2026-11-08, the amended bytes):** the `same-second-completion`
+  family = **70 tests, 70 pass, 0 fail** (byte-for-byte unchanged from §32.29); the `integration-completion`
+  family = **74 tests, 74 pass, 0 fail** (71 prior + the 3 new Finding-2/Finding-3 replay rows; all 71
+  prior rows still passing — the only movement is the three new rows).
+- **Battery (executed 2026-11-08 on the amended bytes):** local SOLO = **528 tests, 528 pass, 0 fail,
+  0 cancelled, 0 skipped, exit 0** (522 prior + 6 — exactly 6 new test declarations, 0 deleted; ~117 s);
+  native SOLO = **100 tests, 100 pass, 0 fail, 0 cancelled, 0 skipped, exit 0** (~65 s); probe SOLO =
+  **968 tests, 968 pass, 0 fail, 0 cancelled, 0 skipped, exit 0** (~1583 s; the re-derived spawned-suite
+  pin **629 = 528 (the measured local SOLO) + 100 (the measured native SOLO) + 1 (the guarded re-entry
+  test)** registered in the pin comment and asserted green inside — the prior pin 623 was correct for the
+  §32.29 bytes and moved honestly with the six added rows); full `npm run test:shell-research` SOLO =
+  **1596 tests, 1596 pass, 0 fail, 0 cancelled, 0 skipped, exit 0** (1590 prior + 6 = 1596, honestly
+  re-derived; ~1692 s) — no timing-row flake this battery; `node --test tests/test-selection.test.mjs` =
+  **6 tests / 6 pass / 0 fail** exit 0; `npm run lint` exit 0; `npm run typecheck` exit 0;
+  `git diff --check` exit 0. Prohibited-path diff vs `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY. The
+  three fixes amend the EXISTING route-(c) commit (message unchanged) — no push.
+
+### 32.31 Codex-review gate round 21 (2026-11-08, four findings on §32.30's amended bytes — 2×P1 + 2×P2, the round-20 termination tracking's own consumption/seed/polling/tie-order completion, all reproduced by the reviewer; §32.30 style — add-only; the amended route-(c) commit carries them; message unchanged)
+
+- **Finding 1 [P1 — the tracker isn't seeded from the capture] — FIXED (the CAPTURE SEEDING).** The
+  reviewer's finding verbatim: "If capture identifies exact generation A, the initial gone-check can observe
+  same-second successor B and initialize this reference to B without comparing it to A. If the next
+  verification degrades to matching coarse ps text, verification passes and SIGTERM reaches B. This sequence
+  reproduces successful cleanup after signalling the replacement. Seed the tracker from the capture's exact
+  identity and exact carry, and compare every subsequent observation against them." Confirmed exactly (RED
+  measured the gone-check's B learned as the reference and SIGTERM reaching B). **The fix
+  (local-process-observation.mjs terminateVerifiedProcess, before the first termination read):** the
+  tracking reference is SEEDED from the capture's exact identity AND exact carry (the {identity, bounds}
+  unit the capture preserved) — the seeding order mirrors the runtime's learning order (the carried
+  identity first, then the capture's own; a capture whose own exact identity and carry definitively differ
+  flags the generation change fail-closed) — and every subsequent observation (the initial gone-check
+  included) is COMPARED against the seed, never learned as the first. **RED→GREEN:** the reviewer's schedule
+  (the capture identifying exact A kinfo:1:100000; the gone-check observing the same-second exact B
+  kinfo:1:200000; the verification degrading to the matching coarse ps text): RED the verification passing
+  and SIGTERM reaching B, GREEN the generation-change firing before any signal (attempted: false, zero
+  kills, the named identity-change classification); the CONTROL — a genuinely-matching observation (every
+  read observing the capture's own exact generation) completes normally.
+- **Finding 2 [P1 — caller-supplied exit polling bypasses the tracker] — FIXED (the POLLING FEEDS THE
+  TRACKER).** The reviewer's finding verbatim: "runHeldHostTurn always supplies waitForExit, whose polling
+  calls readProcessIdentity directly, bypassing this tracking reader. With a coarse capture, initial
+  verifications can learn exact A, polling can observe same-second successor B, and a degraded pre-kill
+  verification can then authorize SIGKILL against B because the tracker never received the polling evidence.
+  This sequence reproduces both signals being sent. Ensure supplied polling feeds the same retained-generation
+  tracker." Confirmed exactly (RED measured both signals sent). **The fix (the DESIGN, stated): the supplied
+  waitForExit RECEIVES the tracking reader as an optional third argument and its polling polls THROUGH it**
+  (local-process-observation.mjs terminateVerifiedProcess forwards `trackTerminationRead` to both exit
+  polls; the default waitForExit already closes over the tracker — the argument is uniform for both shapes;
+  the terminateVerifiedProcess JSDoc grew the whitelisted third parameter) and the production supplier
+  CONSUMES it (driver.mjs waitForProcessExit accepts the optional tracked reader and polls through it when
+  supplied — the natural-exit watcher and every other caller pass none and keep the plain identity reader
+  byte-identically — and the terminateProcessIdentity wiring forwards it). **RED→GREEN:** the reviewer's
+  schedule through the terminateVerifiedProcess contract (the coarse capture; reads 1-2 observing exact A;
+  the supplied polling reading the same-second exact B directly — the bypass; the degraded pre-kill
+  verification returning the matching coarse text): RED both signals sent (`['SIGTERM','SIGKILL']`), GREEN
+  the polling evidence latches against the learned A before SIGKILL (`['SIGTERM']` only, the named
+  identity-change-during-termination classification); the CONTROL — polling reads of the TRACKED generation
+  complete normally (the SIGKILL authorizes; the verified exit completes).
+- **Finding 3 [P2 — the reuse latch isn't terminal for exit verification] — FIXED (the LATCH IS TERMINAL
+  FOR EXIT VERIFICATION).** The reviewer's finding verbatim: "When default exit polling observes successor B
+  after learning A, this assignment sets the latch but polling continues normally. If the following read
+  returns undefined, waitForExit resolves and termination returns exited: true, failure: null, ignoring the
+  proven replacement. A coarse capture followed by reads A, A, B, undefined reproduces this result. Make the
+  latch terminal for exit verification as well as signal authorization." Confirmed exactly (RED measured
+  exited: true with failure: null). **The fix (local-process-observation.mjs terminateVerifiedProcess):** a
+  latched generation change is terminal for the WHOLE termination — both exit verifications (the
+  terminate-phase and the kill-phase) check the latch at resolution: an exit verification that resolves
+  after the latch (the successor observed, then the pid gone) returns the proven replacement per the
+  standing changed-during-termination classification (exited stays false, failure names the change), never
+  the clean exited:true/failure:null. **RED→GREEN:** the reviewer's schedule (the coarse capture; reads A,
+  A, B, undefined through the DEFAULT polling): RED exited: true with failure: null, GREEN the latched
+  outcome preserved (exited: false, the named failure, `['SIGTERM']` only); the CONTROL — reads A, A, A,
+  undefined (no latch) keep the lawful exited:true/failure:null.
+- **Finding 4 [P2 — the learned-generation comparison runs after the tie filter] — FIXED (the
+  LEARNED-GENERATION CHECK BEFORE THE TIE FILTER).** The reviewer's finding verbatim: "With a coarse
+  baseline, exact reads A and B sharing the same identity-read millisecond both match the baseline's second.
+  The first read advances the horizon, so the strict recency filter skips the second before this
+  learned-reference comparison executes. A subsequent confirmed absence therefore returns disappeared
+  despite distinct exact generations; moving B's timestamp forward by one millisecond correctly returns
+  reuse. Apply the learned-generation check before the tie filter, with the applicable interval
+  classification." Confirmed exactly (RED measured disappeared). **The fix
+  (local-process-observation.mjs adjudicateLocalExit, the round-21/22 pre-filter latch block's established
+  arm):** for a same-scope established read whose OWN exact identity definitively differs from the LEARNED
+  reference, the learned-generation check runs BEFORE the recency filter skips the read — with the
+  applicable interval classification (the in-branch learned-cross-comparison's own rules): an overlapping
+  window is the ambiguous fact, a malformed window refuses
+  pid-start-identity-interval-inconsistent, a definitively stale window is old evidence (the recency filter
+  still governs), every other class latches the reuse. **RED→GREEN:** the reviewer's schedule (the coarse
+  baseline; exact reads A and B sharing the identity-read millisecond 1000; the confirmed absence): RED
+  disappeared, GREEN `pid-start-identity-reused`; the CONTROL — a read genuinely skipped by recency
+  (collected BEFORE the baseline window) is still skipped and the lawful disappearance holds.
+- **Focused prior-counterexample re-run (2026-11-08, the amended bytes):** the `same-second-completion`
+  family = **70 tests, 70 pass, 0 fail** (byte-for-byte unchanged from §32.30); the `integration-completion`
+  family = **74 tests, 74 pass, 0 fail** (byte-for-byte unchanged from §32.30); ALL termination-named tests
+  = **21 tests, 21 pass, 0 fail** (the 15 prior rows + the 6 new round-21 termination rows — every existing
+  termination row still passing).
+- **Battery (executed 2026-11-08 on the amended bytes):** local SOLO — the FIRST run measured 535/536 with
+  ONE failure (`F4 (P2) RED → the live provenance binds the MATERIALIZED executing helper copies`): an
+  HONESTLY-ATTRIBUTED self-inflicted artifact — the driver's type-annotation-only fix was applied WHILE that
+  run was executing, so the executing-source snapshot and the fresh disk read diverged mid-run (the digest
+  test compares them); the bytes were stable on the re-run and NOTHING was relabelled: local SOLO re-run =
+  **536 tests, 536 pass, 0 fail, 0 cancelled, 0 skipped, exit 0** (528 prior + 8 — exactly 8 new test
+  declarations, 0 deleted; ~117 s); native SOLO = **100 tests, 100 pass, 0 fail, 0 cancelled, 0 skipped,
+  exit 0** (~65 s); probe SOLO = **968 tests, 968 pass, 0 fail, 0 cancelled, 0 skipped, exit 0** (~1598 s;
+  the re-derived spawned-suite pin **637 = 536 (the measured local SOLO) + 100 (the measured native SOLO)
+  + 1 (the guarded re-entry test)** registered in the pin comment and asserted green inside — the prior pin
+  629 was correct for the §32.30 bytes and moved honestly with the eight added rows); full
+  `npm run test:shell-research` SOLO = **1604 tests, 1604 pass, 0 fail, 0 cancelled, 0 skipped, exit 0**
+  (1596 prior + 8 = 1604, honestly re-derived; ~1695 s) — no timing-row flake this battery;
+  `node --test tests/test-selection.test.mjs` = **6 tests / 6 pass / 0 fail** exit 0; `npm run lint` exit 0;
+  `npm run typecheck` exit 0 (the waitForProcessExit JSDoc grew the whitelisted optional trackedRead
+  parameter); `git diff --check` exit 0. Prohibited-path diff vs
+  `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY. The four fixes amend the EXISTING route-(c) commit
+  (message unchanged) — no push.
+### 32.32 Codex-review gate round 22 (2026-11-09, three findings on §32.31's amended bytes — 1×P1 + 2×P2, the exact-generation route's lifetime-retention/pre-filter-carry/own+carried-endpoint completion, all reproduced by the reviewer; §32.31 style — add-only; the amended route-(c) commit carries them; message unchanged)
+
+- **Finding 1 [P1 — the held-turn reader lifetime doesn't retain exact generations] — FIXED (the LIFETIME
+  EXACT-GENERATION RETENTION).** The reviewer's finding verbatim: "With a coarse capture lacking an exact
+  carry, a held-phase read can verify exact generation A, but subsequent cleanup reads of same-second
+  successor B still pass this comparison against the original coarse identity. The termination tracker then
+  learns B as its initial reference, forgetting the earlier evidence of A. This sequence reproduces SIGTERM
+  being sent to B followed by successful cleanup. Retain and cross-compare exact generations across the
+  entire held-turn reader lifetime, including natural-exit polling and cleanup." Confirmed exactly (RED
+  re-verified on the committed route-(c) bytes: the cleanup read of B passed against the coarse capture and
+  SIGTERM reached B — terminationCalls 1). **The fix (driver.mjs runHeldHostTurn — the shared per-turn
+  reference; local-process-observation.mjs terminateVerifiedProcess — the shared-lifetime seed):** the
+  held-turn reader RETAINS the exact generations learned across its ENTIRE lifetime — `heldTurnLearnedExactReference`
+  is a SINGLE per-turn reference seeded by the reader's first exact observation (the read's carried identity
+  first, then its own — the runtime's learning order) and cross-checked by EVERY subsequent read the same
+  reader serves: the held-phase verification, the natural-exit polling (round-21 F2's polling polls through
+  the plain reader) AND the cleanup reads all feed the same reference — never a per-site reference; a later
+  exact generation definitively differing from the retained one throws the named identity-change fact before
+  any comparison against the original coarse identity can pass. The reference is SHARED into the termination
+  tracker's seeding: `terminateVerifiedProcess` grew the whitelisted `learnedExactReference` dependency and
+  seeds `terminationLearnedExactReference` from it BEFORE the round-21 capture seeding — the capture's own
+  exact identity and carry are cross-checked against the seed exactly like subsequent reads (a carry
+  definitively differing from the retained lifetime generation flags the generation change fail-closed; a
+  tracker never learns as an initial reference a generation the lifetime already retained), so the
+  natural-exit polling, the gone-check and the termination reads all inherit the lifetime's evidence.
+  **RED→GREEN:** the reviewer's schedule through the DEFAULT reader/polling path (the coarse capture lacking
+  an exact carry; the held-phase verification's kinfo reads 1-2 observing exact A kinfo:1:100000; every
+  later read — the natural-exit polling and the cleanup — observing the same-second successor B
+  kinfo:1:200000): RED on the committed bytes (SIGTERM reached B, terminationCalls 1, successful cleanup),
+  GREEN on the amended bytes (terminationCalls 0 — the cleanup read of B is generation-changed against the
+  retained A and the named refusal rides the cleanup, no signal). **CONTROLS:** (a) consistently-same exact
+  generations (every read kinfo:1:100000) complete the termination normally (terminationCalls 1, no
+  identity-change refusal — the turn's own failure is the natural-deadline fact, never the lifetime
+  tracker); (b) a genuinely different-second generation (every read kinfo:2:100000) still refuses by name
+  (the standing verification behavior unchanged).
+- **Finding 2 [P2 — the pre-filter check ignores carried identities] — FIXED (the CARRIED IDENTITY IN THE
+  PRE-FILTER CHECK).** The reviewer's finding verbatim: "For a coarse baseline, after a read learns exact
+  generation A, a tied mixed-resolution read can return matching coarse startIdentity while carrying
+  different exact generation B in observedStartIdentity. This pre-filter check considers only the
+  observation's own identity, so the tied read is skipped before its carry is checked. A subsequent
+  confirmed absence therefore returns disappeared; moving the second read one millisecond later correctly
+  returns reuse. Apply the pre-filter learned-reference comparison to carried identities, including
+  failed-read carries." Confirmed exactly (RED re-verified on the committed route-(c) bytes: the tied
+  carried-B read was skipped and the confirmed absence returned disappeared). **The fix
+  (local-process-observation.mjs adjudicateLocalExit — the pre-filter learned-reference block's carried
+  arm):** the pre-filter learned-reference comparison applies to the read's CARRIED exact identity
+  (`observedStartIdentity`, established carries AND failed-read carries alike) BEFORE the recency filter
+  skips the read — a tied read whose carry definitively differs from the learned reference is
+  generation-changed, not skipped — with the applicable interval classification (the same rules the
+  in-branch carried comparisons apply): an overlapping window is the ambiguous fact, a malformed window
+  refuses pid-start-identity-interval-inconsistent, a definitively stale window is old evidence (the
+  recency filter still governs), every other class latches the reuse. **RED→GREEN:** the reviewer's schedule
+  (the coarse baseline; the exact-A learning read; the tied mixed read returning the matching coarse
+  startIdentity while carrying exact B kinfo:1:200000; the confirmed absence): RED on the committed bytes
+  (the confirmed absence measured `{"status":"disappeared","reason":null}`), GREEN on the amended bytes
+  (`pid-start-identity-reused` — the carry is checked before the recency skip). **CONTROL:** a tied read
+  whose carry MATCHES the learned reference is still skipped
+  lawfully (the lawful disappearance holds).
+- **Finding 3 [P2 — the refreshed endpoint binding checks only the carry] — FIXED (the OWN+CARRIED BINDING
+  AGAINST THE BASELINE'S ADMISSIBLE EXACT CARRY).** The reviewer's finding verbatim: "When the broker
+  baseline is coarse but preserves exact generation A in base.observedStartIdentity, a refreshed daemon
+  endpoint reporting same-second exact generation B passes the coarse generation comparison. This additional
+  guard checks only the endpoint's carry, so an endpoint reporting B directly bypasses it. Replaying the
+  existing fixture with a second-2 coarse baseline carrying kinfo:2:500000 and an endpoint reporting
+  kinfo:2:700000 returns settled: true without refusals. Compare the endpoint's own and carried identities
+  against the baseline's admissible exact carry before crediting ancestry." Confirmed exactly (RED
+  re-verified on the committed route-(c) bytes: settled true with an empty refusals array). **The fix
+  (driver.mjs joinRecordLocalProcessDuties — the endpoint binding's own+carried arm):** when the baseline is
+  coarse but carries an admissible exact generation (`base.observedStartIdentity`), BOTH the endpoint's OWN
+  identity AND its carried identity are compared against that carry before crediting ancestry — an endpoint
+  reporting B directly (its own exact identity) refuses `ancestry-endpoint-generation-foreign` the same as
+  one carrying B (the refreshed endpoint read postdates the baseline by construction, so a definitively
+  different own identity is positive replacement evidence; the round-20 carried guard's collection-window
+  checks above stay byte-identical). **RED→GREEN:** the reviewer's schedule (the second-2 coarse baseline
+  carrying kinfo:2:500000; the daemon endpoint reporting kinfo:2:700000 DIRECTLY): RED on the committed
+  bytes (settled: true, no refusals), GREEN on the amended bytes (`ancestry-endpoint-generation-foreign`,
+  settled: false). **CONTROL:** an endpoint whose own AND carried identities match the baseline's exact
+  carry keeps crediting (settled: true, empty refusals). The two pre-existing round-20-F3 fixture rows were
+  aligned honestly: their daemon endpoints now report the SAME carried generation their baselines carry
+  (the coherent filler — without it the empty-refusals CONTROL assertion there would trip the new guard
+  with an unrelated refusal), their asserted subjects (the carried startup-write refusals) unchanged and
+  still passing.
+- **Focused prior-counterexample re-run (2026-11-09, the amended bytes):** the `same-second-completion` +
+  `integration-completion` families = **146 tests, 146 pass, 0 fail** (144 prior + the 2 new round-22 F3
+  rows — the ONLY selection delta; the F1/F2 rows live outside these families' name pattern and were
+  verified by their own focused rows); the identical families on the committed route-(c) bytes = **144
+  tests, 144 pass, 0 fail** — zero movement among the pre-existing rows (no prior row changed pass/fail
+  state); the six round-22 rows by name: the 3 RED rows FAIL on the committed bytes and PASS on the amended
+  bytes, the 3 CONTROL rows PASS on both (lawful behavior holds on both sides).
+- **Battery (executed 2026-11-09 on the amended bytes):** local SOLO = **542 tests, 542 pass, 0 fail,
+  0 cancelled, 0 skipped, exit 0** (536 prior + 6 — exactly 6 new test declarations, 0 deleted; ~117 s);
+  native SOLO = **100 tests, 100 pass, 0 fail, 0 cancelled, 0 skipped, exit 0** (~65 s); probe SOLO =
+  **968 tests, 967 pass, 1 fail** (~1578 s) — the ONE failure honestly attributed, never relabelled: the
+  spawned-suite reporter-alias row `an underscore destination alias with a quoted spaced value is stripped`
+  measured its SPAWNED shell-research child exiting 1 (the row's own status assertion; its sibling spawns
+  of the identical suite passed twice moments before, and the row re-ran green twice afterwards — the
+  identical spawn reproduced status 0 in isolation, and the standalone row re-run = **1 test / 1 pass /
+  0 fail** exit 0 with its 643-count assertions green — a ONE-OFF transient inside that battery's spawned
+  child, the §32.31 flake class); full `npm run test:shell-research` SOLO = **1610 tests, 1610 pass,
+  0 fail, 0 cancelled, 0 skipped, exit 0** (1604 prior + 6 = 1610, honestly re-derived — 542 + 100 + 968;
+  ~1689 s; no timing-row flake this battery); the
+  re-derived spawned-suite pin **643 = 542 (the measured local SOLO) + 100 (the measured native SOLO) + 1
+  (the guarded re-entry test)** registered in the pin comment and asserted green inside (the prior pin 637
+  was correct for the §32.31 bytes and moved honestly with the six added rows);
+  `node --test tests/test-selection.test.mjs` = **6 tests / 6 pass / 0 fail** exit 0; `npm run lint` exit 0;
+  `npm run typecheck` exit 0; `git diff --check` exit 0. Prohibited-path diff vs
+  `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY. The three fixes amend the EXISTING route-(c) commit
+  (message unchanged) — no push.
+
+### 32.33 Codex-review gate round 23 (2026-11-09, three findings on §32.32's amended bytes — 1×P1 + 2×P2, the exact-generation route's error-consumption-before-escalation/tied-observation-retention/marker-vs-carry completion, all reproduced by the reviewer; §32.32 style — add-only; the amended route-(c) commit carries them; message unchanged)
+
+- **Finding 1 [P1 — the failed-read carry isn't consumed before escalation] — FIXED (the ERROR-CARRIED
+  IDENTITY CONSUMPTION).** The reviewer's finding verbatim: "When exit polling observes a same-second
+  successor through an inspector error, await readIdentity(expected) throws before the tracker consumes its
+  observedStartIdentity. The surrounding waitForExit catch then permits escalation: a subsequent
+  degraded-to-matching-ps verification passes without setting terminationGenerationChanged. Reproducing this
+  with the actual inspector produced SIGTERM followed by SIGKILL and a clean exit outcome despite the
+  intervening exact replacement evidence. Consume error-carried identities and latch generation-change
+  failures before permitting another signal." Confirmed exactly (RED re-verified on the committed route-(c)
+  bytes: SIGTERM followed by SIGKILL and the clean `exited:true, failure:null` outcome despite the carried
+  replacement evidence). **The fix (local-process-observation.mjs `terminateVerifiedProcess` — the tracking
+  reader):** `trackTerminationRead` now consumes the read's THROWN error before it propagates: an error
+  carrying the exact `observedStartIdentity` (the inspector's mid-read identity-change shape) is compared
+  against the learned reference exactly like a returned record — the reference initializes from a first
+  carried identity, and a definitively different one latches `terminationGenerationChanged` — then the error
+  propagates UNCHANGED (the throw's own semantics untouched). The latch therefore fires at the consumption,
+  BEFORE the surrounding `waitForExit` catch can permit any further signal: the round-20 escalation gate
+  refuses, SIGKILL never fires, and the round-21 terminal-latch classification reports the proven
+  replacement. **RED→GREEN:** the reviewer's schedule through the DEFAULT polling path (the coarse capture;
+  reads 1-2 verifying exact A kinfo:1:100000; read 3 — the exit polling's inspector — THROWING with the
+  same-second successor B kinfo:1:200000 as `observedStartIdentity`; read 4 the degraded-to-matching-ps
+  pre-kill verification; read 5 gone): RED on the committed bytes (signals `['SIGTERM','SIGKILL']`,
+  `exited:true`, `failure:null`), GREEN on the amended bytes (signals `['SIGTERM']`, `exited:false`,
+  `failure:'the exact fake-ZCode process identity changed during termination'`). **CONTROL:** the error
+  carrying the LEARNED generation itself (exact A again) never latches — the escalation completes as before
+  (signals `['SIGTERM','SIGKILL']`, the lawful `exited:true`, `signalled:'SIGKILL'`).
+- **Finding 2 [P2 — the tied first exact observation doesn't initialize the reference] — FIXED (the TIED
+  EXACT OBSERVATION RETENTION).** The reviewer's finding verbatim: "With a coarse baseline, the first exact
+  read tied with the baseline's identity-read millisecond is skipped by the later recency filter without
+  initializing learnedExactReference. A subsequent same-second exact successor is therefore learned as the
+  original generation. For example, a coarse baseline and exact A at 1200, exact B at 1201, and confirmed
+  absence at 1202 return disappeared despite the distinct exact identities. Preserve the tied read's exact
+  evidence without advancing the presence horizon, and mirror that retention in replay." Confirmed exactly
+  (RED re-verified on the committed route-(c) bytes: the confirmed absence measured
+  `{"status":"disappeared","reason":null}`). **The fix (local-process-observation.mjs `adjudicateLocalExit`
+  — the recency filter's retention; driver.mjs `joinRecordLocalProcessDuties` — the deferred
+  post-admission learning's tie arm):** an established same-scope read whose identity evidence TIES the
+  presence horizon (equality — never strictly-before) still RETAINS its exact evidence when the recency
+  filter skips it — the carried identity first (the runtime's learning order, with the round-17
+  stale-carry learning exclusion), then the observation's own — WITHOUT advancing the horizon (the horizon
+  advance and the recency skip remain byte-identically; only the evidence is retained; the tied read never
+  decides), so a subsequent same-second successor is compared against the retained tied observation. The
+  replay mirror (`readRecencyTied`) retains the persisted tied read's exact evidence the same way. This
+  RESOLVES the round-17 Finding-6 strict-admission divergence toward the reuse verdict (see the honest
+  movement below); the STRICTLY-BEFORE exclusion (round-16 F3) is unchanged. **RED→GREEN:** the reviewer's
+  schedule (the coarse baseline at 1200; exact A kinfo:1:100000 tied at 1200; exact B kinfo:1:200000 at
+  1201; the confirmed absence): RED on the committed bytes (`disappeared`), GREEN on the amended bytes
+  (`['unestablished','pid-start-identity-reused']` — the successor latches via the retained tied A); the
+  replay mirror on the persisted schedule: RED (settled true, empty refusals), GREEN
+  (`exit-reuse-latched`). **CONTROL:** the same tie schedule with COARSE reads only keeps the coarse
+  behavior byte-identically (`['disappeared',null,1215]`).
+- **Finding 3 [P2 — the transport carry isn't checked against the captured marker] — FIXED (the
+  CAPTURED-MARKER SEED + the MARKER-VS-CARRY BINDING).** The reviewer's finding verbatim: "When the marker
+  captures exact generation A but the initial transport observation returns matching coarse text with exact
+  successor B in its verdict-level observedStartIdentity, this comparison accepts the coarse match and
+  ignores the contradictory carry. The transport tracker then seeds itself from B rather than rejecting it
+  against A. A coherent replay with marker kinfo:4:100000, a second-4 coarse observation carrying
+  kinfo:4:200000, and subsequent absence returns settled: true with no refusals. Compare the observation's
+  carried exact identity against the captured marker in both runtime admission and replay." Confirmed
+  exactly (RED re-verified on the committed route-(c) bytes: the runtime latch never fired and the coherent
+  replay measured `settled:true` with an empty refusals array). **The fix (driver.mjs `runHeldHostTurn` —
+  the transport tracker's seeding; driver.mjs `joinRecordLocalProcessDuties` — the persisted marker
+  binding and the replay tracker's seeding):** (a) the RUNTIME transport admission seeds the tracker from
+  the captured marker's own exact generation FIRST; the phase-3 observation's carried exact identity and
+  own exact identity are CROSS-CHECKED against it exactly like the exit retries' reads — a definitively
+  different generation latches `transportExitGenerationLatched` (fail-closed; the tracker never seeds from
+  B against marker A) while a matching (or coarse/unparseable) carry keeps the admission; a coarse marker
+  keeps the round-18/19 seeding byte-identically (the captured identity seeds nothing; the phase-3
+  evidence still initializes the reference). (b) The REPLAY's persisted marker binding compares the
+  observation's verdict-level carried exact identity against the captured marker too — definitively
+  different ⇒ `ancestry-ppid-chain-foreign` (the conjunct stays gated on `marker.startIdentity`, so
+  markers persisted before the field keep their documented tolerance) — and the replay's transport tracker
+  seeds from the marker's captured generation first (the runtime's seeding order, mirrored). The runtime
+  comparison lives in the driver's transport admission flow — the observation-layer established-with-carry
+  representation (the rounds-12/14 pinned contract, unchanged) rides the carry to this admission, which is
+  the transport-specific consumer the finding names. **RED→GREEN:** the reviewer's schedule (the captured
+  marker kinfo:4:100000; the phase-3 observation returning the matching coarse second-4 text while
+  CARRYING kinfo:4:200000; the subsequent confirmed absence): RUNTIME RED on the committed bytes (no
+  latch — the tracker seeded from B), GREEN on the amended bytes (`transportExitGenerationLatched ===
+  true`, the absence persisted uncredited); REPLAY RED (settled true, `[]`), GREEN
+  (`ancestry-ppid-chain-foreign`, settled false — the block's proven second-2 alignment carries the
+  reviewer's second-4 schedule; the same-second successor semantics are identical). **CONTROLS:** a carry
+  MATCHING the captured marker keeps the admission on both sides (runtime: no latch, the confirmed absence
+  settles as before; replay: settled true with empty refusals).
+- **The honest prior-row movement (round-17 Finding 6, re-adjudicated per the §32.32 precedent):** the
+  landed round-17 Finding-6 replay row pinned the EXACT semantics this finding supersedes (its schedule IS
+  the finding's scenario: an exact read tied with the coarse baseline's horizon, then a same-second
+  successor, asserting the runtime's disappeared and the replay's settled agreement). The row is
+  REWRITTEN in place (a re-adjudication, never a silent edit): its title and comment now name the
+  round-23 supersession, and its assertions flip to the superseding lawful outcome with the original
+  subject — runtime/replay AGREEMENT — preserved: both sides now retain the tied evidence and latch the
+  successor (replay `exit-reuse-latched`; runtime
+  `['unestablished','pid-start-identity-reused']`). The row FAILS on the committed bytes (it pins the new
+  behavior) and PASSES on the amended bytes; the round-16 Finding-3 strictly-before exclusion row and the
+  round-17 Finding-6 strictly-after admission CONTROL row are untouched and still passing.
+- **Focused prior-counterexample re-run (2026-11-09, the amended bytes):** the `same-second-completion` +
+  `integration-completion` families = **151 tests, 151 pass, 0 fail** (146 prior + 5 new rows — the ONLY
+  selection delta: the round-23 Finding-2 runtime RED + control rows, the Finding-2 replay mirror row, and
+  the Finding-3 replay RED + control rows; the Finding-1 and Finding-3 RUNTIME rows live outside these
+  families' name pattern and were verified by their own focused rows); the identical families on the
+  committed route-(c) bytes = **147 pass / 4 fail** — the 4 = the three new RED schedules these families
+  contain (Finding-2 runtime, Finding-2 replay, Finding-3 replay) PLUS the one re-adjudicated round-17
+  Finding-6 rewrite; every other prior row passes on BOTH bytes unchanged (zero movement). The committed
+  route-(c) byte-level RED verification of the two rows outside the families: Finding-1 runtime RED
+  (SIGTERM+SIGKILL, clean exit) and Finding-3 runtime RED (no latch) both FAIL on the committed bytes and
+  PASS on the amended bytes; their CONTROL rows pass on both bytes.
+- **Battery (executed 2026-11-09 on the amended bytes):** local SOLO = **551 tests, 551 pass, 0 fail,
+  0 cancelled, 0 skipped, exit 0** (542 prior + 9 — exactly 9 new test declarations, 0 deleted; ~117 s);
+  native SOLO = **100 tests, 100 pass, 0 fail, 0 cancelled, 0 skipped, exit 0** (~65 s); probe SOLO =
+  **968 tests, 968 pass, 0 fail, 0 cancelled, 0 skipped, exit 0** (~1590 s; the re-derived spawned pin
+  **652 = 551 (the measured local SOLO) + 100 (the measured native SOLO) + 1 (the guarded re-entry
+  test)** registered in the pin comment and asserted green inside — the prior pin 643 was correct for the
+  §32.32 bytes and moved honestly with the nine added rows); full `npm run test:shell-research` SOLO =
+  **1619 tests, 1619 pass, 0 fail, 0 cancelled, 0 skipped, exit 0** (1610 prior + 9 = 1619, honestly
+  re-derived — 551 + 100 + 968; no timing-row flake this battery) — the FIRST full battery of the round
+  measured ONE failure, honestly attributed, never relabeled: the probe's spawned-selection row's
+  SPAWNED shell-research child exited 1 under battery load (the row's own status assertion at
+  tests/shell-wait-probe.test.mjs:606; the focused row re-run = **1 test / 1 pass / 0 fail** exit 0 with
+  the spawned child's 652-count assertions green — the §32.31/§32.32 one-off spawned-child transient
+  class), and the SOLO full re-run above is the recorded honest battery; `node --test
+  tests/test-selection.test.mjs` = **6 tests / 6 pass / 0 fail** exit 0; `npm run lint` exit 0;
+  `npm run typecheck` exit 0; `git diff --check` exit 0. Prohibited-path diff vs
+  `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY. The three fixes amend the EXISTING route-(c) commit
+  (message unchanged) — no push.
+
+### 32.34 Codex-review gate round 24 (2026-11-09, two findings on §32.33's amended bytes — 1×P1 + 1×P2, the exact-generation route's refusal-carry/mixed-capture-seed completion, both reproduced by the reviewer; §32.33 style — add-only; the amended route-(c) commit carries them; message unchanged)
+
+- **Finding 1 [P1 — the default reader's refusals don't carry the replacement evidence] — FIXED (the
+  REFUSAL CARRIES THE SUCCESSOR — design (a), the round-23 pattern).** The reviewer's finding verbatim:
+  "During SIGTERM exit polling, observing a same-second successor throws this plain error without carrying
+  its identity or permanently latching the mismatch. terminateVerifiedProcess only consumes error-carried
+  observedStartIdentity, so its polling catch permits escalation. If the next inspection degrades to
+  matching coarse ps text, verification passes and SIGKILL reaches the successor. Reproducing exact A →
+  exact B → coarse → gone produced both signals and exited: true, failure: null. Preserve the successor
+  identity on these refusals or make generation change terminal across subsequent reads." Confirmed
+  exactly (RED re-verified on the committed route-(c) bytes through the DEFAULT reader and DEFAULT
+  termination: signals `['SIGTERM','SIGKILL']`, `exited:true`, `failure:null`). **The fix (driver.mjs
+  runHeldHostTurn — the default reader's generation-change refusals):** every refusal now carries the exact
+  identity that PROVED the change on the thrown error (`observedStartIdentity`) — the shared
+  `throwIfCarriedSuccessor` carry guard's evidence identity, the ppid/relation refusal's observed
+  identity, and the round-22 lifetime-retention refusal's differing exact candidate (the carry first, then
+  the observation's own — the runtime's learning order). The round-23 Finding-1 consumption path in
+  `terminateVerifiedProcess` compares the carried identity against the learned reference and latches
+  `terminationGenerationChanged` BEFORE the error propagates, so the round-20 escalation gate refuses, the
+  SIGKILL phase never starts, and the round-21 terminal-latch classification reports the proven
+  replacement. Design (a) was chosen (the established round-23 pattern; the reader's refusals are the same
+  class the tracker already consumes); design (b) (a terminal reader latch) was unnecessary — the per-turn
+  reader's evidence now reaches the tracker that owns the latch. **RED→GREEN:** the reviewer's schedule
+  through the DEFAULT reader (the coarse capture; every pre-SIGTERM read exact A kinfo:1:100000; the SIGTERM
+  exit polling's inspection exact B kinfo:1:200000; the degraded-to-matching-ps pre-kill verification; the
+  gone kill-phase read — `process.kill` intercepted solely to record the default termination's signals):
+  RED on the committed bytes (signals `['SIGTERM','SIGKILL']`, the clean `exited:true`/`failure:null`),
+  GREEN on the amended bytes (signals `['SIGTERM']` only,
+  `cleanup.verifiedProcessTerminated:false`, the `'the exact fake-ZCode process identity changed during
+  termination'` failure in `cleanup.errors`). **CONTROL:** a same-generation sequence (every read exact A)
+  completes the termination normally — SIGTERM only, `verifiedProcessTerminated:true`, no cleanup errors
+  (the round-23 behaviors unchanged).
+- **Finding 2 [P2 — the transport seed ignores the capture's exact carry] — FIXED (the MIXED-CAPTURE SEED
+  + the persisted-marker carry binding).** The reviewer's finding verbatim: "When identity capture is
+  mixed-resolution, transportIdentity.startIdentity is coarse but transportIdentity.observedStartIdentity
+  retains exact generation A. This seed ignores A, allowing a phase-3 observation carrying same-second
+  successor B to initialize the reference instead of latching replacement. A subsequent confirmed absence
+  is then accepted. Changing the existing captured-marker regression to this mixed capture reproduced
+  transportExitGenerationLatched: false with an absent exit. Seed from the capture's exact carry too, and
+  preserve that binding for replay." Confirmed exactly (RED re-verified on the committed route-(c) bytes:
+  `transportExitGenerationLatched` undefined/false and the absent exit accepted). **The fix (driver.mjs
+  runHeldHostTurn — the transport tracker seed; driver.mjs — the persisted marker composition; driver.mjs
+  joinRecordLocalProcessDuties — the replay's marker binding and tracker seed):** (i) the runtime seed
+  ACCEPTS the capture's exact CARRY first (`transportIdentity.observedStartIdentity`), then its own exact
+  identity — a mixed-resolution capture's exact A seeds the reference, the phase-3 observation carrying
+  same-second successor B latches `transportExitGenerationLatched` against it (a self-contradictory
+  capture whose both exact forms differ latches fail-closed); a coarse-only capture keeps the round-18/19
+  seeding byte-identically. (ii) The runtime marker composition PERSISTS the capture's exact carry
+  (schema-additive `observedStartIdentity`), preserving the binding for replay. (iii) The replay's marker
+  binding compares the persisted marker's exact evidence (carry first, then own identity) against the
+  transport echo's exact evidence (carried identity first, then its own) through the representation-aware
+  relation — definitively different ⇒ `ancestry-ppid-chain-foreign` — and the replay's transport tracker
+  seeds from the marker's exact carry first (the runtime's seeding order, mirrored). **RED→GREEN:** the
+  reviewer's schedule (the mixed capture: coarse second-4 text + the exact carry kinfo:4:100000; the
+  phase-3 observation carrying kinfo:4:200000; the subsequent confirmed absence): RUNTIME RED (latched
+  false, the absent exit accepted), GREEN (latched true, the absence persisted uncredited, the persisted
+  marker reinforces `observedStartIdentity:'kinfo:4:100000'`); REPLAY RED (settled true, `[]`), GREEN
+  (`ancestry-ppid-chain-foreign`, settled false). **CONTROLS:** a coarse-only capture keeps the
+  round-18/19 seeding on both sides (the phase-3 carry initializes the reference; no latch; the absence
+  settles); a phase-3 carry MATCHING the capture's exact A keeps the admission (runtime and replay); a
+  coarse-only marker keeps the round-23 replay behavior byte-identically (the echo's carry seeds; settled).
+- **Focused prior-counterexample re-run (2026-11-09, the amended bytes):** the `same-second-completion` +
+  `integration-completion` families = **152 tests, 152 pass, 0 fail** (151 prior + 1 new row — the
+  Finding-2 replay row; the Finding-1 and Finding-2 RUNTIME rows live outside these families' name
+  pattern and were verified by their own focused rows); the identical families on the committed
+  route-(c) bytes = **151 pass / 1 fail** — the new Finding-2 replay row ONLY; every other prior row
+  passes on BOTH bytes unchanged (zero movement). The committed-bytes RED verification of the two rows
+  outside the families: the Finding-1 runtime RED (both signals + the clean exit) and the Finding-2
+  runtime RED (latched false, absent exit accepted) both FAIL on the committed bytes and PASS on the
+  amended bytes; their CONTROL rows pass on both bytes.
+- **Battery (executed 2026-11-09 on the amended bytes):** local SOLO = **556 tests, 556 pass, 0 fail,
+  0 cancelled, 0 skipped, exit 0** (551 prior + 5 — exactly 5 new test declarations, 0 deleted; ~119 s);
+  native SOLO = **100 tests, 100 pass, 0 fail, 0 cancelled, 0 skipped, exit 0** (~65 s); probe SOLO =
+  **968 tests, 968 pass, 0 fail, 0 cancelled, 0 skipped, exit 0** (~1595 s; the re-derived spawned pin
+  **657 = 556 (the measured local SOLO) + 100 (the measured native SOLO) + 1 (the guarded re-entry
+  test)** registered in the pin comment and asserted green inside — the prior pin 652 was correct for the
+  §32.33 bytes and moved honestly with the five added rows); full `npm run test:shell-research` SOLO =
+  measured **1624 tests, 1623 pass, 1 fail** on BOTH full-battery executions — the SAME row each time,
+  honestly attributed and never relabeled: the probe suite's reporter-alias spawn row (`a whole-token
+  quoted reporter flag is replaced instead of duplicated`) measured its SPAWNED shell-research child
+  exiting 1 under battery load (its own status assertion; 184 s); the row's focused re-run =
+  **1 test / 1 pass / 0 fail**, exit 0, 185 s, with its spawned child's 657-count assertions green — the
+  §32.31/§32.32/§32.33 one-off spawned-child transient class, and the three component SOLOs above
+  (556 + 100 + 968 = 1624) carry the honest byte-level result; `node --test
+  tests/test-selection.test.mjs` = **6 tests / 6 pass / 0 fail** exit 0; `npm run lint` exit 0;
+  `npm run typecheck` exit 0; `git diff --check` exit 0. Prohibited-path diff vs
+  `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY. The two fixes amend the EXISTING route-(c) commit
+  (message unchanged) — no push.
+
+### 32.35 Codex-review gate round 25 (2026-11-09, four findings on §32.34's amended bytes — 3×P1 + 1×P2, the exact-generation route's later-read-carry/terminal-latch/error-feed/own-seed completion, all reproduced by the reviewer; §32.34 style — add-only; the amended route-(c) commit carries them; message unchanged)
+
+- **Finding 1 [P1 — double-read mismatches carry A instead of B] — FIXED (the LATER-READ CARRY).** The
+  reviewer's finding verbatim: "When SIGTERM exit polling reads exact generation A followed by
+  same-second successor B, this refusal carries A because rideObservedIdentity copies the first read.
+  The termination tracker compares that carry against its retained A and never latches the replacement.
+  If the next verification degrades to matching coarse ps text, SIGKILL reaches B. This is reproducible
+  through the real inspector seams. Preserve B and its collection bounds, or propagate an explicit
+  terminal generation-change fact." Confirmed exactly (RED re-verified on the committed route-(c) bytes
+  through the REAL inspector seams: the unit row measured the refusal carrying `kinfo:1:100000` (A),
+  the full-turn row measured signals `['SIGTERM','SIGKILL']` with the clean `exited:true`/`failure:null`
+  — SIGKILL reached B after the degraded matching-ps verification). **The fix (local-process-observation.mjs
+  inspectVerifiedProcessIdentity — the double-read mismatch refusal):** the mismatch throw now carries the
+  SECOND (later) read's identity with its own collection bounds — the same {identity, taken, completed}
+  unit the ppid-failure path preserves (the exact composition's kernel bounds preferred, the second
+  read's dispatch/resolution bounds as fallback) — never rideObservedIdentity's first-read copy; the
+  message keeps its established 'identity changed' class. The later observation is the replacement
+  evidence; the round-23 error-consumption path compares B against the retained A and latches
+  `terminationGenerationChanged` BEFORE the error propagates, so the escalation gate refuses and the
+  SIGKILL phase never starts. **RED→GREEN:** the unit row (the real double-read through the injected
+  ps+kinfo seams: the first sub-read exact A, the second sub-read same-second B): RED on the committed
+  bytes (the carry `kinfo:1:100000`), GREEN on the amended bytes (the carry `kinfo:1:200000` plus its
+  safe-integer bounds); the full-turn row (the DEFAULT reader and the DEFAULT termination, the SIGTERM
+  exit polling's inspection reading A→B, the degraded-to-matching-ps pre-kill verification, the gone
+  kill-phase read — `process.kill` intercepted solely to record the signals): RED on the committed bytes
+  (signals `['SIGTERM','SIGKILL']`, the clean exit), GREEN on the amended bytes (signals `['SIGTERM']`
+  only, `cleanup.verifiedProcessTerminated:false`, the 'identity changed' failure in `cleanup.errors`).
+  **CONTROL:** a MATCHING double-read (A then A) keeps the lawful path — the verified inspection returns
+  the composed exact identity (the unit arm) and the termination completes cleanly (the full-turn arm:
+  signals `['SIGTERM']`, `verifiedProcessTerminated:true`, no cleanup errors).
+- **Finding 2 [P1 — lifetimeChanged resets on every read] — FIXED (the TERMINAL-TURN LATCH).** The
+  reviewer's finding verbatim: "With a coarse capture, a held-phase read can retain exact A and a
+  natural-exit poll can observe successor B and throw. The surrounding failure handler then starts
+  cleanup, but lifetimeChanged resets on every read. If subsequent inspections degrade to matching
+  coarse ps text, cleanup accepts them and sends SIGTERM to B despite the previously proven replacement.
+  Retain a terminal generation-change latch for the entire turn and consult it before cleanup
+  signalling." Confirmed exactly (RED re-verified on the committed route-(c) bytes: the degraded cleanup
+  SIGTERM'd the successor with the clean `verifiedProcessTerminated:true`). **The fix (driver.mjs
+  runHeldHostTurn — the turn-scoped latch; local-process-observation.mjs terminateVerifiedProcess — the
+  pre-proven latch):** (i) the lifetime generation-change fact is recorded on a TURN-SCOPED
+  `heldTurnGenerationChanged` latch beside the lifetime refusal's throw (the per-read `lifetimeChanged`
+  local resets on every read and remains only the refusal's trigger); (ii) the cleanup's
+  `terminateProcessIdentity` CONSULTS the latch — forwarded as the termination tracker's
+  `generationChanged` dependency, initializing `terminationGenerationChanged` — so every established
+  gate (the pre-signal verdict gate, the post-SIGTERM latch check, the escalation gate) refuses and a
+  degraded-to-MATCHING-coarse-ps cleanup read never re-authorizes a signal; (iii) the tracker's initial
+  absence check consults the latch too — a latched change is terminal and the vanished pid is the PROVEN
+  replacement's absence, never credited as the target's exit (the round-20/21 standing rule applied to
+  the pre-proven fact). **RED→GREEN:** the reviewer's schedule through the DEFAULT natural watcher and
+  the DEFAULT termination (the coarse capture; the held phase exact A; the natural poll's first read
+  exact B — the lifetime refusal throws; every cleanup read degrades to the MATCHING ps text):
+  RED on the committed bytes (SIGTERM fired, the clean termination), GREEN on the amended bytes
+  (signals `[]`, `verifiedProcessTerminated:false`, the 'identity changed' refusal in `cleanup.errors`).
+  **CONTROL:** a turn with NO generation change (every read exact A) keeps its lawful cleanup — SIGTERM
+  only, `verifiedProcessTerminated:true`, no cleanup errors, the turn's own failure the natural-deadline
+  fact, never the latch.
+- **Finding 3 [P1 — failed inspections bypass the lifetime retention loop] — FIXED (the ERROR FEED).**
+  The reviewer's finding verbatim: "With a coarse capture lacking an exact carry, the held-phase
+  inspector can observe exact A and then fail its environment query, carrying A on the error. That
+  exception bypasses this retention loop, leaving the shared reference null. Failure cleanup can
+  consequently observe same-second successor B, learn B as the initial reference, and signal it.
+  Consume error-carried exact identities before rethrowing, so observations made by failed inspections
+  also seed and cross-check the lifetime reference." Confirmed exactly (RED re-verified on the committed
+  route-(c) bytes: B learned as the initial reference, SIGTERM fired at it, the clean termination).
+  **The fix (driver.mjs runHeldHostTurn — the default reader's inspection catch):** the error-carried
+  exact identity (the inspector's uniform round-5 ride on the environment-query failure) feeds the
+  LIFETIME retention BEFORE the rethrow — seeding the shared reference when none exists, cross-checking
+  it otherwise (a definitively different carried identity latches the terminal-turn latch) — so the
+  failure cleanup's same-second successor compares against the seeded A through the lifetime loop's
+  refusal AND the termination tracker's seeded reference. An error carrying NO identity (or a coarse
+  one — the established non-exact tolerance) keeps the current behavior. **RED→GREEN:** the reviewer's
+  schedule (the held-phase inspection's FIRST sub-read exact A, its environment query FAILS — the error
+  rides A; every cleanup read observes exact B): RED on the committed bytes (B learned, SIGTERM fired,
+  the clean termination), GREEN on the amended bytes (signals `[]`, `verifiedProcessTerminated:false`,
+  the generation-changed refusal rides the cleanup). **CONTROL:** an inspection whose FIRST read fails
+  carrying NOTHING (the ps row throws before any identity was observed — no ride exists) keeps the
+  current behavior: the cleanup's first exact observation initializes the reference and the lawful
+  verified termination completes (SIGTERM, `verifiedProcessTerminated:true`, no cleanup errors).
+- **Finding 4 [P2 — the exit tracker isn't seeded from a fully exact baseline's own identity] — FIXED
+  (the OWN-IDENTITY SEEDING).** The reviewer's finding verbatim: "A fully exact baseline normally
+  supplies A in presence.observation.startIdentity without a separate carry, so this initialization
+  leaves the learned reference null. An established mixed-resolution read tied with the baseline's
+  identity timestamp can then return matching coarse text while carrying successor B. Its pre-filter
+  comparison finds no learned reference, the tie branch learns B, and a subsequent confirmed absence
+  incorrectly returns disappeared. Seed the reference from the baseline's own exact identity as well,
+  so B is rejected before the tie skip." Confirmed exactly (RED re-verified on the committed route-(c)
+  bytes: `['disappeared', null, 1215]`). **The fix (local-process-observation.mjs adjudicateLocalExit —
+  the baseline seeding):** the learned reference seeds from the FULLY EXACT baseline's OWN identity
+  (`presence.observation.startIdentity` in the exact form) when no admissible carry exists; the carry
+  keeps its precedence when both exist (the runtime's carried-first learning order). The tied mixed
+  read's carry then latches against the seeded A at the pre-filter comparison (the established interval
+  classes govern) BEFORE the recency tie skip can learn B, and the confirmed absence never credits the
+  original generation. **RED→GREEN:** the reviewer's schedule (the fully exact baseline A with no
+  carry; the tied established mixed read returning matching coarse text while carrying B; the
+  subsequent confirmed absence): RED on the committed bytes (`['disappeared', null, 1215]`), GREEN on
+  the amended bytes (`['unestablished', 'pid-start-identity-reused']`). **CONTROL:** a COARSE-ONLY
+  baseline keeps the current learning order byte-identically (the tied carry is learned as the first
+  reference; `['disappeared', null, 1215]`).
+- **Focused prior-counterexample re-run (2026-11-09, the amended bytes):** the `same-second-completion`
+  + `integration-completion` families = **152 tests, 152 pass, 0 fail**; the identical families on the
+  committed route-(c) bytes = **152 pass / 0 fail** (re-measured on a HEAD worktree) — ZERO movement:
+  none of the eight new round-25 rows live inside these families' name patterns and every prior row
+  passes on BOTH bytes unchanged; the eight new rows were verified by their own focused run (**8 tests,
+  8 pass**) with each RED state demonstrated on the committed bytes before its fix.
+- **Battery (executed 2026-11-09 on the amended bytes):** local SOLO = **564 tests, 564 pass, 0 fail,
+  0 cancelled, 0 skipped, exit 0** (556 prior + 8 — exactly 8 new test declarations, 0 deleted);
+  native SOLO = **100 tests, 100 pass, 0 fail, exit 0**; probe SOLO = **968 tests, 968 pass, 0 fail,
+  0 cancelled, 0 skipped, exit 0**; full `npm run test:shell-research` SOLO = measured **1632 tests,
+  1632 pass, 0 fail, 0 cancelled, 0 skipped, exit 0** (= 564 + 100 + 968; no flakes — every spawn row
+  green). The spawned-suite pin moved honestly: the first probe SOLO attempt measured its EIGHT spawn
+  rows failing on the re-derivation attempt's own arithmetic slip (the pin initially written as
+  565 — 564 + 100 + 1 is 665); the direct guarded-suite run re-measured **665 tests, 665 pass,
+  0 fail, exit 0** (= 564 local + 100 native + 1 guarded re-entry), the pin was corrected to 665 in the
+  pin comment and asserted green inside the re-run probe SOLO. `node --test tests/test-selection.test.mjs`
+  = **6 tests / 6 pass / 0 fail** exit 0; `npm run lint` exit 0; `npm run typecheck` exit 0;
+  `git diff --check` exit 0. Prohibited-path diff vs `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY.
+  The four fixes amend the EXISTING route-(c) commit (message unchanged) — no push.
+
+### 32.36 Codex-review gate round 26 (2026-11-10, three findings on §32.35's amended bytes — 1×P1 + 2×P2, the exact-generation route's latch-before-refusal/consume-before-absence/stale-window-symmetric completion, all reproduced by the reviewer; §32.35 style — add-only; the amended route-(c) commit carries them; message unchanged)
+
+- **Finding 1 [P1 — the early reader refusals don't set the generation-change latch] — FIXED (the
+  LATCH-BEFORE-REFUSAL rule).** The reviewer's finding verbatim (driver.mjs's default reader head):
+  "When the captured identity is exact A and natural-exit polling observes same-second successor B,
+  this guard throws before setting heldTurnGenerationChanged. If cleanup subsequently degrades to
+  matching coarse ps text, termination accepts that read and sends SIGTERM to B despite the previously
+  proven replacement. Changing the existing terminal-turn-latch test's capture to kinfo:1:100000
+  reproduces the unwanted signal. Preserve the generation-change latch before these early refusals."
+  Confirmed exactly (RED re-verified on the §32.35 bytes: the terminal-turn-latch schedule with the
+  capture changed to the EXACT `kinfo:1:100000` measured signals `['SIGTERM']` with the clean
+  `verifiedProcessTerminated:true` — the early relation guard (the both-exact generation relation,
+  reached BEFORE the round-22 lifetime retention block) threw without latching, and the degraded
+  matching-ps cleanup read re-authorized the signal). **The fix (driver.mjs runHeldHostTurn — the
+  default reader's two early generation-change refusals):** the shared carried-successor guard
+  (`throwIfCarriedSuccessor`) and the head relation guard now SET `heldTurnGenerationChanged` BEFORE
+  throwing — the latch survives the throw and the cleanup consults it (the round-25 wiring: the
+  tracker initializes with the change latched and every established gate refuses). Only the DEFINITIVE
+  generation difference latches: uncertainty and a ppid-only reparenting are never positive
+  replacement evidence (the reparented same-generation process stays lawfully terminable). RED→GREEN:
+  the reviewer's schedule (the exact capture A `kinfo:1:100000`; the held phase exact A; the natural
+  poll's first read clean exact B `kinfo:1:200000`; every cleanup read degrading to the MATCHING ps
+  text; DEFAULT watcher + DEFAULT termination, `process.kill` intercepted solely to record):
+  RED on the §32.35 bytes (`['SIGTERM']`, the clean termination), GREEN on the amended bytes
+  (signals `[]`, `verifiedProcessTerminated:false`, the 'identity changed' refusal in
+  `cleanup.errors`). **CONTROL:** a positively-MATCHING exact capture (every read `kinfo:1:100000`)
+  keeps the lawful path — SIGTERM only, `verifiedProcessTerminated:true`, no cleanup errors, the
+  turn's own failure the natural-deadline fact.
+- **Finding 2 [P2 — observed-then-gone evidence bypassed before returning absence] — FIXED (the
+  CONSUME-BEFORE-ABSENCE rule).** The reviewer's finding verbatim (the default reader's round-28
+  observedThenGone conversion): "If kinfo observes successor B and the following ps query finds no
+  process, the inspector throws observedThenGone carrying B. The earlier return bypasses this new
+  tracking block, discarding the evidence that B differs from learned generation A. With that
+  schedule, the default cleanup reports verifiedProcessTerminated: true instead of the
+  generation-change failure. Cross-check the carried identity before converting the error to
+  absence." Confirmed exactly (RED re-verified on the §32.35 bytes through the DEFAULT reader and the
+  DEFAULT termination: the tracker's initial gone-check read the observed-then-gone successor B, the
+  bare `undefined` conversion returned a plain absence, and the cleanup measured
+  `verifiedProcessTerminated:true`). **The fix (driver.mjs runHeldHostTurn — the default reader's
+  inspection catch):** the observedThenGone conversion CROSS-CHECKS the error's carried exact identity
+  FIRST — seeding the shared reference when none exists (the round-25 Finding-3 learning order), and
+  on a DEFINITIVE difference from the learned reference latching the terminal-turn latch and throwing
+  the named 'identity changed' refusal CARRYING the successor, so the termination tracker's round-23
+  error consumption latches the change and the gone-check never credits the replacement's absence as
+  the target's exit. A matching carry (the genuinely-gone original), a non-exact carry, or no carry
+  keeps the round-28 exited shape unchanged. RED→GREEN: the reviewer's schedule (the coarse capture;
+  the held phase exact A learned; the natural watcher deadline-rejected; the cleanup's live read
+  degrading to the MATCHING ps text; the tracker's initial gone-check kinfo reading B and the
+  following ps query finding the pid gone): RED on the §32.35 bytes
+  (`verifiedProcessTerminated:true`), GREEN on the amended bytes (signals `[]`,
+  `verifiedProcessTerminated:false`, the generation-change refusal in `cleanup.errors`).
+  **CONTROL:** the same schedule with the gone-check observing A-then-gone (the carried identity
+  MATCHES the learned reference) keeps the lawful absence — the clean exited termination
+  (`verifiedProcessTerminated:true`), no cleanup errors, no signal.
+- **Finding 3 [P2 — stale-window rules missing against baseCarriedExact] — FIXED (the
+  STALE-WINDOW-SYMMETRIC rule).** The reviewer's finding verbatim (the replay's ancestry endpoint
+  binding): "For a mixed-resolution baseline carrying exact A, this comparison unconditionally
+  rejects an endpoint's carried predecessor B even when B's collection completed strictly before the
+  baseline read started. The preceding endpoint check applies collection-window classification, but
+  this added branch does not. Replaying that schedule produces ancestry-endpoint-generation-foreign,
+  while adjudicateLocalExit correctly discards the stale carry and returns disappeared. Apply the
+  same stale-window rules when comparing against baseCarriedExact." Confirmed exactly (RED
+  re-verified on the §32.35 bytes: the replay measured `['ancestry-endpoint-generation-foreign']`).
+  **The fix (driver.mjs joinRecordLocalProcessDuties — the ancestry endpoint carried comparison):**
+  the collection-window classification is HOISTED out of the round-20 carried-vs-bound check and
+  SHARED (`carriedWindowRefuses` — byte-identical logic: the legacy tie-inclusive post-horizon rule,
+  the supplied-invalid/inverted refusal, and the ordered-interval STALE discard), and the round-22
+  baseCarriedExact branch's carried-vs-carry comparison now applies the SAME classification — a
+  carried predecessor completing strictly before the baseline read started is STALE (discarded, the
+  lawful disappearance the runtime returns), only a NON-stale carried predecessor refuses. RED→GREEN:
+  the reviewer's schedule (the mixed-resolution broker baseline carrying exact A
+  `kinfo:2:500000`; the daemon endpoint matching-coarse while its verdict-level carry holds the
+  predecessor B `kinfo:2:300000` at collection [2100, 2200] — strictly before the baseline read
+  started 2600): RED on the §32.35 bytes (`ancestry-endpoint-generation-foreign`), GREEN on the
+  amended bytes (refusals `[]`, `settled:true`) with RUNTIME/REPLAY AGREEMENT
+  (`adjudicateLocalExit` on the same facts returns `['disappeared', null]` — the stale carry
+  discarded). **CONTROL:** the SAME carried predecessor with a NON-stale window ([2650, 2680] —
+  completing after the baseline read started) still refuses `ancestry-endpoint-generation-foreign`.
+- **Focused prior-counterexample re-run (2026-11-10, the amended bytes):** the `same-second` name
+  family = **98 tests, 98 pass, 0 fail**; the `integration-completion` name family = **82 tests,
+  82 pass, 0 fail**; the `route (c)` name family = **115 tests, 115 pass, 0 fail** — ZERO movement
+  among the prior rows: each of the three new RED schedules was demonstrated RED on the §32.35 bytes
+  before its fix (the measured RED states above) and GREEN on the amended bytes, and every prior row
+  in all three families passes unchanged.
+- **Battery (executed 2026-11-10 on the amended bytes):** local SOLO = **570 tests, 570 pass, 0 fail,
+  exit 0** (564 prior + 6 — exactly 6 new test declarations, 0 deleted); native SOLO = **100 tests,
+  100 pass, 0 fail, exit 0**; probe SOLO = **968 tests, 968 pass, 0 fail, exit 0**. The spawned-suite
+  pin moved honestly: 570 + 100 + 1 = **671** (re-measured on the amended bytes; exactly 6 new test
+  declarations, 0 deleted — re-derived from the measured 570 local SOLO and 100 native SOLO), the pin
+  comment extended and the value corrected to 671, asserted green inside the probe SOLO. Full
+  `npm run test:shell-research` SOLO = **1638 tests** (= 570 + 100 + 968), measured TWICE honestly:
+  run 1 = **1637 pass, 1 fail, exit 1** — the single fail the probe file's
+  'a quoted destination value containing spaces is stripped completely' spawn row (183986 ms): the
+  SPAWNED guarded child suite (the same 570 local + 100 native + 1 guarded re-entry = 671 composition
+  that passed 3/3 inside the probe SOLO minutes earlier) exited 1 on a TRANSIENT child-row flake under
+  the nested-suite load (the child's own row output is captured by spawnSync and never printed — the
+  generated assertion message drops the stderr — so the child row is not named in the log); run 2
+  (re-run on the identical bytes) = **1638 pass, 0 fail, 0 cancelled, 0 skipped, exit 0** — the
+  previously-failing spawn row passed (183919 ms) and every child row green. The flake is attributed
+  as measured, never relabeled.
+  `node --test tests/test-selection.test.mjs`
+  = **6 tests / 6 pass / 0 fail** exit 0; `npm run lint` exit 0; `npm run typecheck` exit 0;
+  `git diff --check` exit 0. Prohibited-path diff vs `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY.
+  The three fixes amend the EXISTING route-(c) commit (message unchanged) — no push.
+
+### 32.37 Codex-review gate round 27 (2026-11-10, two findings on §32.36's amended bytes — 1×P1 + 1×P2, the exact-generation route's second-read-failure later-read carry and default-reader consume-before-absence completion, both reproduced by the reviewer; §32.36 style — add-only; the amended route-(c) commit carries them; message unchanged)
+
+- **Finding 1 [P1 — second-read failures overwrite the successor carry with A] — FIXED (the
+  LATER-READ CARRY ON SECOND-READ FAILURES).** The reviewer's finding verbatim (the inspector's
+  double-read failure path — the second-read catch's generation comparison): "When the first exact
+  read observes A and the second observes same-second successor B before its ps query fails, this
+  replaces B's carried identity with A. The driver consequently compares A against its learned A and
+  never sets the generation-change latch. If cleanup subsequently degrades to matching coarse ps
+  text, it sends SIGTERM to B. This schedule reproduces an unwanted signal and
+  verifiedProcessTerminated: true. Preserve B and its collection bounds, or explicitly latch the
+  inspector-proven generation change before cleanup." Confirmed exactly (RED re-verified on the
+  §32.36 bytes at BOTH surfaces: the inspector level — the observedThenQueryFailed schedule's
+  identity-change refusal measured `observedStartIdentity:'kinfo:1:100000'` (the first-read ride);
+  the SIGTERM-exit-polling tracker level — measured signals `['SIGTERM','SIGKILL']` (the unwanted
+  escalation signal reaching B) with the clean `verifiedProcessTerminated:true` — the tracker
+  compared its retained A against the SAME carried A and never latched the proven successor).
+  **The fix (local-process-observation.mjs inspectVerifiedProcessIdentity — the second-read-failure
+  generation comparison):** the observedThenGone/observedThenQueryFailed refusal now carries the
+  SECOND read's exact identity with its own collection bounds — the same {identity, taken,
+  completed} unit the non-failure mismatch path preserves (the round-25 Finding-1 later-read
+  carry) — never rideObservedIdentity's first-read copy. **The structural choice: PRESERVE the
+  later observation** (the preserve-B option — no new inspector-layer latch state): the carried
+  error already travels with its own collection bounds (the round-10 Finding-2 shape) and the
+  termination tracker's round-23 error consumption compares carried identities, so the later-read
+  carry is the uniform rule across the failure and non-failure paths; A's predecessor evidence
+  never overwrites B's replacement evidence, and the message keeps its established 'identity
+  changed' class. RED→GREEN: the reviewer's schedule (the first exact read observing A
+  `kinfo:1:100000`; the second read observing the same-second successor B `kinfo:1:200000` before
+  its ps query fails): RED on the §32.36 bytes (the refusal carrying A; the tracker level
+  `['SIGTERM','SIGKILL']` + the clean termination), GREEN on the amended bytes (the refusal
+  carrying B with its bounds; `['SIGTERM']`, `verifiedProcessTerminated:false`, the 'identity
+  changed' refusal in `cleanup.errors`). **CONTROLS:** a genuinely-matching second read (A then A)
+  whose ps query fails keeps the lawful query-failed class — the carried A is the SAME generation
+  (the observedThenQueryFailed shape stays with its carry, never reclassified as the
+  identity-change refusal), and at the tracker level the same-generation failure never latches
+  anything: no 'identity changed' error rides anywhere and the designed still-matching-PID
+  escalation completes the termination cleanly (`['SIGTERM','SIGKILL']`,
+  `verifiedProcessTerminated:true`, no cleanup errors); the round-25 Finding-1 non-failure
+  mismatch path is unchanged (its rows re-run green).
+- **Finding 2 [P2 — observedThenGone converted to absence before the tracker consumes it] — FIXED
+  (the DEFAULT reader's CONSUME-BEFORE-ABSENCE rule).** The reviewer's finding verbatim (the
+  termination tracker's consumption vs the default reader's round-28 conversion): "When
+  terminateVerifiedProcess uses its default reader, a kinfo query observing successor B followed by
+  an empty ps result produces an observedThenGone error. The default reader converts that error to
+  undefined before this tracker can consume B, so even a capture seeded with exact A returns
+  exited: true, failure: null. Forward the carried identity through the tracker before converting
+  the error to absence, as the driver's separate reader now does." Confirmed exactly (RED
+  re-verified on the §32.36 bytes through the DEFAULT reader: the capture seeded with exact A
+  `kinfo:1:100000`; the gone-check's kinfo observing the same-second successor B `kinfo:1:200000`
+  and the following ps query finding the pid gone; measured
+  `{attempted:false, signalled:null, exited:true, failure:null}` — the carried B discarded before
+  the tracker could compare it against the seeded A). **The fix (local-process-observation.mjs
+  terminateVerifiedProcess — the DEFAULT reader's observed-then-gone conversion, mirroring the
+  driver's separate reader):** the conversion CROSS-CHECKS the error's carried exact identity FIRST
+  through the SAME tracker state every read consumes (the learned-reference/latch declarations
+  hoisted above the default reader definition): a DEFINITIVE difference from the learned reference
+  sets the generation-change latch — the gone-check's post-read gate then returns the named
+  'identity changed during termination' failure, never the clean exit; a carry observed with NO
+  reference yet seeds it (the round-25 Finding-3 learning order); a matching carry (the
+  genuinely-gone original), a non-exact carry, or no carry keeps the round-28 exited shape
+  unchanged. The DEFAULT reader also honors the SAME observer seam options the inspection layer
+  honors (`inspectOsSeams` — the round-14 Finding-1 discipline the driver's default reader already
+  applies), so the deterministic surface reaches the default reader's actual protocol (the driver's
+  own terminateProcessIdentity passes its separate reader and is byte-unchanged). RED→GREEN: the
+  reviewer's schedule: RED on the §32.36 bytes (the measured clean exit above), GREEN on the
+  amended bytes (signals `[]` — no signal is ever attempted, `exited:false`, `failure` naming the
+  identity change during termination). **CONTROLS:** the observed-then-gone carry MATCHING the
+  seeded reference (the gone-check observing the seeded A itself before the pid vanished) keeps the
+  lawful clean exit (`exited:true, failure:null`, no signal), and the genuinely-gone original with
+  NO successor observation (the exact bridge reporting the pid gone — no carry rides anything)
+  keeps the lawful clean exit unchanged.
+- **Focused prior-counterexample re-run (2026-11-10, the amended bytes):** the `same-second` name
+  family = **98 tests, 98 pass, 0 fail**; the `integration-completion` name family = **82 tests,
+  82 pass, 0 fail** — ZERO movement among the prior rows: each new RED schedule was demonstrated
+  RED on the §32.36 bytes before its fix (the measured RED states above) and GREEN on the amended
+  bytes, every prior row in both families passes unchanged, and the new rows are members of
+  neither family.
+- **Battery (executed 2026-11-10 on the amended bytes):** local SOLO = **574 tests, 574 pass, 0
+  fail, exit 0** (570 prior + 4 — exactly 4 new test declarations, 0 deleted); native SOLO = **100
+  tests, 100 pass, 0 fail, exit 0**; probe SOLO = **968 tests, 968 pass, 0 fail, exit 0**. The
+  spawned-suite pin moved honestly: 574 + 100 + 1 = **675** (re-measured on the amended bytes;
+  exactly 4 new test declarations, 0 deleted — re-derived from the measured 574 local SOLO and 100
+  native SOLO), the pin comment extended and the value corrected to 675, asserted green inside the
+  probe SOLO. Full `npm run test:shell-research` SOLO = **1642 tests** (= 574 + 100 + 968),
+  measured **1642 pass, 0 fail, 0 cancelled, 0 skipped, exit 0**.
+  `node --test tests/test-selection.test.mjs`
+  = **6 tests / 6 pass / 0 fail** exit 0; `npm run lint` exit 0; `npm run typecheck` exit 0;
+  `git diff --check` exit 0. Prohibited-path diff vs `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY.
+  The two fixes amend the EXISTING route-(c) commit (message unchanged) — no push.
+
+### 32.38 Codex-review gate round 28 (2026-11-10, two findings on §32.37's amended bytes — 2×P2, the exact-generation route's post-read latch recheck and first-held-read capture-generation cross-check, both reproduced by the reviewer; §32.37 style — add-only; the amended route-(c) commit carries them; message unchanged)
+
+- **Finding 1 [P2] Recheck the generation latch after the awaited absence read —
+  tools/shell-wait-probe/local-process-observation.mjs:1304-1305 — FIXED (the POST-READ LATCH
+  RECHECK).** The reviewer's finding verbatim: "During escalation,
+  `trackTerminationRead(identity)` can detect an exact successor, set
+  `terminationGenerationChanged`, and return `undefined` through the default reader's
+  observed-then-gone conversion. Because this expression checks the latch before awaiting that
+  read, it still sets `gone` to true and returns `exited: true, failure: null`. This is
+  reproducible after an unverifiable pre-kill read followed by an observed-then-gone successor.
+  Recheck the latch after collecting the absence result before crediting the exit." Confirmed
+  exactly (RED re-verified on the committed a885c527 bytes in a clean `git clone --shared` copy
+  under /tmp with the new deterministic rows copied in; the DEFAULT reader and the REAL
+  escalation path ran — reads 1-2 observed the live exact generation A `kinfo:1:100000`,
+  SIGTERM was signalled, the terminate-phase `waitForExit` rejected, read 3 degraded to the
+  unresolvable ps text `not-a-start-instant` (the UNCERTAIN relation → `unverifiable`), and
+  read 4's kinfo observed the same-second successor B `kinfo:1:200000` while the following ps
+  query found the pid gone — the observed-then-gone conversion consumed B through the tracker
+  and set the latch DURING the awaited read; measured
+  `{"attempted":true,"signalled":"SIGTERM","exited":true,"failure":null}` — the proven
+  replacement's absence credited as the target's clean exit). **The fix
+  (local-process-observation.mjs terminateVerifiedProcess — the escalation's absence
+  conversion):** the `gone` verdict is computed inside the latch check and the latch is
+  RECHECKED after `await trackTerminationRead(identity)` collects the absence and BEFORE
+  `outcome.exited` is credited: a latch hit keeps `gone:false` and walks the existing named
+  `the exact fake-ZCode process identity changed during termination` refusal; a latch-free
+  absence (`preKillVerdict === 'gone'`, or the awaited read's own unlatched undefined) still
+  credits the lawful exit. RED→GREEN on the same schedule: RED
+  `{"attempted":true,"signalled":"SIGTERM","exited":true,"failure":null}`; GREEN
+  `{"attempted":true,"signalled":"SIGTERM","exited":false,"failure":"the exact fake-ZCode
+  process identity changed during termination"}`. **CONTROLS:** the awaited absence read
+  observing the SAME exact generation A (a matching observed-then-gone carry) and the exact
+  bridge reporting a plain gone with NO carry both keep the lawful
+  `{"attempted":true,"signalled":"SIGTERM","exited":true,"failure":null}` — the recheck rejects
+  only a latched change.
+- **Finding 2 [P2] Bind first held-turn error reads to the captured generation —
+  tools/shell-wait-probe/driver.mjs:1567-1570 — FIXED (the CAPTURE-GENERATION CROSS-CHECK).**
+  The reviewer's finding verbatim: "If the capture identifies exact generation A but the first
+  held-turn inspection observes exact successor B and then finds it gone, the lifetime
+  reference is still null. This branch learns B without comparing it with
+  `expected.startIdentity` or the capture's exact carry, then returns `undefined` without
+  latching replacement. Consequently, the held-turn verification treats the successor's
+  disappearance as ordinary absence. Seed or cross-check against the captured generation
+  before converting this error to absence." Confirmed exactly (RED re-verified on the committed
+  bytes through `runHeldHostTurn` with the DEFAULT reader: the exact capture A
+  `kinfo:1:100000`; the FIRST held-turn inspection's kinfo observed B `kinfo:1:200000` and the
+  following ps query found the pid gone; the branch seeded the null lifetime reference with B
+  and converted the error to `undefined` — measured the turn's own failure
+  `the exact fake-ZCode process remained alive during natural` with `cleanup.errors:[]`, i.e.
+  the successor's disappearance treated as ordinary absence, no latch). **The fix (driver.mjs
+  runHeldHostTurn — the default reader's observed-then-gone branch):** before the absence
+  conversion the carried exact identity is compared (the established
+  `startIdentitiesDefinitivelyDiffer` rule) against the capture's exact forms
+  (`expected.observedStartIdentity` and `expected.startIdentity`, exact forms only) AND the
+  learned lifetime reference: a definitive difference sets the existing
+  `heldTurnGenerationChanged` latch and throws the existing named
+  `the exact fake-ZCode process identity changed` refusal carrying the successor; otherwise
+  the null reference is seeded with the carried identity exactly as before and the round-28
+  lawful absence stands. RED→GREEN on the same schedule: RED the natural-deadline failure
+  above with `cleanup.errors:[]`; GREEN the held read refuses first — measured
+  `verifiedProcessTerminated:false`, signals `[]`, the `identity changed` refusal in
+  `cleanup.errors`, and the turn failure
+  `held shell wait turn failed with cleanup errors: the exact fake-ZCode process identity
+  changed`. **CONTROLS:** the first held-turn observed-then-gone carry MATCHING the exact
+  capture A keeps the natural-deadline failure with `cleanup.errors:[]` and no signal; a COARSE
+  capture (no exact form to compare) whose first held-turn observed-then-gone carry is a
+  same-second successor likewise keeps the round-28 lawful absence (the carry seeds the
+  reference; `cleanup.errors:[]`, no signal).
+- **Round bookkeeping:** the codex restart's no-`--cwd` job `review-mwac5mba-b5gio8` (which
+  reviewed the main repo a8f54d06 instead of this worktree) is recorded as an INVALID job and
+  is NOT counted as a gate round.
+- **Focused prior-counterexample re-run (2026-11-10, the amended bytes):** the `same-second`
+  name family = **98 tests, 98 pass, 0 fail**; the `integration-completion` name family = **82
+  tests, 82 pass, 0 fail** (the local entry; **84/84** when the native entry's two are
+  included) — ZERO movement among the prior rows: each new RED schedule was demonstrated RED
+  on the a885c527 bytes before its fix (the measured RED states above) and GREEN on the
+  amended bytes, and every prior row in both families passes unchanged.
+- **Battery (executed 2026-11-10 on the amended bytes):** local SOLO = **578 tests, 578 pass,
+  0 fail, exit 0** (574 prior + 4 — exactly 4 new test declarations, 0 deleted); native SOLO =
+  **100 tests, 100 pass, 0 fail, exit 0**; probe SOLO = **968 tests, 968 pass, 0 fail, exit
+  0**. The spawned-suite pin moved honestly: 574 + 100 + 1 = 675 → **578 + 100 + 1 = 679**
+  (re-measured on the amended bytes; exactly 4 new test declarations, 0 deleted — re-derived
+  from the measured 578 local SOLO and 100 native SOLO), the pin comment extended and the
+  value corrected to 679, asserted green inside all eight spawn rows of the probe SOLO. Full
+  `npm run test:shell-research` SOLO = **1646 tests** (= 578 + 100 + 968), measured **1645
+  pass, 1 fail, 0 cancelled, 0 skipped, exit 1** — the single fail is the probe file's
+  'the shell-research suite selects exactly the three registered shell research entries and
+  exits zero' spawn row (184625.719125 ms): the SPAWNED child suite (the same 578 local + 100
+  native + 1 guarded re-entry = 679 composition that passed all eight rows inside the probe
+  SOLO minutes earlier) exited 1 under the nested-suite load, and the child's own row output
+  is captured by spawnSync and never printed (the generated assertion message drops the
+  stderr, so the child row is not named in the log). Re-run of the EXACT row SOLO on the
+  identical bytes = **1 test / 1 pass / 0 fail, exit 0** (183810.417625 ms) — the measured
+  nested-suite load flake (the same class §32.36 recorded on this exact spawn row at 183986 ms
+  in its full-suite run 1, where the row passed on re-run), NOT a regression; the flake is
+  attributed as measured, never relabeled, and the full suite was not re-run. `node --test
+  tests/test-selection.test.mjs` = **6 tests / 6 pass / 0 fail** exit 0; `npm run lint` exit
+  0; `npm run typecheck` exit 0; `git diff --check` exit 0. Prohibited-path diff vs
+  `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY. The two fixes amend the EXISTING
+  route-(c) commit (message unchanged) — no push.
+
+### 32.39 Codex-review gate round 29 (2026-11-10, two findings on §32.38's amended bytes — 2×P2, the signal-throw absence conversions' post-read latch recheck and the coarse-carry capture-generation cross-check, both reproduced by the self-review; §32.38 style — add-only; the amended route-(c) commit carries them; message unchanged)
+
+- **Finding 1 [P2] kill-throw catch 仍在 await 后无条件记 exit — FIXED (the POST-READ LATCH
+  RECHECK AT THE SIGNAL-THROW ABSENCE CONVERSIONS).** The self-review's finding verbatim:
+  "位置：tools/shell-wait-probe/local-process-observation.mjs:1267（SIGTERM catch）与
+  :1334（SIGKILL catch）：`if (await trackTerminationRead(identity) === undefined) {
+  outcome.exited = true; return outcome; }` 自评审实测（只读 harness，走真实默认 reader，
+  未注入 readIdentity）：identity 精确 A `kinfo:1:100000`；读 1-2 live exact A；`kill`
+  抛错；catch 内读 3 的 kinfo 观察到同秒 successor B `kinfo:1:200000`，随后 ps gone。
+  默认 reader 在 :1126-1130 置 `terminationGenerationChanged = true` 并返回 `undefined`，
+  catch 随即记 exit。当前字节实测：`{"attempted":true,"signalled":null,"exited":true,
+  "failure":null}`。这与 F1 完全同一机制；F1 的补救句（await 收集 absence 后、记 exit
+  前复查 latch）在这两个站点未落实。`kill` 抛 ESRCH/EPERM 是可达路径（生产 driver
+  注入自己的 reader 时该缺口暴露面较小，但导出 default-reader API 路径是 F1 新测试的
+  依据）。" Confirmed exactly (RED re-verified on the committed a885c527 bytes in a clean
+  `git clone --shared` copy under /tmp with the new deterministic rows copied in; no
+  `git worktree add`: the SIGTERM-throw arm measured
+  `{"attempted":true,"signalled":null,"exited":true,"failure":null}`; the SIGKILL-throw arm
+  measured `{"attempted":true,"signalled":"SIGTERM","exited":true,"failure":null}` with
+  signals `["SIGTERM","SIGKILL"]` — the default reader's observed-then-gone successor B
+  latched `terminationGenerationChanged` during the awaited absence read and the catch
+  credited the proven replacement's absence as the target's clean exit at BOTH sites).
+  **The fix (local-process-observation.mjs terminateVerifiedProcess — the two signal-throw
+  catches):** after `await trackTerminationRead(identity)` collects the absence and BEFORE
+  `outcome.exited = true`, the catch RECHECKS `terminationGenerationChanged`: a hit walks the
+  existing named `the exact fake-ZCode process identity changed during termination` refusal
+  and never credits the exit. RED→GREEN on the same schedules: RED the two measured states
+  above; GREEN the SIGTERM-throw arm
+  `{"attempted":true,"signalled":null,"exited":false,"failure":"the exact fake-ZCode process
+  identity changed during termination"}` and the SIGKILL-throw arm
+  `{"attempted":true,"signalled":"SIGTERM","exited":false,"failure":"the exact fake-ZCode
+  process identity changed during termination"}` (signals `["SIGTERM","SIGKILL"]`).
+  **CONTROLS:** the SIGTERM catch's matching-A observed-then-gone carry and carry-less plain
+  gone both keep `{"attempted":true,"signalled":null,"exited":true,"failure":null}`; the
+  SIGKILL catch's matching-A carry keeps
+  `{"attempted":true,"signalled":"SIGTERM","exited":true,"failure":null}` — the recheck
+  rejects only a latched change.
+- **Finding 2 [P2] F2 的 capture 交叉检查只接受 exact carry — FIXED (the COARSE-CARRY
+  COMPARISON).** The self-review's finding verbatim: "位置：tools/shell-wait-probe/driver.mjs:1567
+  的 `parseExactStartIdentity(carriedGoneIdentity) !== null` 门槛。自评审实测：exact capture
+  A `kinfo:1:100000`；首次 held-turn 读的 kinfo 瞬时不可用（抛错降级），ps 首次读到 coarse
+  `Thu Jan  1 00:00:02 1970`（不同秒），随后 ps gone → observed-then-gone 携带 coarse
+  证据。当前字节实测：natural deadline failure、`cleanup.errors:[]`、`signals:[]`，与旧
+  字节完全相同。同一份 coarse 证据若在 live double-read 中返回，按既有
+  `startIdentityGenerationRelation`（exact A vs coarse 第 2 秒 = different）会抛
+  `the exact fake-ZCode process identity changed`——即“活着被拒、消失却被记合法
+  absence”。" Confirmed exactly (RED re-verified on the committed a885c527 bytes through
+  `runHeldHostTurn` with the DEFAULT reader: the exact capture A; the first held-turn read's
+  kinfo bridge transiently unavailable, the first ps read observing the coarse second-2 text,
+  the second ps read gone — the observed-then-gone error carrying the COARSE identity; the
+  round-28 exact-carry gate skipped the cross-check and the turn's own failure measured
+  `the exact fake-ZCode process remained alive during natural` with `cleanup.errors:[]` and
+  `signals:[]`). **The fix (driver.mjs runHeldHostTurn — the observed-then-gone branch):** the
+  round-28 gate's exact-carry requirement is removed from the COMPARISON and the branch now
+  applies the existing representation-aware `startIdentitiesDefinitivelyDiffer` rule against
+  the capture's exact forms (`expected.observedStartIdentity`, `expected.startIdentity` —
+  exact sides only) and the learned exact reference: a COARSE carry whose second definitively
+  differs from the exact reference (the same relation a live double-read applies) sets the
+  existing `heldTurnGenerationChanged` latch and throws the existing named refusal carrying
+  the successor; a coarse carry in the capture's own second (the non-definitive 'same'
+  relation) and a non-exact capture keep the round-28 lawful absence. Only an EXACT carry
+  still seeds the lifetime reference (the existing exact-retention contract). RED→GREEN on the
+  same schedule: RED the natural-deadline failure above with `cleanup.errors:[]`; GREEN
+  measured `{"failure":"held shell wait turn failed with cleanup errors: the exact fake-ZCode
+  process identity changed","verifiedProcessTerminated":false,"cleanupErrors":["the exact
+  fake-ZCode process identity changed"],"signals":[]}`. **CONTROLS:** a coarse carry in the
+  EXACT capture A's own second (second 1) keeps the natural-deadline failure with
+  `cleanup.errors:[]` and no signal (the relation is 'same', never a definitive difference);
+  a coarse-only capture with the same-second coarse carry likewise keeps the round-28 lawful
+  absence; the existing coarse-capture + exact-carry control row (§32.38) re-runs green.
+- **Flake-record wording (§32.38 correction inside this round's own block only):** the
+  §32.38 full-suite flake sentence now cites §32.36's RECORDED same spawn-row failure
+  (183986 ms in its full-suite run 1, passed on re-run) as the same-class basis instead of
+  implying any unrecorded R27 re-run history; no §32.37-or-earlier line changed. The
+  round-28 probe SOLO's eight spawn rows passed with the then-current pin 679, and this
+  round's probe SOLO's eight spawn rows pass with the re-pinned 683 (below).
+- **Focused prior-counterexample re-run (2026-11-10, the amended bytes):** the `same-second`
+  name family = **98 tests, 98 pass, 0 fail**; the `integration-completion` name family = **82
+  tests, 82 pass, 0 fail** — ZERO movement among the prior rows: each new RED schedule was
+  demonstrated RED on the a885c527 bytes before its fix (the measured RED states above) and
+  GREEN on the amended bytes, and every prior row in both families passes unchanged.
+- **Battery (executed 2026-11-10 on the amended bytes):** local SOLO = **582 tests, 582 pass,
+  0 fail, exit 0** (578 prior + 4 — exactly 4 new test declarations, 0 deleted); native SOLO =
+  **100 tests, 100 pass, 0 fail, exit 0**; probe SOLO = **968 tests, 968 pass, 0 fail, exit
+  0**. The spawned-suite pin moved honestly: 578 + 100 + 1 = 679 → **582 + 100 + 1 = 683**
+  (re-measured on the amended bytes; exactly 4 new test declarations, 0 deleted — re-derived
+  from the measured 582 local SOLO and 100 native SOLO), the pin comment extended and the
+  value corrected to 683, asserted green inside all eight spawn rows of the probe SOLO.
+  `node --test tests/test-selection.test.mjs` = **6 tests / 6 pass / 0 fail** exit 0;
+  `npm run lint` exit 0; `npm run typecheck` exit 0; `git diff --check` exit 0.
+  Prohibited-path diff vs `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY. The two fixes
+  amend the EXISTING route-(c) commit (message unchanged) — no push.
+
+### 32.40 Codex-review gate round 30 (2026-11-10, one finding on §32.39's amended bytes — 1×P2, the termination tracker default reader's coarse-carry comparison, reproduced by the reviewer; §32.39 style — add-only; the amended route-(c) commit carries them; message unchanged)
+
+- **Finding 1 [P2] Compare coarse disappearance carries against the exact reference —
+  tools/shell-wait-probe/local-process-observation.mjs:1124-1129 — FIXED (the COARSE-CARRY
+  COMPARISON IN THE TRACKER DEFAULT READER).** The reviewer's finding verbatim: "When the
+  exact bridge becomes unavailable, an observed-then-gone error can carry a coarse identity
+  from a demonstrably different second. This exact-form guard discards that replacement
+  evidence before returning `undefined`. Reproducing with capture `kinfo:1:100000`, a
+  degraded ps read of second 2, and `environ: 'gone'` returns `exited: true, failure: null`,
+  although the generation relation is `different`. Compare every carried identity against the
+  retained exact reference before converting to absence; only reference initialization should
+  require an exact identity." Confirmed exactly (RED re-verified on the committed d17d7e16
+  bytes in a clean `git clone --shared` copy under /tmp with the new deterministic rows copied
+  in; no `git worktree add`: the DEFAULT tracker reader ran through `inspectOsSeams` with the
+  reviewer's exact schedule — the capture seeded with exact A `kinfo:1:100000`, the kinfo
+  bridge unavailable, the degraded ps read observing the coarse second-2 successor, and
+  `environ: 'gone'` producing the observed-then-gone error carrying the COARSE identity;
+  measured `{"attempted":false,"signalled":null,"exited":true,"failure":null}` — the exact
+  exited:true/failure:null shape the finding names, the replacement evidence discarded before
+  the absence conversion). **The fix (local-process-observation.mjs terminateVerifiedProcess —
+  the default reader's observed-then-gone conversion, the tracker-side twin of §32.39
+  Finding 2):** the exact-carry requirement is removed from the COMPARISON — every carried
+  identity (exact or coarse) is compared against the retained EXACT reference with the
+  established representation-aware `startIdentitiesDefinitivelyDiffer` rule (the reference
+  side exact-only; the carry compared at the exact side's second resolution, the same rule a
+  live double-read applies): a definitive difference latches
+  `terminationGenerationChanged` and the gone-check's post-read gate returns the existing
+  named `the exact fake-ZCode process identity changed during termination` failure, never the
+  clean exit; a coarse carry in the reference's own second (the non-definitive 'same'
+  relation) proves no difference; and ONLY an EXACT carry still initializes the retained
+  reference (the existing exact-retention contract — a coarse carry never seeds). RED→GREEN on
+  the same schedule: RED the measured clean exit above; GREEN
+  `{"attempted":false,"signalled":null,"exited":false,"failure":"the exact fake-ZCode process
+  identity changed during termination"}` with `killCalls:[]`. **CONTROLS (all measured):** the
+  coarse carry in the capture's OWN second (second 1 — the non-definitive 'same' relation)
+  keeps `{"attempted":false,"signalled":null,"exited":true,"failure":null}`; the matching
+  exact A carry keeps `{"attempted":false,"signalled":null,"exited":true,"failure":null}`;
+  the carry-less plain gone (the exact bridge reporting the pid gone — no observation, no
+  carry) keeps `{"attempted":false,"signalled":null,"exited":true,"failure":null}` — none
+  signals. The existing round-27 matching-carry control row and every round-28/29 row re-run
+  green on the amended bytes.
+- **Focused prior-counterexample re-run (2026-11-10, the amended bytes):** the `same-second`
+  name family = **98 tests, 98 pass, 0 fail**; the `integration-completion` name family = **82
+  tests, 82 pass, 0 fail** — ZERO movement among the prior rows: the new RED schedule was
+  demonstrated RED on the d17d7e16 bytes before its fix (the measured RED state above) and
+  GREEN on the amended bytes, every prior row in both families passes unchanged, and the two
+  new rows are members of neither family.
+- **Battery (executed 2026-11-10 on the amended bytes):** local SOLO = **584 tests, 584 pass,
+  0 fail, exit 0** (582 prior + 2 — exactly 2 new test declarations, 0 deleted); native SOLO =
+  **100 tests, 100 pass, 0 fail, exit 0**. The spawned-suite pin moved honestly: 582 + 100 +
+  1 = 683 → **584 + 100 + 1 = 685** (re-measured on the amended bytes; exactly 2 new test
+  declarations, 0 deleted — re-derived from the measured 584 local SOLO and 100 native SOLO).
+  The FIRST probe SOLO attempt measured **968 tests, 960 pass, 8 fail, exit 1** — ALL EIGHT
+  spawn rows failing on this re-derivation attempt's own arithmetic slip: the pin was
+  initially written as 686, but 584 + 100 + 1 is **685** (the child suite itself stayed green
+  at its correct 685 total — every row failed at the spawned-count pattern, the deterministic
+  slip class §32.35 recorded for its own attempt — and the local/native SOLO batteries passed
+  unchanged). The pin was corrected to 685 and the RE-RUN probe SOLO on the corrected bytes =
+  **968 tests, 968 pass, 0 fail, exit 0**, all eight spawn rows green with the corrected pin.
+  `node --test tests/test-selection.test.mjs` = **6 tests / 6 pass / 0 fail** exit 0;
+  `npm run lint` exit 0; `npm run typecheck` exit 0; `git diff --check` exit 0.
+  Prohibited-path diff vs `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY. The fix amends
+  the EXISTING route-(c) commit (message unchanged) — no push.
+
+### 32.41 Codex-review gate round 31 (2026-11-10, two findings on §32.40's amended bytes — 2×P2, the mixed-read carry generation guard and the window-closed successful-carry evidence preservation, both reproduced by the reviewer; §32.40 style — add-only; the amended route-(c) commit carries them; message unchanged)
+
+- **Finding 1 [P2] Check the mixed-read exact carry against the expected generation —
+  tools/shell-wait-probe/local-process-observation.mjs:2928-2929 — FIXED (the MIXED-READ
+  CARRY GUARD).** The reviewer's finding verbatim: "When the expected identity is
+  `kinfo:5:100000`, a mixed-resolution inspection can return matching coarse text plus
+  `observedStartIdentity: 'kinfo:5:500000'`. This guard checks only the coarse identity and
+  returns `established` despite explicit successor evidence. In `runHeldHostTurn`, the daemon
+  refresh is consequently selected for ancestry while the broker duty retains the original
+  baseline, allowing both hops and the duty aggregate to establish across different
+  generations. Compare the carried exact identity against the expected generation before
+  accepting the refresh." Confirmed exactly (RED re-verified on the committed a3cd45ba bytes
+  in a clean `git clone --shared` copy under /tmp with the new deterministic rows copied in;
+  no `git worktree add`: the REAL inspector through the osSeams — the first kernel read
+  degrading, the second observing the exact same-second successor `kinfo:5:500000`, the ps
+  texts agreeing on second 5 — measured the ESTABLISHED verdict
+  `{"status":"established","reason":null,...,"observedStartIdentity":"kinfo:5:500000",...}`
+  riding the successor despite the both-exact definitive difference from the expected
+  `kinfo:5:100000`). **The fix (local-process-observation.mjs observeLocalProcess — the
+  success-path acceptance guard):** the separately preserved exact carry is compared against
+  the expected generation with the established `startIdentitiesDefinitivelyDiffer` rule; a
+  definitive difference walks the existing named `start-identity-generation-changed` class
+  and RIDES the carried evidence + bounds (the uniform ride discipline — the same carriage
+  the round-26 promotion uses), so the exit adjudicator still classifies it and the runtime
+  ancestry/duty hops can no longer bind across generations on the matching coarse text alone.
+  A carry in the expected generation (an exact match, or a coarse same-second carry against
+  an exact bound — the round-12 semantics) keeps the lawful established classification.
+  RED→GREEN on the same schedule: RED the established verdict above; GREEN measured
+  `{"status":"unestablished","reason":"start-identity-generation-changed",
+  "observedStartIdentity":"kinfo:5:500000","bounds":[true,true]}` (both collection bounds
+  riding). **CONTROLS:** the exact-MATCHING carry (the second read observing the bound's own
+  `kinfo:5:100000`) keeps `['established', null]` with the carry riding; a COARSE expected
+  bound with the same-second successor carry keeps `['established', null]` with the successor
+  riding (the round-12 replacement-detection semantics preserved for coarse bounds).
+- **Finding 1 semantic consequence (disclosed):** the definitive-difference guard entangles
+  FOUR codified established-with-carry rows — the round-12 Finding-1 row, the round-13
+  Finding-2 row + its control, and the round-14 Finding-2 row — whose schedules now refuse at
+  the observation layer with the carry riding. Their adjudication outcomes are UNCHANGED (the
+  carried rules latch the successor's reuse / discard the stale predecessor exactly as
+  before: `pid-start-identity-reused` for the successor schedules, `disappeared` for the
+  stale-predecessor schedule); only each row's observation-status assertion was updated to
+  the refusal with a round-31 note. Every control row that keeps a lawful established
+  classification (the exact-match and coarse-same-second arms above, the round-12
+  different-second refusal and unchanged-original arms, the round-14 overlap/post-baseline
+  interval arms) re-runs green.
+- **Finding 2 [P2] Preserve successful inspection evidence when cancellation arrives —
+  tools/shell-wait-probe/local-process-observation.mjs:2774-2776 — FIXED (the
+  SUCCESSFUL-RESULT EVIDENCE PRESERVATION).** The reviewer's finding verbatim: "If
+  cancellation arrives during the final `ps` query and that query succeeds, the inspector can
+  return normally with the new mixed-resolution exact carry. This branch preserves evidence
+  only from `inspectionError`, discarding the successful result's carried identity and
+  collection bounds. A mixed read carrying successor `kinfo:5:500000` against baseline
+  `kinfo:5:100000` therefore becomes an identity-free cancellation verdict, and a subsequent
+  confirmed absence makes `adjudicateLocalExit` report `disappeared`. Preserve the successful
+  result's exact evidence on this path as well." Confirmed exactly (RED re-verified on the
+  committed bytes: the injected inspection seam aborts the window and returns the successful
+  mixed-resolution record carrying the successor + bounds; the window-closed verdict measured
+  BARE — no `observedStartIdentity`, no bounds — the identity-free cancellation verdict).
+  **The fix (local-process-observation.mjs observeLocalProcess — the window-closed branch):**
+  when the inspection SUCCEEDED (no `inspectionError`) and the result carries
+  `observedStartIdentity`, the successful result's carried identity and collection bounds
+  ride the cancellation verdict exactly like the error carriage (the same fields, the same
+  uniform ride discipline), so the exit adjudicator classifies the carried evidence against
+  the bound generation. RED→GREEN on the same schedule: RED the bare verdict with the
+  subsequent confirmed absence adjudicating `disappeared`; GREEN measured the verdict
+  `{"status":"unestablished","reason":"observation-window-closed",
+  "observedStartIdentity":"kinfo:5:500000","read":5000,"completed":5100}` and the
+  adjudication `{"status":"unestablished","reason":"pid-start-identity-reused"}`. **CONTROLS
+  (both measured):** the identity-free cancellation (a plain successful result with no
+  carry — the bare verdict, `observedStartIdentity` undefined) keeps the existing
+  adjudication (`disappeared`); a cancellation over a result carrying the BOUND generation's
+  own exact identity keeps the lawful disappearance (the equal carry is non-deciding).
+- **Focused prior-counterexample re-run (2026-11-10, the amended bytes):** the `same-second`
+  name family = **99 tests, 99 pass, 0 fail** (+1: the new Finding-1 control row's name joins
+  the family — ZERO movement among the prior 98 rows); the `integration-completion` name
+  family = **82 tests, 82 pass, 0 fail**; `node --test tests/test-selection.test.mjs` = **6
+  tests / 6 pass / 0 fail** exit 0 — each new RED schedule was demonstrated RED on the
+  a3cd45ba bytes before its fix (the measured RED states above) and GREEN on the amended
+  bytes.
+- **Battery (executed 2026-11-10 on the amended bytes):** local SOLO = **588 tests, 588 pass,
+  0 fail, exit 0** (584 prior + 4 — exactly 4 new test declarations, 0 deleted; the four
+  entangled prior rows updated per the Finding-1 disclosure above); native SOLO = **100
+  tests, 100 pass, 0 fail, exit 0**; probe SOLO = **968 tests, 968 pass, 0 fail, exit 0**.
+  The spawned-suite pin moved honestly: 584 + 100 + 1 = 685 → **588 + 100 + 1 = 689**
+  (re-measured on the amended bytes; exactly 4 new test declarations, 0 deleted — re-derived
+  from the measured 588 local SOLO and 100 native SOLO, with the arithmetic written out:
+  584 + 4 = 588; 588 + 100 = 688; 688 + 1 = 689), the pin comment extended and the value
+  corrected to 689, asserted green inside all eight spawn rows of the probe SOLO.
+  `npm run lint` exit 0; `npm run typecheck` exit 0; `git diff --check` exit 0.
+  Prohibited-path diff vs `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY. The two fixes
+  amend the EXISTING route-(c) commit (message unchanged) — no push.
+
+### 32.42 Codex-review gate round 32 (2026-11-10, one finding on §32.41's amended bytes — 1×P2, the window-closed carriage's own-exact-identity fallback (the round-31 successful-result carriage completed), reproduced by the reviewer; §32.41 style — add-only; the amended route-(c) commit carries them; message unchanged)
+
+- **Finding 1 [P2] Preserve successful exact identity evidence when cancellation arrives —
+  tools/shell-wait-probe/local-process-observation.mjs:2805-2806 — FIXED (the EXACT-IDENTITY
+  FALLBACK).** The reviewer's finding verbatim: "When both kinfo reads succeed and
+  cancellation arrives during the final `ps` query, the inspector returns the exact identity
+  in `observed.startIdentity`, without an `observedStartIdentity` carry. This condition
+  therefore discards the successfully observed identity and its bounds. Reproducing this with
+  a same-second successor yields an identity-free `observation-window-closed` verdict;
+  combined with a subsequent confirmed absence, `adjudicateLocalExit` incorrectly reports
+  `disappeared` instead of detecting PID reuse. Fall back to the successful result's own
+  exact identity and collection bounds when no separate carry exists." Confirmed exactly
+  (RED re-verified on the committed f65d48b1 bytes in a clean `git clone --shared` copy under
+  /tmp with the new deterministic rows copied in; no `git worktree add`: the REAL inspector
+  ran with BOTH kinfo reads observing the same-second successor `kinfo:5:500000` and the
+  cancellation arriving during the FINAL ps query, which SUCCEEDED; measured the BARE verdict
+  `{"status":"unestablished","reason":"observation-window-closed",...}` with NO
+  `observedStartIdentity` and NO bounds — the inspector's both-exact return carries its
+  exact identity AS `startIdentity` with no separate carry, so the round-31 carriage
+  condition skipped it and the subsequent confirmed absence adjudicated the ORIGINAL
+  generation's `disappeared`). **The fix (local-process-observation.mjs observeLocalProcess —
+  the window-closed successful-result carriage):** the carried evidence is resolved
+  CARRY-FIRST — the separate `observedStartIdentity` carry when present (the round-31 rule,
+  byte-unchanged), otherwise the successful result's OWN EXACT `startIdentity` (exact forms
+  only: a degraded coarse result has no exact identity to preserve and keeps the bare
+  verdict) — with the same collection bounds, the same whitelisted fields and the same
+  uniform ride discipline. RED→GREEN on the same schedule: RED the bare verdict above;
+  GREEN measured the verdict
+  `{"status":"unestablished","reason":"observation-window-closed",
+  "observedStartIdentity":"kinfo:5:500000","read":<taken>,"completed":<completed>}` (the
+  both-exact return's own kernel bounds) and the adjudication
+  `{"status":"unestablished","reason":"pid-start-identity-reused"}` — the observed
+  successor's window lies entirely after the bound generation's presence, so the PID-reuse
+  latch replaces the `disappeared` misclassification. **CONTROLS (both measured):** the
+  kinfo bridge failing on EVERY read — the degraded coarse result has no exact identity to
+  fall back to, so the bare window-closed verdict stands with `observedStartIdentity`
+  undefined and the lawful `disappeared` adjudication class is unchanged; NO cancellation —
+  the normal both-exact same-generation success path establishes exactly as before
+  (`['established', null]`, the bound generation returned). The round-31 mixed-carry row and
+  its controls re-run green byte-unchanged.
+- **Focused prior-counterexample re-run (2026-11-10, the amended bytes):** the `same-second`
+  name family = **99 tests, 99 pass, 0 fail**; the `integration-completion` name family = **82
+  tests, 82 pass, 0 fail**; `node --test tests/test-selection.test.mjs` = **6 tests / 6 pass /
+  0 fail** exit 0 — ZERO movement among the prior rows: the new RED schedule was demonstrated
+  RED on the f65d48b1 bytes before its fix (the measured RED state above) and GREEN on the
+  amended bytes, and the two new rows are members of neither family.
+- **Battery (executed 2026-11-10/11 on the amended bytes):** local SOLO = **590 tests, 590 pass,
+  0 fail, exit 0** (588 prior + 2 — exactly 2 new test declarations, 0 deleted); native SOLO =
+  **100 tests, 100 pass, 0 fail, exit 0**. The spawned-suite pin moved honestly: 588 + 100 +
+  1 = 689 → **590 + 100 + 1 = 691** (re-measured on the amended bytes; exactly 2 new test
+  declarations, 0 deleted — re-derived from the measured 590 local SOLO and 100 native SOLO,
+  with the arithmetic written out: 588 + 2 = 590; 590 + 100 = 690; 690 + 1 = 691), the pin
+  comment extended and the value corrected to 691. The probe SOLO was measured TWICE honestly:
+  run 1 = **968 tests, 967 pass, 1 fail, exit 1** — the single fail the probe file's
+  'a space-separated underscore reporter alias is replaced with its value' spawn row
+  (184946.869583 ms): the SPAWNED child suite (the same 590 local + 100 native + 1 guarded
+  re-entry = 691 composition) exited 1 under the nested-suite load, and the child's own row
+  output is captured by spawnSync and never printed (the generated assertion message drops
+  the stderr, so the child row is not named in the log); the EXACT row re-run SOLO on the
+  identical bytes = **1 test / 1 pass / 0 fail, exit 0** (185148.407959 ms) — the measured
+  nested-suite load flake (the same class §32.36 recorded on a spawn row at 183986 ms and
+  §32.38 on another at 184625 ms, each green on re-run), NOT a regression; run 2 (the re-run
+  of the FULL probe SOLO on the identical bytes) = **968 tests, 968 pass, 0 fail, exit 0**,
+  all eight spawn rows green with the corrected pin.
+  `npm run lint` exit 0; `npm run typecheck` exit 0; `git diff --check` exit 0.
+  Prohibited-path diff vs `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY. The fix amends
+  the EXISTING route-(c) commit (message unchanged) — no push.
+
+### 32.43 Codex-review gate round 33 (2026-11-10, two findings on §32.42's amended bytes — 2×P2, the failed identity-bearing transport retry persistence and the A→B identity-transition generation binding, both reproduced by the reviewer; §32.42 style — add-only; the amended route-(c) commit carries them; message unchanged)
+
+- **Finding 1 [P2] Persist failed transport retries that seed the exact reference —
+  tools/shell-wait-probe/driver.mjs:2847-2855 — FIXED (the FAILED-RETRY PERSISTENCE).** The
+  reviewer's finding verbatim: "When a failed transport retry carries exact generation A,
+  this loop retains A, but only established retries enter `transportPresenceReads`. A
+  subsequent confirmed absence carrying same-second generation B therefore latches reuse at
+  runtime while overwriting the only persisted evidence of A. If
+  `transportExitGenerationLatched` is missing or false in a torn record,
+  `nativeInterruptionGateDInput` incorrectly returns `settled: true`; retaining the failed A
+  read correctly produces `transport-exit-generation-foreign`. Persist identity-bearing
+  failed retries so replay can independently reconstruct the latch." Confirmed exactly (RED
+  re-verified on the committed 21a2be83 bytes in a clean `git clone --shared` copy under /tmp
+  with the new deterministic rows copied in; no `git worktree add`: the runtime row's
+  schedule — the coarse phase-3 transport observation, exit retry 1 FAILED carrying exact A
+  `kinfo:1:100000`, exit retry 2 the confirmed absence carrying the same-second successor B
+  `kinfo:1:200000` — measured `transportPresenceReads: []`, the only persisted evidence of A
+  lost while the runtime latch fired). **The fix (driver.mjs — the transport retry loop):**
+  a FAILED (non-established, non-absent) retry carrying an EXACT identity (either carried
+  field — the same candidates the runtime cross-check consumes) is persisted into
+  `transportPresenceReads` (the round-23 persisted retry sequence pattern); identity-LESS
+  failed retries add no persisted row, and the runtime latch is byte-unchanged (it fired at
+  the same read either way). The replay walk needed NO change — the reviewer's replay
+  reconstruction row passes on both bytes (the persisted failed read independently
+  reconstructs `transport-exit-generation-foreign`), which is the proof the gap was purely
+  the runtime persistence. RED→GREEN: RED the measured `transportPresenceReads: []` above;
+  GREEN the same schedule measures the failed A read persisted into the retained sequence
+  (`observedStartIdentity:'kinfo:1:100000'`, its own `liveness-read-failed` class kept) with
+  the latch flag and the B absence exit fact byte-unchanged, and the replay row's two arms
+  assert the reviewer's pair: the torn record (no failed A read, no latch flag) replays
+  `settled: true` — the reviewer's wrong outcome, recorded as the documented RED state — and
+  the record WITH the persisted failed retry refuses
+  `transport-exit-generation-foreign` (`settled: false`). **CONTROLS (measured):** the
+  established-retry horizon path is untouched (its rows re-run green); an identity-LESS
+  failed retry adds no persisted row; the replay's horizon contributor walk still skips
+  non-established reads (the persisted failed retry feeds the latch walk, never the presence
+  horizon).
+- **Finding 2 [P2] Bind exact read transitions to the adjudicated generation —
+  tools/shell-wait-probe/local-process-observation.mjs:909-916 — FIXED (the TRANSITION
+  GENERATION BINDING).** The reviewer's finding verbatim: "If an inspection spans a newer
+  baseline—first observing exact A, then observing same-second B after B's baseline was
+  established—this error describes A→B, not replacement of the bound B generation. However,
+  `observeLocalProcess` discards its evidence in the `identityChanged` branch and emits a
+  bare `start-identity-generation-changed` verdict. A reproduction with reads at +200/+600 ms
+  and B's baseline at +580 ms makes `adjudicateLocalExit` incorrectly report B as
+  `pid-start-identity-reused`. Preserve the transition's interval and compare it against the
+  expected generation before latching reuse." Confirmed exactly (RED re-verified on the
+  committed bytes: the injected double-read transition error carrying the SECOND read's
+  identity `kinfo:5:500000` and the interval [200,600] measured the BARE verdict — no
+  `observedStartIdentity`, no bounds — and the adjudication with B's presence baseline at
+  [570,580] latched `pid-start-identity-reused` for B, the wrong generation). **The fix
+  (local-process-observation.mjs — the observeLocalProcess `identityChanged` branch and the
+  adjudicator's named-read arms):** (a) the transition refusal RIDES its evidence — the
+  carried identity (the round-25 later-read carry) and its collection bounds — instead of the
+  bare verdict; (b) the adjudicator's early hoist and named-read arm are GENERATION-AWARE: a
+  named read whose carried identity does NOT definitively differ from the bound generation
+  describes the A→B transition whose B is bound (the bound generation's own arrival — the
+  read spanned B's baseline) and is non-deciding old-era evidence (skipped; the bound
+  generation's lawful confirmed absence governs → `disappeared`); a foreign-carried named
+  read and a BARE named read keep their existing interval/completion rules byte-identically.
+  RED→GREEN on the reviewer's schedule: RED the bare verdict + the B `pid-start-identity-
+  reused` misclassification above; GREEN measured the verdict
+  `{"status":"unestablished","reason":"start-identity-generation-changed",
+  "observedStartIdentity":"kinfo:5:500000","read":200,"completed":600}` and the adjudication
+  `disappeared` (never `pid-start-identity-reused`). **CONTROLS (all measured):** the
+  transition that DOES replace the bound generation (A bound, the second read observing the
+  successor B, the carried window entirely post-baseline) latches
+  `pid-start-identity-reused` exactly as before; a BARE named read keeps the existing
+  completion-based rule; the no-cancellation success path establishes byte-unchanged.
+  NO prior row regressed (the full local entry re-run green — the round-31/32 rows and every
+  carried-rule row pass unchanged).
+- **Focused prior-counterexample re-run (2026-11-10, the amended bytes):** the `same-second`
+  name family = **99 tests, 99 pass, 0 fail**; the `integration-completion` name family = **82
+  tests, 82 pass, 0 fail**; `node --test tests/test-selection.test.mjs` = **6 tests / 6 pass /
+  0 fail** exit 0 — ZERO movement among the prior rows: each new RED schedule was demonstrated
+  RED on the 21a2be83 bytes before its fix (the measured RED states above) and GREEN on the
+  amended bytes, and the four new rows are members of neither family.
+- **Battery (executed 2026-11-10 on the amended bytes):** local SOLO = **594 tests, 594 pass,
+  0 fail, exit 0** (590 prior + 4 — exactly 4 new test declarations, 0 deleted); native SOLO =
+  **100 tests, 100 pass, 0 fail, exit 0**; probe SOLO = **968 tests, 968 pass, 0 fail, exit
+  0**. The spawned-suite pin moved honestly: 590 + 100 + 1 = 691 → **594 + 100 + 1 = 695**
+  (re-measured on the amended bytes; exactly 4 new test declarations, 0 deleted — re-derived
+  from the measured 594 local SOLO and 100 native SOLO, with the arithmetic written out:
+  590 + 4 = 594; 594 + 100 = 694; 694 + 1 = 695), the pin comment extended and the value
+  corrected to 695, asserted green inside all eight spawn rows of the probe SOLO.
+  `npm run lint` exit 0; `npm run typecheck` exit 0; `git diff --check` exit 0.
+  Prohibited-path diff vs `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY. The two fixes
+  amend the EXISTING route-(c) commit (message unchanged) — no push.
+
+### 32.44 Codex-review gate round 33 follow-up (2026-11-11, three findings on §32.43's amended bytes — review-mwbdjsb7-nnobtl, 3×P2, the retained exact reference before the bound-generation skip, the real-path later-ps carry, and the replay transition-exemption mirror, all reproduced by deterministic seam injection; §32.43 style — add-only; the amended route-(c) commit carries them; message unchanged)
+
+- **Finding 1 [P2] Check the retained exact reference before skipping a transition —
+  tools/shell-wait-probe/local-process-observation.mjs:3503-3506 — FIXED (the RETAINED
+  REFERENCE BEFORE THE SKIP).** The reviewer's finding verbatim: "With a mixed-resolution
+  baseline carrying exact generation A alongside a coarse start identity, a later transition
+  carrying same-second exact generation B passes this guard because B matches the coarse
+  second. The `continue` bypasses comparison with `learnedExactReference`, so a subsequent
+  confirmed absence produces `disappeared` despite proven PID reuse. Check the retained exact
+  generation and applicable interval rules before discarding the transition." Confirmed
+  exactly (RED re-verified on the committed ff562806 bytes in a clean `git clone --shared`
+  copy under /tmp with the new deterministic rows copied in — no `git worktree add`; the
+  clone's tools verified byte-untouched: `git diff --stat -- tools/` empty; the injected
+  schedule — the mixed-resolution presence (coarse bound `Thu Jan  1 00:00:05 1970` + the
+  retained exact carry `kinfo:5:100000`), the named transition carrying the same-second exact
+  B `kinfo:5:500000` with its post-baseline interval [900,1000], the confirmed absence at
+  [1100,1150] — measured `{"status":"disappeared","reason":null}`, the proven reuse credited
+  as the bound generation's lawful disappearance). **The fix (the adjudicator's
+  transition-generation-binding skip):** the skip now fires only when the carry is
+  same-generation at EVERY retained resolution — an EXACT carry (`parseExactStartIdentity`
+  non-null) that definitively differs from the LEARNED exact reference
+  (`startIdentitiesDefinitivelyDiffer` against the round-15/17/25 seeded-and-learned
+  `learnedExactReference`) is NOT skipped and falls through to the existing named-read
+  interval rules (the foreign-carry path: post-baseline latches, overlap is the ambiguous
+  fact, stale is old evidence). A coarse carry and an exact carry EQUAL to the learned
+  reference keep the skip byte-unchanged. RED→GREEN: RED the measured `disappeared` above;
+  GREEN measured the verdict
+  `{"status":"unestablished","reason":"start-identity-generation-changed",
+  "carried":"kinfo:5:500000","read":900,"completed":1000}` and the adjudication
+  `{"status":"unestablished","reason":"pid-start-identity-reused"}`. **CONTROLS (both
+  measured):** the coarse carry matching the bound at its own resolution still skips — the
+  lawful disappearance governs (`{"status":"disappeared","reason":null}`, the round-33
+  behavior byte-unchanged); the exact carry equal to the learned reference is never falsely
+  rejected (`{"status":"disappeared","reason":null}`).
+- **Finding 2 [P2] Carry the later ps identity when exact composition disagrees —
+  tools/shell-wait-probe/local-process-observation.mjs:2537-2540 — FIXED (the LATER PS
+  CARRY).** The reviewer's finding verbatim: "On the real Darwin path, kinfo can observe
+  bound generation A before the subsequent ps query observes a different-second successor B.
+  This error carries A rather than the later ps observation. The transition then reaches
+  `adjudicateLocalExit` carrying the bound identity and is discarded as the bound generation's
+  arrival; a following absence incorrectly yields `disappeared`. Preserve the later ps
+  identity and its collection bounds when these snapshots disagree." Confirmed exactly (RED
+  re-verified on the ff562806 bytes in the same clone: the injected real-path schedule — the
+  kinfo seam answering exact A `kinfo:1:100000` and the ps seam answering the
+  different-second successor's lstart `Fri Jan  2 00:00:03 1970` — measured the refusal
+  carrying `"kinfo:1:100000"`, A the FIRST read, no bounds). **The fix (the shared
+  composition helper + the real readMacProcessStart site):** the ps read's own
+  dispatch/completion window is captured around the query, and on disagreement the REAL
+  path's refusal carries the LATER ps observation with THAT window (the round-25/27
+  later-read carry protocol) — the seam path (ps FIRST, kinfo second) keeps its existing
+  exact-kinfo carry unchanged (there the exact read IS the later one), and an UNPARSEABLE ps
+  text proven nothing so the exact kinfo carry stands there (uncertainty is never positive
+  evidence). RED→GREEN on the same schedule: GREEN measured the verdict
+  `{"status":"unestablished","reason":"start-identity-generation-changed",
+  "carried":"Fri Jan  2 00:00:03 1970","read":…,"completed":…}` (the ps lstart text + its
+  ordered real-clock collection window) and the adjudication
+  `{"status":"unestablished","reason":"pid-start-identity-reused"}` — the different-second
+  successor is definitively foreign at every resolution and its window is post-baseline.
+  **CONTROLS (both measured):** two agreeing same-generation reads still compose and
+  establish byte-unchanged (`{"status":"established","reason":null,"identity":
+  "kinfo:1:100000"}`); the seam path's kinfo-last disagreement carry is byte-unchanged
+  (measured `observedStartIdentity === "kinfo:1:100000"`, the refusal class unchanged).
+  **ENTANGLED PRIOR ROW updated per this finding (disclosed):** the round-5
+  combination-agreement row (the real-path different-second refusal) asserted the OLD carry
+  (`kinfo:1793855520:123000`, the first read's exact P0) — its carried expectation and name
+  tail now assert the LATER ps observation with the two window bounds riding; the row's core
+  finding (contradictory snapshots NEVER combine, the degraded second kinfo query never
+  consulted, ps consulted exactly once) is byte-unchanged.
+- **Finding 3 [P2] Mirror the bound-generation transition exemption during replay —
+  tools/shell-wait-probe/driver.mjs:7365-7367 — FIXED (the TRANSITION EXEMPTION MIRROR).**
+  The reviewer's finding verbatim: "When a transition carries the bound exact identity and
+  overlaps that generation's baseline, the updated runtime deliberately ignores it and
+  permits the generation's later confirmed disappearance. Replay still treats every
+  `start-identity-generation-changed` reason as replacement evidence here. Reproducing this
+  with an otherwise settled record yields runtime `disappeared` but replay
+  `exit-reuse-interval-ambiguous`, rejecting valid evidence after persistence. Mirror the
+  runtime's generation-bound transition handling before setting `replacementDetected`."
+  Confirmed exactly (RED re-verified on the ff562806 bytes in the same clone: the otherwise
+  settled record — the exact bound `kinfo:1:0` bound to its recorded ms-1000 instants, the
+  named transition carrying THAT bound identity with its window [2000,2200] overlapping the
+  baseline horizon [1900,2100], the confirmed absence at [4900,5100] — measured the replay
+  pair runtime `{"status":"disappeared","reason":null}` vs replay
+  `["exit-reuse-interval-ambiguous"]`, the valid evidence rejected after persistence). **The
+  fix (nativeInterruptionGateDInput's latch walk):** the mirror SKIPS a named
+  start-identity-generation-changed read whose carried identity does NOT definitively differ
+  from the bound generation (`carriedDefinitivelyForeign` false) and whose exact carry does
+  not differ from the replay's learned reference — identically to the runtime's skip: the
+  read never latches, never learns, and never has its bounds consumed (the skip sits BEFORE
+  the supplied-instant validation the runtime never runs for a skipped read). A bare named
+  read and a foreign-carried named read keep their existing replacement classification.
+  RED→GREEN: GREEN measured the same record replaying `{"settled":true,"refusals":[]}` —
+  runtime/replay agreement (both disappeared); **CONTROLS (all measured):** the
+  foreign-carried transition (exact successor `kinfo:1:900000`) still refuses — replay
+  `{"settled":false,"refusals":["exit-reuse-interval-ambiguous"]}` against the runtime's
+  `{"status":"unestablished","reason":"pid-start-identity-ambiguous"}` (the overlapping
+  window is the ambiguous fact on BOTH sides, unchanged); the plain settled record without
+  the transition replays `{"settled":true,"refusals":[]}` unchanged.
+- **Honest failures during this round (all re-measured clean):** (a) the first RED clone run
+  aborted at module LOAD — the injected F3 row used `await` inside a non-async test
+  (SyntaxError; no RED state measured in that run; the row made async before any RED
+  measurement was recorded); (b) the first F3 record draft measured
+  `["ancestry-endpoint-instant-foreign","exit-reuse-interval-ambiguous"]` — the draft's exact
+  bound `kinfo:9:500000` contradicted its recorded ms-1000 start instants (the round-6
+  exact-side self-consistency gate refused; the reviewer's reuse-interval refusal WAS present
+  but contaminated) — the record was aligned (`kinfo:1:0` ↔ its own ms 1000) and RED
+  re-measured clean as `["exit-reuse-interval-ambiguous"]`; (c) the first GREEN attempt ran
+  on intermediate bytes missing the `psCompletedEpochMs` declaration — the two F2 rows failed
+  as `liveness-read-failed` (the ReferenceError caught and reclassified by the inspector's
+  uniform failure path); the declaration was completed and the full row set re-run green
+  5/5. No label, schedule or refusal name was changed to pass — every fix was to the test
+  row's own mechanics or the record's self-consistency.
+- **Focused prior-counterexample re-run (2026-11-11, the amended bytes):** the `same-second`
+  name family = **101 tests, 101 pass, 0 fail** (+2: the two new Finding-1 rows' names join
+  the family — ZERO movement among the prior 99 rows); the `integration-completion` name
+  family = **82 tests, 82 pass, 0 fail**; `node --test tests/test-selection.test.mjs` = **6
+  tests / 6 pass / 0 fail** exit 0 — ZERO movement among the prior rows: each new RED
+  schedule was demonstrated RED on the ff562806 bytes before its fix (the measured RED
+  states above) and GREEN on the amended bytes.
+- **Battery (executed 2026-11-11 on the amended bytes):** local SOLO = **599 tests, 599
+  pass, 0 fail, exit 0** (594 prior + 5 — exactly 5 new test declarations, 0 deleted; the
+  one entangled prior row updated per the Finding-2 disclosure above is a content update,
+  not a count change); native SOLO = **100 tests, 100 pass, 0 fail, exit 0**; probe SOLO =
+  **968 tests, 968 pass, 0 fail, exit 0** — all eight spawn rows green with the corrected
+  pin. The spawned-suite pin moved honestly: 594 + 100 + 1 = 695 → **599 + 100 + 1 = 700**
+  (re-measured on the amended bytes; exactly 5 new test declarations, 0 deleted — re-derived
+  from the measured 599 local SOLO and 100 native SOLO, counted by
+  `rg -c '^\s*test\(' tests/shell-wait-local-process.test.mjs` BEFORE the pin edit: 594
+  before the additions, 599 after; the arithmetic written out: 594 + 5 = 599; 599 + 100 =
+  699; 699 + 1 = 700), the pin comment extended and the value corrected to 700, asserted
+  green inside all eight spawn rows of the probe SOLO. `npm run lint` exit 0;
+  `npm run typecheck` exit 0; `git diff --check` exit 0. Prohibited-path diff vs
+  `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY. The three fixes amend the EXISTING
+  route-(c) commit (message unchanged) — no push.
+
+### 32.45 Codex-review gate round 34 (2026-11-11, two findings on §32.44's amended bytes — review-mwbhnnxl-21lsyh, 1×P1 + 1×P2, the within-read transition latch before the termination reference seeding and the transition exemption's arrival-window evidence, both reproduced by the reviewer through the default inspector seams; §32.44 style — add-only; the amended route-(c) commit carries them; message unchanged)
+
+- **Finding 1 [P1] Latch observed transitions before learning a successor reference —
+  tools/shell-wait-probe/local-process-observation.mjs:1212-1216 — FIXED (the
+  WITHIN-READ TRANSITION LATCH).** The reviewer's finding verbatim: "When the capture and
+  initial cleanup reads are coarse, the exact reader can recover during SIGTERM polling and
+  detect an A→B same-second replacement. With no learned exact reference, this catch seeds
+  the reference from B without latching the already-proven transition. A subsequent
+  verification of same-nonce B then passes against the coarse capture and authorizes SIGKILL.
+  I reproduced this through the default inspector seams, receiving both signals and
+  `exited: true`. Preserve the within-read generation-change evidence instead of treating B
+  as an initial unchanged observation." Confirmed exactly (RED re-verified on the committed
+  b56b018e bytes in a clean `git clone --shared` copy under /tmp with the new deterministic
+  rows copied in — no `git worktree add`; the clone's tools verified byte-untouched: the
+  default-inspector seam schedule measured the kill seam receiving `["SIGTERM","SIGKILL"]` —
+  SIGKILL authorized against the proven replacement, the reviewer's exact reproduction). **The
+  fix (trackTerminationRead's error-carry consumption):** an error of the inspector's OWN
+  identity-change class (`/identity changed/` — the double-read mismatch, the second-read
+  failure comparison, and the composition disagreement alike; the same discriminator
+  `observeLocalProcess` uses) carries a PROVEN within-read A→B transition. When NO reference
+  has been learned yet, that transition LATCHES (`terminationGenerationChanged = true`)
+  instead of seeding the reference from the carried successor — every termination gate (the
+  escalation gate included) then refuses, the successor is never signalled, and its absence
+  is never credited as the target's exit. A NON-transition error's exact carry keeps the
+  existing seeding byte-unchanged (the lawful first-exact learning), and the WITH-reference
+  consumption keeps the round-23 comparison byte-unchanged (a carried SAME-generation
+  identity never latches — the round-23 control re-verified green). RED→GREEN: GREEN
+  measured `{"attempted":true,"signalled":"SIGTERM","exited":false,"failure":"the exact
+  fake-ZCode process identity changed during termination"}` (one signal, the latched
+  outcome). **CONTROLS (both measured):** the lawful plain-exact seeding (the exact reader
+  recovering CLEANLY with no within-read transition — every double read composing the same
+  exact B) completes `{attempted:true, signalled:'SIGTERM', exited:true, failure:null}` (the
+  returned-record seeding path untouched); a plain mid-polling absence with no carried
+  identity keeps `{attempted:true, signalled:'SIGTERM', exited:true, failure:null}`.
+- **Finding 2 [P2] Restrict the transition exemption to proven bound-generation arrivals —
+  tools/shell-wait-probe/local-process-observation.mjs:3559-3562 — FIXED (the
+  ARRIVAL-WINDOW EVIDENCE, runtime + replay mirror).** The reviewer's finding verbatim:
+  "With a coarse baseline and no retained exact identity, a later exact A→B transition within
+  that same second is skipped because B matches the coarse second. This also happens when the
+  entire transition read starts after the baseline, so it cannot merely describe the bound
+  generation's earlier arrival. Using the actual inspector seams, a baseline at 1100 followed
+  by an A→B read during [1200,1600] and confirmed absence at 1800 incorrectly returns
+  `disappeared`. Require evidence that the transition belongs to the bound generation's
+  arrival before exempting it, and apply the corresponding restriction in replay." Confirmed
+  exactly (RED re-verified on the b56b018e bytes in the same clone: the reviewer's literal
+  runtime schedule — the coarse baseline horizon [1050,1100,1150] with no retained exact
+  identity, the transition verdict carrying the same-second exact B `kinfo:1:500000` with its
+  collection interval [1200,1600] — measured `{"status":"disappeared","reason":null}`; the
+  replay pair on the settled-record shape measured `{"settled":true,"refusals":[]}` — BOTH
+  sides wrongly crediting the reuse as the bound generation's disappearance). **The fix (a):
+  the runtime exemption** now requires the transition NOT to classify POST against the
+  presence horizon (`carriedIdentityIntervalClass(read) !== 'post'`, tie-inclusive — the
+  collection started at/after the horizon's completion): an entirely post-baseline window
+  cannot describe the bound generation's earlier arrival, so the existing replacement
+  classification governs (post latches, overlap is the ambiguous fact, stale is old
+  evidence). Overlap, stale, legacy and malformed classes keep the transition-generation-
+  binding exemption byte-unchanged, and the §32.44 retained-reference refinement is
+  untouched (an exact carry differing from the learned reference never reaches the
+  restricted skip). **The fix (b): the replay mirror** (the round-33-followup exemption in
+  `nativeInterruptionGateDInput`) applies the same restriction — the ordered-horizon mirror
+  scan is hoisted into a shared `mirrorWindowAt` helper (byte-behavior-preserving for the
+  replacement path, which now consumes the helper's window) and the exempt candidate's
+  carried interval is classified by the SAME resolution the runtime classifier applies (the
+  supplied-valid completed bound, the ordered carried interval, tie-inclusive at the post
+  edge against the mirrored window's start/end): a post candidate is NOT exempt and latches
+  (`exit-reuse-latched`); every other class keeps the exemption and its pre-validation skip.
+  RED→GREEN: the runtime measured `{"status":"unestablished","reason":
+  "pid-start-identity-reused"}` and the replay measured `{"settled":false,
+  "refusals":["exit-reuse-latched"]}` — runtime/replay agreement on the rejection.
+  **CONTROLS (all measured, both sides):** the true arrival (the transition window
+  OVERLAPPING the baseline — runtime [900,1150] against the horizon at 1100; replay
+  [2000,2200] against the mirrored horizon [1900,2100]) stays exempt — runtime
+  `{"status":"disappeared","reason":null}`, replay `{"settled":true,"refusals":[]}` (the
+  round-33 behavior byte-unchanged); the stale window (runtime [700,900] completing strictly
+  before the horizon's start; replay [1500,1800]) stays old evidence — runtime `disappeared`,
+  replay settled; and the plain settled record without the transition read replays
+  `{"settled":true,"refusals":[]}` unchanged.
+- **ENTANGLED PRIOR ROW updated per Finding 2 (disclosed):** the §32.44 Finding-1 controls
+  row asserted the coarse same-second carry and the exact same-generation carry SKIPPING with
+  entirely post-baseline windows [900,1000] — under the arrival-window rule those windows
+  can no longer describe the bound generation's earlier arrival, so the row's arms moved to
+  arrival windows ([300,650]: both carries still skip → the lawful disappearance, the
+  round-33 behavior preserved where it is sound) and a THIRD arm now documents the new rule:
+  the post-baseline coarse same-second carry [900,1000] is replacement evidence
+  (`pid-start-identity-reused`). The row's name and its protected semantics (the coarse
+  carry is never FALSELY rejected; the exact same-generation carry is never rejected at all
+  within an arrival window) are unchanged.
+- **Honest failures during this round (all re-measured clean):** (a) the first injected
+  schedules measured 4/4 RED-failing INCLUDING both control rows — the F1 control's kill
+  seam did not turn the pid gone after SIGTERM (the schedule never reached the escalation)
+  and the F2 replay records carried the INVOCATION scope digest on the transport observation
+  (the template's transport scope digest is required by the duty-echo binding) plus
+  companion-endpoint/absence timings that violated the ancestry hop lifetimes — the rows
+  were repaired (the controls now pass on BOTH bytes; the F2 replay records reuse the proven
+  settled-record shape with the schedule scaled onto its ancestry windows: baseline instant
+  2100, the A→B read during [2200,2600], the confirmed absence at 5100, disclosed above) and
+  the first F1 RED schedule resolved through the post-transition absence instead of the
+  reviewer's escalation (`exited:true` after SIGTERM only) — it was rescheduled to keep the
+  successor live through the escalation so the reviewer's BOTH-signals reproduction is what
+  the row measures; (b) the first GREEN attempt measured the F2 control arm with the
+  record-scaled bounds against the literal runtime baseline (a schedule mismatch in the row
+  itself — measured reused) — corrected to the schedule-matching windows and re-run green
+  4/4; (c) the first GREEN SOLO measured the §32.44 F1 controls row failing (the entangled
+  prior row above — a legitimate rule change, not a defect in the fix). No refusal name,
+  label or schedule was altered to pass: every change was to a row's own mechanics, to a
+  record's self-consistency, or is the disclosed entangled-row rule update.
+- **Focused prior-counterexample re-run (2026-11-11, the amended bytes):** the `same-second`
+  name family = **101 tests, 101 pass, 0 fail** (ZERO movement: the four new rows' names
+  join no family); the `integration-completion` name family = **82 tests, 82 pass, 0 fail**;
+  `node --test tests/test-selection.test.mjs` = **6 tests / 6 pass / 0 fail** exit 0 — each
+  new RED schedule was demonstrated RED on the b56b018e bytes before its fix (the measured
+  RED states above) and GREEN on the amended bytes.
+- **Battery (executed 2026-11-11 on the amended bytes):** local SOLO = **603 tests, 603
+  pass, 0 fail, exit 0** (599 prior + 4 — exactly 4 new test declarations, 0 deleted; the
+  one entangled prior row updated per the Finding-2 disclosure above is a content update,
+  not a count change); native SOLO = **100 tests, 100 pass, 0 fail, exit 0**; probe SOLO =
+  **968 tests, 968 pass, 0 fail, exit 0** — all eight spawn rows green with the corrected
+  pin. The spawned-suite pin moved honestly: 599 + 100 + 1 = 700 → **603 + 100 + 1 = 704**
+  (re-measured on the amended bytes; exactly 4 new test declarations, 0 deleted —
+  re-derived from the measured 603 local SOLO and 100 native SOLO, counted by
+  `rg -c '^\s*test\(' tests/shell-wait-local-process.test.mjs` BEFORE the pin edit: 599
+  before the additions, 603 after; the arithmetic written out: 599 + 4 = 603; 603 + 100 =
+  703; 703 + 1 = 704), the pin comment extended and the value corrected to 704, asserted
+  green inside all eight spawn rows of the probe SOLO. `npm run lint` exit 0;
+  `npm run typecheck` exit 0; `git diff --check` exit 0. Prohibited-path diff vs
+  `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY. The two fixes amend the EXISTING
+  route-(c) commit (message unchanged) — no push.
+
+### 32.46 Round-34 self-review follow-up gate (2026-11-11, one non-blocking P3 on §32.45's amended bytes — the replay exemption's supplied-invalid bounds reproduced by the self-review through the real `nativeInterruptionGateDInput`/`adjudicateLocalExit`; §32.45 style — add-only; the amended route-(c) commit carries it; message unchanged)
+
+- **Finding 1 [P3] The replay exemption resolves supplied-invalid bounds through the fallback
+  chain — tools/shell-wait-probe/driver.mjs:7397-7408 — FIXED (the SUPPLIED-VALIDITY
+  SHORT-CIRCUIT).** The self-review's finding verbatim: "the replay exemption's post
+  computation resolves `observedIdentityReadEpochMs` via the fallback chain when it is present
+  but non-integer, whereas the runtime classifier
+  (`local-process-observation.mjs:3291-3341`, `boundSuppliedValid`) classifies a
+  supplied-invalid lower bound as `inconsistent` and exempts it (non-post). Measured via the
+  real `nativeInterruptionGateDInput`/`adjudicateLocalExit`: a named transition read carrying
+  `observedIdentityReadEpochMs: "2200"` (string) and `observedIdentityCompletedEpochMs: 2600`
+  against the 2100 baseline gives runtime `{"status":"disappeared"}`, replay
+  `{"settled":false,"refusals":["exit-reuse-carried-instant-outside-interval"]}` on HEAD; on
+  b56b018e both settle. Impact is fail-closed (no false settlement, no signal), malformed
+  persisted input only, and it contradicts the new comment's 'malformed classes keep the
+  exemption byte-identically' claim; a one-line supplied-validity short-circuit would restore
+  exact mirroring." Confirmed exactly (RED re-verified on the committed f0d2bb8f bytes in a
+  clean `git clone --shared` copy under /tmp with the new deterministic rows copied in — no
+  `git worktree add`; the clone's tools verified byte-untouched: the reviewer's literal pair
+  measured runtime `{"status":"disappeared","reason":null}` against replay
+  `{"settled":false,"refusals":["exit-reuse-carried-instant-outside-interval"]}` — the
+  fallback chain (a string `"2200"` is not a safe integer, so the resolution fell through to
+  `identityReadEpochMs` 2210, classified POST against the 2100 horizon, refused exemption, and
+  the round-23 supplied-instant validation then refused the string bound by name). **The fix
+  (the exemption's post computation):** a PRESENT-but-non-legal bound — not a positive safe
+  integer, the runtime classifier's own `boundSuppliedValid` reading — is the runtime's
+  `inconsistent` class and EXEMPTS before any window classification; the fallback chain now
+  belongs to the ABSENT-bounds shape only (matching `carriedIdentityEpochMs`'s `??`
+  resolution), so the malformed lower bound can never resolve into a manufactured POST. Legal
+  numeric bounds keep their existing post/overlap/stale classification byte-identically, the
+  absent-bounds legacy shape is unchanged, and the exemption's pre-validation skip (the
+  runtime never validates a skipped read's bounds) is preserved. RED→GREEN: GREEN measured the
+  documented pair `runtime {"status":"disappeared","reason":null}` / replay `{"settled":true,
+  "refusals":[]}` on the SAME malformed input. **CONTROLS (all measured, both sides):** the
+  valid post transition still latches — runtime `{"status":"unestablished","reason":
+  "pid-start-identity-reused"}`, replay `{"settled":false,"refusals":["exit-reuse-latched"]}`;
+  the valid overlapping window still exempts — runtime `{"status":"disappeared","reason":
+  null}`, replay `{"settled":true,"refusals":[]}`; the supplied-invalid COMPLETED bound
+  (`2200` numeric, `"2600"` string) already classified inconsistent on both sides and still
+  does — runtime `disappeared`, replay settled (the short-circuit must not change it); the
+  plain settled record without the transition read replays `{"settled":true,"refusals":[]}`
+  unchanged. The round-34 four rows and every §32.45-epoch row re-ran green.
+- **Honest note:** no incidental failure occurred in this round's gate battery (the
+  high-load `the real builder failure-path prune stays inside clone metadata and preserves
+  shared registrations` row inside the probe SOLO — its own 300s timeout — passed in the
+  single full run; no row-level re-run was needed). The pin derivation was counted before
+  the pin edit (`rg -c '^\s*test\(' tests/shell-wait-local-process.test.mjs`: 603 before the
+  additions, 605 after).
+- **Focused prior-counterexample re-run (2026-11-11, the amended bytes):** the `same-second`
+  name family = **101 tests, 101 pass, 0 fail** (ZERO movement — the two new rows join no
+  family); the `integration-completion` name family = **82 tests, 82 pass, 0 fail**;
+  `node --test tests/test-selection.test.mjs` = **6 tests / 6 pass / 0 fail** exit 0 — the
+  new RED schedule was demonstrated RED on the f0d2bb8f bytes before the fix (the measured
+  pair above) and GREEN on the amended bytes.
+- **Battery (executed 2026-11-11 on the amended bytes):** local SOLO = **605 tests, 605
+  pass, 0 fail, exit 0** (603 prior + 2 — exactly 2 new test declarations, 0 deleted);
+  native SOLO = **100 tests, 100 pass, 0 fail, exit 0**; probe SOLO = **968 tests, 968 pass,
+  0 fail, exit 0** — all eight spawn rows green with the corrected pin. The spawned-suite
+  pin moved honestly: 603 + 100 + 1 = 704 → **605 + 100 + 1 = 706** (re-measured on the
+  amended bytes; exactly 2 new test declarations, 0 deleted — 603 + 2 = 605; 605 + 100 =
+  705; 705 + 1 = 706), the pin comment extended and the value corrected to 706, asserted
+  green inside all eight spawn rows of the probe SOLO. `npm run lint` exit 0;
+  `npm run typecheck` exit 0; `git diff --check` exit 0. Prohibited-path diff vs
+  `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY. The fix amends the EXISTING route-(c)
+  commit (message unchanged) — no push.
+
+### 32.47 Codex-review gate round 35 (2026-11-11, one P1 on §32.46's amended bytes — review-mwbwd2yd-tywdos, the held-turn reader's within-read transition latch mirroring the round-34 termination protocol, reproduced by the reviewer through the default reader; §32.46 style — add-only; the amended route-(c) commit carries it; message unchanged)
+
+- **Finding 1 [P1] Latch within-read replacements before seeding the turn reference —
+  tools/shell-wait-probe/driver.mjs:1636-1640 — FIXED (the HELD-TURN WITHIN-READ
+  TRANSITION LATCH).** The reviewer's finding verbatim: "With a coarse capture and no
+  learned reference, the first held-phase inspection can observe exact generation A followed
+  by same-second successor B and throw `identity changed`. This catch seeds the reference
+  with B without setting `heldTurnGenerationChanged`. Failure cleanup then accepts B,
+  forwards B as the termination reference, and sends SIGTERM to the proven replacement.
+  Reproducing this through the default reader yields `verifiedProcessTerminated: true` with
+  no cleanup errors. Latch the within-read transition before seeding, as
+  `trackTerminationRead` already does." Confirmed exactly (RED re-verified on the committed
+  90c88cb4 bytes in a clean `git clone --shared` copy under /tmp with the new deterministic
+  rows copied in — no `git worktree add`; the clone's tools verified byte-untouched: the
+  default-reader held-turn schedule — the coarse capture `Thu Jan  1 00:00:01 1970`, the
+  held-phase inspection's first read exact A `kinfo:1:100000` and its second read the
+  same-second successor B `kinfo:1:500000`, the cleanup/termination reads observing the
+  accepted B, the post-signal read observing the gone pid — measured
+  `verifiedProcessTerminated: true` with `cleanup.errors: []`, the reviewer's exact pair;
+  the default termination's SIGTERM attempt targets the accepted B's pid and is ESRCH-caught
+  on the fake pid, so no real process is ever signalled in the row). **The fix (the
+  held-turn default reader's error-carry catch):** an error of the inspector's OWN
+  identity-change class (`/identity changed/` — the double-read mismatch, the second-read
+  failure comparison and the composition disagreement alike) carries a PROVEN within-read
+  A→B transition; with NO reference learned yet it LATCHES
+  (`heldTurnGenerationChanged = true`) instead of seeding the reference from B — the same
+  protocol the round-34 fix applies in `trackTerminationRead`. The latch is forwarded into
+  the termination tracker (`generationChanged`), so the failure cleanup's termination refuses
+  BEFORE its signal gate and B is never signalled (its absence is never credited as the
+  target's exit). A NON-transition error's exact carry keeps the existing seeding
+  byte-unchanged (the lawful first-exact learning), and the WITH-reference consumption keeps
+  the round-23 comparison byte-unchanged (a carried SAME-generation identity never latches).
+  RED→GREEN: RED the measured `{"verified":true,"errors":[]}` above; GREEN measured
+  `{"verified":false,"errors":["the exact fake-ZCode process identity changed before
+  signalling"]}` — the named refusal rides the cleanup and no signal gate is reached.
+  **CONTROLS (both measured):** (a) the exact reader recovering CLEANLY on the first
+  held-phase read (no within-read transition — every double read composing the same exact B)
+  still seeds the lifetime reference through the success path — measured
+  `processAliveWhileHeld: true` (the lawful seeding untouched); (b) with a reference ALREADY
+  learned (the capture's exact A seeds it), the held-phase A→B transition takes the EXISTING
+  with-reference comparison branch — measured
+  `{"verified":false,"errors":["the exact fake-ZCode process identity changed"]}` (the
+  with-reference path byte-unchanged). The §32.45/§32.46-era rows and every round-34/35 row
+  re-ran green.
+- **Honest note:** no incidental failure occurred in this round's gate battery — the
+  high-load `the real builder failure-path prune stays inside clone metadata and preserves
+  shared registrations` row inside the probe SOLO passed in the single full run (no row-level
+  re-run was needed); the two new rows passed on their own pattern run before and after the
+  fix. One row-construction iteration was needed during authoring (the with-reference control
+  first drove a clean A→A held-phase read and measured no refusal — the turn ended before
+  any successor read; the arm now seeds the reference from the CAPTURE's exact A so the
+  A→B transition exercises the with-reference branch deterministically). The pin derivation
+  was counted before the pin edit (`rg -c '^\s*test\('
+  tests/shell-wait-local-process.test.mjs`: 605 before the additions, 607 after).
+- **Focused prior-counterexample re-run (2026-11-11, the amended bytes):** the `same-second`
+  name family = **101 tests, 101 pass, 0 fail** (ZERO movement — the two new rows join no
+  family); the `integration-completion` name family = **82 tests, 82 pass, 0 fail**;
+  `node --test tests/test-selection.test.mjs` = **6 tests / 6 pass / 0 fail** exit 0 — the
+  new RED schedule was demonstrated RED on the 90c88cb4 bytes before the fix (the measured
+  pair above) and GREEN on the amended bytes.
+- **Battery (executed 2026-11-11 on the amended bytes):** local SOLO = **607 tests, 607
+  pass, 0 fail, exit 0** (605 prior + 2 — exactly 2 new test declarations, 0 deleted);
+  native SOLO = **100 tests, 100 pass, 0 fail, exit 0**; probe SOLO = **968 tests, 968 pass,
+  0 fail, exit 0** — all eight spawn rows green with the corrected pin. The spawned-suite
+  pin moved honestly: 605 + 100 + 1 = 706 → **607 + 100 + 1 = 708** (re-measured on the
+  amended bytes; exactly 2 new test declarations, 0 deleted — 605 + 2 = 607; 607 + 100 =
+  707; 707 + 1 = 708), the pin comment extended and the value corrected to 708, asserted
+  green inside all eight spawn rows of the probe SOLO. `npm run lint` exit 0;
+  `npm run typecheck` exit 0; `git diff --check` exit 0. Prohibited-path diff vs
+  `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY. The fix amends the EXISTING route-(c)
+  commit (message unchanged) — no push.
+
+### 32.48 Codex-review gate round 36 (2026-11-11, two findings on §32.47's amended bytes — review-mwbzhfmk-bxkb77, 2×P2, the coarse error-carry comparison and the persisted marker identity's type validation, both reproduced by the reviewer; §32.47 style — add-only; the amended route-(c) commit carries them; message unchanged)
+
+- **Finding 1 [P2] Compare coarse error carries against the retained exact generation —
+  tools/shell-wait-probe/local-process-observation.mjs:1210-1212 — FIXED (the COARSE-CARRY
+  COMPARISON).** The reviewer's finding verbatim: "When exit polling encounters a kinfo/ps
+  generation disagreement, `composedExactStartIdentity` carries the later, coarse ps identity
+  on its error. This guard ignores that evidence because it is not a kinfo identity, leaving
+  the replacement latch unset. Reproducing an exact `kinfo:1:100000` target, a ps observation
+  from second 2 during polling, and subsequent absence returns `exited: true, failure: null`
+  despite positively observing a replacement. Compare coarse carries against the retained
+  exact reference too; restrict only reference initialization to exact identities. The
+  held-turn reader has the same guard." Confirmed exactly (RED re-verified on the committed
+  7be7b34b bytes in a clean `git clone --shared` copy under /tmp with the new deterministic
+  rows copied in — no `git worktree add`; the clone's tools verified byte-untouched: the
+  default-reader schedule — the exact `kinfo:1:100000` capture, the initial gone-check and
+  pre-signal reads composing exact A, the SIGTERM polling read's kinfo/ps disagreement
+  carrying the coarse `Thu Jan  1 00:00:02 1970` identity, the post-throw read observing the
+  gone pid — measured `{"attempted":true,"signalled":"SIGTERM","exited":true,"failure":null}`
+  with `kinfoCalls: 6, psCalls: 5`, the reviewer's exact pair). **The fix (both guards,
+  one protocol):** a COARSE carry is now compared against the retained exact reference with
+  the SAME representation-aware `startIdentitiesDefinitivelyDiffer` relation (the exact side
+  against the coarse second — a different second is definitively different; the reference's
+  own second or an unresolvable carry is never positive evidence) and LATCHES on a
+  definitive difference; only REFERENCE INITIALIZATION remains exact-only (a non-exact carry
+  with no retained reference still seeds nothing and stays on the lawful path). The
+  termination tracker (`trackTerminationRead`'s error-carry catch) and the held-turn default
+  reader's identical guard are both synced (the previously exact-only `else` branch is now a
+  `coarse` branch requiring a non-null reference). RED→GREEN: GREEN measured
+  `{"attempted":true,"signalled":"SIGTERM","exited":false,"failure":"the exact fake-ZCode
+  process identity changed during termination"}` — the proven replacement is never the
+  target's exit. **CONTROLS (both measured, both bytes identical):** a coarse carry in the
+  reference's own second is the non-definitive 'same' relation — no latch, the lawful
+  escalated exit stands (`exited: true, failure: null`); with NO reference a non-exact carry
+  seeds nothing (only exact identities initialize) — same lawful exit. **Observability note
+  (disclosed):** the held-turn guard's end-to-end effect is CONVERGENT with the termination
+  tracker's consumption of the same error carry (the termination's seeding and the held-turn
+  reference are the same per-turn value, and the held-turn reader's only pre-cleanup call
+  cannot have a reference before the first carry) — a held-turn end-to-end row would not be
+  RED-distinguishable, so no false test was planted; the guard is a byte-level mirror of the
+  protocol the termination row proves.
+- **Finding 2 [P2] Validate persisted marker identities before comparing generations —
+  tools/shell-wait-probe/driver.mjs:6545-6547 — FIXED (the MARKER TYPE VALIDATION).** The
+  reviewer's finding verbatim: "For a persisted marker whose optional `startIdentity` is null
+  or numeric, paired with an exact transport observation, this comparison reaches
+  `parseLstartAsUtc` with a non-string and throws `TypeError`. A targeted reproduction with
+  `marker.startIdentity = 42` crashes `nativeInterruptionGateDInput` instead of returning a
+  named refusal; previously the raw comparison rejected the mismatch without throwing.
+  Validate the marker identity's type before calling the representation-aware comparison."
+  Confirmed exactly (RED re-verified on the 7be7b34b bytes in the same clone: the record with
+  the exact transport observation `kinfo:1:100000` and `marker.startIdentity = 42` threw
+  `TypeError: startIdentity.replace is not a function`; the `null` marker threw `Cannot read
+  properties of null (reading 'replace')` — both crashes, never refusals). **The fix (the
+  marker-binding conjuncts):** a PRESENT-but-non-string marker identity is validated BEFORE
+  the representation-aware comparison and is the fail-closed mismatch the pre-representation
+  raw comparison rejected — the named `ancestry-ppid-chain-foreign` refusal, never a crash;
+  the second conjunct (the marker-vs-carry binding) gains the same string guard, and the
+  ABSENT field keeps its documented tolerance byte-identically. RED→GREEN: GREEN measured
+  `{"settled":false,"refusals":["ancestry-ppid-chain-foreign"]}` for BOTH the numeric and
+  null markers. **CONTROLS (all measured, both bytes identical):** the exact-string marker
+  matching the exact transport observation settles (`{"settled":true,"refusals":[]}`); the
+  coarse-string marker matching the exact observation's second settles (the
+  representation-aware 'same'); the absent field keeps its tolerance (settles).
+- **Honest notes:** (a) the first full probe SOLO measured ONE transient failure — the
+  `a whole-token quoted reporter flag is replaced instead of duplicated` NODE_OPTIONS spawn
+  row (a spawned child exited 1 under the machine's load; every other spawn row measured the
+  same 712 counts green) — the row alone re-ran green (1/1) and the full no-load probe SOLO
+  re-ran **968/968, 0 fail**, and the final-bytes probe SOLO re-ran **968/968, 0 fail** again;
+  attributed transient, no label changed. (b) One lint-conformance edit after the first
+  probe runs: the removed held-turn row left an unused `runHeldHostTurn` import
+  (`no-unused-vars`) — the import was dropped (zero runtime effect), `npm run lint` re-ran
+  exit 0, and the local/native SOLO, typecheck, diff-check AND the full probe SOLO were
+  re-measured on the EXACT final bytes. The pin derivation was counted before the pin edit
+  (`rg -c '^\s*test\(' tests/shell-wait-local-process.test.mjs`: 607 before the additions,
+  611 after).
+- **Focused prior-counterexample re-run (2026-11-11, the amended bytes):** the `same-second`
+  name family = **102 tests, 102 pass, 0 fail** (+1: the new Finding-1 controls row's name
+  joins the family — ZERO movement among the prior 101 rows); the `integration-completion`
+  name family = **82 tests, 82 pass, 0 fail**; `node --test tests/test-selection.test.mjs` =
+  **6 tests / 6 pass / 0 fail** exit 0 — each new RED schedule was demonstrated RED on the
+  7be7b34b bytes before its fix (the measured states above) and GREEN on the amended bytes.
+- **Battery (executed 2026-11-11 on the amended bytes):** local SOLO = **611 tests, 611
+  pass, 0 fail, exit 0** (607 prior + 4 — exactly 4 new test declarations, 0 deleted);
+  native SOLO = **100 tests, 100 pass, 0 fail, exit 0**; probe SOLO = **968 tests, 968 pass,
+  0 fail, exit 0** (a transient spawn-row failure under load was attributed by a row-level
+  re-run plus two clean full re-runs, the last on the exact final bytes) — all eight spawn
+  rows green with the corrected pin. The spawned-suite pin moved honestly: 607 + 100 + 1 =
+  708 → **611 + 100 + 1 = 712** (re-measured on the amended bytes; exactly 4 new test
+  declarations, 0 deleted — 607 + 4 = 611; 611 + 100 = 711; 711 + 1 = 712), the pin comment
+  extended and the value corrected to 712, asserted green inside all eight spawn rows of the
+  probe SOLO. `npm run lint` exit 0; `npm run typecheck` exit 0; `git diff --check` exit 0.
+  Prohibited-path diff vs `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY. The two fixes
+  amend the EXISTING route-(c) commit (message unchanged) — no push.
+
+### 32.49 Codex-review gate round 37 (2026-11-11, three findings on §32.48's amended bytes — review-mwc4sfh6-fx3ggt, 3×P2, the pre-skip exact-evidence comparison, the selected refresh in the replay retention and the observed-then-gone coarse-capture comparison, all reproduced by the reviewer; §32.48 style — add-only; the amended route-(c) commit carries them; message unchanged)
+
+- **Finding 1 [P2] Check retained exact evidence before the coarse recency skip —
+  tools/shell-wait-probe/local-process-observation.mjs:3732-3733 — FIXED (the PRE-SKIP
+  EXACT-EVIDENCE COMPARISON).** The reviewer's finding verbatim: "With overlapping
+  observations, a mixed-resolution read can retain exact generation A from [1200,1250] while
+  advancing the coarse presence horizon to 1600. A separate exact observation of successor B
+  at 1500 is then skipped here without comparison against A. I reproduced `disappeared` after
+  a confirmed absence despite both exact generations being observed. Compare replacement
+  evidence against the retained exact generation before allowing a later coarse horizon to
+  discard it." Confirmed exactly (RED re-verified on the committed eeb7157f bytes in a clean
+  `git clone --shared` copy under /tmp with the new deterministic rows copied in — no
+  `git worktree add`; the clone's tools verified byte-untouched: the schedule — the coarse
+  presence at 1100, the mixed read retaining exact A from [1200,1250] while advancing the
+  horizon to 1600, the separate exact successor B at 1500 with bounds [1500,1700] (and, in
+  the second arm, [1620,1700]), the confirmed absence at 1800 — measured
+  `{"status":"disappeared","reason":null}` for BOTH arms). **The fix (the strict recency
+  skip):** before a STRICTLY-BEFORE read is discarded, its exact evidence — its own exact
+  observation identity and its exact carried identity — is compared against the retained
+  exact reference with the established representation-aware relation; a definitive
+  difference does NOT skip, and the read falls through to the existing branch/interval paths
+  (post latches, overlap is the named ambiguous fact, stale stays old evidence). Ties (the
+  round-23 tie retention above), absent reads, foreign-scope reads, coarse evidence and
+  reads without a retained reference keep the existing skip byte-identically. RED→GREEN:
+  GREEN measured `pid-start-identity-ambiguous` for the overlapping window and
+  `pid-start-identity-reused` for the post-baseline window. **CONTROLS (both measured, both
+  bytes identical):** the exact evidence EQUAL to the retained reference (same generation)
+  keeps the coarse horizon skip — `{"status":"disappeared","reason":null}`; a coarse-only
+  observation (no exact evidence) keeps its recency skip — `disappeared`.
+- **Finding 2 [P2] Include selected exact refreshes in replay retention —
+  tools/shell-wait-probe/driver.mjs:7410-7413 — FIXED (the SELECTED REFRESH IN THE
+  RETENTION WALK).** The reviewer's finding verbatim: "When the baseline is coarse and the
+  selected companion refresh supplies exact generation A, that refresh never enters this
+  retention walk: `refreshEvidence` contains only failed refreshes. A later same-second
+  exact generation B is therefore learned as the initial reference rather than detected as
+  replacement. Using the existing integration fixture, replay reports `settled: true` with no
+  refusals while `adjudicateLocalExit` returns `pid-start-identity-reused` for the same
+  evidence. Include the selected successful refresh in the ordered retention sequence."
+  Confirmed exactly (RED re-verified on the eeb7157f bytes in the same clone: the record —
+  the coarse presence, the selected companion endpoint refresh [4600,4700,4750] carrying
+  exact A [4620,4640], the later same-second exact B read [4900,4950,5100] with its own
+  exact carry [4920,5000], the confirmed absence at [6000,6200] — measured the replay pair
+  runtime `{"status":"unestablished","reason":"pid-start-identity-reused"}` vs replay
+  `{"settled":true,"refusals":[]}`). **The fix (the ordered retention sequence):** the
+  SELECTED successful companion endpoint rides the retention sequence in the runtime's
+  insertion order — BEFORE the phase reads — beside the phase reads and the failed-refresh
+  evidence, so its exact evidence seeds the replay reference and a later same-second exact
+  successor is detected as replacement. RED→GREEN: GREEN measured the replay
+  `{"settled":false,"refusals":["exit-reuse-latched"]}` — runtime/replay agreement on the
+  same evidence. **CONTROLS (all measured, both bytes identical):** a refresh without an
+  exact carry plus a coarse B settles (`{"settled":true,"refusals":[]}` — the refresh enters
+  the walk harmlessly); the same-generation exact B (equal to A) settles; the plain record
+  without the B read settles.
+- **Finding 3 [P2] Compare disappearance evidence against coarse captures too —
+  tools/shell-wait-probe/local-process-observation.mjs:1164-1167 — FIXED (the CAPTURE
+  COMPARISON).** The reviewer's finding verbatim: "If capture was coarse and the exact bridge
+  recovers on the first termination read, there is no learned exact reference yet. An
+  observed-then-gone successor therefore bypasses this comparison and becomes a clean exit.
+  For a capture in second 1, an exact observation of `kinfo:2:100000` followed by empty ps
+  output reproduces `{ exited: true, failure: null }`, despite proving a different
+  generation. Compare the carried identity against `expected.startIdentity` before learning
+  it or converting the error to absence." Confirmed exactly (RED re-verified on the
+  eeb7157f bytes: the coarse second-1 capture, the kinfo seam answering
+  `{ sec: 2, usec: 100000 }`, the ps seam answering the empty output — measured
+  `{"attempted":false,"signalled":null,"exited":true,"failure":null}` with one kinfo call).
+  **The fix (the observed-then-gone conversion):** the carried identity is ALSO compared
+  against the CAPTURE's own start identity before it is learned or the error is converted to
+  absence — the representation-aware relation applies (an exact side against the coarse
+  second: a different second is definitively different; the capture's own second and an
+  unresolvable pair stay non-definitive), and an exact capture's own evidence is already part
+  of the retained reference through the capture seeding. RED→GREEN: GREEN measured
+  `{"attempted":false,"signalled":null,"exited":false,"failure":"the exact fake-ZCode
+  process identity changed during termination"}` — the proven replacement is never a clean
+  exit. **CONTROLS (both measured, both bytes identical):** a carry in the coarse capture's
+  OWN second keeps the lawful observed-then-gone exit (`{"attempted":false,
+  "signalled":null,"exited":true,"failure":null}`); the matching exact capture (exact
+  identity and exact carry) keeps the lawful exit.
+- **Honest notes:** (a) the first F3 row draft expected a THROWN identity-change refusal;
+  the fixed-code shape is the termination's named FAILURE outcome (the observed-then-gone
+  conversion latches and credits the failure, never a thrown error out of the entry gate) —
+  the row was adjusted to assert the failure outcome (message + `exited !== true`) BEFORE the
+  GREEN run, never after seeing a result; (b) the first typecheck run measured
+  `TS2345` on the new pre-skip comparison's closure over `learnedExactReference` (the `let`
+  narrowing is lost in the callback) — a behavior-preserving local alias
+  (`skipReference`) fixed it, and the local/native SOLO, lint and typecheck AND the full
+  probe SOLO were re-measured on the EXACT final bytes (the first probe SOLO had already run
+  green with the 717 pin before the alias; the final-bytes probe SOLO re-ran green below).
+  The F2 replay record needed two authoring iterations (the exact A/B generations had to
+  share the coarse capture's second, and the refresh/absence timings had to satisfy the
+  ancestry hop lifetimes) — both disclosed here, no label changed. The pin derivation was
+  counted before the pin edit (`rg -c '^\s*test\('
+  tests/shell-wait-local-process.test.mjs`: 611 before the additions, 616 after).
+- **Focused prior-counterexample re-run (2026-11-11, the amended bytes):** the `same-second`
+  name family = **102 tests, 102 pass, 0 fail** (ZERO movement — the five new rows join no
+  family); the `integration-completion` name family = **82 tests, 82 pass, 0 fail**;
+  `node --test tests/test-selection.test.mjs` = **6 tests / 6 pass / 0 fail** exit 0 — each
+  new RED schedule was demonstrated RED on the eeb7157f bytes before its fix (the measured
+  states above) and GREEN on the amended bytes.
+- **Battery (executed 2026-11-11 on the amended bytes):** local SOLO = **616 tests, 616
+  pass, 0 fail, exit 0** (611 prior + 5 — exactly 5 new test declarations, 0 deleted);
+  native SOLO = **100 tests, 100 pass, 0 fail, exit 0**; probe SOLO = **968 tests, 968 pass,
+  0 fail, exit 0** — all eight spawn rows green with the corrected pin (the final-bytes run
+  is the one cited). The spawned-suite pin moved honestly: 611 + 100 + 1 = 712 → **616 + 100
+  + 1 = 717** (re-measured on the amended bytes; exactly 5 new test declarations, 0 deleted
+  — 611 + 5 = 616; 616 + 100 = 716; 716 + 1 = 717), the pin comment extended and the value
+  corrected to 717, asserted green inside all eight spawn rows of the probe SOLO.
+  `npm run lint` exit 0; `npm run typecheck` exit 0; `git diff --check` exit 0.
+  Prohibited-path diff vs `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY. The three fixes
+  amend the EXISTING route-(c) commit (message unchanged) — no push.
+
+### 32.50 Codex-review gate round 38 (2026-11-11, two findings on §32.49's amended bytes — review-mwc95z19-zdq893, 2×P2, the held-turn coarse-capture comparison mirroring round 37's Finding-3 protocol, and the stale-read exclusion preserved before the round-37 recency bypass, both reproduced by the reviewer; §32.49 style — add-only; the amended route-(c) commit carries them; message unchanged)
+
+- **Finding 1 [P2] Compare disappearance evidence against coarse captures —
+  tools/shell-wait-probe/driver.mjs:1600-1602 — FIXED (the HELD-TURN COARSE-CAPTURE
+  COMPARISON).** The reviewer's finding verbatim: "When capture was ps-only and no exact
+  reference has been learned, this filter excludes the capture from comparison. If the exact
+  bridge then observes a successor from a different second before ps finds it gone, the reader
+  learns the successor and returns `undefined` as an ordinary exit. I reproduced
+  `runHeldHostTurn` succeeding without cleanup errors for a second-1 capture followed by
+  `kinfo:2:100000` and empty ps output. Compare against `expected.startIdentity` regardless of
+  whether the capture is exact before converting the error to absence." Confirmed exactly (RED
+  re-verified on the committed 6186eee6 bytes in a clean `git clone --shared` copy under /tmp
+  with the new deterministic rows copied in — no `git worktree add`; the clone's tools verified
+  byte-untouched: the held-turn schedule — the coarse second-1 capture `Thu Jan  1 00:00:01
+  1970`, the kinfo seam answering `{sec: 2, usec: 100000}`, the ps seam answering the empty
+  output — measured the turn RESOLVING with `processAliveWhileHeld: false` and
+  `cleanup.errors: []` (no refusal; the reviewer's "runHeldHostTurn succeeding without cleanup
+  errors")). **The fix (the held-turn reader's observed-then-gone cross-check):** the
+  exact-only guard on the COMPARISON identities is dropped — the carried identity is compared
+  against `expected.startIdentity` regardless of the capture's form, through the
+  representation-aware relation (an exact side against the coarse second: a different second is
+  definitively different; the capture's own second and an unresolvable pair stay
+  non-definitive). This is the same widening the round-37 Finding-3 fix applied to the
+  termination tracker's own observed-then-gone conversion; an exact capture's evidence was
+  already compared through its exactness. RED→GREEN: GREEN measured the turn failing with the
+  named refusal — `cleanup.errors: ["the exact fake-ZCode process identity changed"]` and
+  `verifiedProcessTerminated: false`. **CONTROLS (both measured, both bytes identical):** a
+  carry in the coarse capture's OWN second (`kinfo:1:500000`) keeps the lawful observed-then-
+  gone absence (the turn resolves, `cleanup.errors: []`); a MATCHING exact capture
+  (`kinfo:1:100000` on both sides) keeps the lawful absence.
+- **Finding 2 [P2] Preserve the stale-read exclusion before bypassing recency —
+  tools/shell-wait-probe/local-process-observation.mjs:3820-3823 — FIXED (the STALE-READ
+  EXCLUSION BEFORE THE BYPASS).** The reviewer's finding verbatim: "For an exact baseline,
+  this fallthrough also admits established predecessor observations whose collection finished
+  entirely before the baseline. The downstream `presenceRelation === 'different'` branch then
+  latches reuse without checking that stale interval. I reproduced a baseline sampled at 1600,
+  a predecessor collected during [1200,1250] but completing at 1700, and confirmed absence at
+  1800 returning `pid-start-identity-reused`; without the stale predecessor it correctly
+  returns `disappeared`. Keep definitively stale evidence excluded before bypassing the recency
+  filter." Confirmed exactly (RED re-verified on the 6186eee6 bytes in the same clone: the
+  schedule — the exact baseline `kinfo:1:0` sampled at [1550,1600,1650], the established
+  predecessor `kinfo:1:500000` with its collection window [1200,1250] and its observation
+  completing at 1700, the confirmed absence at 1800 — measured
+  `{"status":"unestablished","reason":"pid-start-identity-reused"}`; the predecessor-free
+  schedule measured `{"status":"disappeared","reason":null}`). **The fix (the round-37 pre-skip
+  comparison):** a bypass candidate whose collection interval classifies definitively STALE
+  (completed strictly before the presence horizon's own collection start — the established
+  stale classification) keeps its exclusion: the skip stands and the old-era predecessor never
+  reaches the raw-relation latch branch. Non-stale windows (overlap, post, legacy) keep the
+  round-37 bypass and its branch/interval semantics byte-identically. RED→GREEN: GREEN measured
+  the reviewer's schedule returning `{"status":"disappeared","reason":null}`. **CONTROLS (all
+  measured, both bytes identical):** the predecessor-free schedule keeps its lawful
+  disappearance; a successor whose collection STARTS after the baseline ([1620,1700] against
+  [1550,1600]) still latches `pid-start-identity-reused` through the bypass; a successor whose
+  window merely OVERLAPS the baseline ([1500,1700]) keeps its existing raw-relation branch
+  (`pid-start-identity-reused`).
+- **Honest note:** no incidental failure occurred in this round's gate battery (the probe SOLO
+  passed in a single full run; the pin derivation was counted before the pin edit
+  (`rg -c '^\s*test\(' tests/shell-wait-local-process.test.mjs`: 616 before the additions, 620
+  after)).
+- **Focused prior-counterexample re-run (2026-11-11, the amended bytes):** the `same-second`
+  name family = **102 tests, 102 pass, 0 fail** (ZERO movement — the four new rows join no
+  family); the `integration-completion` name family = **82 tests, 82 pass, 0 fail**;
+  `node --test tests/test-selection.test.mjs` = **6 tests / 6 pass / 0 fail** exit 0 — each
+  new RED schedule was demonstrated RED on the 6186eee6 bytes before its fix (the measured
+  states above) and GREEN on the amended bytes.
+- **Battery (executed 2026-11-11 on the amended bytes):** local SOLO = **620 tests, 620
+  pass, 0 fail, exit 0** (616 prior + 4 — exactly 4 new test declarations, 0 deleted); native
+  SOLO = **100 tests, 100 pass, 0 fail, exit 0**; probe SOLO = **968 tests, 968 pass, 0 fail,
+  exit 0** — all eight spawn rows green with the corrected pin. The spawned-suite pin moved
+  honestly: 616 + 100 + 1 = 717 → **620 + 100 + 1 = 721** (re-measured on the amended bytes;
+  exactly 4 new test declarations, 0 deleted — 616 + 4 = 620; 620 + 100 = 720; 720 + 1 = 721),
+  the pin comment extended and the value corrected to 721, asserted green inside all eight
+  spawn rows of the probe SOLO. `npm run lint` exit 0; `npm run typecheck` exit 0;
+  `git diff --check` exit 0. Prohibited-path diff vs
+  `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY. The two fixes amend the EXISTING route-(c)
+  commit (message unchanged) — no push.
+
+### 32.51 Codex-review gate round 39 (2026-11-12, two findings on §32.50's amended bytes — review-mwcrgo5m-8t4hr1, 2×P2, the error-carried identity's capture comparison before the reference seeding, and the collection-bounds classification before the raw-relation replacement latch, both reproduced by the reviewer; §32.50 style — add-only; the amended route-(c) commit carries them; message unchanged)
+
+- **Finding 1 [P2] Compare error-carried identities against the captured generation —
+  tools/shell-wait-probe/local-process-observation.mjs:1247-1253 — FIXED (the ERROR-CARRY
+  CAPTURE COMPARISON).** The reviewer's finding verbatim: "With a coarse capture and no
+  learned exact reference, a failed inspection can expose a definitively different generation
+  without latching replacement. Reproduced with a second-1 capture: after SIGTERM, kinfo
+  returns `kinfo:2:100000`, the following ps query throws, and the next read finds absence.
+  This branch learns the successor instead of comparing it against the capture, so
+  termination returns `exited: true, failure: null`. Compare carried evidence against the
+  captured identity and its exact carry before initializing the learned reference." Confirmed
+  exactly (RED re-verified on the committed 69b46403 bytes in a clean `git clone --shared`
+  copy under /tmp with the new deterministic rows copied in — no `git worktree add`; the
+  clone's tools verified byte-untouched: the schedule — the coarse second-1 capture, the
+  pre-signal reads degraded to the matching ps text, SIGTERM, the exit-polling read's kinfo
+  answering `{sec:2,usec:100000}` before its ps query THROWS (the ps-failure
+  observedThenQueryFailed carry), the next read finding the gone pid — measured
+  `{"attempted":true,"signalled":"SIGTERM","exited":true,"failure":null}`). **The fix (the
+  error-carry learning branch):** before a non-transition error's exact carry initializes the
+  learned reference, it is compared against the CAPTURED generation — `identity.startIdentity`
+  and `identity.observedStartIdentity` — through the representation-aware relation (an exact
+  side against the coarse second: a different second is definitively different; the capture's
+  own second and an unresolvable pair stay non-definitive): a definitive difference LATCHES
+  instead of seeding; same-generation or unresolvable carries keep the lawful seeding. This
+  mirrors the observed-then-gone and held-turn capture comparisons (round 37 Finding 3 /
+  round 38 Finding 1) on the ps-throw error path. RED→GREEN: GREEN measured
+  `{"attempted":true,"signalled":"SIGTERM","exited":false,"failure":"the exact fake-ZCode
+  process identity changed during termination"}`. **CONTROLS (both measured, both bytes
+  identical):** the carry in the coarse capture's OWN second (`kinfo:1:500000`) keeps the
+  lawful seeding and the gone pid is the clean exit (`exited: true, failure: null`); a
+  MATCHING exact capture (`kinfo:1:100000` on both sides) keeps the lawful exit.
+- **Finding 2 [P2] Classify exact observation bounds before latching replacement —
+  tools/shell-wait-probe/local-process-observation.mjs:3553-3555 — FIXED (the
+  COLLECTION-BOUNDS CLASSIFICATION BEFORE THE RAW-RELATION LATCH).** The reviewer's finding
+  verbatim: "A successful exact inspection can finish its kernel reads before the presence
+  baseline but complete its final ps query afterward. The real observer then returns the
+  earlier exact identity with its kernel bounds and a later `identityReadEpochMs`. Reproduced
+  with predecessor `kinfo:1:100000` collected during `[1220,1250]`, baseline `kinfo:1:500000`
+  collected during `[1550,1600]`, and delayed ps completion at 1700: this branch reports
+  `pid-start-identity-reused` despite the predecessor being definitively stale. Apply the
+  interval classification before latching this mismatch; otherwise subprocess latency turns
+  old evidence into a false replacement refusal." Confirmed exactly (RED re-verified on the
+  69b46403 bytes in the same clone: the schedule measured
+  `{"status":"unestablished","reason":"pid-start-identity-reused"}`; the predecessor-free
+  schedule measured `{"status":"disappeared","reason":null}`). **The fix (BOTH raw-relation
+  latch sites):** (a) the gate's established different-generation arm — the delayed
+  `identityReadEpochMs` (1700) carried the read past the gate's evidence premise — now runs
+  the read's COLLECTION-interval classification (the kernel bounds — the same resolution
+  every carried classification uses) against the presence horizon BEFORE latching:
+  definitively stale is old-era evidence that never latches, an overlapping window is the
+  named ambiguous fact, a malformed window refuses by name, every other class (post, legacy)
+  keeps the raw latch; (b) the established branch's `presenceRelation === 'different'` arm —
+  reached by the stale-classified reads that no longer latch in the gate — takes the SAME
+  stale exclusion against the previous horizon (old evidence records `sawUnestablished`, never
+  reuse). Non-stale classes keep the existing latch semantics byte-identically at both sites.
+  RED→GREEN: GREEN measured the reviewer's schedule returning
+  `{"status":"disappeared","reason":null}`. **CONTROLS (all measured):** the predecessor-free
+  schedule keeps its lawful disappearance (both bytes); a successor whose kernel window
+  STARTS after the baseline ([1620,1700] against [1550,1600]) still latches
+  `pid-start-identity-reused` (both bytes); a successor whose kernel window OVERLAPS the
+  baseline ([1500,1700]) is now the named `pid-start-identity-ambiguous` fact (the
+  classification's own semantics — previously the raw latch; the classification change is the
+  finding's mandate applied at the gate arm).
+- **Honest note:** one authoring iteration on F2's fix (disclosed): the first patch classified
+  only the GATE's established arm and the stale predecessor still measured `reused` — the
+  second raw-relation latch site (the established branch's `presenceRelation === 'different'`
+  arm) also needed the stale exclusion; both sites now classify, and the row went green. No
+  incidental gate failure occurred (the probe SOLO passed in a single full run; the pin
+  derivation was counted before the pin edit (`rg -c '^\s*test\('
+  tests/shell-wait-local-process.test.mjs`: 620 before the additions, 624 after)).
+- **Focused prior-counterexample re-run (2026-11-12, the amended bytes):** the `same-second`
+  name family = **102 tests, 102 pass, 0 fail** (ZERO movement — the four new rows join no
+  family); the `integration-completion` name family = **82 tests, 82 pass, 0 fail**;
+  `node --test tests/test-selection.test.mjs` = **6 tests / 6 pass / 0 fail** exit 0 — each
+  new RED schedule was demonstrated RED on the 69b46403 bytes before its fix (the measured
+  states above) and GREEN on the amended bytes.
+- **Battery (executed 2026-11-12 on the amended bytes):** local SOLO = **624 tests, 624
+  pass, 0 fail, exit 0** (620 prior + 4 — exactly 4 new test declarations, 0 deleted); native
+  SOLO = **100 tests, 100 pass, 0 fail, exit 0**; probe SOLO = **968 tests, 968 pass, 0 fail,
+  exit 0** — all eight spawn rows green with the corrected pin. The spawned-suite pin moved
+  honestly: 620 + 100 + 1 = 721 → **624 + 100 + 1 = 725** (re-measured on the amended bytes;
+  exactly 4 new test declarations, 0 deleted — 620 + 4 = 624; 624 + 100 = 724; 724 + 1 =
+  725), the pin comment extended and the value corrected to 725, asserted green inside all
+  eight spawn rows of the probe SOLO. `npm run lint` exit 0; `npm run typecheck` exit 0;
+  `git diff --check` exit 0. Prohibited-path diff vs
+  `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY. The two fixes amend the EXISTING route-(c)
+  commit (message unchanged) — no push.
+
+### 32.52 Codex-review gate round 40 (2026-11-12, one finding on §32.51's amended bytes — review-mwcuom0y-o3kamz, 1×P2, the stale-window exclusion before the own-identity reference seeding, reproduced by the reviewer; §32.51 style — add-only; the amended route-(c) commit carries it; message unchanged)
+
+- **Finding 1 [P2] Exclude stale exact reads before learning a generation reference —
+  tools/shell-wait-probe/local-process-observation.mjs:4003-4006 — FIXED (the
+  STALE-WINDOW EXCLUSION BEFORE THE OWN-IDENTITY SEEDING).** The reviewer's finding
+  verbatim: "With a coarse presence baseline and no learned exact reference, this branch
+  learns an exact identity even when its kernel collection window is definitively stale.
+  Reproduced with baseline window `[1550,1600]`, predecessor `kinfo:1:100000` collected
+  during `[1220,1250]` but completing at 1700, then a current `kinfo:1:500000` observation
+  and confirmed absence: adjudication returns `pid-start-identity-reused`; removing only the
+  stale predecessor returns `disappeared`. Classify the collection window before initializing
+  the reference so discarded predecessor evidence cannot cause a later false replacement
+  refusal." Confirmed exactly (RED re-verified on the committed 69508cf4 bytes in a clean
+  `git clone --shared` copy under /tmp with the new deterministic rows copied in — no
+  `git worktree add`; the clone's tools verified byte-untouched: the schedule — the coarse
+  presence `Thu Jan  1 00:00:01 1970` at [1550,1600,1650], the predecessor `kinfo:1:100000`
+  with its kernel window [1220,1250] and its observation completing at 1700 (the delayed
+  final-ps shape that carries it past the gate), the current `kinfo:1:500000` observation at
+  [1740,1800,1810] with bounds [1750,1780], the confirmed absence at [1850,1900] — measured
+  `{"status":"unestablished","reason":"pid-start-identity-reused"}`; the predecessor-free
+  schedule measured `{"status":"disappeared","reason":null}`). **The fix (the established
+  branch's own-identity seeding):** the read's COLLECTION window is classified BEFORE its own
+  exact identity initializes the learned reference — the same established stale rule the
+  carry learning already applies (round 17, Finding 5): a window completed strictly before
+  the presence horizon's dispatch is definitively STALE old-era evidence and never becomes
+  the reference. The classification runs against the PREVIOUS horizon (the same-generation
+  relation arm above already advanced the horizon with THIS read — the stale question is
+  about the window as it stood when the read arrived). Without the exclusion a coarse
+  baseline plus a stale predecessor initialized the reference to the predecessor's
+  generation, and the later current same-second observation was detected as its replacement
+  — a false `pid-start-identity-reused` refusal built from discarded predecessor evidence.
+  Non-stale classes (overlap, post, legacy) keep the existing seeding byte-identically.
+  RED→GREEN: GREEN measured the reviewer's schedule returning
+  `{"status":"disappeared","reason":null}`. **CONTROLS (all measured, both bytes
+  identical):** the predecessor-free schedule keeps its lawful disappearance; a predecessor
+  whose kernel window starts AFTER the baseline ([1620,1700] against [1550,1600]) still
+  initializes the reference — the later same-second observation `kinfo:1:500000` is then the
+  detected replacement (`pid-start-identity-reused`); a LEGACY read (no collection bounds)
+  keeps the documented tolerance and still initializes the reference (`reused`).
+- **Honest note:** one authoring iteration on the fix (disclosed): the first patch
+  classified the seeding against the CURRENT horizon and the stale predecessor still
+  measured `reused` — the same-generation relation arm had already advanced the horizon with
+  the predecessor's own read (1700/1210), making its stale window [1220,1250] classify
+  overlap; the classification now consumes the PREVIOUS-horizon capture (the round-16
+  Finding-4 pattern), after which the row went green. No incidental gate failure occurred
+  (the probe SOLO passed in a single full run; the pin derivation was counted before the pin
+  edit (`rg -c '^\s*test\(' tests/shell-wait-local-process.test.mjs`: 624 before the
+  additions, 626 after)).
+  (Process fact, recorded for completeness): this turn was truncated once before §32.52
+  was written and the amend ran — the section and the amend were completed in a
+  continuation from the existing tree state, and every gate number above comes from the
+  single final-byte measurement taken BEFORE that truncation (no code or test byte changed
+  between those runs and the doc append), so no gate was re-run.
+- **Focused prior-counterexample re-run (2026-11-12, the amended bytes):** the `same-second`
+  name family = **102 tests, 102 pass, 0 fail** (ZERO movement — the two new rows join no
+  family); the `integration-completion` name family = **82 tests, 82 pass, 0 fail**;
+  `node --test tests/test-selection.test.mjs` = **6 tests / 6 pass / 0 fail** exit 0 — the
+  new RED schedule was demonstrated RED on the 69508cf4 bytes before the fix (the measured
+  state above) and GREEN on the amended bytes.
+- **Battery (executed 2026-11-12 on the amended bytes):** local SOLO = **626 tests, 626
+  pass, 0 fail, exit 0** (624 prior + 2 — exactly 2 new test declarations, 0 deleted);
+  native SOLO = **100 tests, 100 pass, 0 fail, exit 0**; probe SOLO = **968 tests, 968 pass,
+  0 fail, exit 0** — all eight spawn rows green with the corrected pin. The spawned-suite
+  pin moved honestly: 624 + 100 + 1 = 725 → **626 + 100 + 1 = 727** (re-measured on the
+  amended bytes; exactly 2 new test declarations, 0 deleted — 624 + 2 = 626; 626 + 100 =
+  726; 726 + 1 = 727), the pin comment extended and the value corrected to 727, asserted
+  green inside all eight spawn rows of the probe SOLO. `npm run lint` exit 0;
+  `npm run typecheck` exit 0; `git diff --check` exit 0. Prohibited-path diff vs
+  `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY. The fix amends the EXISTING route-(c)
+  commit (message unchanged) — no push.
+
+### 32.53 Codex-review gate round 41 (2026-11-12, two findings on §32.52's amended bytes — review-mwd6thjb-oppqxc, 2×P2, the stale-window exclusion before the presence horizon advance and before the tied own-identity fallback learning, both reproduced by the reviewer; §32.52 style — add-only; the amended route-(c) commit carries them; message unchanged)
+
+- **Finding 1 [P2] Exclude stale exact reads before advancing the presence horizon —
+  tools/shell-wait-probe/local-process-observation.mjs:3967-3970 — FIXED (the
+  STALE-WINDOW EXCLUSION BEFORE THE HORIZON ADVANCE).** The reviewer's finding verbatim:
+  "With a coarse presence baseline collected during [1550,1600], an exact predecessor
+  collected during [1220,1250] but completing its final ps query at 1700 still compares as
+  `same` and advances the presence horizon to 1700. A confirmed absence collected during
+  [1660,1800] is consequently rejected as overlapping, returning `live`; removing only the
+  stale read returns `disappeared`. Classify the kernel collection window before updating the
+  presence state or horizon, rather than treating delayed subprocess completion as fresh
+  presence evidence." Confirmed exactly (RED re-verified on the committed 12f01649 bytes in a
+  clean `git clone --shared` copy under /tmp with the new deterministic rows copied in — no
+  `git worktree add`; the clone's tools verified byte-untouched: the schedule — the coarse
+  presence `Thu Jan  1 00:00:01 1970` at [1550,1600,1650], the exact predecessor
+  `kinfo:1:100000` with its kernel window [1220,1250] and its final ps completing at 1700,
+  the confirmed absence at [1660,1800] — measured `{"status":"live","reason":null}`; the
+  predecessor-free schedule measured `{"status":"disappeared","reason":null}`). **The fix
+  (the same-generation relation arm):** the read's KERNEL collection window is classified
+  against the PREVIOUS horizon (the round-40 pattern; the relation arm is the advance point,
+  so the capture above is unadvanced) BEFORE the presence state or horizon updates: a window
+  completed strictly before the horizon's dispatch is definitively STALE old-era evidence —
+  it records `sawUnestablished` and never advances the horizon as fresh presence; non-stale
+  windows (overlap, post, legacy) keep the advance byte-identically. RED→GREEN: GREEN
+  measured the reviewer's schedule returning `{"status":"disappeared","reason":null}`.
+  **CONTROLS (both measured, both bytes identical):** the predecessor-free schedule keeps its
+  lawful disappearance; a genuinely FRESH same-generation read (kernel [1620,1700],
+  collected after the baseline) still advances the presence horizon — the delayed absence
+  [1660,1800] overlapping that fresh presence proves nothing and the lawful
+  `{"status":"live","reason":null}` verdict stands.
+- **Finding 2 [P2] Check staleness before learning a tied observation's own identity —
+  tools/shell-wait-probe/local-process-observation.mjs:3833-3834 — FIXED (the TIED
+  OWN-IDENTITY STALE EXCLUSION).** The reviewer's finding verbatim: "When an exact read's
+  `identityReadEpochMs` ties the coarse baseline, this fallback learns its own identity
+  without checking whether its kernel collection window is stale. Reproduced with a baseline
+  at [1550,1600], predecessor `kinfo:1:100000` collected during [1220,1250] and completing at
+  1600, followed by current `kinfo:1:500000` and confirmed absence: adjudication returns
+  `pid-start-identity-reused`, while removing the stale predecessor returns `disappeared`.
+  Apply the adjacent carried-identity branch's stale-window exclusion here too, so discarded
+  predecessor evidence cannot initialize the generation reference." Confirmed exactly (RED
+  re-verified on the 12f01649 bytes in the same clone: the tied schedule measured
+  `{"status":"unestablished","reason":"pid-start-identity-reused"}`; the predecessor-free
+  schedule measured `{"status":"disappeared","reason":null}`). **The fix (the tie-retention
+  block's own-identity fallback):** the fallback takes the SAME stale-window exclusion its
+  adjacent carried-identity branch already applies (`carriedIdentityIntervalClass(read)`
+  against the unadvanced horizon): a tied read whose kernel window completed strictly before
+  the horizon's dispatch never initializes the reference; non-stale and legacy windows keep
+  the existing learning. RED→GREEN: GREEN measured the reviewer's schedule returning
+  `{"status":"disappeared","reason":null}`. **CONTROLS (all measured, both bytes
+  identical):** the predecessor-free schedule keeps its lawful disappearance; a non-stale
+  tied predecessor (kernel [1620,1700]) still initializes the reference — the current
+  same-second observation is then the detected replacement (`pid-start-identity-reused`).
+  Two distinct non-stale-supplied shapes are measured separately: the
+  **inconsistent (0/0)** tied read — a SUPPLIED-INVALID window (0 is neither absent nor
+  positive-valid, so `carriedIdentityIntervalClass` resolves it to `inconsistent`) — still
+  keeps the learning (`pid-start-identity-reused`), and the TRUE **legacy (omitted bounds)**
+  tied read — both window fields completely ABSENT, the round-23 tied-row tolerance — also
+  still initializes the reference (`pid-start-identity-reused`). (Self-review P3 correction:
+  this bullet previously labeled the 0/0 arm as the legacy tolerance; the row now carries
+  both arms explicitly with their own labels and assertion messages.)
+- **Honest note:** no authoring iteration was needed on either fix (both first patches went
+  green) and no incidental gate failure occurred (the probe SOLO passed in a single full
+  run; the pin derivation was counted before the pin edit (`rg -c '^\s*test\('
+  tests/shell-wait-local-process.test.mjs`: 626 before the additions, 629 after)).
+  (Self-review P3, recorded): the F2 control row's `tiedPredecessor(0, 0)` arm was first
+  LABELED 'legacy' while it actually exercises the SUPPLIED-INVALID (`inconsistent`)
+  classification — the true legacy shape omits the two window fields entirely. The arm was
+  relabeled with its own assertion message, a separate true-legacy arm (fields omitted) was
+  added INSIDE the same test row (declaration count re-verified unchanged: 629 local, pin
+  stays 730), and both arms measure `pid-start-identity-reused`; this bullet's controls
+  sentence was corrected accordingly. No behavior defect — evidence-label honesty only.
+- **Focused prior-counterexample re-run (2026-11-12, the amended bytes):** the `same-second`
+  name family = **102 tests, 102 pass, 0 fail** (ZERO movement — the three new rows join no
+  family); the `integration-completion` name family = **82 tests, 82 pass, 0 fail**;
+  `node --test tests/test-selection.test.mjs` = **6 tests / 6 pass / 0 fail** exit 0 — each
+  new RED schedule was demonstrated RED on the 12f01649 bytes before its fix (the measured
+  states above) and GREEN on the amended bytes.
+- **Battery (executed 2026-11-12 on the amended bytes):** local SOLO = **629 tests, 629
+  pass, 0 fail, exit 0** (626 prior + 3 — exactly 3 new test declarations, 0 deleted); native
+  SOLO = **100 tests, 100 pass, 0 fail, exit 0**; probe SOLO = **968 tests, 968 pass, 0 fail,
+  exit 0** — all eight spawn rows green with the corrected pin. The spawned-suite pin moved
+  honestly: 626 + 100 + 1 = 727 → **629 + 100 + 1 = 730** (re-measured on the amended bytes;
+  exactly 3 new test declarations, 0 deleted — 626 + 3 = 629; 629 + 100 = 729; 729 + 1 =
+  730), the pin comment extended and the value corrected to 730, asserted green inside all
+  eight spawn rows of the probe SOLO. `npm run lint` exit 0; `npm run typecheck` exit 0;
+  `git diff --check` exit 0. Prohibited-path diff vs
+  `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY. The two fixes amend the EXISTING route-(c)
+  commit (message unchanged) — no push.
+
+### 32.54 Codex-review gate round 42 (2026-11-12, two findings on §32.53's amended bytes — review-mwdbbf0x-xry6ea, 2×P2, the returned coarse identity's comparison against the retained reference and the replay horizon/supersession stale-kernel mirror, both reproduced by the reviewer; §32.53 style — add-only; the amended route-(c) commit carries them; message unchanged)
+
+- **Finding 1 [P2] Compare coarse returned identities against the retained reference —
+  tools/shell-wait-probe/local-process-observation.mjs:1304-1307 — FIXED (the RETURNED
+  COARSE COMPARISON).** The reviewer's finding verbatim: "When the exact bridge becomes
+  unavailable during exit polling, this guard discards returned coarse identities even when
+  they prove replacement. Reproduced through the default inspector: capture
+  `kinfo:1:100000`, verify it before SIGTERM, then return a double-verified ps identity from
+  second 2 followed by absence. Termination reports `exited: true, failure: null` despite
+  observing PID reuse. Compare returned coarse evidence against the captured/learned
+  generation; only reference initialization should require exact evidence." Confirmed
+  exactly (RED re-verified on the committed 2a6b6dc4 bytes in a clean `git clone --shared`
+  copy under /tmp with the new deterministic rows copied in — no `git worktree add`; the
+  clone's tools verified byte-untouched: the schedule — the exact capture
+  `kinfo:1:100000`, the matching pre-SIGTERM verification, the polling read degrading to the
+  double-verified ps text of second 2, the next read observing the gone pid — measured
+  `{"attempted":true,"signalled":"SIGTERM","exited":true,"failure":null}`). **The fix (the
+  successful-return candidate loop):** a returned COARSE identity is now compared against
+  the retained exact reference with the same representation-aware relation the error-carry
+  paths use (an exact reference side: a different second is definitively different; the
+  reference's own second or an unresolvable pair is never positive evidence) and latches on
+  a definitive difference; only REFERENCE INITIALIZATION remains exact-only (a coarse
+  candidate with no retained reference still seeds nothing). RED→GREEN: GREEN measured
+  `{"attempted":true,"signalled":"SIGTERM","exited":false,"failure":"the exact fake-ZCode
+  process identity changed during termination"}`. **CONTROLS (both measured, both bytes
+  identical):** the returned coarse identity in the reference's own second keeps the lawful
+  exit (`exited: true, failure: null`); with NO learned reference (a coarse capture) the
+  returned coarse identity still seeds nothing and keeps the lawful exit.
+- **Finding 2 [P2] Mirror stale-kernel exclusions in the persisted exit replay —
+  tools/shell-wait-probe/driver.mjs:7247 — FIXED (the STALE-KERNEL MIRROR).** The reviewer's
+  finding verbatim: "A delayed exact read can now be ignored by runtime adjudication but
+  still advance the replay's presence horizon through this same-generation check.
+  Reproduced with baseline window `[6050,6100]`, an exact read collected during `[5000,5100]`
+  whose final ps query completes at 7000, and confirmed absence during `[6200,6800]`:
+  runtime returns `disappeared`, while replay refuses with `exit-absence-overlaps-presence`
+  and `exit-absence-superseded`. Apply the runtime's kernel-window staleness exclusion to
+  the replay horizon and supersession walks so valid persisted runtime results remain
+  creditable." Confirmed exactly (RED re-verified on the 2a6b6dc4 bytes in the same clone:
+  the schedule measured runtime `{"status":"disappeared","reason":null}` against replay
+  `{"settled":false,"refusals":["exit-absence-overlaps-presence",
+  "exit-absence-superseded"]}`). **The fix (the replay's walks):** a `staleKernelPresence`
+  classifier (the read's kernel window — `observedIdentityCompletedEpochMs` as the upper
+  bound against the horizon's collection START, initialized from the presence verdict's
+  dispatch and advanced with every advancing read) now mirrors the runtime's round-41
+  exclusion in BOTH walks: a definitively stale read never advances the replay horizon
+  (nor its collection start) and never participates in the supersession check; legacy,
+  malformed and supplied-invalid windows keep their existing tolerance byte-identically.
+  RED→GREEN: GREEN measured the replay `{"settled":true,"refusals":[]}` — the runtime/replay
+  agreement restored. **CONTROLS (all measured, both bytes identical):** a same-generation
+  read whose kernel window was collected AFTER the baseline start ([6300,6400] against the
+  dispatch 6050) still advances the horizon — the delayed absence overlaps that fresh
+  presence and the existing `exit-absence-overlaps-presence` refusal stands; the plain
+  settled record (no delayed read) replays `{"settled":true,"refusals":[]}` unchanged.
+- **Honest notes:** two authoring iterations on F2 were needed (disclosed): the stale
+  classifier was first placed inside the absence-admission block and the supersession
+  walk — a sibling scope — threw `ReferenceError: staleKernelPresence is not defined`; the
+  helper/state were hoisted to the function scope with a lazy horizon-start initialization
+  (the presence verdict is defined later in the block), and the closure's mutable
+  `number | null` needed a `typeof` narrowing for `tsc` (`TS18047`). Both were corrected
+  BEFORE the gates, then the directed rows, local/native SOLO AND the final-bytes probe
+  SOLO were re-measured on the exact final bytes. The pin derivation was counted before the
+  pin edit (`rg -c '^\s*test\(' tests/shell-wait-local-process.test.mjs`: 629 before the
+  additions, 633 after).
+- **Focused prior-counterexample re-run (2026-11-12, the amended bytes):** the `same-second`
+  name family = **102 tests, 102 pass, 0 fail** (ZERO movement — the four new rows join no
+  family); the `integration-completion` name family = **82 tests, 82 pass, 0 fail**;
+  `node --test tests/test-selection.test.mjs` = **6 tests / 6 pass / 0 fail** exit 0 — each
+  new RED schedule was demonstrated RED on the 2a6b6dc4 bytes before its fix (the measured
+  states above) and GREEN on the amended bytes.
+- **Battery (executed 2026-11-12 on the amended bytes):** local SOLO = **633 tests, 633
+  pass, 0 fail, exit 0** (629 prior + 4 — exactly 4 new test declarations, 0 deleted);
+  native SOLO = **100 tests, 100 pass, 0 fail, exit 0**; probe SOLO = **968 tests, 968 pass,
+  0 fail, exit 0** — all eight spawn rows green with the corrected pin (the final-bytes run
+  is the one cited). The spawned-suite pin moved honestly: 629 + 100 + 1 = 730 → **633 + 100
+  + 1 = 734** (re-measured on the amended bytes; exactly 4 new test declarations, 0 deleted
+  — 629 + 4 = 633; 633 + 100 = 733; 733 + 1 = 734), the pin comment extended and the value
+  corrected to 734, asserted green inside all eight spawn rows of the probe SOLO.
+  `npm run lint` exit 0; `npm run typecheck` exit 0; `git diff --check` exit 0.
+  Prohibited-path diff vs `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY. The two fixes
+  amend the EXISTING route-(c) commit (message unchanged) — no push.
+
+### 32.55 Codex-review gate round 43 (2026-11-12, one finding on §32.54's amended bytes — review-mwdfke9y-2ayusc, 1×P2, the held-turn error carry compared against the captured generation before seeding, reproduced by the reviewer through the observer seams; §32.54 style — add-only; the amended route-(c) commit carries it; message unchanged)
+
+- **Finding 1 [P2] Compare first error carries against the captured generation —
+  tools/shell-wait-probe/driver.mjs:1679-1680 — FIXED (the CAPTURE COMPARISON BEFORE ANY
+  SEEDING).** The reviewer's finding verbatim: "On the first held-phase inspection,
+  `heldTurnLearnedExactReference` is still null even when the capture contains an exact
+  identity. If kinfo/ps composition then detects a different-second generation and throws
+  with the later coarse identity, this guard discards that evidence without setting the
+  terminal latch. A subsequent degraded-to-matching cleanup read can therefore authorize
+  SIGTERM. Using the existing observer seams, I reproduced `verifiedProcessTerminated: true`,
+  no cleanup errors, and a SIGTERM call after that generation-change refusal. Compare
+  error-carried identities against the capture's own and carried identities as well as the
+  learned reference, or seed the reference from the capture before inspection." Confirmed
+  exactly (RED re-verified on the committed 255d893c bytes in a clean `git clone --shared`
+  copy under /tmp with the new deterministic rows copied in — no `git worktree add`; the
+  clone's tools verified byte-untouched: the schedule — the exact capture
+  `kinfo:1:100000`, the first held-phase inspection's kinfo read observing `{sec:1,
+  usec:100000}` before its ps query answers the second-2 text (the composition disagreement
+  throwing the `identity changed` refusal carrying the later coarse identity), the cleanup
+  and termination reads degrading to the matching second-1 ps text, the post-signal read
+  observing the gone pid — measured `verifiedProcessTerminated: true` with
+  `cleanup.errors: []`). **The fix (the held-turn reader's error-carry branch):** every error
+  carry is compared against the CAPTURE's own identity AND its exact carry
+  (`expected.startIdentity` / `expected.observedStartIdentity`) with the established
+  representation-aware relation (an exact side against the coarse second: a different second
+  is definitively different; the capture's own second and an unresolvable pair stay
+  non-definitive) BEFORE the reference-null seeding/latching and the with-reference
+  comparison — a definitive difference sets `heldTurnGenerationChanged` and rethrows; the
+  same-generation and unresolvable cases fall through to the existing branches
+  byte-identically. This is the same protocol family as the round-38/42 driver and
+  round-39/42 termination comparisons. **APPROACH CHOICE (the comparison over capture
+  pre-seeding, per the finding's two options):** pre-seeding
+  `heldTurnLearnedExactReference` from the capture's exact identity would alter the
+  first-exact learning order the round-25/35 rules establish (and the reference's observable
+  state on every read, including the lawful first-exact seeding shapes), while the
+  comparison protects exactly the discarded-evidence path the finding names without changing
+  any lawful seeding — the minimal, existing-semantics-preserving option. RED→GREEN: GREEN
+  measured `{"verified":false,"errors":["the exact fake-ZCode process identity changed
+  before signalling"]}` (the termination refuses before its signal gate). **CONTROLS (all
+  measured, both bytes identical):** an error carry EQUAL to the exact capture proves no
+  difference — the observed-then-gone absence stays lawful (the turn resolves,
+  `cleanup.errors: []`); an UNRESOLVABLE capture identity (`S-SYNTHETIC-CAPTURE`) keeps the
+  documented uncertainty tolerance — the exact carry seeds and the absent pid stays a lawful
+  exit (`cleanup.errors: []`); the normal no-carry success path is unchanged
+  (`cleanup.errors: []`).
+- **Honest notes:** no authoring iteration was needed (the first patch went green) and no
+  incidental gate failure occurred (the probe SOLO passed in a single full run; the pin
+  derivation was counted before the pin edit (`rg -c '^\s*test\('
+  tests/shell-wait-local-process.test.mjs`: 633 before the additions, 635 after)). The
+  reviewer's SIGTERM-call observation is instrumented at their wrapper level; the default
+  held-turn termination's signal attempt on the fake pid is ESRCH-caught, so the row measures
+  the equivalent cleanup outcome (`verifiedProcessTerminated` plus the named refusal) rather
+  than the raw kill call.
+- **Focused prior-counterexample re-run (2026-11-12, the amended bytes):** the `same-second`
+  name family = **102 tests, 102 pass, 0 fail** (ZERO movement — the two new rows join no
+  family); the `integration-completion` name family = **82 tests, 82 pass, 0 fail**;
+  `node --test tests/test-selection.test.mjs` = **6 tests / 6 pass / 0 fail** exit 0 — the
+  new RED schedule was demonstrated RED on the 255d893c bytes before the fix (the measured
+  state above) and GREEN on the amended bytes.
+- **Battery (executed 2026-11-12 on the amended bytes):** local SOLO = **635 tests, 635
+  pass, 0 fail, exit 0** (633 prior + 2 — exactly 2 new test declarations, 0 deleted);
+  native SOLO = **100 tests, 100 pass, 0 fail, exit 0**; probe SOLO = **968 tests, 968 pass,
+  0 fail, exit 0** — all eight spawn rows green with the corrected pin. The spawned-suite
+  pin moved honestly: 633 + 100 + 1 = 734 → **635 + 100 + 1 = 736** (re-measured on the
+  amended bytes; exactly 2 new test declarations, 0 deleted — 633 + 2 = 635; 635 + 100 =
+  735; 735 + 1 = 736), the pin comment extended and the value corrected to 736, asserted
+  green inside all eight spawn rows of the probe SOLO. `npm run lint` exit 0;
+  `npm run typecheck` exit 0; `git diff --check` exit 0. Prohibited-path diff vs
+  `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY. The fix amends the EXISTING route-(c)
+  commit (message unchanged) — no push.
+
+### 32.56 Codex-review gate round 44 (2026-11-12, two findings on §32.55's amended bytes — review-mwdihq4h-ej561x, 2×P2, the first successful exact read compared against the captured generation and the replay own-identity stale-window exclusion, both reproduced by the reviewer; §32.55 style — add-only; the amended route-(c) commit carries them; message unchanged)
+
+- **Finding 1 [P2] Compare first successful exact reads against the captured generation —
+  tools/shell-wait-probe/local-process-observation.mjs:1307-1309 — FIXED (the SUCCESS
+  CANDIDATE CAPTURE COMPARISON).** The reviewer's finding verbatim: "With a coarse capture
+  and coarse pre-signal reads, the exact reader can recover during SIGTERM polling and
+  observe a different-second successor. This branch learns that successor without comparing
+  it against `identity.startIdentity`. Using the default inspector seams, a second-1 capture
+  followed by an exact second-2 observation and absence returned `exited: true, failure:
+  null`. Compare successful candidates against the captured generation before initializing
+  the reference, as the error-carry path already does." Confirmed exactly (RED re-verified on
+  the committed f0117075 bytes in a clean `git clone --shared` copy under /tmp with the new
+  deterministic rows copied in — no `git worktree add`; the clone's tools verified
+  byte-untouched: the schedule — the coarse second-1 capture, the coarse matching pre-signal
+  reads, the SIGTERM polling double read recovering the exact second-2 generation, the next
+  read observing the gone pid — measured `{"attempted":true,"signalled":"SIGTERM",
+  "exited":true,"failure":null}`). **The fix (the success-return candidate loop):** every
+  successful candidate is compared against the CAPTURE's own identity and its exact carry
+  with the representation-aware relation (an exact side against the coarse second: a
+  different second is definitively different) BEFORE initializing the reference — a
+  definitive difference sets `terminationGenerationChanged` instead of seeding; this is the
+  same protocol the round-43 error-carry path and the round-39/42 termination comparisons
+  apply. Same-generation or unresolvable candidates keep the lawful seeding. RED→GREEN:
+  GREEN measured `{"attempted":true,"signalled":"SIGTERM","exited":false,"failure":"the exact
+  fake-ZCode process identity changed during termination"}`. **CONTROLS (both measured, both
+  bytes identical):** an exact observation in the coarse capture's OWN second proves no
+  difference — the gone pid remains the lawful exit (`exited: true, failure: null`); a
+  MATCHING exact capture with its own exact observation keeps the lawful exit.
+- **Finding 2 [P2] Exclude stale own identities when initializing replay retention —
+  tools/shell-wait-probe/driver.mjs:7860-7861 — FIXED (the STALE-WINDOW EXCLUSION ON THE
+  OWN-IDENTITY INITIALIZATION).** The reviewer's finding verbatim: "When an exact
+  observation has kernel collection bounds but no separate `observedStartIdentity`, this
+  fallback seeds `candidateExact` even if those bounds definitively predate the baseline.
+  The runtime explicitly excludes that stale identity. I reproduced a delayed predecessor
+  followed by the current same-second generation and confirmed absence: runtime returned
+  `disappeared`, but replay refused with `exit-reuse-latched`; removing only the stale read
+  made replay settle. Apply the stale-window exclusion to own-identity initialization too,
+  independently of whether an exact carry exists." Confirmed exactly (RED re-verified on
+  the f0117075 bytes in the same clone: the schedule — the coarse baseline [6050,6100], the
+  delayed predecessor `kinfo:1:100000` with kernel bounds [5000,5100] and NO separate
+  observedStartIdentity, the current `kinfo:1:500000` at [7040,7200,7250] with bounds
+  [7050,7100], the confirmed absence at [7300,7600] — measured runtime
+  `{"status":"disappeared","reason":null}` against replay `{"settled":false,
+  "refusals":["exit-reuse-latched"]}`). **The fix (the learning admission):** the
+  candidate's own exact identity takes the SAME kernel-window stale exclusion the carried
+  branch already applies (`candidateLearnStaleDiscarded`: the completed bound strictly
+  before the mirrored horizon's dispatch start, using the existing carried-lower resolution)
+  — a stale own identity never initializes the replay reference; non-stale and legacy
+  windows keep the existing learning. RED→GREEN: GREEN measured the replay
+  `{"settled":true, "refusals":[]}` — runtime/replay agreement restored. **CONTROLS (both
+  measured, both bytes identical):** the stale-read-free record replays settled; a non-stale
+  own identity (kernel [6300,6400] against the dispatch 6050) still seeds the retention —
+  the later same-second observation is the detected replacement
+  (`exit-reuse-latched`).
+- **Honest note (amended by the round-45 self-review P3 correction):** two test-authoring
+  slips were caught in the round-44 pass (the round-44 control schedule initially reused the
+  RED arm's polling ps text for the F1 controls, and a scripted replacement additionally
+  rewrote the round-39 row's two-argument `runTermination(CAPTURE, kinfo)` calls to
+  three-argument calls with a `TEXT_2` reference the round-39 describe does not define — a
+  `ReferenceError` surfaced by the local SOLO). The FIRST correction replaced `TEXT_2` with
+  `TEXT_1`, parameterized the F1 controls with their own polling text, and re-ran the gates —
+  but it did NOT revert the two-argument→three-argument rewrite: the round-39 helper takes
+  two parameters, so the third argument was ignored (a behavior no-op) while the bytes no
+  longer matched the base. THIS amended note supersedes the earlier "the round-39 row was
+  restored" claim, which was inaccurate: the round-45 self-review P3 caught the 200/2
+  numstat against f0117075, and the correction has now restored those two calls to their
+  ORIGINAL two-argument bytes (`git diff --numstat f0117075..HEAD --
+  tests/shell-wait-local-process.test.mjs` = **198/0**, the single hunk being the round-44
+  describe's pure insertion; round-39 row changes = ZERO). The round-39 filtered rows,
+  the round-44 describe, the local SOLO and the family/selection gates were re-run green on
+  the corrected bytes. No production iteration was needed and no incidental gate failure
+  occurred (the probe SOLO passed in a single full run; the pin derivation was counted
+  before the pin edit
+  (`rg -c '^\s*test\(' tests/shell-wait-local-process.test.mjs`: 635 before the additions,
+  639 after)).
+- **Focused prior-counterexample re-run (2026-11-12, the amended bytes):** the `same-second`
+  name family = **102 tests, 102 pass, 0 fail** (ZERO movement — the four new rows join no
+  family); the `integration-completion` name family = **82 tests, 82 pass, 0 fail**;
+  `node --test tests/test-selection.test.mjs` = **6 tests / 6 pass / 0 fail** exit 0 — each
+  new RED schedule was demonstrated RED on the f0117075 bytes before its fix (the measured
+  states above) and GREEN on the amended bytes.
+- **Battery (executed 2026-11-12 on the amended bytes):** local SOLO = **639 tests, 639
+  pass, 0 fail, exit 0** (635 prior + 4 — exactly 4 new test declarations, 0 deleted);
+  native SOLO = **100 tests, 100 pass, 0 fail, exit 0**; probe SOLO = **968 tests, 968 pass,
+  0 fail, exit 0** — all eight spawn rows green with the corrected pin. The spawned-suite
+  pin moved honestly: 635 + 100 + 1 = 736 → **639 + 100 + 1 = 740** (re-measured on the
+  amended bytes; exactly 4 new test declarations, 0 deleted — 635 + 4 = 639; 639 + 100 =
+  739; 739 + 1 = 740), the pin comment extended and the value corrected to 740, asserted
+  green inside all eight spawn rows of the probe SOLO. `npm run lint` exit 0;
+  `npm run typecheck` exit 0; `git diff --check` exit 0. Prohibited-path diff vs
+  `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY. The two fixes amend the EXISTING
+  route-(c) commit (message unchanged) — no push.
+
+### 32.57 Codex-review gate round 45 (2026-11-12, one finding on §32.56's amended bytes — review-mwdm7a6g-7jhabk, 1×P2, the coarse error carry compared against the captured generation when no reference exists, reproduced by the reviewer through the default inspector seams; §32.56 style — add-only; the amended route-(c) commit carries it; message unchanged)
+
+- **Finding 1 [P2] Compare coarse error carries against the captured generation —
+  tools/shell-wait-probe/local-process-observation.mjs:1281-1282 — FIXED (the COARSE-CAPTURE
+  ERROR-CARRY COMPARISON).** The reviewer's finding verbatim: "When capture and pre-signal
+  reads are coarse, no exact reference exists. If the bridge recovers during SIGTERM polling
+  and kinfo observes the original generation but the subsequent ps query observes a
+  different-second successor, the inspector throws with that successor's coarse identity.
+  This guard ignores the evidence because the learned reference is null. Using the default
+  inspector seams, that schedule followed by absence returned `exited: true, failure: null`
+  despite proving replacement. Compare coarse error carries against the captured identity
+  before allowing a later absence to count as successful cleanup." Confirmed exactly (RED
+  re-verified on the committed 71e7a9db bytes in a clean `git clone --shared` copy under /tmp
+  with the new deterministic rows copied in — no `git worktree add`; the clone's tools
+  verified byte-untouched: the schedule — the coarse second-1 capture, the coarse matching
+  pre-signal reads, the SIGTERM polling read whose kinfo query observes the ORIGINAL
+  generation `{sec:1, usec:100000}` before its ps query answers the second-2 successor (the
+  composition disagreement throwing the `identity changed` refusal carrying the later coarse
+  ps identity), the post-signal read observing the gone pid — measured
+  `{"attempted":true,"signalled":"SIGTERM","exited":true,"failure":null}`). **The fix (the
+  termination tracker's coarse error-carry branch):** a coarse carry with NO retained
+  reference is now compared against the CAPTURED identity and its exact carry with the
+  established representation-aware relation (coarse-vs-coarse different text, or
+  exact-vs-coarse different second, is definitively different; the capture's own second and
+  an unresolvable pair stay non-definitive) — a definitive difference latches; the
+  with-reference consumption keeps its existing comparison. This completes the capture-
+  comparison family (round 39 error carries, round 44 successful candidates, round 42 coarse
+  returned evidence). RED→GREEN: GREEN measured `{"attempted":true,"signalled":"SIGTERM",
+  "exited":false,"failure":"the exact fake-ZCode process identity changed during
+  termination"}`. **CONTROLS (all measured, both bytes identical):** a carry in the coarse
+  capture's OWN second keeps the lawful observed-then-gone absence (`exited: true, failure:
+  null`); a MATCHING exact capture with its own exact carry keeps the lawful absence; a plain
+  no-carry absence keeps the lawful exit. **ENTANGLED PRIOR ROW updated per this finding
+  (disclosed):** the round-36 Finding-1 controls row's `no-reference` arm previously asserted
+  that a different-second coarse carry with no reference stays lawful (`exited: true`) —
+  under this round's rule that carry is definitively foreign and now LATCHES; the arm's
+  comment, name tail and assertion were updated to the new rule (`[false, 'the exact
+  fake-ZCode process identity changed during termination']`), with the never-seeding
+  contract (reference initialization stays exact-only) preserved.
+- **Honest notes:** (a) one arithmetic slip on the spawned-suite pin was caught by the FIRST
+  probe-SOLO attempt — the pin was initially written as 743 while 641 + 100 + 1 = 742; the
+  spawn rows failed on the mis-written count, the arithmetic was corrected to 742 (comment
+  arithmetic written out: 639 + 2 = 641; 641 + 100 = 741; 741 + 1 = 742) and the full probe
+  SOLO re-ran 968/968; (b) one authoring iteration on the fix — the first patch inserted the
+  new outer block without its closing brace (a `SyntaxError` surfaced by the directed run
+  before any gate), repaired and re-checked; no label was changed. The pin derivation was
+  counted before the pin edit (`rg -c '^\s*test\(' tests/shell-wait-local-process.test.mjs`:
+  639 before the additions, 641 after).
+- **Focused prior-counterexample re-run (2026-11-12, the amended bytes):** the `same-second`
+  name family = **102 tests, 102 pass, 0 fail** (ZERO movement — the two new rows join no
+  family); the `integration-completion` name family = **82 tests, 82 pass, 0 fail**;
+  `node --test tests/test-selection.test.mjs` = **6 tests / 6 pass / 0 fail** exit 0 — the
+  new RED schedule was demonstrated RED on the 71e7a9db bytes before the fix (the measured
+  state above) and GREEN on the amended bytes.
+- **Battery (executed 2026-11-12 on the amended bytes):** local SOLO = **641 tests, 641
+  pass, 0 fail, exit 0** (639 prior + 2 — exactly 2 new test declarations, 0 deleted); native
+  SOLO = **100 tests, 100 pass, 0 fail, exit 0**; probe SOLO = **968 tests, 968 pass, 0 fail,
+  exit 0** — all eight spawn rows green with the corrected pin. The spawned-suite pin moved
+  honestly: 639 + 100 + 1 = 740 → **641 + 100 + 1 = 742** (re-measured on the amended bytes;
+  exactly 2 new test declarations, 0 deleted), the pin comment extended (including the
+  initial 743 mis-write disclosure) and the value corrected to 742, asserted green inside all
+  eight spawn rows of the probe SOLO. `npm run lint` exit 0; `npm run typecheck` exit 0;
+  `git diff --check` exit 0. Prohibited-path diff vs
+  `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY. The fix amends the EXISTING route-(c)
+  commit (message unchanged) — no push.
+
+### 32.58 Codex-review gate round 46 (2026-11-12, one finding on §32.57's amended bytes — review-mwdq8hy0-vxnoc5, 1×P2, the primary exact-identity mismatch rejection riding the identity and kernel bounds, reproduced by the reviewer through the default inspector seams; §32.57 style — add-only; the amended route-(c) commit carries it; message unchanged)
+
+- **Finding 1 [P2] Preserve kernel bounds when rejecting the primary exact identity —
+  tools/shell-wait-probe/local-process-observation.mjs:3187-3188 — FIXED (the PRIMARY
+  MISMATCH RIDE).** The reviewer's finding verbatim: "When an exact read's kernel collection
+  predates a newer verified presence but its trailing `ps` query completes afterward, this
+  rejection discards the observed identity and kernel bounds. `adjudicateLocalExit`
+  consequently dates the mismatch at completion and incorrectly latches PID reuse. Using the
+  default inspector seams, I reproduced `pid-start-identity-reused` with `expectedStartIdentity`
+  supplied, versus lawful `disappeared` for identical evidence without it. Preserve the
+  identity and its collection bounds here, as the adjacent carried-identity refusal already
+  does." Confirmed exactly (RED re-verified on the committed 818e67de bytes in a clean
+  `git clone --shared` copy under /tmp with the new deterministic rows copied in — no
+  `git worktree add`; the clone's tools verified byte-untouched: the schedule — the exact
+  read observing `kinfo:1:100000` with kernel bounds [1220,1250] against the expected/newer
+  `kinfo:1:500000`, the trailing ps completing later (the injected `nowEpochMs` counter),
+  the confirmed absence at [1750,1900] — measured the bare verdict
+  `{"status":"unestablished","reason":"start-identity-generation-changed"}` with
+  `observedStartIdentity: undefined` and adjudicateLocalExit returning
+  `{"status":"unestablished","reason":"pid-start-identity-reused"}` — the mismatch dated at
+  the delayed completion (the `identityReadEpochMs` fallback) and latched). **The fix (the
+  primary mismatch rejection):** the verdict now RIDES the observed identity
+  (`observedStartIdentity`) and its collection bounds (`observedIdentityReadEpochMs` from the
+  kernel `observedIdentityTakenEpochMs`, `observedIdentityCompletedEpochMs`), exactly like
+  the adjacent carried-identity refusal. adjudicateLocalExit then classifies the carried
+  interval against the presence horizon with the real collection window: definitively stale
+  is old-era evidence that never latches. RED→GREEN: GREEN measured the verdict riding
+  `{"observedStartIdentity":"kinfo:1:100000","observedIdentityReadEpochMs":1220,
+  "observedIdentityCompletedEpochMs":1250}` and adjudicateLocalExit returning
+  `{"status":"disappeared","reason":null}`. **CONTROLS (all measured, both bytes
+  identical):** the identical evidence WITHOUT `expectedStartIdentity` stays
+  `established` (the observer accepts the read; the adjudication's own stale-window
+  exclusions keep the lawful classification); a REAL replacement (a kernel window starting
+  after the baseline, [1620,1700] against [1550,1600]) still latches
+  `pid-start-identity-reused`; the kernel window EQUAL to the presence window ([1550,1600])
+  is the named `pid-start-identity-ambiguous` fact (never a raw latch).
+- **Honest notes:** the probe SOLO was re-run on the exact final bytes (the only post-run
+  edit was removing an unused `DIFFERENT` const from the round-47 describe — zero runtime
+  effect, caught by `no-unused-vars` and re-measured green); the pin derivation was counted
+  before the pin edit (`rg -c '^\s*test\(' tests/shell-wait-local-process.test.mjs`: 641
+  before the additions, 643 after). No incidental gate failure occurred.
+  (Self-review annotation correction, recorded): this section was originally MISLABELED —
+  the heading and the new describe/source comment carried "round 47 /
+  review-mwdfke9y-2ayusc / on §32.55's amended bytes (818e67de)", copied from the §32.55
+  record; the finding's `:3187-3188` line numbers prove the review targeted the §32.57
+  bytes (107afb7a), where the same rejection sits at :3163-3165 (site-byte-equivalent).
+  The heading, describe name and source comment have been relabeled to round 46 /
+  review-mwdq8hy0-vxnoc5 / §32.57's amended bytes; the RED re-verification was
+  independently re-reproduced on the true 107afb7a bytes (RED
+  `pid-start-identity-reused` / GREEN `disappeared`), so the measured conclusion stands
+  unchanged.
+- **Focused prior-counterexample re-run (2026-11-12, the amended bytes):** the `same-second`
+  name family = **102 tests, 102 pass, 0 fail** (ZERO movement — the two new rows join no
+  family); the `integration-completion` name family = **82 tests, 82 pass, 0 fail**;
+  `node --test tests/test-selection.test.mjs` = **6 tests / 6 pass / 0 fail** exit 0 — the
+  new RED schedule was demonstrated RED on the 818e67de bytes before the fix (the measured
+  state above) and GREEN on the amended bytes.
+- **Battery (executed 2026-11-12 on the amended bytes):** local SOLO = **643 tests, 643
+  pass, 0 fail, exit 0** (641 prior + 2 — exactly 2 new test declarations, 0 deleted); native
+  SOLO = **100 tests, 100 pass, 0 fail, exit 0**; probe SOLO = **968 tests, 968 pass, 0 fail,
+  exit 0** — all eight spawn rows green with the corrected pin. The spawned-suite pin moved
+  honestly: 641 + 100 + 1 = 742 → **643 + 100 + 1 = 744** (re-measured on the amended bytes;
+  exactly 2 new test declarations, 0 deleted — 641 + 2 = 643; 643 + 100 = 743; 743 + 1 =
+  744), the pin comment extended and the value corrected to 744, asserted green inside all
+  eight spawn rows of the probe SOLO. `npm run lint` exit 0; `npm run typecheck` exit 0;
+  `git diff --check` exit 0. Prohibited-path diff vs
+  `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY. The fix amends the EXISTING route-(c)
+  commit (message unchanged) — no push.
+
+### 32.59 Codex-review gate round 47 (2026-11-12, two findings on §32.58's amended bytes — review-mwdue8eb-56vwlf, 2×P2, the unrounded kernel creation compared against the precise write in the exact binding and the carried-exact check, and the replay retention sequence sorted by the runtime evidence-time key before reference learning, both reproduced by the reviewer; §32.58 style — add-only; the amended route-(c) commit carries them; message unchanged)
+
+- **Finding 1 [P2] Compare precise writes against unrounded kernel creation times —
+  tools/shell-wait-probe/local-process-observation.mjs:5446-5448 — FIXED (the UNROUNDED
+  KERNEL CREATION).** The reviewer's finding verbatim: "When kernel creation and the startup
+  write differ by less than a millisecond, this comparison can credit a successor created
+  after the write. For example, `kinfo:1700000000:300` represents creation at
+  `1700000000000.300`, but its rounded `startInstant` is `1700000000000`; a record written at
+  `1700000000000.200` therefore establishes successfully. Compare the kernel's unrounded
+  seconds/microseconds against `firstWritePreciseMs`, including in the carried-exact check
+  below, rather than treating rounded milliseconds as exact ordering evidence." Confirmed
+  exactly (RED re-verified on the committed 27e68db5 bytes in a clean `git clone --shared`
+  copy under /tmp checked out at 27e68db5 with the amended deterministic rows copied in — no
+  `git worktree add`; the clone's tools verified byte-untouched by an empty
+  `git diff --stat HEAD -- tools/`: the schedule — the exact identity `kinfo:1700000000:300`
+  (creation 1700000000000.3) against a record written at `firstWritePreciseMs`
+  1700000000000.2 — measured `{"status":"established","reasons":[]}` in the exact branch
+  under the rounded comparison). **The fix (both sites the reviewer named):** the exact
+  branch's upper comparison now uses the kernel's UNROUNDED creation
+  (`exactCreation.sec * 1000 + exactCreation.usec / 1000`) against `firstWritePreciseMs`
+  (the null fallback is unreachable in the exact branch and falls back to the prior rounded
+  upper arm byte-identically); the CARRIED-EXACT check takes the same unrounded upper
+  comparison (`carriedExactCreationPreciseMs`); both lower arms keep their rounded
+  whole-second fork-before tolerances by their own documented semantics (the reviewer named
+  only the write comparison). RED→GREEN: the amended bytes measure the exact branch and the
+  carried-exact check both refusing `{"status":"unestablished","reasons":
+  ["generation-start-second-mismatch"]}` on the reviewer's schedule. **CONTROLS (all
+  measured, both bytes green):** the creation-before-write arm (`kinfo:1699999999:500`),
+  the creation TIED with the write (`kinfo:1700000000:200` — the module's tie convention),
+  the write-after-creation arm (write 1700000000000.5), and the carried-exact
+  creation-before-write arm all keep `established`. **The implicated existing row's schedule
+  update:** the route (c) startup-duty successor arm (§32.12 Finding 1's describe) carried
+  an internally inconsistent fabrication (the identity text at the base creation with
+  `startInstantEpochMs` 1.5 s later) whose refusal rode the ROUNDED instant — under the
+  unrounded rule the refusal must come from the identity's own generation, so the arm now
+  fabricates a LATER exact generation (`kinfo:1793855522:123000`, unrounded creation
+  1793855522123 > the precise write 1793855520243) — the demonstrated-later refusal the arm
+  protects, re-measured green.
+- **Finding 2 [P2] Sort replay evidence before retaining exact generations —
+  tools/shell-wait-probe/driver.mjs:7411-7415 — FIXED (the EVIDENCE-TIME SORT before the
+  retention walk).** The reviewer's finding verbatim: "When persisted reads are not
+  chronological, this concatenation makes replay disagree with `adjudicateLocalExit`, which
+  explicitly sorts its inputs. With baseline `[6050,6100]`, an exact-A failed read collected
+  during `[6000,6050]` and completed at `6100`, followed chronologically by exact-B during
+  `[6600,6650]` completed at `6900`, runtime permits the subsequent confirmed disappearance.
+  Persisting B before A instead produces `exit-reuse-interval-ambiguous`; merely reversing
+  those array entries removes the refusal. Sort the merged retention sequence using the
+  runtime's evidence-time key and tie rank before learning references." Confirmed exactly
+  (RED measured on the same clean 27e68db5 clone with a deterministic probe of the three
+  arms: the persisted B-before-A order measured
+  `{"settled":false,"refusals":["exit-reuse-interval-ambiguous"]}` while the persisted
+  A-before-B order measured `{"settled":true,"refusals":[]}` and the plain arm
+  `{"settled":true,"refusals":[]}` — the two persisted orders DISAGREED, exactly the
+  reviewer's reproduction). **The fix:** the merged retention sequence (the selected
+  Companion refresh, the phase reads, the learned refresh evidence) is sorted with the
+  runtime adjudicator's OWN complete ordering key before the walk learns any reference — the
+  evidence-time instant (`observedIdentityReadEpochMs`, else the ABSENT read's completion,
+  else the identity-read instant, else the whole-read completion) with the decision rank as
+  the tie break (absent 0, established 1, unestablished 2) — never the persisted array
+  order. RED→GREEN: the amended bytes measure BOTH persisted orders — `[exactB, exactA,
+  absence]` and `[exactA, exactB, absence]` — settling with EMPTY refusals (the runtime's
+  permitted disappearance reproduced order-independently: the failed A predates the baseline
+  horizon, is skipped as old evidence, B learns, the absence confirms), and the plain arm
+  replays unchanged.
+- **Honest notes:** the new rows live in TWO round-47 describes in
+  tests/shell-wait-local-process.test.mjs (the F1 refusal row with its four-control row, and
+  the F2 persisted-order row with the plain arm — exactly 3 new test declarations, 0
+  deleted, counted with `rg -c '^\s*test\('`: 643 at HEAD, 646 on the amended bytes). The
+  pin was FIRST pushed to 749 on a misderived 5-declaration claim during the round's early
+  probe work; the probe SOLO's own spawned-suite guard FAILED against it (measured 747 vs
+  expected 749), the derivation was re-counted honestly and corrected to **643 + 3 = 646
+  local; 646 + 100 + 1 = 747 total** before the final green runs. The fix's source comments
+  and describe names were initially stamped "round 48 / review-mwdbbf0x-xry6ea" (copied from
+  §32.54's record while drafting the amendment); the review job record
+  (jobs/review-mwdue8eb-56vwlf.json, created 2026-11-12T17:49:17.700Z, branch diff against
+  HEAD~1 on the 27e68db5 worktree) proves the true round 47 / review-mwdue8eb-56vwlf —
+  relabeled everywhere BEFORE the final measured battery. `npm run typecheck` caught three
+  TS18047 nullability errors on the first fix draft; fixed with explicit null guards (the
+  exact branch's unreachable fallback rides the prior rounded arm; the carried check gained
+  an explicit non-null conjunct) — typecheck exit 0 re-measured. One mid-round probe SOLO
+  failed the repository-registration canary because TWO probe SOLO runs were left
+  overlapping with a `git worktree add` RED clone (an environmental concurrency artifact of
+  this round's measurement loop, not a code failure) — the battery below re-runs the probe
+  SOLO strictly alone. The F1 main row was demonstrated RED on the 27e68db5 bytes before the
+  fix (the measured state above) and the F2 disagreement likewise; both rows GREEN on the
+  amended bytes.
+- **Focused prior-counterexample re-run (2026-11-12, the final amended bytes):** the
+  `same-second` name family = **102 tests, 102 pass, 0 fail** (ZERO movement — the three new
+  rows join no family); the `integration-completion` name family = **82 tests, 82 pass,
+  0 fail**; `node --test tests/test-selection.test.mjs` = **6 tests / 6 pass / 0 fail**
+  exit 0.
+- **Battery (executed 2026-11-12 on the final amended bytes, sequentially, no concurrent
+  git operations):** local SOLO = **646 tests, 646 pass, 0 fail, exit 0** (643 prior + 3 —
+  exactly 3 new test declarations, 0 deleted); native SOLO inside the probe spawn rows =
+  100 tests; probe SOLO = **968 tests, 968 pass, 0 fail, exit 0** — all eight spawn rows
+  green with the corrected pin. The spawned-suite pin moved honestly: 643 + 100 + 1 = 744 →
+  **646 + 100 + 1 = 747** (re-measured on the final amended bytes; exactly 3 new test
+  declarations, 0 deleted — 643 + 3 = 646; 646 + 100 = 746; 746 + 1 = 747), the pin comment
+  extended and the value corrected to 747, asserted green inside all eight spawn rows of
+  the probe SOLO. `npm run lint` exit 0; `npm run typecheck` exit 0; `git diff --check`
+  exit 0. Prohibited-path diff vs `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY. The fix
+  amends the EXISTING route-(c) commit (message unchanged) — no push.
+
+### 32.60 Codex-review gate round 48 (2026-11-12, two findings on §32.59's amended bytes — review-mwe17z6i-3cs22y, 2×P2, the runtime evidence-time horizon order before the stateful stale-kernel filter, and the unrounded kernel creation in the exact spawn-witness orderings and their replay mirror, both reproduced by the reviewer; §32.59 style — add-only; the amended route-(c) commit carries them; message unchanged)
+
+- **Finding 1 [P2] Sort horizon evidence before applying the stale-kernel filter —
+  tools/shell-wait-probe/driver.mjs:7317-7320 — FIXED (the EVIDENCE-TIME HORIZON
+  ORDER).** The reviewer's finding verbatim: "When overlapping same-generation reads are
+  persisted out of collection order, this stateful filter makes replay order-dependent. With
+  baseline `[6050,6100]`, kernel reads `[6200,6250]` completing at `6900` and
+  `[6400,6450]` completing at `6500`, and absence `[6600,6800]`, replay incorrectly settles
+  when the 6500 read appears first but refuses when reversed; `adjudicateLocalExit`
+  consistently reports live. Sort the horizon sources using the runtime's evidence-time
+  ordering before advancing the horizon and applying this filter." Confirmed exactly (RED
+  re-verified on the committed e5f7f914 bytes in a clean `git clone --shared` copy under
+  /tmp checked out at e5f7f914 with the amended deterministic rows copied in — no
+  `git worktree add`; the clone's tools verified byte-untouched by an empty
+  `git diff --stat HEAD -- tools/`; the clone deleted after the measurements): the persisted
+  B-before-A order measured **settled TRUE with EMPTY refusals** — the stateful round-42
+  stale-kernel filter compared the delayed read's kernel window `[6200,6250]` against the
+  horizon dispatch B had already advanced to 6400, discarded it, the horizon stopped at
+  6500, and the absence `[6600,6800]` was admitted and correlated — the reviewer's
+  "incorrectly settles when the 6500 read appears first", while the reversed order refused.
+  **The fix:** the horizon sources walk in adjudicateLocalExit's COMPLETE ordering key —
+  the evidence-time instant (`observedIdentityReadEpochMs`, else the absent completion, else
+  the identity-read instant, else the whole-read completion) with the decision rank as the
+  tie break (absent 0, established 1, unestablished 2) — sorted BEFORE the walk advances
+  the horizon and applies the filter; the refreshed Companion endpoint rides BEFORE the
+  phase reads (the runtime's insertion order) ahead of the stable sort. RED→GREEN: the
+  amended bytes measure BOTH persisted orders at **settled FALSE with
+  `['exit-absence-overlaps-presence', 'exit-absence-superseded']`** — the sorted walk
+  reaches the delayed read first (its whole-read completion 6900 advances the horizon), the
+  absence's collection starts before that horizon and can never correlate, and the delayed
+  read's own 6900 completion supersedes the claimed absence — the runtime-live
+  classification reproduced order-independently. **CONTROLS (all measured):** the
+  chronological order (already the sorted order) keeps its refusal set byte-identically —
+  the controls row was GREEN on the PRE-fix clone too — and the plain absence record
+  settles with no refusals unchanged.
+- **Finding 2 [P2] Preserve microsecond ordering in exact spawn-witness checks —
+  tools/shell-wait-probe/local-process-observation.mjs:4810-4813 — FIXED (the UNROUNDED
+  CREATION in the exact witness orderings, runtime and replay).** The reviewer's finding
+  verbatim: "For sub-millisecond creation/write differences, this exact-mode comparison
+  credits contradictory evidence. A writer identity `kinfo:1:300` rounds to 1000 ms, so a
+  witness with `firstWriteEpochMs: 1000` and `firstWritePreciseMs: 1000.2` passes even
+  though the writer was created at 1000.3 ms; a targeted probe establishes the
+  Companion-to-daemon hop. Rounded child/parent instants similarly conceal inverted
+  creation order. Compare unrounded kernel creation times in exact-mode witness orderings
+  and their replay counterparts, retaining rounded values only for the persisted
+  representation." Confirmed exactly (RED on the same clean e5f7f914 clone): the
+  reviewer's schedule through the REAL join seam (`joinAncestryHops`, hop 1 — the writer
+  endpoint `kinfo:1:300` read [1100,1200], the daemon endpoint `kinfo:1:400` read
+  [2000,2500], witness boundary 1000, write 1000/1000.2) measured the hop **ESTABLISHED
+  with `witnessClass: 'spawn-boundary-capture'`** — the reviewer's "a targeted probe
+  establishes the Companion-to-daemon hop"; the replay counterpart (the persisted hop-1
+  `witnessClass` claim re-verified through the block's own digest-only projection) measured
+  the claim RIDING with an EMPTY witness-refusal list. **The fix (four sites — the runtime
+  pair and their replay mirrors):** the exact writer continuity ordering consumes the
+  kernel's UNROUNDED creation (`sec * 1000 + usec / 1000`) against the witness's PRECISE
+  write (`firstWritePreciseMs` when carried, the rounded `firstWriteEpochMs` otherwise);
+  the exact child/parent creation order (the `spawn-witness-creation-order-inverted`
+  conjunct) gained the same unrounded exact-mode arm — the rounded pair (child 1000.2 →
+  1000, writer 1000.3 → 1000) concealed the inverted spawn order; and the replay mirror
+  (`verifyPersistedSpawnWitnessEstablishment` in the join) carries BOTH arms byte-for-byte.
+  The rounded values remain the persisted representation (the exact-mode tuple's agreement
+  gates); the coarse arms are byte-identical. RED→GREEN: the amended bytes measure the
+  runtime hop refusing `spawn-witness-parent-generation-ambiguous` by name and the replay
+  mirror refusing the same label (the record unsettled). **CONTROLS (all measured):** (a)
+  the lawful tuple (write 1100/1100.5 after the unrounded creation 1000.3) ESTABLISHES with
+  its named witnessClass — the exact ordering untouched; (b) the child/parent inversion
+  control (child `kinfo:1:200` created 1000.2 vs writer 1000.3) refuses
+  `spawn-witness-creation-order-inverted` by its own label; (c) the rounded-only control
+  (coarse identities, the registered coarse windows) keeps its establishment
+  byte-identically; (d) the replay lawful control (write 1100.5) re-verifies with NO
+  spawn-witness refusal and settles.
+- **Honest notes:** the four new rows live in THREE round-48 describes in
+  tests/shell-wait-local-process.test.mjs (the horizon-order RED row with its two persisted
+  orders; its chronological/plain controls row; the exact witness ordering row with its
+  lawful/inversion/coarse controls; the replay witness mirror row with its lawful control) —
+  exactly 4 new test declarations, 0 deleted, counted with `rg -c '^\s*test\('`: 646 at
+  HEAD, 650 on the amended bytes. The pin moved honestly: 646 + 100 + 1 = 747 → **650 +
+  100 + 1 = 751** (re-measured on the amended bytes; 646 + 4 = 650; 650 + 100 = 750; 750 +
+  1 = 751), the pin comment extended and the value corrected to 751, asserted green inside
+  all eight spawn rows of the probe SOLO. Row development needed fixture iterations, all on
+  the amended bytes and all resolved BEFORE the RED/GREEN claims (each disclosed for
+  reproducibility): the two new describe callbacks were initially non-async (a load-time
+  SyntaxError caught by `node --check`); the witness factory's override spread leaked a
+  wrapper member into the closed v3 identity key set (shape-invalid); the inverted-child
+  control needed its own daemon endpoint identity (the child-foreign equality precedes the
+  creation-order conjunct); the coarse control needed boundary ≥ floor + 1000 (the coarse
+  child window); the replay block initially lacked the inline broker/transport observation
+  echoes and carried its marker outside the daemon read window. The F1 sort reorders every
+  record's horizon walk — the byte-stability controls (chronological + plain, the latter
+  GREEN pre-fix) and the full-suite greens below prove no existing row moved; the F2
+  unrounded arms fire only in exact mode — the §32 exact rows keep the ties-establish
+  convention (their writes postdate the unrounded creations) and the full-suite greens
+  cover them. `npm run typecheck` exit 0 on the first fix draft; no incidental gate
+  failure; the battery ran strictly serially with no concurrent git operations (the round-47
+  canary lesson applied).
+- **Focused prior-counterexample re-run (2026-11-12, the final amended bytes):** the
+  `same-second` name family = **102 tests, 102 pass, 0 fail** (ZERO movement — the four new
+  rows join no family); the `integration-completion` name family = **82 tests, 82 pass,
+  0 fail**; `node --test tests/test-selection.test.mjs` = **6 tests / 6 pass / 0 fail**
+  exit 0.
+- **Battery (executed 2026-11-12 on the final amended bytes, strictly serial):** local
+  SOLO = **650 tests, 650 pass, 0 fail, exit 0** (646 prior + 4 — exactly 4 new test
+  declarations, 0 deleted); probe SOLO = **968 tests, 968 pass, 0 fail, exit 0** — all
+  eight spawn rows green with the corrected pin 751. `npm run lint` exit 0;
+  `npm run typecheck` exit 0; `git diff --check` exit 0. Prohibited-path diff vs
+  `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY. The fix amends the EXISTING route-(c)
+  commit (message unchanged) — no push.
+
+### 32.61 Codex-review gate round 49 (2026-11-12, one finding on §32.60's amended bytes — review-mwe4v95u-4gjvp8, 1×P2, the admission replay's exact branch and its adjacent carried-exact check consuming the kernel's unrounded creation against the precise write — the runtime round-48 binding's replay mirror, reproduced by the reviewer; §32.60 style — add-only; the amended route-(c) commit carries it; message unchanged)
+
+- **Finding 1 [P2] Compare unrounded creation times in admission replay —
+  tools/shell-wait-probe/driver.mjs:6200-6202 — FIXED (the UNROUNDED KERNEL CREATION, the
+  admission-replay mirror).** The reviewer's finding verbatim: "When creation and
+  startup-write times differ by less than a millisecond, this replay still compares the
+  rounded `startInstant`, unlike the updated runtime check. For example, `kinfo:1:300`
+  represents creation at 1000.3 ms, but a startup write at 1000.2 ms passes because
+  `startInstant` is 1000. Using the existing round-48 replay fixture with those admission
+  timestamps returns `settled: true` with no refusals, crediting a process created after
+  the startup record. Apply the runtime's unrounded seconds/microseconds comparison here
+  and to the adjacent carried-exact check." Confirmed exactly (RED re-verified on the
+  committed fe4ac525 bytes in a clean `git clone --shared` copy under /tmp checked out at
+  fe4ac525 with the amended deterministic rows copied in — no `git worktree add`; the
+  clone's tools verified byte-untouched by an empty `git diff --stat HEAD -- tools/`; the
+  clone deleted after the measurements): the round-48 replay fixture's shape with the
+  reviewer's admission timestamps (the writer identity `kinfo:1:300` — unrounded creation
+  1000.3 — against the admission record `startOriginMs` 1000.1, write 1000/1000.2)
+  measured **settled TRUE with EMPTY refusals** — the rounded `startInstant` (1000) could
+  not see the creation postdating its own startup write. **The fix (both sites the
+  reviewer named):** the replay's exact admission branch consumes the kernel's UNROUNDED
+  creation (`replayExactCreation.sec * 1000 + replayExactCreation.usec / 1000`) against
+  the precise write (`identity.firstWritePreciseMs`) — mirroring the runtime's round-48
+  `generation-start-second-mismatch` binding under the replay's own frozen slot label
+  (`admission-start-mismatch`, the §32.12 mirror's label family); the ADJACENT CARRIED-EXACT
+  CHECK takes the same unrounded upper comparison (`carriedExactCreationPreciseMs`); both
+  lower arms keep their rounded whole-second fork-before tolerances by their own documented
+  semantics; the coarse darwin containment arm is byte-identical. RED→GREEN: the amended
+  bytes measure BOTH the exact branch and the carried-exact check refusing
+  `admission-start-mismatch` (the record unsettled) on the reviewer's schedule. **CONTROLS
+  (all measured, refusal sets byte-identical pre/post-fix):** (a) the lawful admission
+  (creation 1000.1 before the write 1100/1100.5 by ≥1 ms) settles with no refusals; (b) the
+  write TIED with the unrounded creation (1000.3 — the module's tie convention) settles
+  with no refusals; (c) the carried-exact creation BEFORE the write (`kinfo:1:100` —
+  1000.1 vs the 1000.2 write, the mixed-resolution observation shape: coarse
+  `observation.startIdentity`, exact verdict-level `observedStartIdentity`) settles with no
+  refusals.
+- **Honest notes:** the two new rows live in ONE round-49 describe in
+  tests/shell-wait-local-process.test.mjs (the unrounded RED row with the exact and
+  carried arms; its lawful/tie/carried-before-write controls row) — exactly 2 new test
+  declarations, 0 deleted, counted with `rg -c '^\s*test\('`: 650 at HEAD, 652 on the
+  amended bytes. The pin moved honestly: 650 + 100 + 1 = 751 → **652 + 100 + 1 = 753**
+  (re-measured on the amended bytes; 650 + 2 = 652; 652 + 100 = 752; 752 + 1 = 753), the
+  pin comment extended and the value corrected to 753, asserted green inside all eight
+  spawn rows of the probe SOLO. Row development needed fixture iterations, all resolved
+  BEFORE the RED/GREEN claims (each disclosed for reproducibility): the round-49 block
+  initially reused the round-48 replay block's second-1 daemon generation, whose hop-1
+  uncertainty window (`companionStart + 1000 > daemonStart` on a shared creation second)
+  refused `ancestry-endpoint-lifetime-unverifiable` without a witness claim — the daemon
+  generation moved to second 2 (`kinfo:2:400000`) with the companion endpoint's read
+  demonstrably after the daemon's entire creation window, making the hop lifetimes hold
+  STRICTLY so the admission generation rules are the schedule's only live conjuncts; the
+  carried-before-write control's first constant (`kinfo:1:100000`) was a microsecond
+  conversion error (100000 µs = 100 ms, creation 1100.0 — the ROUNDED upper arm refused it
+  pre-fix); corrected to `kinfo:1:100` (creation 1000.1). The unrounded arms fire only in
+  the exact branch / exact carries — the full-suite greens below cover the rounds 33-49
+  rows (the §32 exact rows keep the ties-establish convention; the coarse rows keep the
+  registered windows byte-identically). `npm run typecheck` exit 0 on the first fix draft;
+  no incidental gate failure; the battery ran strictly serially (no concurrent git
+  operations, no overlapping probe runs).
+- **Focused prior-counterexample re-run (2026-11-12, the final amended bytes):** the
+  `same-second` name family = **102 tests, 102 pass, 0 fail** (ZERO movement — the two new
+  rows join no family); the `integration-completion` name family = **82 tests, 82 pass,
+  0 fail**; `node --test tests/test-selection.test.mjs` = **6 tests / 6 pass / 0 fail**
+  exit 0.
+- **Battery (executed 2026-11-12 on the final amended bytes, strictly serial):** local
+  SOLO = **652 tests, 652 pass, 0 fail, exit 0** (650 prior + 2 — exactly 2 new test
+  declarations, 0 deleted); probe SOLO = **968 tests, 968 pass, 0 fail, exit 0** — all
+  eight spawn rows green with the corrected pin 753. `npm run lint` exit 0;
+  `npm run typecheck` exit 0; `git diff --check` exit 0. Prohibited-path diff vs
+  `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY. The fix amends the EXISTING route-(c)
+  commit (message unchanged) — no push.
+- **R50 self-review disclosure (2026-11-12, the debug remnant removed):** the round-49
+  amendment as originally committed (2d37fd0a) carried FOUR UNDISCLOSED debug remnant
+  lines — `R49DBG` `console.log` injections added to driver.mjs's four
+  `ancestry-endpoint-lifetime-unverifiable` push sites (the hop-1 strict, the hop-1 bound
+  window, the hop-2 strict and the hop-2 bound-window arms) during THIS section's recorded
+  hop-1 fixture iteration (the second-1 daemon-generation diagnosis) and never removed
+  before the amend; §32.61's fix claim and honest notes above did not mention them. Caught
+  by the round-50 self-review. The refusal semantics were NEVER changed (every push and
+  the complete else-if chain executed identically — which is why every gate above passed),
+  but any real probe run hitting a hop-1/hop-2 lifetime refusal would have printed
+  `R49DBG ...` to the driver's stdout. The four injections are REMOVED with every
+  surrounding refusal/control-flow byte restored (rg 'R49DBG' over tools/ and tests/ = 0);
+  because driver.mjs changed, the probe SOLO was RE-RUN on the corrected bytes (never a
+  byte-skip) together with the full battery below; the round-49 rows stay green (they
+  assert refusal labels, never stdout).
+- **Battery (re-executed 2026-11-12 on the debug-remnant-free bytes, strictly serial):**
+  local SOLO = **652 tests, 652 pass, 0 fail, exit 0**; the round-49 targeted rows = **2
+  tests, 2 pass, 0 fail**; probe SOLO = **968 tests, 968 pass, 0 fail, exit 0** — all
+  eight spawn rows green with pin 753; the `same-second` family = **102 tests, 102 pass,
+  0 fail**; the `integration-completion` family = **82 tests, 82 pass, 0 fail**;
+  `node --test tests/test-selection.test.mjs` = **6 tests / 6 pass / 0 fail** exit 0;
+  `npm run lint` exit 0; `npm run typecheck` exit 0; `git diff --check` exit 0.
+  Prohibited-path diff vs `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY. The removal
+  amends the EXISTING route-(c) commit (message unchanged) — no push.
+
+### 32.62 Codex-review gate round 50 (2026-11-13, two findings on §32.61's amended bytes — review-mwe9xpn0-7mhztk, 2×P2, the exact marker binding refusing the overlapping quantized tie of a downward-quantized child creation, and the transport replay seeding latching the contradictory carried/own exact identities, both reproduced by the reviewer; §32.61 style — add-only; the amended route-(c) commit carries them; message unchanged)
+
+- **Finding 1 [P2] Preserve sub-millisecond uncertainty in the exact marker binding —
+  tools/shell-wait-probe/local-process-observation.mjs:4790-4791 — FIXED (the OVERLAPPING
+  QUANTIZED TIE).** The reviewer's finding verbatim: "When a child's identity is
+  `kinfo:1:400` (creation at 1000.4 ms), its persisted start instant rounds to 1000. A
+  predecessor marker written at 1000.2 ms also rounds to 1000, so disabling the ambiguity
+  check credits this stale marker with `witnessClass: 'spawn-boundary-capture'`. This
+  reproduces through `joinAncestryHops`; the replay mirrors the same comparison. Preserve
+  the fractional marker time and compare against the unrounded kernel creation, or refuse
+  overlapping quantized timestamps rather than treating rounded equality as exact
+  evidence." Confirmed exactly (RED re-verified on the committed a420fc5e bytes in a clean
+  `git clone --shared` copy under /tmp checked out at a420fc5e with the amended
+  deterministic rows copied in — no `git worktree add`; the clone's tools verified
+  byte-untouched by an empty `git diff --stat HEAD -- tools/`; the clone deleted after the
+  measurements): the reviewer's schedule through `joinAncestryHops` hop 2 (the daemon
+  writer `kinfo:1:0` read [1500,2500], the transport child captured `kinfo:1:400` with
+  `childOsStartInstantMs` 1000, the marker captured identity `kinfo:1:400` at 1000)
+  measured the hop **ESTABLISHED with `witnessClass: 'spawn-boundary-capture'`** — the
+  stale marker credited. **The fix (option 2 of the reviewer's two, with the reason):**
+  the marker's persisted time is quantized to whole milliseconds by its OWN persisted
+  shape (`markerEpochMs` — no fractional member exists to preserve, so option 1 is
+  unavailable without a persisted-shape change), therefore the OVERLAPPING QUANTIZED TIE
+  is refused: in exact mode, when the child's exact identity is NOT millisecond-aligned
+  (`usec % 1000 !== 0`) AND quantizes DOWNWARD (`usec % 1000 < 500` — the persisted
+  `childOsStartInstantMs` understates the true creation), a marker tied with the persisted
+  instant overlaps the true creation window (the marker's true write lies inside
+  [persisted, persisted + 1)) and refuses `spawn-witness-marker-generation-ambiguous` —
+  the ambiguity is refused, never resolved as true (the module's convention; the coarse
+  band below already refuses the same overlap as ambiguous). A millisecond-ALIGNED child
+  keeps the §32 ties-establish convention byte-identically (its persisted instant IS the
+  true creation), and a marker strictly AFTER the persisted instant is demonstrably after
+  the true creation under BOTH quantization directions (unchanged). The replay mirror
+  (`verifyPersistedSpawnWitnessEstablishment`'s marker binding in the join) applies the
+  same refusal byte-for-byte. RED→GREEN: the amended bytes measure the runtime hop
+  refusing `spawn-witness-marker-generation-ambiguous` (the record unsettled). **CONTROLS
+  (all measured):** (a) the lawful marker a whole millisecond after the persisted instant
+  (1100 — its true write ∈ [1100, 1101) is strictly after the 1000.4 creation) keeps the
+  credit with its named witnessClass; (b) the ALIGNED tie (child `kinfo:1:0` — creation
+  exactly 1000.0, the persisted instant IS the true creation) tied with marker 1000 keeps
+  the tie convention byte-identically; (c) the coarse record keeps the registered
+  ambiguity band byte-identically (the marker inside the child's first possible second
+  refuses the coarse ambiguous label, no witnessClass).
+- **Finding 2 [P2] Latch contradictory exact identities while seeding transport replay —
+  tools/shell-wait-probe/driver.mjs:6964-6967 — FIXED (the WITHIN-READ CONTRADICTION
+  LATCH).** The reviewer's finding verbatim: "When the captured marker is coarse, the
+  upstream marker checks cannot distinguish two exact generations in its second. This loop
+  then seeds from the transport observation's carried identity but silently ignores a
+  different own identity. For example, a carry of `kinfo:4:200000` alongside an own
+  identity of `kinfo:4:400000`, followed by confirmed absence, still produces
+  `settled: true`. The runtime's phase-3 loop latches this contradiction, so replay must
+  likewise refuse a differing identity here instead of assuming the marker binding already
+  rejected it." Confirmed exactly (RED on the same clean a420fc5e clone): the transport
+  replay (the proven echo-consistent block with the phase-3 transport observation carrying
+  `observedStartIdentity: 'kinfo:4:200000'` beside `observation.startIdentity:
+  'kinfo:4:400000'`, a COARSE captured marker, and the confirmed transport absence)
+  measured **settled TRUE with EMPTY refusals** — the seeding loop learned the carry and
+  silently ignored the differing own identity. **The fix:** the seeding loop tracks whether
+  IT seeded the reference (a coarse or absent captured marker cannot discriminate
+  same-second exact generations, so the marker-vs-carry binding never fired) and, when a
+  later entry DEFINITIVELY DIFFERS from that loop-seeded reference, latches the
+  within-read contradiction — the runtime phase-3 rule's own label family — instead of
+  silently keeping one side: the retained same-second exact successor B can never be
+  laundered into the carried generation A's confirmed absence. The marker-seeded differ
+  case keeps its existing above-binding behavior byte-identically. RED→GREEN: the amended
+  bytes measure the record **settled FALSE with
+  `transport-exit-generation-foreign`** (the runtime phase-3 family's replay label).
+  **CONTROLS (all measured, refusal sets byte-identical pre/post-fix):** (a) the
+  SAME-GENERATION carry/own (identical exact identities) seeds lawfully and the confirmed
+  absence credits unchanged (settled, no refusals); (b) carry-ONLY (a coarse own identity
+  with the exact verdict carry) keeps its existing behavior; (c) own-ONLY (no carry) keeps
+  its existing behavior; (d) the plain coarse record settles unchanged.
+- **Honest notes:** the four new rows live in TWO round-50 describes in
+  tests/shell-wait-local-process.test.mjs (the exact-marker RED row with its lawful
+  control and its aligned-tie/coarse controls row; the transport seeding RED row with its
+  same-generation control and its carry-only/own-only/plain controls row) — exactly 4 new
+  test declarations, 0 deleted, counted with `rg -c '^\s*test\('`: 652 at HEAD, 656 on the
+  amended bytes. The pin moved honestly: 652 + 100 + 1 = 753 → **656 + 100 + 1 = 757**
+  (re-measured on the amended bytes; 652 + 4 = 656; 656 + 100 = 756; 756 + 1 = 757), the
+  pin comment extended and the value corrected to 757, asserted green inside all eight
+  spawn rows of the probe SOLO. Row development needed fixture iterations, all resolved
+  BEFORE the RED/GREEN claims (disclosed for reproducibility): the F2 block initially
+  reused the round-49 replay block's endpoint timing, whose hop-1 uncertainty window
+  (`daemonStart + 1000 > companionRead`) refused
+  `ancestry-endpoint-lifetime-unverifiable` twice on both bytes — the companion/daemon
+  endpoint reads moved past the daemon's entire creation window so the transport
+  contradiction is the schedule's only live conjunct. The F1 fix chose the reviewer's
+  option 2 with the reason recorded above (option 1 would require a persisted-shape
+  change the marker does not carry). The F1 unaligned-refusal fires only when the child's
+  exact identity quantizes DOWNWARD on a marker tie — the §32 ties-establish rows
+  (millisecond-aligned `usec` multiples of 1000) and the coarse rows are untouched, covered
+  by the full-suite greens below. `npm run typecheck` exit 0 on the first fix draft; no
+  incidental gate failure; the battery ran strictly serially (no concurrent git
+  operations, no overlapping probe runs).
+- **Focused prior-counterexample re-run (2026-11-13, the final amended bytes):** the
+  `same-second` name family = **102 tests, 102 pass, 0 fail** (ZERO movement — the four new
+  rows join no family); the `integration-completion` name family = **82 tests, 82 pass,
+  0 fail**; `node --test tests/test-selection.test.mjs` = **6 tests / 6 pass / 0 fail**
+  exit 0.
+- **Battery (executed 2026-11-13 on the final amended bytes, strictly serial):** local
+  SOLO = **656 tests, 656 pass, 0 fail, exit 0** (652 prior + 4 — exactly 4 new test
+  declarations, 0 deleted); probe SOLO = **968 tests, 968 pass, 0 fail, exit 0** — all
+  eight spawn rows green with the corrected pin 757. `npm run lint` exit 0;
+  `npm run typecheck` exit 0; `git diff --check` exit 0. Prohibited-path diff vs
+  `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY. The fix amends the EXISTING route-(c)
+  commit (message unchanged) — no push.
+
+### 32.63 Codex-review gate round 51 (2026-11-13, one finding on §32.62's amended bytes — review-mwed42xp-tf84jm, 1×P2, the exact marker binding accounting for the marker's TRUE rounding interval [M − 0.5, M + 0.5) so the rounded-up quantized tie joins the refused overlap, reproduced by the reviewer; §32.62 style — add-only; the amended route-(c) commit carries it; message unchanged)
+
+- **Finding 1 [P2] Account for rounded-up marker ties in exact mode —
+  tools/shell-wait-probe/local-process-observation.mjs:4807-4809 — FIXED (the TRUE ROUNDING
+  INTERVAL; corrects §32.62's downward-only condition).** The reviewer's finding verbatim:
+  "The marker producer uses `Math.round(markerStats.mtimeMs)`, so a persisted timestamp M
+  represents `[M - 0.5, M + 0.5)`, not `[M, M + 1)`. For child identity `kinfo:1:700`
+  (creation 1000.7 ms), a stale marker written at 1000.6 ms also rounds to 1001. This
+  condition skips the ambiguity check because the child rounds upward, and
+  `joinAncestryHops` incorrectly establishes the hop with `spawn-boundary-capture`
+  (confirmed by reproduction). Use the actual rounding interval, or retain precise marker
+  timestamps, in both this check and its replay mirror in `driver.mjs`." Confirmed exactly
+  (RED re-verified on the committed 065929d9 bytes in a clean `git clone --shared` copy
+  under /tmp checked out at 065929d9 with the amended deterministic rows copied in — no
+  `git worktree add`; the clone's tools verified byte-untouched by an empty
+  `git diff --stat HEAD -- tools/`; the clone deleted after the measurements): the
+  reviewer's schedule through `joinAncestryHops` hop 2 (the daemon writer `kinfo:1:0`, the
+  transport child captured `kinfo:1:700` with `childOsStartInstantMs` 1001, boundary/write
+  1001, the marker captured identity `kinfo:1:700` at 1001) measured the hop **ESTABLISHED
+  with `witnessClass: 'spawn-boundary-capture'`** — the reviewer's reproduction. **The fix
+  (the TRUE ROUNDING INTERVAL — option 1 of the reviewer's two, now available at the
+  semantics level; precise marker TIMESTAMP PERSISTENCE is still unavailable without a
+  persisted-shape change, so the interval is reasoned about rather than stored, and the
+  choice is recorded here as the §32.62-style justification):** the marker's persisted time
+  M represents the true write window [M − 0.5, M + 0.5). For a NON-millisecond-aligned
+  child (usec % 1000 !== 0) the persisted `childOsStartInstantMs` R differs from the true
+  creation C in BOTH quantization directions — quantizing down leaves C ∈ (R, R + 0.5)
+  (§32.62's case), quantizing up leaves C ∈ [R − 0.5, R) (the reviewer's new case) — and a
+  marker tied with R carries the true write window [R − 0.5, R + 0.5) which OVERLAPS C in
+  both directions (the §32.62 condition's `usec % 1000 < 500` covered only the downward
+  half). The corrected rule: exact mode + non-aligned child + usec % 1000 !== 500 + marker
+  tied with R → `spawn-witness-marker-generation-ambiguous`. The EXACT HALF (usec % 1000
+  === 500) is the one excluded case: C = R − 0.5 exactly = the marker window's INCLUDED
+  left edge, so every true write is at/after the creation and the tie credits (the
+  demonstrable-ordering convention). A millisecond-ALIGNED child keeps the §32
+  ties-establish convention byte-identically (its persisted instant IS the true creation),
+  and a marker whose whole window lies at/after C is demonstrably after under every
+  quantization direction (unchanged). The replay mirror
+  (`verifyPersistedSpawnWitnessEstablishment`'s marker binding in the join) applies the
+  same corrected condition byte-for-byte. RED→GREEN: the amended bytes measure the runtime
+  hop refusing `spawn-witness-marker-generation-ambiguous` (the record unsettled), and the
+  §32.62 downward arm stays refused under the corrected rule (its refusal label is
+  unchanged). **CONTROLS (all measured):** (a) the §32.62 DOWNWARD arm (child
+  `kinfo:1:400`, marker 1000) stays refused `spawn-witness-marker-generation-ambiguous`
+  (the corrected rule subsumes it — the round-50 rows keep their assertions); (b) the
+  ALIGNED tie (child `kinfo:1:0`, marker 1000) keeps the tie convention byte-identically
+  (established with its named witnessClass); (c) the HALF-EXACT tie (child `kinfo:1:500` —
+  creation exactly 1000.5 = the persisted 1001's window left edge) keeps the credit
+  (established with its named witnessClass); (d) the ROUNDS-UP POST-WINDOW arm (child
+  `kinfo:1:700`, marker 1100 — the window [1099.5, 1100.5) ⊂ (1000.7, ∞)) and the marker
+  1101 variant (the window [1100.5, 1101.5)) keep the credit with their named
+  witnessClass.
+- **Honest notes:** the two new rows live in ONE round-51 describe in
+  tests/shell-wait-local-process.test.mjs (the rounded-up RED row with its post-window
+  control; its downward/aligned/half-exact/rounds-up-post-window controls row) — exactly 2
+  new test declarations, 0 deleted, counted with `rg -c '^\s*test\('`: 656 at HEAD, 658 on
+  the amended bytes. The pin moved honestly: 656 + 100 + 1 = 757 → **658 + 100 + 1 = 759**
+  (re-measured on the amended bytes; 656 + 2 = 658; 658 + 100 = 758; 758 + 1 = 759), the
+  pin comment extended and the value corrected to 759, asserted green inside all eight
+  spawn rows of the probe SOLO. The implicated round-50 rows were re-run explicitly
+  (targeted: **4 tests, 4 pass, 0 fail** on the corrected bytes — the downward RED arm's
+  label is unchanged under the corrected rule and the aligned/lawful controls keep their
+  credit). The corrected condition fires only on a marker TIED with the persisted instant
+  of a non-aligned, non-half-exact child in exact mode — the §32 exact rows are
+  millisecond-aligned and untouched, covered by the full-suite greens below.
+  `npm run typecheck` exit 0 on the first fix draft; no incidental gate failure; the
+  battery ran strictly serially (no concurrent git operations, no overlapping probe runs).
+- **Focused prior-counterexample re-run (2026-11-13, the final amended bytes):** the
+  `same-second` name family = **102 tests, 102 pass, 0 fail** (ZERO movement — the two new
+  rows join no family); the `integration-completion` name family = **82 tests, 82 pass,
+  0 fail**; `node --test tests/test-selection.test.mjs` = **6 tests / 6 pass / 0 fail**
+  exit 0.
+- **Battery (executed 2026-11-13 on the final amended bytes, strictly serial):** local
+  SOLO = **658 tests, 658 pass, 0 fail, exit 0** (656 prior + 2 — exactly 2 new test
+  declarations, 0 deleted); probe SOLO = **968 tests, 968 pass, 0 fail, exit 0** — all
+  eight spawn rows green with the corrected pin 759. `npm run lint` exit 0;
+  `npm run typecheck` exit 0; `git diff --check` exit 0. Prohibited-path diff vs
+  `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY. The fix amends the EXISTING route-(c)
+  commit (message unchanged) — no push.
+
+### 32.64 Codex-review gate round 52 (2026-11-13, one finding on §32.63's amended bytes — review-mwej5iux-tehmck, 1×P2, the exact composition treating an unparseable ps timestamp as an ordinary query/parsing failure riding the kinfo identity and its collection bounds — the error-vs-evidence rule: torn evidence never drives the deterministic classification — reproduced by the reviewer; §32.63 style — add-only; the amended route-(c) commit carries it; message unchanged)
+
+- **Finding 1 [P2] Treat an unparseable ps timestamp as a read failure —
+  tools/shell-wait-probe/local-process-observation.mjs:2732-2734 — FIXED (the
+  ERROR-VS-EVIDENCE rule for the unparseable ps text).** The reviewer's finding verbatim:
+  "When kinfo succeeds but the subsequent ps timestamp is unparseable, this throws
+  `identity changed` despite having no second identity proving replacement. Reproducing a
+  single malformed child timestamp makes `emitSpawnAncestryWitness` immediately return
+  `spawn-witness-child-generation-changed` after one attempt, bypassing retries that could
+  recover. Return an ordinary query/parsing failure carrying the kinfo identity and its
+  collection bounds; reserve the generation-change classification for successfully parsed
+  identities that disagree." Confirmed exactly (RED re-verified on the committed ece90f35
+  bytes in a clean `git clone --shared` copy under /tmp checked out at ece90f35 with the
+  amended deterministic rows copied in — no `git worktree add`; the clone's tools verified
+  byte-untouched by an empty `git diff --stat HEAD -- tools/`; the clone deleted after the
+  measurements): the emitter schedule through the default inspector seams (the writer's
+  double read agreeing; the child poll's FIRST attempt observing kinfo
+  `kinfo:2:400000` succeeded and then a TORN ps text
+  'the ps lstart timestamp was torn') measured the verdict
+  **`{"status":"unestablished","reason":"spawn-witness-child-generation-changed"}` after
+  ONE attempt** — the composed throw's 'identity changed' message latched the poll's
+  terminal class before any retry. **The fix:** the shared composition
+  (`composedExactStartIdentity`) splits the unparseable case from the disagreement: an
+  UNPARSEABLE ps text (`parseLstartAsUtc === null`) throws an ORDINARY query/parsing
+  failure — its message deliberately carries no 'identity changed' (that phrase stays the
+  mid-double-read reuse class the retry paths latch on) — riding the exact kinfo identity
+  and, when the caller supplies them, the kinfo read's own collection bounds (the new
+  `kinfoCarry` parameter; the real readMacProcessStart path passes
+  `kinfoTakenEpochMs`/`kinfoCompletedEpochMs`); the SUCCESSFULLY PARSED disagreement branch
+  keeps both its throws byte-identically (the laterPsCarry ride and the kinfo carry) — the
+  generation-change classification is reserved for exactly that. The emitter's bounded
+  poll then retains the torn attempt's kinfo carry (the round-7 membership rule: the first
+  observation grounds the history) and RETRIES. RED→GREEN: the amended bytes measure the
+  same schedule **established with the composed exact identity** (`identity.childStartIdentity
+  = 'kinfo:2:400000'`) and the witness written — the retry recovered. **CONTROLS (all
+  measured):** (a) a torn attempt followed by a SUCCESSFULLY PARSED FOREIGN ps text
+  (second 87000 vs the exact second 2) still latches
+  `spawn-witness-child-generation-changed` byte-identically with no witness written (the
+  generation-change classification is reserved for exactly that); (b) the all-agreeing
+  schedule establishes unchanged (witness written); (c) the kinfo-failure DEGRADE path
+  (the exact bridge throws — the composition never reached) keeps its coarse establishment
+  byte-identically (`startIdentityExact: false`, the ps-text identity).
+- **Honest notes:** the two new rows live in ONE round-52 describe in
+  tests/shell-wait-local-process.test.mjs (the unparseable RED/retry row; its
+  parsed-disagreement/lawful/kinfo-degrade controls row) — exactly 2 new test declarations,
+  0 deleted, counted with `rg -c '^\s*test\('`: 658 at HEAD, 660 on the amended bytes. The
+  pin moved honestly: 658 + 100 + 1 = 759 → **660 + 100 + 1 = 761** (re-measured on the
+  amended bytes; 658 + 2 = 660; 660 + 100 = 760; 760 + 1 = 761), the pin comment extended
+  and the value corrected to 761, asserted green inside all eight spawn rows of the probe
+  SOLO. The implicated emitter family (the §32.13-Finding-3 retained-history rows and the
+  codex-round-7 membership rows — the R39-F1/R45 ps-throw ride discipline and the
+  R50-R52-era ps-timestamp family) was re-run explicitly (targeted: **2 tests, 2 pass,
+  0 fail** — the retained-history rows' schedules drive their ps throws through the
+  ride/retained-set paths this fix does not touch, and the unparseable-text poison row
+  already exercised the retained-set's uncertainty rule rather than the composition's
+  throw). The ordinary failure carries no 'identity changed' phrase, so no latch or
+  refusal family consumes it as replacement evidence; the rows asserting the OLD
+  unparseable→identity-changed classification would have failed the battery — none did
+  (the full-suite greens below). `npm run typecheck` exit 0 on the first fix draft; no
+  incidental gate failure; the battery ran strictly serially (no concurrent git
+  operations, no overlapping probe runs).
+- **Focused prior-counterexample re-run (2026-11-13, the final amended bytes):** the
+  `same-second` name family = **102 tests, 102 pass, 0 fail** (ZERO movement — the two new
+  rows join no family); the `integration-completion` name family = **82 tests, 82 pass,
+  0 fail**; `node --test tests/test-selection.test.mjs` = **6 tests / 6 pass / 0 fail**
+  exit 0.
+- **Battery (executed 2026-11-13 on the final amended bytes, strictly serial):** local
+  SOLO = **660 tests, 660 pass, 0 fail, exit 0** (658 prior + 2 — exactly 2 new test
+  declarations, 0 deleted); probe SOLO = **968 tests, 968 pass, 0 fail, exit 0** — all
+  eight spawn rows green with the corrected pin 761. `npm run lint` exit 0;
+  `npm run typecheck` exit 0; `git diff --check` exit 0. Prohibited-path diff vs
+  `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY. The fix amends the EXISTING route-(c)
+  commit (message unchanged) — no push.
+
+### 32.65 Codex-review gate round 53 (2026-11-13, one P1 + one P2 on §32.64's amended bytes — review-mwep1fw3-otdcq1, the PPID rejection preserving the exact generation evidence before throwing and the replay reference learning consuming the ordered advancing presence horizon — reproduced by the reviewer; §32.64 style — add-only; the amended route-(c) commit carries it; message unchanged)
+
+- **Finding 1 [P1] Preserve generation evidence before rejecting a PPID mismatch —
+  tools/shell-wait-probe/driver.mjs:1753-1755 — FIXED (the EXACT-CARRY COMPARISON
+  BEFORE THE PPID REJECTION).** The reviewer's finding verbatim: "With a mixed capture
+  (`startIdentity` coarse, `observedStartIdentity` exact A), an inspection returning
+  same-second exact B with a different PPID throws here without latching replacement:
+  this comparison only checks the coarse capture, bypassing the exact-carry and
+  lifetime checks below. If cleanup subsequently observes matching coarse identity and
+  the original PPID, such as after reparenting, it can signal the proven successor. An
+  in-memory reproduction reached the signal path and returned
+  `verifiedProcessTerminated: true` with no cleanup errors. Compare and retain all
+  exact generation evidence before the PPID rejection." Confirmed exactly (RED
+  re-verified on the committed e5a0d7c7 bytes in a clean `git clone --shared` copy
+  under /tmp checked out at e5a0d7c7 — no `git worktree add`; the clone's tools were
+  verified byte-untouched by an empty `git diff --stat HEAD -- tools/`; the clone was
+  deleted after the measurements): the held-turn schedule through the default reader
+  (capture: coarse `startIdentity` + exact `observedStartIdentity` `kinfo:1:100000`;
+  the held-phase inspection returning exact `kinfo:1:500000` with ppid+1; the cleanup
+  reads degrading to the matching coarse ps text with the ORIGINAL ppid; the
+  post-signal read observing the pid gone) measured
+  **`verifiedProcessTerminated: true` with no cleanup errors** — the PPID rejection
+  never latched the exact successor. **The fix:** before the PPID rejection throws,
+  every observed generation evidence (the read's own `startIdentity` and its
+  `observedStartIdentity`) is compared against the CAPTURE's exact carry
+  (`expected.observedStartIdentity`), the CAPTURE's own exact start identity
+  (`expected.startIdentity` — added by the residual re-review below, so a default
+  both-exact capture with NO carry is compared too) and the LEARNED exact reference
+  with the same representation-aware `startIdentitiesDefinitivelyDiffer` relation: a
+  definitive difference sets `heldTurnGenerationChanged` (the terminal-turn latch)
+  FIRST, so the failure cleanup refuses instead of signalling the proven successor.
+  The read's EXACT identity (its carried exact form first) rides the refusal and, when
+  the latch fires with no learned reference, is retained as the lifetime reference
+  (the residual re-review's finding 3). The same-generation, uncertainty (true
+  unresolvable pair) and no-exact-carry schedules keep their existing LATCH
+  BEHAVIOR and PPID RESULT byte-identically (reparenting stays lawfully
+  terminable; uncertainty is never positive replacement evidence) — that
+  byte-identity is about the latch/result and NOT the rider: only a read with no
+  exact form keeps the existing rider byte-identically, while a read that observes
+  an exact form (the same-generation exact read included) takes that exact
+  identity as the rider (its carried exact form first, then its returned exact
+  form), the exact-priority design. Retention happens only when the latch has
+  fired AND no lifetime reference is learned yet. RED→GREEN: the amended bytes
+  measure the same schedule **`verifiedProcessTerminated: false` with the named
+  cleanup error "the exact fake-ZCode process identity changed before signalling"**. **CONTROLS (all
+  measured on the RED and GREEN bytes):** (a) a SAME-generation exact identity (the
+  capture's exact carry A observed with the different PPID) keeps the existing LATCH
+  BEHAVIOR and PPID REJECTION RESULT — the reparented original still terminates
+  (verified true, no cleanup errors; its rider is the read's exact identity, not the
+  pre-fix coarse text); (b) a coarse capture WITHOUT an exact carry keeps its existing latch
+  behavior and PPID result byte-identically (verified true, no errors; the rider
+  follows the exact-priority rule, outside that byte-identity); (c) a TRUE
+  UNCERTAIN relation — a
+  ps-only held read returning an unparseable text (the kinfo bridge unavailable, so
+  the composition never runs) against the capture's exact carry — never latches
+  (verified true, no errors). [The residual re-review below corrected this control's
+  earlier wording: the arm labelled 'unresolvable' actually measured a
+  same-generation exact A against the capture's own exact carry (the relation is
+  'same') and never reached the uncertain relation.]
+- **Finding 2 [P2] Apply the advancing presence horizon before learning identities —
+  tools/shell-wait-probe/driver.mjs:7954-7958 — FIXED (the ORDERED, ADVANCING PRESENCE
+  HORIZON FOR REFERENCE LEARNING).** The reviewer's finding verbatim: "For reads not
+  already classified as replacements, `mirrorEnd` remains the initial presence horizon
+  rather than the runtime's advancing horizon. Reproducing a baseline at 6100, a
+  coarse refresh ordered at 6200 with identity completion 6500, and a failed exact-A
+  read ordered at 6300 completing at 6400 makes runtime skip A as old evidence, but
+  replay learns A against 6100. A subsequent exact B and confirmed absence then
+  produce runtime `disappeared` versus replay `exit-reuse-latched`; removing the
+  skipped A restores replay settlement. Reference learning must use the same ordered,
+  advancing horizon as `adjudicateLocalExit`." Confirmed exactly (RED re-verified on
+  the e5a0d7c7 clone): the schedule's runtime arm (`adjudicateLocalExit` with the
+  selected refresh among its reads) measured **`disappeared`** (last presence 6500,
+  first absence 7600), the persisted-record replay measured **`settled: false` with
+  `["exit-reuse-latched"]`**, and the without-A arm measured **`settled: true`** — the
+  replay learned the runtime-skipped A against the baseline evidence. **The fix:** the
+  retention walk keeps a STATEFUL presence window
+  (`replayPresenceHorizon`/`replayPresenceStarted`) initialized from the baseline and
+  advanced exactly where `adjudicateLocalExit`'s same-generation arm advances it: an
+  ADMITTED (strict recency) established same-scope same-pid read whose start identity
+  is the bound generation's and whose own collection window is not definitively stale
+  (the round-41 exclusion) advances the window to its identity-evidence instant
+  (`identityReadEpochMs ?? readEpochMs`) and dispatch bound. Non-replacement reads
+  consume the running window for their recency admission and stale-carry exclusions
+  (the runtime's `lastPresenceEpochMs`/`lastPresenceStartedEpochMs` pair); the
+  replacement path keeps its stateless decision-instant `mirrorWindowAt` window
+  byte-identically. RED→GREEN: the amended bytes measure the same schedule
+  **`settled: true` with no refusals** (the without-A arm stays settled), reproducing
+  the runtime's `disappeared`. **CONTROLS (all measured):** (a) moving the failed
+  exact-A read AFTER the refresh's advancing identity completion (ordered 6600 > 6500)
+  keeps it admissible on both sides — the runtime reports
+  `pid-start-identity-reused` and the replay still learns it and latches
+  `exit-reuse-latched` against the later exact B (only runtime-skipped evidence is
+  skipped); (b) the plain schedule (refresh + exact B + absence, no A) keeps
+  `disappeared` on both sides and the replay `settled: true` with zero refusals.
+- **Residual independent re-review (2026-11-13, three findings on the amended
+  2f2901c7 bytes — add-only; the same amended route-(c) commit carries this
+  correction; message unchanged).** The independent re-verification of the round-53
+  fix measured three residual items; the RED measurements below were taken on a clean
+  `git clone --shared` copy at 2f2901c7 under /tmp (no `git worktree add`; node_modules
+  was symlinked only for the clone's dependency resolution; the clone's tools/tests
+  were verified byte-identical to HEAD before the measurement copy replaced only the
+  test file; the clone was deleted after the measurements).
+  - **Finding 1 [P1] — the PURE exact capture's own start identity was missing from
+    the PPID rejection's comparison set.** A default both-exact capture carries its
+    exact generation in `startIdentity` with NO `observedStartIdentity`, so the first
+    round-53 comparison set (the capture's EXACT CARRY and the learned reference only)
+    was empty for that normal capture shape. The reviewer's schedule — capture
+    `{startIdentity: 'kinfo:1:100000', ppid: 4194302}` (no carry); a held-phase
+    MIXED read returning `startIdentity` = the matching coarse ps text,
+    `observedStartIdentity` = `kinfo:1:500000`, ppid = 4194303 (the kinfo bridge
+    degrades on the second read); cleanup reads degrading to the matching coarse text
+    with the ORIGINAL ppid; the post-signal read observing the pid gone — measured
+    **`verifiedProcessTerminated: true` with no cleanup errors** on 2f2901c7 (the
+    coarse returned identity compares 'same' against the exact capture at the coarse
+    second, so the pre-existing `startIdentitiesDefinitivelyDiffer(observed.startIdentity,
+    expected.startIdentity)` guard never fired). **The fix:** the capture's OWN
+    `startIdentity` joins the PPID rejection's comparison set under the same
+    `parseExactStartIdentity` exact-form gate as the carry and the learned reference
+    (the :1608-1615 observed-then-gone comparison family includes the same field).
+    RED→GREEN on the reviewer's schedule through the default reader:
+    **`verifiedProcessTerminated: false` with the named cleanup error "the exact
+    fake-ZCode process identity changed before signalling"**. **CONTROLS (the
+    verified/cleanup-error outcomes measured identically on the RED and GREEN
+    bytes):** (a) the pure-exact capture's
+    SAME-generation mixed read (its carried exact identity = the capture's exact A)
+    with the different PPID keeps the lawful termination — verified true, no cleanup
+    errors (the new capture-identity comparison is 'same'); (b) the no-exact-carry
+    coarse capture keeps its existing latch behavior and PPID result — verified
+    true, no errors (its rider follows the exact-priority rule); (c) a TRUE
+    UNCERTAIN relation (below) never latches — verified true, no errors.
+  - **Finding 2 [P3] — the control (c) label was false.** The round-53 controls row's
+    "unresolvable" arm held the capture's exact carry A and returned the SAME exact A
+    from the held read (the kinfo exact + parseable ps text composed A), so its PPID
+    rejection compared A with A: the relation is 'same', and the arm never exercised
+    an uncertain decision (the instrumented schedule's held read composes exact A from
+    the kinfo exact identity and the PARSEABLE ps text, so it reaches the PPID
+    rejection with a same-generation identity — neither the uncertain relation nor the
+    claimed parse-failure throw is exercised). Instrumented measurement on
+    2f2901c7: the arm's held PPID rejection carried `kinfo:1:100000`,
+    `startIdentityGenerationRelation('kinfo:1:100000','kinfo:1:100000')` = 'same',
+    while `startIdentityGenerationRelation('S-COARSE-CAPTURE','kinfo:1:100000')` =
+    'uncertain'. **The fix:** control (c) is now a TRUE uncertain schedule — a
+    ps-only held read (the kinfo bridge unavailable for every call, so the composition
+    never runs) returns the unparseable text with the different PPID; the capture
+    carries the same text plus the exact carry A; the PPID rejection's comparison is
+    then candidate-text vs exact-A = 'uncertain' and the cleanup terminates (verified
+    true, no errors, measurable identically on the RED and GREEN bytes). The arm and
+    the test name now say "true-uncertain"; the corresponding wording above is
+    corrected.
+  - **Finding 3 [retain gap, previously unproven] — the PPID rejection discarded the
+    read's exact carry.** The round-53 block only set `heldTurnGenerationChanged`; the
+    refusal's rider stayed the RETURNED identity, which on a mixed-resolution read is
+    the COARSE ps text, and the read's exact carry was never retained. Measured on
+    2f2901c7 with the reviewer's pure-exact schedule: the held PPID rejection's
+    `observedStartIdentity` was the coarse `Thu Jan  1 00:00:01 1970` (the exact
+    `kinfo:1:500000` was dropped). **The fix:** the rejection now carries the read's
+    EXACT identity when it has one (its carried exact form first — the mixed read's
+    preserved evidence — then its returned exact form), falling back to the returned
+    identity byte-identically for reads with no exact form; and when the rejection
+    has latched a generation change with NO lifetime reference learned yet, that exact
+    identity is retained as `heldTurnLearnedExactReference` (the error-carry branch's
+    exact-retention protocol — the `parseExactStartIdentity` gate plus the null
+    reference is the only seed condition). RED→GREEN seam observation: the same
+    schedule's rider is `kinfo:1:500000` on the amended bytes (vs the coarse text on
+    2f2901c7), and the mixed-capture round-53 row stays green. **Retain-risk
+    judgment:** the retained successor seeds the termination tracker's shared-lifetime
+    reference (the capture's exact A then compares definitively different and flags
+    the same terminal state), but it introduces no independent outcome change in the
+    measured schedules: the terminal latch already refuses every later cleanup gate,
+    and a throwing PPID rejection propagates out of the termination before any
+    subsequent read can act on the seeded value. The only residual theoretical edge
+    is a same-generation PPID rejection carrying an exact identity into the
+    termination tracker while its reference is still null (the tracker's exact-carry
+    branch classifies 'identity changed' messages as a within-read transition); that
+    schedule is not reachable in the measured shapes because the throwing read ends
+    the termination as a cleanup error before any later gate, so the outcome is a
+    cleanup refusal either way. It is recorded here as an unexercised edge rather
+    than claimed green.
+  - **Test-count note:** the residual review adds ONE local row (the pure-exact RED
+    row); the controls row was corrected IN PLACE (the same declaration count). `rg -c
+    '^\s*test\('` counted 664 at 2f2901c7 and 665 on the amended bytes (0 deleted);
+    the pin moves honestly 664 + 100 + 1 = 765 → **665 + 100 + 1 = 766**.
+- **Honest notes:** the four new rows live in TWO round-53 describes in
+  tests/shell-wait-local-process.test.mjs (the F1 RED row; its same-generation/
+  no-exact-carry/unresolvable controls row; the F2 replay RED row with its without-A
+  arm; its non-stale-learning/plain-settled controls row) — exactly 4 new test
+  declarations, 0 deleted, counted with `rg -c '^\s*test\('`: 660 at HEAD, 664 on the
+  amended bytes. The pin moved honestly: 660 + 100 + 1 = 761 → **664 + 100 + 1 = 765**
+  (re-measured on the amended bytes; 660 + 4 = 664; 664 + 100 = 764; 764 + 1 = 765),
+  the pin comment extended and the value corrected to 765, asserted green inside all
+  eight spawn rows of the probe SOLO. The full local SOLO was re-run on the fix draft
+  BEFORE the new rows were appended (660/660, 0 fail — no pre-existing row moved) and
+  on the amended bytes (664/664). One unused test-local constant was removed after the
+  first lint run (a no-unused-vars error); the final local SOLO and probe SOLO were
+  re-run on the exact final bytes. `npm run lint` exit 0; `npm run typecheck` exit 0;
+  no incidental gate failure; the battery ran strictly serially (no concurrent git
+  operations, no overlapping probe runs).
+- **Focused prior-counterexample re-run (2026-11-13, the final amended bytes):** the
+  `same-second` name family = **103 tests, 103 pass, 0 fail** (+1: the F1 RED row name
+  carries "same-second"; the controls row joins no family); the
+  `integration-completion` name family = **82 tests, 82 pass, 0 fail**;
+  `node --test tests/test-selection.test.mjs` = **6 tests / 6 pass / 0 fail** exit 0.
+- **Battery (executed 2026-11-13 on the final amended bytes, strictly serial):** local
+  SOLO = **664 tests, 664 pass, 0 fail, exit 0** (660 prior + 4 — exactly 4 new test
+  declarations, 0 deleted); native SOLO = **100 tests, 100 pass, 0 fail, exit 0**;
+  probe SOLO = **968 tests, 968 pass, 0 fail, exit 0** — all eight spawn rows green
+  with the corrected pin 765. `npm run lint` exit 0; `npm run typecheck` exit 0;
+  `git diff --check` exit 0. Prohibited-path diff vs
+  `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY. The fix amends the EXISTING route-(c)
+  commit (message unchanged) — no push.
+- **Residual-review focused gates and battery (2026-11-13, the final amended bytes,
+  strictly serial — this line supersedes the battery line above for the residual-fix
+  bytes):** targeted round-53 rows = **3 tests, 3 pass, 0 fail** (the mixed-capture
+  RED row, the pure-exact residual RED row and the corrected controls row); the
+  `same-second` name family = **104 tests, 104 pass, 0 fail** (+1: the residual RED
+  row's name carries "same-second"); the `integration-completion` name family (the
+  local entry — the documented family gate) = **82 tests, 82 pass, 0 fail** (the
+  local+native union measures 84/84 with zero failures);
+  `node --test tests/test-selection.test.mjs` = **6 tests / 6 pass / 0 fail** exit 0.
+  Local SOLO = **665 tests, 665 pass, 0 fail, exit 0** (664 prior + exactly 1 new
+  declaration, 0 deleted); native SOLO = **100 tests, 100 pass, 0 fail, exit 0**;
+  probe SOLO = **968 tests, 968 pass, 0 fail, exit 0** — all eight spawn rows green
+  with the corrected pin 766. **ATTRIBUTION DISCLOSURE:** the first probe SOLO run
+  measured 967 pass / 1 fail — the `a space-separated underscore reporter alias is
+  replaced with its value` spawn row saw its spawned shell-research child exit 1. The
+  same row re-ran in isolation green (**1 test / 1 pass / 0 fail, exit 0**) and the
+  full probe SOLO re-ran **968/968 with zero failures on the SAME final bytes** (no
+  code or test change between the runs); the failing child's status is attributed to
+  a transient spawn/load flake, never a pin or assertion mismatch (the seven sibling
+  spawn rows and the isolated re-run were green, and the child's pin is asserted only
+  after the status gate). `npm run lint` exit 0; `npm run typecheck` exit 0;
+  `git diff --check` exit 0; `npm run check:line-endings` exit 0. Prohibited-path diff
+  vs `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY. The residual fix amends the
+  EXISTING route-(c) commit (message unchanged) — no push.
+
+### 32.66 Codex-review gate round 55 (2026-11-13, one P2 on §32.65's amended bytes — review-mwezp5nu-tnnjwm, the replacement classification consuming the ordered, advancing presence horizon for delayed identity reads — reproduced by the reviewer; §32.65 style — add-only; the amended route-(c) commit carries it; message unchanged)
+
+- **Finding [P2] Preserve the advancing horizon when classifying replacements —
+  tools/shell-wait-probe/driver.mjs:7956-7959 — FIXED (the ADVANCING HORIZON FOR
+  REPLACEMENT CLASSIFICATION).** The reviewer's finding verbatim: "For delayed
+  identity reads, resetting to `mirrorWindowAt()` loses the runtime's advancing
+  horizon because that helper filters sources by identity-completion time rather
+  than their evidence-order key. A coarse baseline [6000,6100], exact-B presence
+  collected [5500,6250] completing at 7400, failed exact-A read [5600,5700], and
+  confirmed absence at 16000 reproduce this: runtime returns
+  `pid-start-identity-ambiguous`, but replay accepts a claimed `disappeared` exit
+  with `settled: true` and no refusals. Classify replacements against the same
+  ordered, advancing horizon so replay cannot credit evidence the runtime refuses."
+  Confirmed exactly (RED re-verified on the committed 9047f8da bytes in a clean
+  `git clone --shared` copy under /tmp checked out at 9047f8da — no `git worktree
+  add`; the clone's tools/ were verified byte-untouched (`git diff --stat HEAD --
+  tools/` empty; driver.mjs sha256
+  `0a519e7e7c7f44e5e7ae8cdc9721bee64d4ba6f244d3648fedf317c4ef37ce69` identical to
+  the worktree copy) before the measurement copy replaced only the test file;
+  node_modules was symlinked only for the clone's dependency resolution; the clone
+  was deleted after the measurement): the reviewer's schedule measured the runtime
+  **`unestablished` / `pid-start-identity-ambiguous` with
+  `lastVerifiedPresenceEpochMs: 7400`** (the delayed exact-B read sorted by its
+  carried evidence-order key 5500 before the failed exact-A read's 5600 and
+  advanced the runtime horizon to the identity completion 7400 with the collection
+  start 5500), while the persisted-record replay of the SAME schedule with a
+  claimed `disappeared` exit measured **`settled: true` with `refusals: []`** —
+  the replay accepted the disappearance the runtime refuses. **The fix:** the
+  replacement classification consumes the SAME ordered, advancing window
+  (`replayPresenceHorizon`/`replayPresenceStarted`) the retention walk maintains
+  for the recency admission and the stale-carry exclusions — the runtime's
+  `lastPresenceEpochMs`/`lastPresenceStartedEpochMs` pair as advanced by the
+  same-generation arm — instead of resetting to the stateless `mirrorWindowAt()`
+  scan. That scan filters sources by the identity-COMPLETION time
+  (`identityReadEpochMs ?? readEpochMs`) rather than the runtime's evidence-order
+  key (`observedIdentityReadEpochMs` first), so the delayed exact-B read was
+  skipped against the failed exact-A read's 5600 decision instant and A was
+  classified against the initial baseline [6000,6100], where its [5600,5700]
+  collection completed strictly before the presence's dispatch. `mirrorWindowAt`
+  remains byte-identically consumed by the round-34 transition-exemption post
+  test only. RED→GREEN: the amended bytes measure the same schedule **`settled:
+  false` with `refusals: ["exit-reuse-interval-ambiguous"]`** (the exit-family
+  mirror of the runtime's `pid-start-identity-ambiguous`), re-measured in a second
+  clean `git clone --shared` copy at 9047f8da with ONLY the fixed driver.mjs and
+  the identical test-file bytes copied in (2 tests / 2 pass / 0 fail; the clone
+  was verified to differ from HEAD in exactly those two files, then deleted) and
+  in the worktree. **CONTROLS (all measured byte-identically on the RED and GREEN
+  bytes):** (a) the ALIGNED/NON-DELAYED schedule — exact-B's evidence-order key
+  equal to its identity completion (7400), so the runtime walks A (key 5600)
+  first with no learned reference — keeps runtime `disappeared` / replay
+  `settled: true` with zero refusals; (b) a genuinely STALE exact-A [4000,4500]
+  completed strictly before the advancing horizon's collection start (5500) keeps
+  runtime `disappeared` / replay `settled: true` with zero refusals (old evidence
+  is never converted into a refusal); (c) a POST-horizon exact-A [7500,7600]
+  starting at/after the advancing horizon's completion (7400) keeps runtime
+  `pid-start-identity-reused` / replay `exit-reuse-latched`.
+- **Test-count note:** the fix adds TWO local rows in a new round-55 describe in
+  tests/shell-wait-local-process.test.mjs (the delayed exact-B RED row; its
+  aligned/stale/post controls row) — exactly 2 new test declarations, 0 deleted.
+  `rg -c '^\s*test\('` counted 665 at 9047f8da and 667 on the amended bytes
+  (665 + 2 = 667). The pin moves honestly 665 + 100 + 1 = 766 → **667 + 100 + 1 =
+  768**, the pin comment extended and the constant corrected to 768.
+- **Battery (executed 2026-11-13 on the final amended bytes, strictly serial):**
+  targeted round-55 rows = **2 tests, 2 pass, 0 fail**; the `same-second` name
+  family = **104 tests, 104 pass, 0 fail** (ZERO movement — the two new rows join
+  no family); the `integration-completion` name family (the local entry — the
+  documented family gate) = **82 tests, 82 pass, 0 fail**;
+  `node --test tests/test-selection.test.mjs` = **6 tests / 6 pass / 0 fail**
+  exit 0. Local SOLO = **667 tests, 667 pass, 0 fail, exit 0**; native SOLO =
+  **100 tests, 100 pass, 0 fail, exit 0**; probe SOLO = **968 tests, 968 pass,
+  0 fail, exit 0** — all eight spawn rows green with pin 768. `npm run lint`
+  exit 0; `npm run typecheck` exit 0; `git diff --check` exit 0;
+  `npm run check:line-endings` exit 0. Prohibited-path diff vs
+  `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY. The fix amends the EXISTING
+  route-(c) commit (message unchanged) — no push.
+- **ATTRIBUTION DISCLOSURE:** one intermediate full local-SOLO run on the same
+  executable bytes (driver.mjs + tests/shell-wait-local-process.test.mjs
+  unchanged; only the shell-wait-probe pin changed in between, and the local
+  entry never imports it) measured **666 pass / 1 fail**; the failing row's name
+  was not captured (that run logged only the summary counters). The identical
+  bytes re-ran in full green twice — **667/667, 0 fail** (the first pre-battery
+  run and the immediate re-run after the transient) — and every round-55
+  targeted row was green in every run (2/2 each time); the single failure is
+  attributed to a transient spawn/load flake, never a pin or assertion mismatch.
+  A second attribution case: the first full probe SOLO on the same final bytes
+  measured **967 pass / 1 fail** — the `a quoted destination value containing
+  spaces is stripped completely` spawn row saw its spawned shell-research child
+  exit 1 with EMPTY stderr (the two prior identical spawn rows in the same run
+  were green, so the pin 768 and the child selection/totals were correct, and
+  the child's reprinted failure detail was not captured). The row re-ran in
+  isolation green (**1 test / 1 pass / 0 fail, exit 0**) and the full probe SOLO
+  re-ran **968/968 with zero failures on the SAME final bytes** (no code or
+  test change between the runs); the failing child's status is attributed to a
+  transient spawn/load flake, never a pin or assertion mismatch.
+
+### 32.67 Codex-review gate round 56 (2026-11-14, one P2 on §32.66's amended bytes — review-mwf4l12h-r9uq9t, the round-34 transition exemption consuming the ordered, advancing presence horizon for delayed identity reads — reproduced by the reviewer; §32.66 style — add-only; the amended route-(c) commit carries it; message unchanged)
+
+- **Finding [P2] Use the advancing horizon for the transition exemption —
+  tools/shell-wait-probe/driver.mjs:7794-7794 — FIXED (the TRANSITION
+  EXEMPTION'S ARRIVAL WINDOW consumes the SAME ordered, advancing presence
+  horizon).** The reviewer's finding verbatim: "For delayed identity reads,
+  this remaining `mirrorWindowAt()` call can reject an exit the runtime
+  accepts. Using the round-55 fixture, retain the baseline [6000,6100] and
+  delayed exact-B presence completing at 7400, then supply a
+  `start-identity-generation-changed` read carrying B collected during
+  [6500,6600], followed by absence at 16000. Runtime returns `disappeared`,
+  but replay refuses with `exit-reuse-interval-ambiguous`: the stateless scan
+  omits the delayed presence and incorrectly classifies the transition as
+  post-horizon. Use the ordered, advancing presence window for this exemption
+  too, so persistence preserves the runtime verdict." Confirmed exactly (RED
+  re-verified on the committed 0bdd1936 bytes in a clean `git clone --shared`
+  copy under /tmp checked out at 0bdd1936 — no `git worktree add`; the
+  clone's tools/ were verified byte-untouched (`git diff --stat HEAD -- tools/`
+  empty; driver.mjs sha256
+  `09c43766b5b7383af95cc1cceb1f9d5002e13485faf695c3105aaaa028b5a58a`
+  identical to the worktree copy) before the measurement copy replaced only
+  the test file; node_modules was symlinked only for the clone's dependency
+  resolution; the clone was deleted after the measurement): the reviewer's
+  schedule measured the runtime **`disappeared` / `reason: null` with
+  `lastVerifiedPresenceEpochMs: 7400` and `firstVerifiedAbsenceEpochMs:
+  16000`** (the delayed exact-B presence sorted by its carried evidence-order
+  key 5500 before the transition read's 6500 and advanced the runtime horizon
+  to [5500,7400]; the transition's [6500,6600] collection overlaps that
+  horizon and is non-deciding), while the persisted-record replay of the SAME
+  schedule with the claimed `disappeared` exit measured **`settled: false`
+  with `refusals: ["exit-reuse-interval-ambiguous"]`** — the replay refused
+  the exit the runtime settled. **The fix:** the round-34 arrival
+  restriction's post test consumes the SAME ordered, advancing window
+  (`replayPresenceHorizon`/`replayPresenceStarted`) the retention walk
+  maintains for the recency admission, the replacement classification and the
+  reference learning — the runtime's
+  `lastPresenceEpochMs`/`lastPresenceStartedEpochMs` pair as advanced by the
+  delayed presence. Its position inside the decision-order walk is exactly
+  the runtime's pre-read horizon, so no second ordering semantics was
+  introduced; the retired stateless `mirrorWindowAt` scan filtered horizon
+  sources by the identity-COMPLETION time (`identityReadEpochMs ??
+  readEpochMs`) rather than the runtime's evidence-order key
+  (`observedIdentityReadEpochMs` first), omitted the delayed exact-B presence
+  against the transition's 6500 decision instant, and classified the
+  transition POST against the initial baseline [6000,6100]. The exemption now
+  classifies against [5500,7400] (overlap → non-post), preserving the
+  runtime's verdict. RED→GREEN: the amended bytes measure the same schedule
+  **`settled: true` with `refusals: []`** (2 tests / 2 pass / 0 fail),
+  re-measured in a second clean `git clone --shared` copy at 0bdd1936 with
+  ONLY the fixed driver.mjs and the identical test-file bytes copied in (the
+  clone's diff vs HEAD contains exactly those two files; driver.mjs sha256
+  `bff5f9af32f2e7bed8c91bb667c330758514c16ee22a68bfecb486d7ca907d33`,
+  tests/shell-wait-local-process.test.mjs sha256
+  `182fd408bdbe80321c91a38d412dc76cce51a7d5653b7aa14dcc5326e3f3ab55` —
+  identical to the worktree copies; the clone was deleted after the
+  measurement) and in the worktree. **CONTROLS (all measured byte-identically
+  on the RED and GREEN bytes):** (a) the EXISTING round-34 family arrival
+  shape — the transition's carried [6050,6100] collection overlapping the
+  baseline dispatch window — keeps runtime `disappeared` / replay
+  `settled: true` with zero refusals (the advancing window leaves the exempt
+  verdict unchanged; the round-33 follow-up and round-34 family rows
+  themselves re-ran 11/11 green); (b) a TRUE post-horizon transition
+  [7500,7600] starting at/after the advancing horizon's identity completion
+  (7400) keeps runtime `pid-start-identity-reused` / replay
+  `exit-reuse-latched` (definitive, never ambiguous).
+- **Test-count note:** the fix adds TWO local rows in a new round-56 describe
+  in tests/shell-wait-local-process.test.mjs (the delayed-horizon RED/settled
+  row; its overlap/post controls row) — exactly 2 new test declarations, 0
+  deleted. `rg -c '^\s*test\('` counted 667 at 0bdd1936 and 669 on the
+  amended bytes (667 + 2 = 669). The pin moves honestly 667 + 100 + 1 = 768 →
+  **669 + 100 + 1 = 770**, the pin comment extended and the constant
+  corrected to 770.
+- **Battery (executed 2026-11-14 on the final executable bytes, strictly
+  serial):** targeted round-56 rows = **2 tests, 2 pass, 0 fail** (plus the
+  identical 2/2 in the two clean clones); the `same-second` name family =
+  **104 tests, 104 pass, 0 fail** (ZERO movement — the two new rows join no
+  family); the `integration-completion` name family (the local entry — the
+  documented family gate) = **82 tests, 82 pass, 0 fail**;
+  `node --test tests/test-selection.test.mjs` = **6 tests / 6 pass / 0 fail**
+  exit 0. Local SOLO = **669 tests, 669 pass, 0 fail, exit 0**; native SOLO =
+  **100 tests, 100 pass, 0 fail, exit 0**; probe SOLO = **968 tests, 968
+  pass, 0 fail, exit 0** — all spawn rows green with pin 770. `npm run lint`
+  exit 0; `npm run typecheck` exit 0; `git diff --check` exit 0;
+  `npm run check:line-endings` exit 0. Prohibited-path diff vs
+  `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY. The fix amends the
+  EXISTING route-(c) commit (message unchanged) — no push.
+
+### 32.68 Codex-review gate round 57 (2026-11-14, two P2 findings on §32.67's amended bytes — review-mwf7zc16-j6y8je, the exact child-continuity write ordering and the replay absence recency exclusion; §32.67 style — add-only; the amended route-(c) commit carries them; message unchanged)
+
+- **Finding 1 [P2] Reject witnesses written before the child's precise
+  creation — tools/shell-wait-probe/local-process-observation.mjs:4988-4989
+  — FIXED (the CHILD CONTINUITY'S UNROUNDED CREATION vs the PRECISE
+  WRITE).** The reviewer's finding verbatim: "For an exact child
+  `kinfo:1:300`, the rounded start instant is 1000 ms. A witness with
+  `boundaryEpochMs` and `firstWriteEpochMs` equal to 1000 and
+  `firstWritePreciseMs` equal to 1000.2 passes this check, and
+  `joinAncestryHops` establishes the Companion→daemon hop—even though the
+  child was created at 1000.3, after the witness was written. Compare the
+  child's unrounded creation time against the precise witness-write time
+  before granting exact-mode credit, and mirror that check in replay."
+  Confirmed exactly (RED re-verified on the committed 7f792837 bytes in a
+  clean `git clone --shared` copy under /tmp checked out at 7f792837 — no
+  `git worktree add`; the clone's tools/ were verified byte-untouched
+  (`git diff --stat HEAD -- tools/` empty; driver.mjs sha256
+  `bff5f9af32f2e7bed8c91bb667c330758514c16ee22a68bfecb486d7ca907d33`,
+  local-process-observation.mjs sha256
+  `0fc5b24c1b3acf9a7ede6e0665ec54da44f247e3e215fcd03c0c58c6dfdd0c0f`)
+  before the measurement copy replaced only the test file (sha256
+  `c9bf9863749a5e04bb338e53336d873057c9578a2d5b7aea28eb6e129accf74d`,
+  identical to the worktree copy); node_modules was symlinked only for the
+  clone's dependency resolution; the clone was deleted after the
+  measurement): the reviewer's schedule measured the Companion→daemon hop
+  **`{"status":"established","reason":null,"witnessClass":"spawn-boundary-capture"}`**
+  — the witness written at 1000.2 established the hop although the child was
+  created at 1000.3. **The fix:** in `establishThroughSpawnWitness`'s exact
+  child-continuity block (`local-process-observation.mjs:4991-5012`,
+  immediately after the exact boundary-ordering check the finding cites),
+  the kernel's UNROUNDED creation (`sec * 1000 + usec / 1000`, the
+  R48/R53 convention) is compared against the PRECISE write
+  (`firstWritePreciseMs` when carried, the rounded `firstWriteEpochMs`
+  otherwise — the same resolution the round-48 writer-side ordering above
+  uses): a strictly earlier write refuses
+  `spawn-witness-child-generation-ambiguous` (the existing child-continuity
+  label), a same-instant tie keeps the module's convention (ties
+  establish), and the coarse/rounded-only arm never engages. The replay
+  mirror (`verifyPersistedSpawnWitnessEstablishment`,
+  `driver.mjs:5947-5966`) applies the identical comparison from the
+  persisted write (`persistedWritePreciseMs`) and returns the SAME label.
+  The check is scoped to the read-time-child hop (the existing exact
+  child-ordering block), so the hop-2 marker-path exact-mode rows (rounds
+  50/51) keep their registered labels byte-identically — the disclosed
+  scope boundary, never a silent behavior change. RED→GREEN: the amended
+  bytes measure the same schedule
+  **`["unestablished","spawn-witness-child-generation-ambiguous"]`** at
+  runtime and the replay refuses
+  `spawn-witness-child-generation-ambiguous`; the targeted rows measure
+  **4 tests / 4 pass / 0 fail** in the worktree and in a second clean
+  `git clone --shared` copy at 7f792837 with ONLY the two fixed tools and
+  the identical test-file bytes copied in (the clone's diff vs HEAD
+  contains exactly those three files; driver.mjs sha256
+  `ab50f2d5b68c009b30b791064f437401ac228966852a252b0274734cf43d5d1f`,
+  local-process-observation.mjs sha256
+  `778f5ffb4663f4bb9c43821de06409ca602dc696041cf5cbcde1364304d1eff3`,
+  test sha256 `c9bf9863749a5e04bb338e53336d873057c9578a2d5b7aea28eb6e129accf74d`
+  — identical to the worktree copies; the clone was deleted after the
+  measurement). **CONTROLS (all measured byte-identically on the RED and
+  GREEN bytes):** (a) a write AFTER the child's unrounded creation
+  (1100.5 > 1000.3) keeps the establishment and its
+  `witnessClass: 'spawn-boundary-capture'`; (b) the SAME-INSTANT tie (the
+  write exactly at the child's 1000.25 creation) keeps the tie convention;
+  (c) the ROUNDED-ONLY coarse record keeps the registered coarse
+  establishment byte-identically. The full local SOLO re-ran 673/673 with
+  zero failures — no existing row changed (the round-48 writer-side rows
+  and the round-50/51 hop-2 marker rows are byte-identical).
+- **Finding 2 [P2] Mirror the runtime recency exclusion for carried
+  absences — tools/shell-wait-probe/driver.mjs:7872-7876 — FIXED (the
+  REPLAY ABSENCE RECENCY EXCLUSION BEFORE THE LEARNED-REFERENCE
+  COMPARISON).** The reviewer's finding verbatim: "This learned-reference
+  comparison can reject an exit that `adjudicateLocalExit` accepts. Using
+  the round-56 fixture, let delayed exact-B evidence collected during
+  [4500,6300] advance the presence horizon to 7600, then include an
+  identity-bearing absence carrying exact A collected during [5000,5900]
+  and completing at 5900, followed by absence at 16000. Runtime returns
+  `disappeared`, but replaying that actual verdict refuses
+  `exit-reuse-interval-ambiguous`. The runtime skips the older absence
+  before its learned-reference comparison; replay needs the same recency
+  exclusion before classifying it as replacement evidence." Confirmed
+  exactly (RED re-verified in the same clean clone, same byte provenance):
+  the reviewer's schedule measured the runtime **`disappeared` /
+  `reason: null` with `lastVerifiedPresenceEpochMs: 7600` and
+  `firstVerifiedAbsenceEpochMs: 16000`** (the delayed exact-B presence's
+  same-generation arm advanced the runtime horizon to its identity-read
+  completion 7600; the carrying-A absence completing at 5900 was skipped
+  by the runtime's `evidenceEpochMs <= lastPresenceEpochMs` filter), while
+  the persisted-record replay of the SAME schedule with the claimed
+  `disappeared` exit measured **`settled: false` with
+  `refusals: ["exit-reuse-interval-ambiguous"]`** — the replay's absent
+  branch compared the old A carry against the learned B and refused the
+  exit the runtime settled. **The fix:** the absent branch now computes
+  the runtime's own ABSENCE evidence instant (`evidenceEpochMs =
+  readEpochMs`) and, when it is a safe integer at/before the advancing
+  `replayPresenceHorizon` (`absentRecencyExcluded`, `driver.mjs:7913-7919`),
+  suppresses ONLY the learned-reference comparison; the carried
+  identity's BOUND-foreign comparison keeps the early identity-bearing
+  classification (the runtime's pre-filter interval rules), a
+  missing/malformed completion is never recency-excluded (the existing
+  torn-evidence refusals still own it), and every non-stale absence keeps
+  its replacement classification byte-identically. This is exactly the
+  runtime's ordering: the absence recency skip runs before the absent
+  branch's learned-reference comparison, after the identity-bearing
+  pre-filter classification. RED→GREEN: the amended bytes measure the same
+  schedule **`settled: true` with `refusals: []`**, re-measured in the
+  second clean clone (same hashes) and in the worktree (4 tests / 4 pass /
+  0 fail). **CONTROLS (all measured byte-identically on the RED and GREEN
+  bytes):** (a) the SAME carrying-A absence collected entirely after the
+  advanced horizon ([8000,9000]) stays genuine replacement evidence on
+  both sides — runtime `pid-start-identity-reused`, replay the definitive
+  `exit-reuse-latched` (never ambiguous); (b) the ordinary delayed-B +
+  confirmed-absence schedule (no carrying-A absence) keeps runtime
+  `disappeared` / replay `settled: true` with zero refusals.
+- **Test-count note:** the fixes add FOUR local rows in three new round-57
+  describe blocks in tests/shell-wait-local-process.test.mjs (the runtime
+  exact-child RED/controls row; the replay exact-child RED/lawful row; the
+  stale-absence RED/settled row and its non-stale/ordinary controls row) —
+  exactly 4 new test declarations, 0 deleted. `rg -c '^\s*test\('` counted
+  669 at 7f792837 and 673 on the amended bytes (669 + 4 = 673). The pin
+  moves honestly 669 + 100 + 1 = 770 → **673 + 100 + 1 = 774**, the pin
+  comment extended and the constant corrected to 774.
+- **Battery (executed 2026-11-14 on the final executable bytes, strictly
+  serial):** targeted round-57 rows = **4 tests, 4 pass, 0 fail** (plus
+  the identical 4/4 in the two clean clones); the `same-second` name
+  family = **104 tests, 104 pass, 0 fail** (ZERO movement — the four new
+  rows join no family); the `integration-completion` name family (the
+  local entry — the documented family gate) = **82 tests, 82 pass, 0
+  fail**; `node --test tests/test-selection.test.mjs` = **6 tests / 6
+  pass / 0 fail** exit 0. Local SOLO = **673 tests, 673 pass, 0 fail,
+  exit 0**; native SOLO = **100 tests, 100 pass, 0 fail, exit 0**; probe
+  SOLO = **968 tests, 968 pass, 0 fail, exit 0** — all spawn rows green
+  with pin 774. `npm run lint` exit 0; `npm run typecheck` exit 0;
+  `git diff --check` exit 0; `npm run check:line-endings` exit 0.
+  Prohibited-path diff vs
+  `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY. The fix amends the
+  EXISTING route-(c) commit (message unchanged) — no push.
+- **ATTRIBUTION DISCLOSURE:** no attribution case arose this round — every
+  battery run (targeted, the two clean-clone measurements, the two name
+  families, test-selection, and all three SOLO suites) was green on the
+  first attempt on the final bytes; no transient spawn/load failure was
+  observed.
+
+### 32.69 Codex-review gate round 58 (2026-11-14, three P2 findings on §32.68's amended bytes — review-mwfb8x00-exyttv, the exact child-creation ordering outside the optional endpoint instant on both hops, the tied absence carry before the replay recency exclusion, and the same-generation supersession filter on retained reads; §32.68 style — add-only; the amended route-(c) commit carries them; message unchanged)
+
+- **Finding 1 [P2] Check exact child creation against the write on both hops —
+  tools/shell-wait-probe/local-process-observation.mjs:5006-5010 — FIXED
+  (the EXACT CHILD-CREATION ORDERING INDEPENDENT OF THE OPTIONAL ENDPOINT
+  INSTANT).** The reviewer's finding verbatim: "This check is nested under
+  `Number.isSafeInteger(expected.childOsStartInstant)`, but the
+  daemon-to-transport call supplies no such endpoint instant, so it skips the
+  check. With writer `kinfo:1:100`, child `kinfo:1:300`, boundary/write epoch
+  1000, precise write 1000.2, and marker epoch 1001, the hop establishes
+  despite the child being created at 1000.3—after the witness was written.
+  The replay mirror also accepts this chronology and settles the local layer.
+  Apply the unrounded child-creation check independently of the optional
+  endpoint instant in both implementations." Confirmed exactly (RED measured
+  on the committed `94ce236d` bytes in a clean `git clone --shared` copy under
+  /tmp checked out at `94ce236d` — no `git worktree add`; the clone's tools/
+  were verified byte-untouched (`git diff --stat HEAD -- tools/` empty;
+  driver.mjs sha256
+  `ab50f2d5b68c009b30b791064f437401ac228966852a252b0274734cf43d5d1f`,
+  local-process-observation.mjs sha256
+  `778f5ffb4663f4bb9c43821de06409ca602dc696041cf5cbcde1364304d1eff3`)
+  before the measurement copy replaced ONLY the test file; node_modules was
+  symlinked only for the clone's dependency resolution; the clone was deleted
+  after the measurements): the reviewer's schedule measured the
+  daemon→transport hop
+  **`{"hop":"daemon-to-transport","status":"established","reason":null,"witnessClass":"spawn-boundary-capture"}`**
+  — the witness written at 1000.2 established the marker hop although the
+  witnessed child was created at 1000.3 — and the persisted replay of the
+  same schedule measured **`settled: true` with `refusals: []`**. **The fix:**
+  the round-57 unrounded-creation-vs-precise-write comparison is HOISTED out
+  of the read-time-child endpoint conjunct in BOTH implementations — in
+  `establishThroughSpawnWitness` it now sits after the parent-generation
+  continuity checks (`local-process-observation.mjs:4934-4956`) and in
+  `verifyPersistedSpawnWitnessEstablishment` after the parent-generation
+  mirror (`driver.mjs:5946-5964`) — consuming the record's captured exact
+  `childStartIdentity` against the PRECISE write (`firstWritePreciseMs` when
+  carried, the rounded `firstWriteEpochMs` otherwise): the check therefore
+  runs identically on the read-time-child hop (Companion→daemon) and the
+  marker-only hop (daemon→transport). A strictly earlier write refuses
+  `spawn-witness-child-generation-ambiguous` (the existing label), a
+  same-instant tie keeps the module convention (ties establish), and the
+  coarse arm never engages (exactMode only). RED→GREEN: the amended bytes
+  measure **`["unestablished","spawn-witness-child-generation-ambiguous"]`**
+  at the runtime marker hop and the replay refuses
+  `spawn-witness-child-generation-ambiguous`; the targeted rows measure
+  **6 tests / 6 pass / 0 fail** and the clean-clone GREEN (fixed tools +
+  final test bytes, hashes below) measures **7 tests / 7 pass / 0 fail**
+  including the implicated round-50 row. **CONTROLS (all measured
+  byte-identically on the RED and GREEN bytes):** (a) a write AFTER the
+  child's unrounded creation (1100.5 > 1000.3) keeps the marker-hop
+  establishment and its `witnessClass: 'spawn-boundary-capture'`; (b) the
+  SAME-INSTANT tie (the precise write exactly at the child's 1000.25
+  creation) keeps the tie convention; (c) the ROUNDED-ONLY coarse record
+  keeps the registered `spawn-witness-marker-generation-ambiguous` refusal
+  byte-identically.
+- **Finding 2 [P2] Preserve tied absence carries in the replay comparison —
+  tools/shell-wait-probe/driver.mjs:7914-7918 — FIXED (the TIED ABSENCE
+  CARRY BEFORE THE REPLAY RECENCY EXCLUSION).** The reviewer's finding
+  verbatim: "The `<=` exclusion suppresses replacement evidence that the
+  runtime checks before its recency skip. Using the round-57 fixture, retain
+  exact B with a presence horizon of 7600, then add an absence completing at
+  7600 carrying different exact A collected during [7000,7500], followed by
+  the ordinary absence at 16000. `adjudicateLocalExit` returns
+  `pid-start-identity-ambiguous`, but replay accepts a claimed disappearance
+  with `settled: true` and no refusals. Preserve the runtime's tie-inclusive
+  carried-identity comparison before excluding the absence." Confirmed
+  exactly (RED re-verified in the same clean clone, same byte provenance):
+  the reviewer's schedule measured the runtime
+  **`unestablished` / `reason: "pid-start-identity-ambiguous"` with
+  `lastVerifiedPresenceEpochMs: 7600` and `firstVerifiedAbsenceEpochMs:
+  null`** (the delayed exact-B presence advanced the horizon to 7600; the
+  tied foreign-carry absence ran the runtime's PRE-FILTER learned-reference
+  comparison — gate `identityEvidenceEpochMs(read) >= lastPresenceEpochMs`,
+  tie-inclusive — whose overlapping [7000,7500] window returned the named
+  ambiguous fact BEFORE the `evidenceEpochMs <= lastPresenceEpochMs` skip),
+  while the persisted-record replay of the SAME schedule with the claimed
+  `disappeared` exit measured **`settled: true` with `refusals: []`** — the
+  round-57 `<=` exclusion suppressed the comparison at the tie. **The fix:**
+  `absentRecencyExcluded` now mirrors BOTH runtime comparison sites
+  (`driver.mjs:7923-7950`): it consumes the absence's identity-evidence
+  instant (`identityReadEpochMs` when carried, else `readEpochMs`) as the
+  pre-filter gate and the whole-observation completion as the absent-branch
+  recency key, excluding only an absence whose identity evidence is
+  STRICTLY older than the advancing horizon AND whose completion is at/before
+  it — the exact shape the runtime skips entirely. Same-generation ties (no
+  definitive difference) still fall through to the recency skip
+  byte-identically. RED→GREEN: the amended bytes measure the same schedule
+  **`settled: false` with `refusals: ["exit-reuse-interval-ambiguous"]`**,
+  matching the runtime's ambiguity (never `exit-reuse-latched`). **CONTROLS
+  (all measured byte-identically on the RED and GREEN bytes):** (a) the SAME
+  tied absence carrying the LEARNED exact B (same generation) is not
+  replacement evidence — runtime `disappeared` at 16000 and replay
+  `settled: true`, `refusals: []`; (b) the round-57 stale control (exact A
+  collected [5000,5900], completing 5900, strictly older than the 7600
+  horizon) keeps runtime `disappeared` / replay `settled: true`.
+- **Finding 3 [P2] Require same-generation evidence for every supersession
+  source — tools/shell-wait-probe/driver.mjs:8167-8170 — FIXED (the
+  SAME-GENERATION FILTER ON EVERY SUPERSESSION SOURCE).** The reviewer's
+  finding verbatim: "The same-generation filter applies only to the refreshed
+  endpoint; all retained phase reads enter the supersession loop unchecked.
+  With the existing `S-COMPANION` baseline at 6100, confirmed absence at
+  8500, and a retained `kinfo:1:200000` observation at 10000, the generation
+  relation is `uncertain`. Runtime correctly leaves the presence horizon
+  unchanged and returns disappearance at 8500, but replay rejects that
+  verdict with `exit-absence-superseded`. Apply `sameGenerationAsBound` to
+  retained reads too, so uncertain-generation evidence cannot supersede the
+  bound process's absence." Confirmed exactly (RED re-verified in the same
+  clean clone, same byte provenance): the reviewer's schedule measured the
+  runtime **`disappeared` / `reason: null` with
+  `lastVerifiedPresenceEpochMs: 6100` and `firstVerifiedAbsenceEpochMs:
+  8500`**, while the persisted-record replay of the SAME verdict measured
+  **`settled: false` with `refusals: ["exit-absence-superseded"]`** — the
+  retained uncertain read at 10000 superseded the bound absence the runtime
+  settled. **The fix:** the supersession loop now consumes
+  `sameGenerationAsBound(read.observation)` for every established retained
+  read (`driver.mjs:8201-8230`), exactly as the refreshed endpoint already
+  did: only `same`-generation evidence re-wins the verdict; uncertainty and
+  definitive replacement never supersede. RED→GREEN: the amended bytes
+  measure **`settled: true` with `refusals: []`**, matching the runtime's
+  disappearance. **CONTROLS (all measured byte-identically on the RED and
+  GREEN bytes):** (a) a SAME-generation retained read at 10000 is genuine
+  survival evidence — runtime `live` with `lastVerifiedPresenceEpochMs:
+  10000`, and the replay keeps its definitive `exit-absence-superseded`
+  refusal (the filter never disables the check); (b) a SAME-generation
+  retained read at 7000 (before the verified absence) never supersedes —
+  runtime `disappeared` at 8500 and replay `settled: true`.
+- **Test-count note:** the fixes add SIX local rows in three new round-58
+  describe blocks in tests/shell-wait-local-process.test.mjs (one RED row and
+  one controls row per finding; the F1 pair covers the runtime and the
+  replay) — exactly 6 new test declarations, 0 deleted. `rg -c '^\s*test\('`
+  counted 673 at 94ce236d and 679 on the amended bytes (673 + 6 = 679). The
+  pin moves honestly 673 + 100 + 1 = 774 → **679 + 100 + 1 = 780**, the pin
+  comment extended and the constant corrected to 780.
+- **IMPLICATED EXISTING ROW (disclosed):** the round-50 control "the marker
+  after the quantized creation keeps the credit" kept its witness write at
+  the rounded 1000 while its witnessed child `kinfo:1:400` was created at
+  1000.4 — a chronology the now-independent exact child-creation check
+  rightly refuses (`spawn-witness-child-generation-ambiguous`). The control's
+  witness write moved to the rounded 1100 (`firstWriteEpochMs` 1000 → 1100,
+  wrapper read completion follows) so the row exercises ONLY the marker
+  binding it owns; the stale arm still refuses at the marker binding
+  (`spawn-witness-marker-generation-ambiguous`) before any write ordering is
+  consulted. No declaration was added or deleted by this correction.
+- **Battery (executed 2026-11-14 on the final executable bytes, strictly
+  serial):** targeted round-58 rows = **6 tests, 6 pass, 0 fail** (plus the
+  round-50 implicated row in the same run = 7/7, and the identical 7/7 in
+  the clean clone: driver.mjs sha256
+  `ecf4d6b81133c4b2c7978fc4e7193ee3e4dee20275b523ec57b677cb33a4647b`,
+  local-process-observation.mjs sha256
+  `47983208a85c6996a6a9204ac27d9becf5d12cd137c792cf6dcdafce6656ad6e`,
+  final test sha256 `fa725cb920bd68ce3504f32224f8190ef47a9cb454c0363b137d79cc3362b0e7`
+  — identical to the worktree copies; the clone was deleted after the
+  measurement); the `same-second` name family = **104 tests, 104 pass, 0 fail**; the
+  `integration-completion` name family (the local entry — the documented
+  family gate) = **82 tests, 82 pass, 0 fail**; `node --test tests/test-selection.test.mjs` =
+  **6 tests / 6 pass / 0 fail** exit 0. Local SOLO = **679 tests, 679 pass, 0 fail, exit 0**;
+  native SOLO = **100 tests, 100 pass, 0 fail, exit 0**; probe SOLO =
+  **968 tests, 968 pass, 0 fail, exit 0** — all spawn rows green with pin 780. `npm run lint` exit 0;
+  `npm run typecheck` exit 0; `git diff --check` exit 0; `npm run
+  check:line-endings` exit 0. Prohibited-path diff vs
+  `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY. The fix amends the
+  EXISTING route-(c) commit (message unchanged) — no push.
+- **ATTRIBUTION DISCLOSURE:** no attribution case arose this round — every battery run (targeted, the two name families, test-selection, and all three SOLO suites) was green on the first attempt on the final bytes; no transient spawn/load failure was observed. (The one intermediate full local-SOLO failure was NOT a transient: it was the round-50 implicated row disclosed above, corrected in place before the final battery.)
+
+### 32.70 Codex-review gate round 59 (2026-11-14, one P1 + one P2 finding on §32.69's amended bytes — review-mwfewow5-9m2azr, the PPID-only rejection's first-exact retention and the replay conflicting-exact recency bypass; §32.69 style — add-only; the amended route-(c) commit carries them; message unchanged)
+
+- **Finding 1 [P1] Retain exact identity evidence on PPID-only rejection —
+  tools/shell-wait-probe/driver.mjs:1835-1836 — FIXED (the PPID-ONLY
+  REJECTION'S FIRST-EXACT RETENTION).** The reviewer's finding verbatim:
+  "With a coarse capture and no learned reference, a PPID-mismatched
+  inspection can observe exact generation A without setting
+  `heldTurnGenerationChanged`. This condition then discards A, allowing
+  cleanup to learn a different same-second generation B and signal it. Using
+  the existing round-53 harness with held-read `kinfo:1:100000` and
+  cleanup-read `kinfo:1:500000` produced a SIGTERM attempt and
+  `verifiedProcessTerminated: true` with no cleanup errors. Retain the first
+  exact observation even when the rejection is PPID-only." Confirmed exactly
+  (RED measured on `14e11f4c` in a clean `git clone --shared` copy under /tmp
+  checked out at `14e11f4c` — no `git worktree add`; the clone's tools/ were
+  verified byte-untouched before the measurement copy replaced ONLY the test
+  file (driver.mjs sha256
+  `ecf4d6b81133c4b2c7978fc4e7193ee3e4dee20275b523ec57b677cb33a4647b`,
+  the round-58 amended bytes); node_modules was symlinked only for the
+  clone's dependency resolution; the clone was deleted after the
+  measurements): the reviewer's round-53 harness with the COARSE capture
+  (no exact carry), the held read observing double-exact `kinfo:1:100000`
+  under the reparenting-shaped PPID mismatch and the cleanup read observing
+  double-exact `kinfo:1:500000` with the original PPID measured
+  **`{"verified":true,"errors":[]}`** — the cleanup learned B as the initial
+  reference, verified it at the coarse second and completed the termination
+  (SIGTERM attempted; the fake pid's ESRCH is converted to the observed
+  absence). **The fix:** the retention condition no longer requires
+  `heldTurnGenerationChanged`; the read's first exact identity
+  (`observedStartIdentity` first, then `startIdentity`, gated by
+  `parseExactStartIdentity`) is retained whenever the lifetime reference is
+  still null (`driver.mjs:1835-1862`) — the same exact-retention protocol
+  the round-53 residual's latched rider path applies. The cleanup's B is now
+  compared against A by the shared lifetime reader and the
+  pre-termination read refuses by name BEFORE any signal. RED→GREEN: the
+  amended bytes measure **`{"verified":false,"errors":["the exact fake-ZCode
+  process identity changed"]}`** (one error; the undefined termination was
+  never attempted — the refusal comes from the reader's pre-termination
+  read, and the failure rider remains `kinfo:1:100000`). **CONTROLS (all
+  measured byte-identically on the RED and GREEN bytes):** (a) the SAME
+  exact generation A on both the held and cleanup reads (a reparented
+  original) keeps the lawful termination — verified true, zero cleanup
+  errors; (b) the retained exact A with the cleanup degraded to the
+  matching COARSE text also terminates lawfully — verified true, zero
+  errors (the representation-aware same-generation relation); (c) a held
+  read with NO exact form retains nothing and keeps the existing
+  PPID-rejection/cleanup schedule byte-identically — verified true, zero
+  errors.
+- **Finding 2 [P2] Preserve learned-generation conflicts through replay
+  recency checks — tools/shell-wait-probe/driver.mjs:7847-7850 — FIXED
+  (the CONFLICTING-EXACT RECENCY BYPASS).** The reviewer's finding verbatim:
+  "For retained exact reads without kernel interval bounds, this detects a
+  conflict that the later `carried < mirrorEnd` guard silently discards,
+  unlike `adjudicateLocalExit`'s recency-bypass behavior. Reproduced with a
+  coarse baseline at 6100, a failed read carrying exact B during [5500,6500],
+  an exact-A observation at 6000 without interval bounds, and confirmed
+  absence at 7600: runtime returns `pid-start-identity-reused`, but replay
+  accepts the claimed disappearance with `settled: true` and no refusals.
+  Mirror the runtime's conflicting-exact-evidence exception before skipping
+  the read." Confirmed exactly (RED re-verified in a clean
+  `git clone --shared` copy of `14e11f4c` with the final test bytes; same
+  byte provenance as Finding 1): the reviewer's schedule measured the
+  runtime **`unestablished` / `reason: "pid-start-identity-reused"` with
+  `lastVerifiedPresenceEpochMs: 6100` and `firstVerifiedAbsenceEpochMs:
+  null`** (the failed read's exact B was learned during its [5500,6500]
+  window; the exact-A observation at 6000 hit the runtime's round-37
+  pre-skip exact-evidence comparison because its exact identity
+  definitively differs from the learned B, so the coarse horizon never
+  discarded it and the observation's own exact conflict latched the reuse),
+  while the persisted-record replay of the SAME schedule with the claimed
+  `disappeared` exit measured **`settled: true` with `refusals: []`** — the
+  replay's `carried < mirrorEnd` guard (carried 6000 < 6100) silently
+  discarded the already-detected replacement. **The fix:** before the
+  recency `continue`, the replay now mirrors the runtime's
+  conflicting-exact-evidence exception for the ESTABLISHED read's OWN exact
+  observation (`driver.mjs:8204-8243`): when `replacementDetected` and the
+  observation's own exact identity definitively differs from the retained
+  `replayLearnedExactReference` (and its kernel window is not definitively
+  stale — the same stale exclusion the runtime applies, reusing the
+  existing `candidateLearnStaleDiscarded` classification), the older read is
+  NOT discarded; it reaches the latched refusal. The bypass is
+  deliberately OWN-evidence-scoped: the runtime's established branch keeps
+  its legacy recency guard for a CARRIED-only conflict (a legacy carried
+  instant older than the horizon is never replacement evidence there), and
+  an in-read carry-vs-own conflict with no retained reference is skipped by
+  the runtime's pre-skip block as well — both keep the replay's recency
+  skip. RED→GREEN: the amended bytes measure the same schedule **`settled:
+  false` with `refusals: ["exit-reuse-latched"]`**, matching the runtime's
+  reuse refusal. **CONTROLS (all measured byte-identically on the RED and
+  GREEN bytes):** (a) an old exact read EQUAL to the learned reference is
+  not conflicting evidence — runtime `disappeared` at 7600 and replay
+  `settled: true`, `refusals: []`; (b) an old COARSE read carries no exact
+  conflict — runtime `disappeared` / replay `settled: true`, `refusals:
+  []`; (c) an old exact-A read with NO learned reference (the failed B
+  removed) is skipped identically — runtime `disappeared` / replay
+  `settled: true`, `refusals: []`; (d) a matching coarse observation whose
+  SEPARATELY CARRIED exact A conflicts with the learned B but whose legacy
+  carried instant is older than the horizon keeps the runtime's carried
+  recency guard — runtime `disappeared` and replay `settled: true`,
+  `refusals: []` (the own-evidence scope pin).
+- **Test-count note:** the fixes add FOUR local rows in two new round-59
+  describe blocks in tests/shell-wait-local-process.test.mjs (one RED row and
+  one controls row per finding; the F1 controls row carries its three arms
+  and the F2 controls row its four arms) — exactly 4 new test declarations,
+  0 deleted. `rg -c '^\s*test\('`
+  counted 679 at `14e11f4c` and 683 on the amended bytes (679 + 4 = 683).
+  The pin moves honestly 679 + 100 + 1 = 780 → **683 + 100 + 1 = 784**, the
+  pin comment extended and the constant corrected to 784.
+- **IMPLICATED EXISTING ROW (disclosed):** none — the fixes changed no
+  existing test declaration, and the full local SOLO (683/683) confirms
+  every prior row, including the round-53/55/57/58 controls around these
+  readers and the replay walk, is byte-identically green. The two new
+  controls rows pin the changed retention/bypass behavior's
+  same-generation/no-exact arm so the F1 retention cannot silently turn a
+  lawful reparented termination into a refusal.
+- **Battery (executed 2026-11-14 on the final executable bytes, strictly
+  serial):** targeted round-59 rows = **4 tests, 4 pass, 0 fail** (RED on
+  the clean clone = 4 tests, 2 pass, 2 fail — the two controls passed, the
+  two RED rows measured the reviewer's values; GREEN clean clone with the
+  final tools and test bytes = 4/4, hashes: driver.mjs
+  `557cd0fe8f582274056a1bda287d78b72519b3b751cfbb711af7394b9721a5b9`,
+  local-process-observation.mjs unchanged at
+  `47983208a85c6996a6a9204ac27d9becf5d12cd137c792cf6dcdafce6656ad6e`,
+  tests/shell-wait-local-process.test.mjs
+  `e6f9c70d768de5cffa054ed9bd7eec6afd6f93aa488d245ae3be4364536cf901`,
+  tests/shell-wait-probe.test.mjs
+  `5c535c294b6d063d90f5d4246d59de497d41b1c23aa30e6c00d9c7df0e981e06`
+  — identical to the worktree copies; the clone was deleted after the
+  measurement); the `same-second` name family = **105 tests, 105 pass, 0
+  fail**; the `integration-completion` name family (the local entry — the
+  documented family gate) = **82 tests, 82 pass, 0 fail**; `node --test
+  tests/test-selection.test.mjs` = **6 tests / 6 pass / 0 fail** exit 0.
+  Local SOLO = **683 tests, 683 pass, 0 fail, exit 0**; native SOLO = **100
+  tests, 100 pass, 0 fail, exit 0**; probe SOLO re-run = **968 tests, 968
+  pass, 0 fail, exit 0** — all spawn rows green with pin 784 (the exact
+  spawn CLI measured **784 tests, 784 pass, 0 fail**). `npm run lint` exit
+  0; `npm run typecheck` exit 0; `git diff --check` exit 0; `npm run
+  check:line-endings` exit 0. Prohibited-path diff vs
+  `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY. The fix amends the
+  EXISTING route-(c) commit (message unchanged) — no push.
+- **ATTRIBUTION DISCLOSURE:** one transient environment case arose and is
+  attributed as such: the first final-bytes probe SOLO measured
+  **967/968** — only the shell-research-spawn contract test failed (the
+  spawned suite CLI exited 1; the assertion message carries no stderr
+  detail). The EXACT spawn command (`ZCODE_SHELL_WAIT_PROBE_SELF_TEST=1
+  NODE_OPTIONS='--test-reporter=spec' node tools/run-test-suite.mjs
+  shell-research`) was re-run immediately on the SAME final bytes and
+  measured **784 tests / 784 pass / 0 fail, exit 0**; the full probe SOLO
+  re-run then measured **968/968, exit 0**; and the serial battery's
+  standalone local (683/683) and native (100/100) entries were green. No
+  source/test byte changed between the failing and passing probe runs, so
+  the single failure is attributed to the environment, not the bytes.
+  (One earlier intermediate lint failure — two new F1 fixture constants
+  were declared but never referenced — was a static-analysis defect in the
+  NEW rows, not a gate/attribution event; the constants were removed and
+  the final lint and battery ran on the corrected bytes.)
+
+### 32.71 Codex-review gate round 60 (2026-11-14, two P2 findings on §32.70's amended bytes — review-mwflp4jc-hor6ht, mock OS signalling in synthetic-PID termination controls and the replay conflicting-transition recency bypass; plus two prior-round comment nits; §32.70 style — add-only; the amended route-(c) commit carries them; message unchanged)
+
+- **Finding 1 [P2] Mock OS signalling in synthetic-PID termination controls
+  — tests/shell-wait-local-process.test.mjs:32938-32940 — FIXED (the
+  SYNTHETIC-PID SIGNAL SPY).** The reviewer's finding verbatim: "The
+  same-generation controls enable default termination while mocking identity
+  reads but not `process.kill`. A safe spy confirmed that this fixture calls
+  `process.kill(4194303, 'SIGTERM')`. That PID is valid on Linux hosts with a
+  sufficiently large PID range, so an unrelated process occupying it can
+  receive the signal despite never passing real identity verification. Mock
+  signalling as well, rather than relying on the synthetic PID being absent."
+  Confirmed exactly (RED measured on `546d826c` in a clean `git clone
+  --shared` copy under /tmp — no `git worktree add`; node_modules was
+  symlinked only for dependency resolution; the clone was deleted after the
+  measurements): a safe spy installed around the round-59 F1
+  default-termination helper and swallowing only the synthetic pid recorded
+  **three `KILL-SPY 4194303 SIGTERM`** intercepts (one per lawful control
+  arm) while the two round-59 F1 rows stayed green. Those three calls are
+  real `process.kill` invocations on the committed pre-fix test bytes; on
+  this macOS host 4194303 is above the pid ceiling, but the reviewer's
+  Linux-pid_max concern is exactly why the synthetic absence must not be the
+  safety property. **The fix:** a file-level `withSyntheticSignalSpy(pids,
+  run)` helper (tests/shell-wait-local-process.test.mjs:46-62) replaces
+  `process.kill` for the run: calls for the fixture's synthetic pid are
+  RECORDED and swallowed (`return true`, never delegated), every other pid
+  delegates to the original, and the original is restored in `finally`. All
+  six default-termination fixture sites in the file now run under it: the
+  round-59 F1 `runHeldTurn` (the three lawful arms assert exactly
+  `[[PID, 'SIGTERM']]`; the successor refusal row asserts `[]`), the round-53
+  F1 `runHeldTurn` (its four lawful controls assert one SIGTERM each; the two
+  refusal rows assert `[]`), the round-35 F1 and with-reference direct calls
+  (both assert `[]`), the round-38 `heldTurnWith` (the refusal and both
+  lawful-absence arms assert `[]`), and the round-43 `heldTurnWith` (the
+  refusal and all three controls assert `[]` — the normal arm settles through
+  the observed-then-gone read before the signal gate). RED→GREEN: the
+  vulnerable call is now recorded inside the test process and never reaches
+  the OS, while the behavior coverage is retained by the per-arm assertions
+  (a lawful termination signals exactly once; a latch/refusal path signals
+  none).
+- **Finding 2 [P2] Preserve conflicting transition evidence through replay
+  recency checks — tools/shell-wait-probe/driver.mjs:8237-8242 — FIXED (the
+  CONFLICTING-TRANSITION RECENCY BYPASS).** The reviewer's finding verbatim:
+  "For a retained transition without completion bounds, this exception still
+  discards conflicting exact evidence because it requires an established
+  read. Reproduced using the round-59 fixture: retain the failed exact-B
+  read, replace the old exact-A observation with an
+  `unestablished`/`start-identity-generation-changed` read carrying A at
+  6000, and retain the 7600 absence. Runtime returns
+  `pid-start-identity-reused`, but replay returns `settled: true` with no
+  refusals. Apply the runtime's conflicting-transition handling before
+  skipping this evidence." Confirmed exactly (RED re-measured in a clean
+  `git clone --shared` copy of `546d826c` with the FINAL test bytes — same
+  clone provenance as Finding 1): the round-59 fixture with the transition
+  read measured the runtime **`unestablished` / `reason:
+  "pid-start-identity-reused"` (lastVerifiedPresenceEpochMs 6100,
+  firstVerifiedAbsenceEpochMs null)** and the replay **`settled: true`,
+  `refusals: []`**. **The fix:** before the replay's recency `continue`, the
+  unestablished `start-identity-generation-changed` read's CARRIED exact
+  identity now takes the same conflicting-exact bypass as the established
+  read's own observation when it definitively differs from the learned
+  reference and is not definitively stale by its kernel window
+  (`carryLearnStaleDiscarded` — the runtime's `skipIntervalClass ===
+  'stale'` exclusion; driver.mjs:8246-8273). Same-generation, coarse and
+  no-exact transitions keep the recency skip; the earlier interval-ordered
+  transition handling (ambiguous / inconsistent) still runs first for
+  bounded evidence. RED→GREEN: the final bytes measure the same schedule
+  **`settled: false` with `refusals: ["exit-reuse-latched"]`**, matching the
+  runtime's reuse refusal. **CONTROLS (all measured byte-identically on the
+  RED and GREEN bytes):** the existing four round-59 arms keep their
+  settlement byte-identically — (a) same-generation old exact, (b) old
+  coarse, (c) no-reference exact, (d) carried-only old conflict all measure
+  runtime `disappeared` / replay `settled: true`, `refusals: []` — and the
+  new transition controls settle on both sides: (e) a transition carrying
+  the learned exact B itself (`disappeared` / `settled: true`, `[]`) and (f)
+  a transition carrying conflicting A whose bounded collection completed
+  strictly before the baseline dispatch (`disappeared` / `settled: true`,
+  `[]`). The established exact-A exception row is unchanged and still
+  latches both sides.
+- **Prior-round comment nits (pure comments, zero executable-byte change):**
+  (a) `tests/shell-wait-probe.test.mjs`'s §32.70 pin comment said "the F2
+  controls three arms"; the row carries FOUR arms — the fourth is the
+  carried-only scope pin — and the comment now says so. (b)
+  `tools/shell-wait-probe/driver.mjs`'s round-59 F1 retention comment said
+  the first exact observation is retained "whenever the rejection is
+  PPID-only"; the code's condition is the wider refusal block
+  (`observed.ppid !== expected.ppid || relation !== 'same'`) with a null
+  lifetime reference and an exact observed identity, so a non-PPID
+  relation-uncertain rejection also retains. The comment now describes that
+  actual condition.
+- **Test-count note:** the repair adds exactly ONE local test declaration —
+  the F2 conflicting-transition RED row in the round-59 replay describe (the
+  existing F2 controls row gains the (e)/(f) arms without a new
+  declaration, and all F1 changes sit inside existing rows). Local 683 →
+  **684**; native 100; guarded 1 → total 683 + 100 + 1 = 784 → **684 + 100 +
+  1 = 785**. `rg -c '^\s*test\(' tests/shell-wait-local-process.test.mjs`
+  counted 683 at `546d826c` and 684 on the amended bytes (exactly +1, 0
+  deleted); the pin comment was extended and `shellSuiteSpawnedTestTotal`
+  corrected to 785.
+- **IMPLICATED EXISTING ROWS (disclosed):** the six default-termination
+  fixture sites across the round-35, round-38, round-43, round-53 and
+  round-59 describe blocks changed only by the `process.kill` interception
+  and the new signal-coverage assertions; their measured outcomes are
+  unchanged (the targeted 18/18 run and the full local SOLO confirm). The
+  round-59 F2 controls row gained the two transition arms; its four prior
+  arms are byte-identical in outcome.
+- **Battery (executed 2026-11-14 on the final executable bytes, strictly
+  serial):** targeted round-59/60 rows = **5 tests, 5 pass, 0 fail** (the
+  GREEN clean-clone copy measured the same 5/5 with driver.mjs
+  `5e8bca4e88288ff2a4fd8a6c6ed9dde3bd5ca9b9143c49ccaebfa165f012a9c5`,
+  local-process-observation.mjs unchanged at
+  `47983208a85c6996a6a9204ac27d9becf5d12cd137c792cf6dcdafce6656ad6e`,
+  tests/shell-wait-local-process.test.mjs
+  `bc63962d0d7f6ee851e50f6f7c1ab05d49492cb25f79a55fb42f1a5bae998de0`,
+  tests/shell-wait-probe.test.mjs
+  `a21ff83a35379860054e4ea0a6d04a1d31bbbf4821bedf8702df8992c4c23994`
+  — identical to the worktree copies; the clone was deleted after the
+  measurement; the RED clean clone with the same test bytes against
+  `546d826c`'s driver failed the round-60 row with `settled: true`,
+  `refusals: []`). The `same-second` name family = **105 tests, 105 pass, 0
+  fail** (zero movement — the new row joins no family); the
+  `integration-completion` name family (the local entry — the documented
+  family gate) = **82 tests, 82 pass, 0 fail**; `node --test
+  tests/test-selection.test.mjs` = **6 tests / 6 pass / 0 fail** exit 0.
+  Local SOLO = **684 tests, 684 pass, 0 fail, exit 0**; native SOLO = **100
+  tests, 100 pass, 0 fail, exit 0**; probe SOLO = **968 tests, 968 pass, 0
+  fail, exit 0** — all spawn rows green with pin 785 (the exact spawn CLI
+  measured **785 tests, 785 pass, 0 fail**). `npm run lint` exit 0; `npm run
+  typecheck` exit 0; `git diff --check` exit 0; `npm run check:line-endings`
+  exit 0. Prohibited-path diff vs
+  `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY. The fix amends the
+  EXISTING route-(c) commit (message unchanged) — no push.
+- **ATTRIBUTION DISCLOSURE:** no attribution case arose this round — every
+  battery entry (targeted rows, both name families, test-selection and all
+  three SOLO suites) was green on the first final-bytes attempt; no
+  transient spawn/load failure was observed. The one intermediate RED
+  failure in the clean clone is the intended reviewer schedule, not a gate
+  event: the final test bytes against the pre-fix driver fail exactly the
+  new round-60 row.
+
+### 32.72 Codex-review gate round 61 (2026-11-14, one P2 finding on §32.71's amended bytes — review-mwfpq4q1-jmyixg, the replay ordinary failed-read conflicting-exact recency bypass; §32.71 style — add-only; the amended route-(c) commit carries it; message unchanged)
+
+- **Finding 1 [P2] Preserve ordinary failed-read conflicts during replay —
+  tools/shell-wait-probe/driver.mjs:8266-8272 — FIXED (the
+  CONFLICTING-FAILED-READ RECENCY BYPASS).** The reviewer's finding verbatim:
+  "[P2] Preserve ordinary failed-read conflicts during replay —
+  tools/shell-wait-probe/driver.mjs:8266-8272. For retained
+  `liveness-read-failed` reads without `observedIdentityCompletedEpochMs`,
+  the recency bypass still drops generation conflicts that the runtime
+  latches. With a coarse presence horizon of 6100, exact-A evidence
+  collected at 6010 and returned at 6160, exact-B evidence collected at 6080
+  and returned at 6230, and confirmed absence at 7600, `adjudicateLocalExit`
+  returns `pid-start-identity-reused`, but replay accepts the claimed
+  disappearance with `settled: true` and no refusals. Include ordinary
+  failed-read conflicts in the runtime-equivalent latch handling rather than
+  restricting this exception to `start-identity-generation-changed`."
+  Confirmed exactly (RED measured on `e904d7bd` in a clean `git clone
+  --shared` copy under /tmp — no `git worktree add`; the clone's tools/ were
+  verified byte-untouched before the final test bytes replaced ONLY the test
+  file (driver.mjs sha256
+  `5e8bca4e88288ff2a4fd8a6c6ed9dde3bd5ca9b9143c49ccaebfa165f012a9c5`, the
+  round-60 amended bytes); node_modules was symlinked only for the clone's
+  dependency resolution; the clone was deleted after the measurements): the
+  reviewer's schedule measured the runtime **`unestablished` / `reason:
+  "pid-start-identity-reused"`** (the failed exact-A read collected 6010 /
+  returned 6160 was learned as the reference — its exact form is
+  unresolvable against the coarse bound, so the failed-carry retention
+  learns it — and the later failed exact-B read collected 6080 / returned
+  6230 hit the runtime's pre-filter learned-reference comparison, whose
+  `skipIntervalClass !== 'stale'` legacy class latched the reuse), while the
+  persisted-record replay of the SAME schedule with the claimed
+  `disappeared` exit measured **`settled: true` with `refusals: []`** — the
+  replay's `carried < mirrorEnd` guard (carried 6080 < 6100) discarded the
+  already-detected replacement because the round-60 bypass still required
+  `reason === 'start-identity-generation-changed'`. **The fix:** the recency
+  bypass's unestablished arm is no longer reason-scoped
+  (`driver.mjs:8266-8294`): any `unestablished` read whose CARRIED exact
+  identity definitively differs from the retained
+  `replayLearnedExactReference` and is not definitively stale by its kernel
+  window (`carryLearnStaleDiscarded` — the runtime's `skipIntervalClass ===
+  'stale'` exclusion; a legacy read without completion bounds is never
+  stale) skips the recency `continue` and reaches the existing latched
+  refusal. The named transition is the prior scope of the same predicate, so
+  its behavior is unchanged; the runtime's `adjudicateLocalExit` pre-skip
+  exact-evidence comparison covers every non-absent same-scope read, which
+  is the semantic being mirrored. RED→GREEN: the amended bytes measure the
+  same schedule **`settled: false` with `refusals: ["exit-reuse-latched"]`**,
+  matching the runtime's reuse refusal. **CONTROLS (all measured
+  byte-identically on the RED and GREEN bytes):** (g) an ordinary failed
+  read carrying the learned exact A itself (collected 6050 / returned 6060,
+  older than the horizon) is same-generation evidence — runtime
+  `disappeared` / replay `settled: true`, `refusals: []`; (h) with NO
+  learned reference the old failed exact-B read (collected 6080 / returned
+  6090) is skipped identically — runtime `disappeared` / replay `settled:
+  true`, `refusals: []`; (i) the round-60 transition exception carrying
+  conflicting A still latches both sides — runtime
+  `pid-start-identity-reused` / replay `settled: false`, `refusals:
+  ["exit-reuse-latched"]`; (j) the round-59 established exception row still
+  latches both sides identically. The round-59/60 RED rows' exact schedules
+  also keep their measured outcomes (both sides refuse).
+- **Test-count note:** the repair adds exactly ONE local test declaration —
+  the ordinary conflicting-failed-read RED row in the round-59 replay
+  describe; the existing F2 controls row gains the (g)/(h)/(i)/(j) arms
+  without a new declaration. Local 684 → **685**; native 100; guarded 1 →
+  total 684 + 100 + 1 = 785 → **685 + 100 + 1 = 786**. `rg -c '^\s*test\('
+  tests/shell-wait-local-process.test.mjs` counted 684 at `e904d7bd` and 685
+  on the amended bytes (exactly +1, 0 deleted); the pin comment was extended
+  and `shellSuiteSpawnedTestTotal` corrected to 786.
+- **IMPLICATED EXISTING ROWS (disclosed):** the round-59 F2 controls row
+  gained the four round-61 arms and now measures all ten arms green; its six
+  prior arms are byte-identical in outcome. The round-59 and round-60 F2 RED
+  rows are unchanged and still refuse both sides. No existing test
+  declaration was changed or deleted; the full local SOLO (685/685) confirms
+  every prior row.
+- **Battery (executed 2026-11-14 on the final executable bytes, strictly
+  serial):** targeted round-59/60/61 rows = **6 tests, 6 pass, 0 fail** (the
+  RED clean clone with the final test bytes against `e904d7bd`'s driver
+  measured 6 tests, 5 pass, 1 fail — exactly the new row; the GREEN
+  clean-clone copy measured 6/6 with driver.mjs
+  `0444e0ae037538a3f57b5bffc0077a693be170d84ceb50e7523cf9218555f32c`,
+  local-process-observation.mjs unchanged at
+  `47983208a85c6996a6a9204ac27d9becf5d12cd137c792cf6dcdafce6656ad6e`,
+  tests/shell-wait-local-process.test.mjs
+  `51ae199afc78e32efc38e7d5f29d14d0dac947c9db7febe001bd6285755d8665`,
+  tests/shell-wait-probe.test.mjs
+  `9898a98b81fbd330f3ccf1c8e49a0df443aac6e5a31f60f9b8f7eb31005e721f`
+  — identical to the worktree copies; the clone was deleted after the
+  measurement). The `same-second` name family = **105 tests, 105 pass, 0
+  fail** (zero movement — the new row joins no family); the
+  `integration-completion` name family (the local entry — the documented
+  family gate) = **82 tests, 82 pass, 0 fail**; `node --test
+  tests/test-selection.test.mjs` = **6 tests / 6 pass / 0 fail** exit 0.
+  Local SOLO = **685 tests, 685 pass, 0 fail, exit 0**; native SOLO = **100
+  tests, 100 pass, 0 fail, exit 0**; probe SOLO = **968 tests, 968 pass, 0
+  fail, exit 0** — all spawn rows green with pin 786 (the exact guarded
+  spawn CLI measured **786 tests, 786 pass, 0 fail**; the direct unguarded
+  `node tools/run-test-suite.mjs shell-research` measured **1753 tests, 1753
+  pass, 0 fail**, exit 0). `npm run lint` exit 0; `npm run typecheck` exit
+  0; `git diff --check` exit 0; `npm run check:line-endings` exit 0.
+  Prohibited-path diff vs `9c337403658ed8cb5319e5da75635154ba4aa851` EMPTY.
+  The fix amends the EXISTING route-(c) commit (message unchanged) — no
+  push.
+- **ATTRIBUTION DISCLOSURE:** no attribution case arose this round — every
+  battery entry (targeted rows, both name families, test-selection and all
+  three SOLO suites) was green on the first final-bytes attempt; no
+  transient spawn/load failure was observed. The one intermediate RED
+  failure in the clean clone is the intended reviewer schedule, not a gate
+  event: the final test bytes against the pre-fix driver fail exactly the
+  new round-61 row.
+
+### 32.73 Codex-review gate round 62 self-review (2026-11-14, one P2 finding on §32.72's amended bytes — the replay ordinary failed-read conflicting-exact recency bypass was over-generalized: the runtime's early-pre-filter versus pre-skip-fall-through two-phase distinction was not mirrored; §32.72 style — add-only; the amended route-(c) commit carries it; message unchanged)
+
+- **Finding 1 [P2] The generalized bypass over-refuses old legacy carried
+  conflicts from ordinary failed reads — tools/shell-wait-probe/driver.mjs:8266-8294
+  — FIXED (the TWO-PHASE PRE-FILTER ALIGNMENT).** The reviewer's finding
+  verbatim: "[P2] The generalized bypass over-refuses old legacy carried
+  conflicts from ordinary failed reads. Replay
+  `tools/shell-wait-probe/driver.mjs:8266-8269` bypasses the recency continue
+  for ANY `unestablished` read whose carried exact differs from
+  `replayLearnedExactReference` and is non-stale; the guard is at :8292-8294
+  and is keyed only on the carried instant (`carried < mirrorEnd`). Runtime:
+  the pre-skip exact comparison at `local-process-observation.mjs:3982-4022`
+  only applies when `evidenceEpochMs < lastPresenceEpochMs`; it then falls
+  through to the ordinary failed-read branch at :4329-4372, whose legacy
+  carried-instant guard at :4370 (`carriedIdentityEpochMs(read) >=
+  lastPresenceEpochMs`) refuses to latch a carried identity observed BEFORE
+  the horizon. When identity evidence is at/after the horizon, the early
+  pre-filter at :3877-3891 latches without that guard. The new predicate does
+  not mirror this early-pre-filter versus pre-skip-fall-through distinction
+  (the code's own round-59 note at driver.mjs:8231-8238 states the same rule
+  for carried-only conflicts: 'an old carried conflict is NOT replacement
+  evidence there and must keep the recency skip here').
+  Reproduction: coarse baseline identity-read 6100; ordinary
+  `liveness-read-failed` read A carrying `kinfo:1:100000`, observed 6010,
+  returned 6310, no completed bound (learned as the reference); ordinary
+  failed read B carrying `kinfo:1:500000`, observed 6080, returned 6090, no
+  completed bound; confirmed absence 7600. Runtime `adjudicateLocalExit`:
+  `disappeared`. RED e904d7bd replay: settled:true, []. GREEN 25d7bbe5
+  replay: settled:false, refusals:['exit-reuse-latched'] (false refusal
+  introduced by this fix). Boundary: with B's identityReadEpochMs 6090 and
+  readEpochMs 6230, runtime still disappeared, GREEN refuses, RED settles;
+  with identityReadEpochMs 6100 (tie), runtime returns
+  pid-start-identity-reused and both replay versions latch."
+  Confirmed exactly (RED measured on `25d7bbe5` in a clean `git clone
+  --shared` copy under /tmp — no `git worktree add`; the clone was verified
+  at the full HEAD `25d7bbe5c090aa1196d49c93699d2cab9acacd4d` with ONLY an
+  untracked node_modules symlink for dependency resolution, and was deleted
+  after the measurements; the pre-fix bytes measured driver.mjs sha256
+  `0444e0ae037538a3f57b5bffc0077a693be170d84ceb50e7523cf9218555f32c`,
+  local-process-observation.mjs sha256
+  `47983208a85c6996a6a9204ac27d9becf5d12cd137c792cf6dcdafce6656ad6e`,
+  tests/shell-wait-local-process.test.mjs sha256
+  `51ae199afc78e32efc38e7d5f29d14d0dac947c9db7febe001bd6285755d8665`,
+  tests/shell-wait-probe.test.mjs sha256
+  `9898a98b81fbd330f3ccf1c8e49a0df443aac6e5a31f60f9b8f7eb31005e721f`).
+  The standalone repro imported the clone's modules and measured the exact
+  schedules:
+  (a) the reviewer's ORIGINAL round-61 schedule (A observed 6010 / returned
+  6160, B observed 6080 / returned 6230) — runtime `unestablished` /
+  `pid-start-identity-reused`; RED replay `settled: false`,
+  `["exit-reuse-latched"]`; GREEN replay identical (still latches — the row
+  stays green);
+  (b) the counterexample (A observed 6010 / returned 6310; B observed 6080 /
+  returned 6090, NO `identityReadEpochMs` and no completion bound) — runtime
+  `disappeared`; RED replay `settled: false`,
+  `["exit-reuse-latched"]` (the false refusal); GREEN replay `settled: true`,
+  `[]`;
+  (c) the boundary arm with B's explicit `identityReadEpochMs: 6090` beside
+  `readEpochMs: 6230` (identity evidence still strictly older than 6100) —
+  runtime `disappeared`; RED replay `settled: false`,
+  `["exit-reuse-latched"]`; GREEN replay `settled: true`, `[]`;
+  (d) the boundary arm with B's `identityReadEpochMs: 6100` (the tie) —
+  runtime `unestablished` / `pid-start-identity-reused`; RED and GREEN both
+  `settled: false`, `["exit-reuse-latched"]` (the at/after-horizon latch is
+  preserved).
+  **The fix:** the unestablished bypass now consumes the runtime's own
+  two-phase premise (`driver.mjs:8286-8325`). The named
+  `start-identity-generation-changed` transition keeps its unconditional
+  (non-stale) bypass — the runtime's generation-changed branch (round 60)
+  latches after the pre-skip fall-through WITHOUT the legacy carried-instant
+  guard. An ORDINARY failed read additionally requires its identity evidence
+  (`identityReadEpochMs ?? readEpochMs`, the runtime's `evidenceEpochMs`
+  source) to be at/after the current advancing horizon `mirrorEnd` — the
+  runtime's early pre-filter entry
+  (`local-process-observation.mjs:3685`, whose block contains the
+  `:3877-3891` carried comparison). Identity evidence strictly older keeps
+  the outer `carried < mirrorEnd` recency skip, which IS the runtime's legacy
+  carried-instant guard at `local-process-observation.mjs:4370` (a carried
+  instant at/after the horizon never reaches the skip, so it still latches).
+  No established-arm, absence-arm or learning-admission behavior changed.
+- **CONTROLS (measured on the final bytes; both sides):** (g) the ordinary
+  failed read carrying the learned exact A itself (observed 6050 / returned
+  6060, older than the horizon) is same-generation evidence — runtime
+  `disappeared` / replay `settled: true`, `refusals: []`; (h) with NO learned
+  reference the old failed exact-B read (observed 6080 / returned 6090) is
+  skipped identically — runtime `disappeared` / replay `settled: true`,
+  `refusals: []`; (i) the round-60 transition exception carrying conflicting
+  exact A still latches both sides — runtime `pid-start-identity-reused` /
+  replay `settled: false`, `["exit-reuse-latched"]`; (j) the round-59
+  established exact-A observation still latches both sides identically. The
+  round-59 and round-61 RED rows' exact schedules keep their measured
+  outcomes (both sides refuse), and the ordinary-carried-only scope control
+  (rawOldCarriedConflict) still settles both sides.
+- **Test-count note:** the repair adds exactly ONE local test declaration —
+  the two-phase ordinary failed-read row in the round-59 replay describe
+  (`tests/shell-wait-local-process.test.mjs:33425`), carrying the
+  counterexample plus both boundary arms and the reviewer's original-schedule
+  re-assertion; the existing F2 controls row is unchanged. Local 685 →
+  **686**; native 100; guarded 1 → total 685 + 100 + 1 = 786 →
+  **686 + 100 + 1 = 787**. `rg -c '^\s*test\('
+  tests/shell-wait-local-process.test.mjs` counted 685 at `25d7bbe5` and 686
+  on the amended bytes (exactly +1, 0 deleted); the pin comment was extended
+  and `shellSuiteSpawnedTestTotal` corrected to 787
+  (`tests/shell-wait-probe.test.mjs:649`).
+- **IMPLICATED EXISTING ROWS (disclosed):** the new predicate replaces the
+  round-61 reason-only predicate inside `conflictingUnestablishedAgainstReference`;
+  the round-59 established arm (`conflictingExactAgainstReference`), the
+  round-61 RED row with the reviewer's at/after-horizon schedule, the round-60
+  transition row and the round-59/61 controls row all keep byte-identical
+  outcomes. The new row re-asserts the round-61 schedule and both boundary
+  arms. No existing test declaration was changed or deleted; the full local
+  SOLO (686/686) confirms every prior row.
+- **Battery (executed 2026-11-14 on the final executable bytes, strictly
+  serial; the probe was never run in parallel with another probe):** the
+  targeted `F2 (P2)` name pattern = **63 tests, 63 pass, 0 fail** (the
+  round-59 replay describe itself = 5 tests / 5 pass: the round-59/60/61/62
+  rows plus the controls row); the `same-second` name family = **105 tests,
+  105 pass, 0 fail** (zero movement — the new row joins no family); the
+  `integration-completion` name family (the local entry — the documented
+  family gate) = **82 tests, 82 pass, 0 fail**; `node --test
+  tests/test-selection.test.mjs` = **6 tests / 6 pass / 0 fail** exit 0.
+  Local SOLO = **686 tests, 686 pass, 0 fail, exit 0**; native SOLO = **100
+  tests, 100 pass, 0 fail, exit 0**; probe SOLO = **968 tests, 968 pass, 0
+  fail, exit 0** (1608.1 s) — all spawn rows green with pin 787 (the exact
+  guarded spawn CLI,
+  `ZCODE_SHELL_WAIT_PROBE_SELF_TEST=1 NODE_OPTIONS='--test-reporter=spec' node
+  tools/run-test-suite.mjs shell-research`, measured **787 tests, 787 pass, 0
+  fail, exit 0**, 185.5 s). `npm run lint` exit 0; `npm run typecheck` exit
+  0; `git diff --check` exit 0; `npm run check:line-endings` exit 0 (LF
+  verified in 550 tracked files). Prohibited-path diff
+  (`git diff 9c337403658ed8cb5319e5da75635154ba4aa851 --stat -- scripts/
+  hooks/ skills/ agents/ .codex-plugin/ prompts/ schemas/ marketplace/
+  docs/superpowers/specs/ package.json npm-shrinkwrap.json`) EMPTY (0 bytes
+  of diff). The fix amends the EXISTING route-(c) commit (message unchanged)
+  — no push.
+- **ATTRIBUTION DISCLOSURE:** one transient timing case arose and is
+  attributed as such: the FIRST full local SOLO on the final bytes measured
+  **685/686** — the failing row was `reads order by their DECISION instant —
+  a stale-presence completion never outranks a later absence`
+  (`tests/shell-wait-local-process.test.mjs:8066`) with
+  `AssertionError: the completion lands late` at its wall-clock
+  `staleLive.readEpochMs >= before + 300` assertion (the row's own 300 ms
+  `setTimeout` margin; suite-load scheduling can close it marginally early).
+  The row re-ran in isolation green (**1 test / 1 pass / 0 fail**) and the
+  identical-bytes full local SOLO re-run measured **686/686, 0 fail, exit
+  0**; no source/test byte changed between the two runs. The failure is
+  attributed to a transient timing/load flake, never a pin or assertion
+  mismatch. Every other battery entry was green on the first final-bytes
+  attempt.
+
+### 32.74 Codex-review gate round 63 (2026-11-14, two P2 findings on §32.73's amended bytes — review-mwfxlzpe-0fve20: the exact marker binding's aligned-child exemption and the replay's absence-carried generation conflicts; §32.73 style — add-only; the amended route-(c) commit carries it; message unchanged)
+
+- **Finding 1 [P2] Reject overlapping marker timestamps for aligned starts
+  too — tools/shell-wait-probe/local-process-observation.mjs:4838-4840 —
+  FIXED (the ALIGNED-CHILD MARKER-WINDOW CHECK).** The reviewer's finding
+  verbatim: "[P2] Reject overlapping marker timestamps for aligned starts
+  too — tools/shell-wait-probe/local-process-observation.mjs:4838-4840.
+  When the child's exact creation is millisecond-aligned, the marker
+  timestamp is still rounded. For example, child `kinfo:1:1000` starts at
+  1001 ms, while an older marker written at 1000.6 ms also rounds to 1001.
+  This condition exempts that case, and `joinAncestryHops` returns an
+  established hop, even though the marker's possible write interval overlaps
+  creation. Consequently, a predecessor's marker can be attributed to the
+  replacement generation. Apply the marker-window check regardless of child
+  alignment; the persisted replay contains the same exception." Confirmed
+  exactly (RED measured on `e5e86d5a` in a clean `git clone --shared` copy
+  under /tmp — no `git worktree add`; the clone was verified at the full HEAD
+  `e5e86d5af3657320b007b846b4f4c1d3f15499b3` with `git status --porcelain`
+  EMPTY and ONLY an untracked node_modules symlink for dependency resolution;
+  the pre-fix bytes measured local-process-observation.mjs sha256
+  `47983208a85c6996a6a9204ac27d9becf5d12cd137c792cf6dcdafce6656ad6e` and
+  driver.mjs sha256
+  `51c111aeea7cb45b1b7af409f5cb0d9c064e413dbd9d7b50bbb541de3148e050`; the
+  final test bytes measured
+  `4f37f514f6925b4648669e9bfe4f8a3ea30b33d012e39dfa0d82b5b75b2c3e7e`; the
+  clone was deleted after the measurements). The standalone reproduction and
+  the new RED row measured the reviewer's schedule: child `kinfo:1:1000`
+  (true creation 1001.0, persisted 1001) tied with marker 1001 measured the
+  hop **`established` / reason `null` / `witnessClass:
+  "spawn-boundary-capture"`**, although the marker's true write window
+  [1000.5, 1001.5) contains the 1000.6 write that preceded the creation.
+  The mirrored replay (`verifyPersistedSpawnWitnessEstablishment`) carried
+  the same exception: the persisted aligned tie (witnessed child
+  `kinfo:2:1000`, `childOsStartInstantMs` 2001, marker 2001) measured
+  **`settled: true` with `refusals: []`**. **The fix:** the exact-mode tie
+  now establishes ONLY when the marker's true write window's INCLUDED lower
+  bound is at/after the child's TRUE creation — `M - 0.5 >= C` with
+  `C = sec * 1000 + usec / 1000` (the unrounded exact identity instant) —
+  applied to EVERY exact child; the millisecond-aligned exemption is
+  RETIRED at `local-process-observation.mjs:4816-4846` and mirrored at
+  `driver.mjs:5927-5946`. The exact half (`usec % 1000 === 500`, `C = M -
+  0.5`) remains the one establishing tie (the window's included left
+  endpoint); every other tie (quantize-down, quantize-up and now aligned)
+  refuses `spawn-witness-marker-generation-ambiguous`, never resolved as
+  true; the coarse band is byte-identical; a marker strictly after `R` keeps
+  its whole window at/after `C` and establishes unchanged. RED→GREEN: the
+  amended bytes measure the reviewer's schedule **`unestablished` /
+  `spawn-witness-marker-generation-ambiguous`** with no `witnessClass`, and
+  the persisted replay refuses the SAME named label (`settled: false`).
+  **CONTROLS (all measured on the final bytes; the clean-clone RED bytes
+  measure the first three arms as the old behavior except the two retired
+  aligned arms):** (a) the TRUE SAME-INSTANT half-exact arm — child
+  `kinfo:1:500` (creation 1000.5 = the persisted 1001's included window
+  left edge) tied with marker 1001 — **establishes** with
+  `spawn-boundary-capture`; (b) the WRITE-LATER arm — aligned child
+  `kinfo:1:1000` (creation 1001) with marker 1002 (window [1001.5, 1002.5))
+  — **establishes**; (c) the non-aligned DOWNWARD tie (child `kinfo:1:400`,
+  creation 1000.4, marker 1000) stays **ambiguous** byte-identically; (d)
+  the COARSE band (coarse record/endpoint, marker 1100 inside the child's
+  first possible second) stays **ambiguous** byte-identically; (e) the
+  replay mirror's later-marker arm (marker 2002, child 2001) re-verifies
+  clean (`refusals: []`, `settled: true`).
+- **Finding 2 [P2] Preserve absence-carried generation conflicts during
+  replay — tools/shell-wait-probe/driver.mjs:8326-8327 — FIXED (the
+  CONFLICTING-ABSENCE RECENCY BYPASS).** The reviewer's finding verbatim:
+  "[P2] Preserve absence-carried generation conflicts during replay —
+  tools/shell-wait-probe/driver.mjs:8326-8327. For an identity-bearing
+  absence without a kernel completion bound, this skip can discard a
+  conflict that the runtime latches. After learning exact generation B and
+  advancing the presence horizon to 6250, an absence carrying exact A at
+  6220 and completing at 6400 triggers `pid-start-identity-reused` in
+  `adjudicateLocalExit`. With a subsequent confirmed absence at 7600,
+  however, replay accepts a claimed disappearance with `settled: true` and
+  no refusals because neither bypass covers absent reads. Mirror the
+  runtime's early carried-identity comparison for absences as well."
+  Confirmed exactly (RED on the same `e5e86d5a` clean `git clone --shared`
+  copy with the final test bytes): the reviewer's schedule measured the
+  runtime **`unestablished` / `reason: "pid-start-identity-reused"`** with
+  `lastVerifiedPresenceEpochMs` **6250** (the exact-B presence's
+  identity-read instant; the absence carrying exact A has
+  `observedIdentityReadEpochMs` 6220 and completion 6400 with NO kernel
+  completion bound, so the pre-filter gate `identityEvidenceEpochMs =
+  identityReadEpochMs ?? readEpochMs = 6400 >= 6250` fires and the generic
+  carried-exact block at
+  `local-process-observation.mjs:3877-3891` latches the conflict), while
+  the persisted-record replay of the SAME schedule with the claimed
+  `disappeared` exit measured **`settled: true` with `refusals: []`** — the
+  replay's `carried < mirrorEnd` guard (carried 6220 < 6250) discarded the
+  already-detected absent-read replacement because the established and
+  unestablished bypasses did not cover absent reads. **The fix:** the
+  recency bypass gains the absent-read arm
+  (`driver.mjs:8333-8366`): an absent read whose CARRIED exact identity
+  definitively differs from the retained `replayLearnedExactReference`, is
+  not definitively stale by its kernel window
+  (`carryLearnStaleDiscarded` — the runtime's `skipIntervalClass ===
+  'stale'` exclusion; a no-completion-bound legacy absence is never stale),
+  and whose identity evidence (`identityReadEpochMs ?? readEpochMs` — the
+  runtime's `evidenceEpochMs` source) is at/after the horizon skips the
+  recency `continue` and reaches the existing `exit-reuse-latched` refusal.
+  The at/after-horizon gate is the runtime's early pre-filter entry
+  (`local-process-observation.mjs:3685`): an earlier identity evidence
+  keeps the recency skip, which IS the runtime's legacy carried-instant
+  guard for the absent branch (`carriedIdentityEpochMs(read) >=
+  lastPresenceEpochMs`) — the same two-phase channel §32.73 established for
+  ordinary failed reads. RED→GREEN: the amended bytes measure the same
+  schedule **`settled: false` with `refusals: ["exit-reuse-latched"]`**,
+  matching the runtime's reuse refusal. **CONTROLS (all measured
+  byte-identically on the RED and GREEN bytes):** (a) the SAME-generation
+  carry (exact B observed at 6220) is not a conflict — runtime
+  `disappeared` / replay `settled: true`, `refusals: []`; (b) NO carry
+  (an ordinary confirmed absence after the horizon) — runtime
+  `disappeared` / replay `settled: true`, `refusals: []`; (c) OLD identity
+  evidence (the conflicting carry observed at 6180 — strictly older than
+  the 6250 horizon) keeps the runtime's legacy carried-instant guard and
+  the replay's recency skip — runtime `disappeared` / replay `settled:
+  true`, `refusals: []`; (d) the PLAIN settled schedule (only the 7600
+  absence) is byte-identical on both sides.
+- **Test-count note:** the repair adds exactly FIVE local test
+  declarations — the F1 RED row and its four-arm controls row, the F2 RED
+  row and its four-arm controls row in a new round-63 describe, plus the F1
+  replay-mirror row in the integration-completion describe. Local 686 →
+  **691**; native 100; guarded 1 → total 686 + 100 + 1 = 787 →
+  **691 + 100 + 1 = 792**. `rg -c '^\s*test\('
+  tests/shell-wait-local-process.test.mjs` counted 686 at `e5e86d5a` and
+  691 on the amended bytes (exactly +5, 0 deleted); the pin comment was
+  extended and `shellSuiteSpawnedTestTotal` corrected to 792
+  (`tests/shell-wait-probe.test.mjs:657`).
+- **IMPLICATED EXISTING ROWS (disclosed):** three prior rows encoded the
+  retired aligned-tie exemption and were corrected IN PLACE (same
+  declaration counts, 0 added/deleted there): (1) the §32 route-(c) exact
+  test's "TIES = SAME GENERATION" arm (`tests/shell-wait-local-process.test.mjs:3398`)
+  now uses the HALF-EXACT child (`kinfo:1793849000:700500`, creation
+  ...700.5 = the persisted ...701's included window left edge) to preserve
+  the establishing-tie coverage, and additionally asserts the aligned tie
+  (`kinfo:1793849000:700000`, marker ...700) as
+  `spawn-witness-marker-generation-ambiguous`; (2) the round-50 F1 controls
+  row's aligned arm (`:30987`) now asserts the named ambiguity (the coarse
+  arm stays byte-identical); (3) the round-51 F1 controls row's aligned arm
+  (`:31196`) now asserts the named ambiguity (downward, half-exact and
+  post-window arms unchanged). The clean-clone RED run with the final test
+  bytes measures these two updated older controls rows failing against the
+  pre-fix code (they encode the NEW behavior by construction); the
+  round-63 reviewer-schedule RED rows fail for the intended reasons. The
+  full local SOLO (691/691) confirms every other prior row byte-identically;
+  no existing test declaration was changed or deleted. (Draft-pin
+  disclosure: the initially drafted pins for these two arms — `:30971` /
+  `:31176` — were the row-declaration positions in the draft bytes that did
+  not yet carry the route-(c) in-place hunk (+16 lines); before the codex
+  gate they are corrected to the final-byte declaration positions `:30987`
+  / `:31196`, the same declaration-line convention the bullet already
+  uses.)
+- **Battery (executed 2026-11-14 on the final executable bytes, strictly
+  serial; the probe was never run in parallel with another probe):** the
+  targeted `round 63` pattern = **7 tests, 7 pass, 0 fail** (the five new
+  rows plus the two updated round-50/51 controls rows; the clean clone with
+  the FINAL test bytes against `e5e86d5a`'s pre-fix modules measured 7
+  tests, 2 pass, 5 fail — the three new positive rows plus the two updated
+  older controls rows, while both new controls rows pass; the GREEN
+  clean-clone copy with the final modules and test bytes measured 7/7 with
+  local-process-observation.mjs
+  `d2ec94179d7619c8a44a61a2a1cadbab70834a5276eefe7614db450a83ac8a3e`,
+  driver.mjs `2772753f8deea26cca66249a0de8bbe2556a2e12d6812e02094137f426de9434`,
+  tests/shell-wait-local-process.test.mjs
+  `4f37f514f6925b4648669e9bfe4f8a3ea30b33d012e39dfa0d82b5b75b2c3e7e`,
+  tests/shell-wait-probe.test.mjs
+  `10372073c51257ebc00480c3460f9342e72d81a712c8899cccc44c3f86480e26` —
+  identical to the worktree copies; the clone was deleted after the
+  measurements); the targeted `F2 (P2)` name pattern = **65 tests, 65 pass,
+  0 fail** (63 prior rows + the two new round-63 F2 rows); the
+  `same-second` name family = **105 tests, 105 pass, 0 fail** (zero
+  movement — the new rows join no family); the `integration-completion`
+  name family (the local entry — the documented family gate) = **83 tests,
+  83 pass, 0 fail** (the F1 replay-mirror row joins it); `node --test
+  tests/test-selection.test.mjs` = **6 tests / 6 pass / 0 fail** exit 0.
+  Local SOLO = **691 tests, 691 pass, 0 fail, exit 0**; native SOLO = **100
+  tests, 100 pass, 0 fail, exit 0**; probe SOLO = **968 tests, 968 pass, 0
+  fail, exit 0** (1617.4 s) — the spawn rows' internal pin 792 holds; the
+  exact guarded spawn CLI
+  (`ZCODE_SHELL_WAIT_PROBE_SELF_TEST=1 NODE_OPTIONS='--test-reporter=spec'
+  node tools/run-test-suite.mjs shell-research`) measured **792 tests, 792
+  pass, 0 fail, exit 0** (185.3 s). `npm run lint` exit 0; `npm run
+  typecheck` exit 0; `git diff --check`
+  exit 0; `npm run check:line-endings` exit 0 (LF verified in 550 tracked
+  files). Prohibited-path diff (`git diff
+  9c337403658ed8cb5319e5da75635154ba4aa851 --stat -- scripts/ hooks/
+  skills/ agents/ .codex-plugin/ prompts/ schemas/ marketplace/
+  docs/superpowers/specs/ package.json npm-shrinkwrap.json`) EMPTY (0 bytes
+  of diff). The fix amends the EXISTING route-(c) commit (message unchanged)
+  — no push.
+- **ATTRIBUTION DISCLOSURE:** no attribution case arose this round — every
+  battery entry (targeted rows, both name families, test-selection, all
+  three SOLO suites) was green on the first final-bytes attempt; no
+  transient spawn/load failure was observed. The five clean-clone RED
+  failures are the intended reviewer schedules and the two updated aligned
+  controls rows, never gate events.
+
+### 32.75 Codex-review gate round 64 (2026-11-14, two P2 findings on §32.74's amended bytes — review-mwg28yk8-ds4mtv: the presence horizon's backward move across the recency bypass and the replay's discarded within-read exact contradiction; §32.74 style — add-only; the amended route-(c) commit carries them; message unchanged)
+
+- **Finding 1 [P2] Keep the presence horizon monotonic after the recency
+  bypass — tools/shell-wait-probe/local-process-observation.mjs:4112-4117 —
+  FIXED (the MONOTONIC HORIZON FOR OLDER CONFLICTING EVIDENCE).** The
+  reviewer's finding verbatim: "[P2] Keep the presence horizon monotonic
+  after the recency bypass —
+  tools/shell-wait-probe/local-process-observation.mjs:4112-4117. With a
+  coarse baseline carrying exact identity B at 6250, an older
+  mixed-resolution presence carrying exact A at 6200 can bypass the recency
+  filter when its carried completion bound is absent. This assignment then
+  moves the verified presence horizon backward to 6200. A confirmed absence
+  collected over [6200, 6300], which overlaps the actual baseline,
+  consequently produces `disappeared`; without the old read, the same
+  absence correctly remains unestablished. Preserve the previous horizon
+  when processing older conflicting evidence instead of treating it as an
+  advancing presence." Confirmed exactly against the pre-fix bytes (the
+  cited lines are the same-generation arm's horizon assignment
+  `state = 'live'; lastPresenceEpochMs = identityEvidenceEpochMs(read); …
+  lastPresenceStartedEpochMs = read.readStartedEpochMs`, reachable by an
+  OLDER read exactly because the round-37 pre-skip exact-evidence bypass
+  falls it through the recency filter when its exact carry definitively
+  differs from the learned reference and its carried completion bound is
+  absent — the legacy interval class keeps the round-38 stale exclusion
+  silent). RED measured on `fe0cbf2a` in a clean `git clone --shared` copy
+  under /tmp/r64fix-red — no `git worktree add`; the clone was verified at
+  the full HEAD `fe0cbf2acb42b46c415e2e8813e5b942856aa4c0` with `git
+  status --porcelain` carrying ONLY the overlaid final test bytes and an
+  untracked node_modules symlink for dependency resolution; the pre-fix
+  bytes measured local-process-observation.mjs sha256
+  `d2ec94179d7619c8a44a61a2a1cadbab70834a5276eefe7614db450a83ac8a3e` and
+  driver.mjs sha256
+  `2772753f8deea26cca66249a0de8bbe2556a2e12d6812e02094137f426de9434` (both
+  identical to §32.74's recorded GREEN bytes — fe0cbf2a is that amended
+  commit); the final test bytes measured
+  `554db6ed020450e975cc4cc07cc2b1076cbe23bebeb242741adccb8d1eb39602`; the
+  clone was deleted after the measurements. The new RED row measured the
+  reviewer's schedule — the coarse baseline carrying exact B at 6250
+  (horizon 6250), the older mixed-resolution presence carrying exact A at
+  6200 with an absent carried completion bound, the confirmed absence over
+  [6200, 6300] — as **`disappeared` / `lastVerifiedPresenceEpochMs` 6200 /
+  `firstVerifiedAbsenceEpochMs` 6300**: the horizon moved BACKWARD to the
+  older read's evidence instant and the ROUND-36 overlap rejection (6200 <
+  6250) was pre-empted. **The fix:** the same-generation arm's horizon
+  assignment now preserves the previous horizon for older conflicting
+  evidence — `identityEvidenceEpochMs(read) < previousHorizonEpochMs` (the
+  bypass's own premise: the read's identity evidence strictly below the
+  pre-read horizon; the guard's "older" key is the runtime's
+  `evidenceEpochMs` source, never the carried instant) takes the stale
+  arm's treatment (`sawUnestablished`, the horizon pair keeps its previous
+  values, the read is never an advancing presence) at
+  `local-process-observation.mjs:4110-4135`; the normal advance stays
+  byte-identical for reads whose evidence is at/after the horizon (they
+  never pass through the bypass), and tied reads never reach the arm at
+  all (the recency filter skips them; the round-22 latch-before-skip
+  pre-filter owns their conflicts), so the equal-timestamp tie-rank
+  behavior is untouched. RED→GREEN: the amended bytes measure the
+  reviewer's schedule **`unestablished` / `absence-unestablished`**, and
+  the preserved-horizon probe (the same schedule with the absence
+  collected over [6250, 6300] — starting exactly AT the horizon) credits
+  the lawful `disappeared` with **`lastVerifiedPresenceEpochMs` 6250**
+  (the PRESERVED baseline, never the backward 6200).
+  **REPLAY-MIRROR CONCLUSION (no driver byte changes for this finding):**
+  the replay's horizon walk advances ONLY strictly forward
+  (`carried > finalPresenceHorizonMs`, `driver.mjs:7566`) with the
+  stale-kernel skip (`driver.mjs:7565`) — it never moves the horizon
+  backward and never advances an older read, so the replay already
+  implements the monotonic horizon the runtime fix adopts and the runtime
+  fix aligns the runtime WITH the replay. Verified by the new
+  integration-completion row: the persisted record carrying the RED
+  claimed disappearance (exit `disappeared`, `lastVerifiedPresenceEpochMs`
+  6200, `firstVerifiedAbsenceEpochMs` 6300) measures **`settled: false`
+  with `refusals: ["exit-absence-overlaps-presence"]`** on the pre-fix
+  bytes AND on the amended bytes — the [6200, 6300] absence overlapping
+  the preserved 6250 baseline is the named uncorrelated refusal, never
+  credited. **CONTROLS (all measured on the final bytes; the clean-clone
+  RED bytes measure this row green — none of the arms encodes the fix):**
+  (a) WITHOUT the old read the same [6200, 6300] absence correctly remains
+  `unestablished` / `absence-unestablished` (the reviewer's own
+  counterfactual); (b) the OLD read WITH a completion bound whose window
+  [6100, 6160] completes strictly before the horizon's collection start
+  6200 is definitively stale — the round-38 exclusion keeps the recency
+  skip, the horizon never moves, the absence stays unestablished; (c) the
+  NORMAL advancing path is byte-identical: a fresh same-generation
+  presence (evidence 6350 > the horizon) advances it and the verdict
+  reports ITS instant (`live` / `lastVerifiedPresenceEpochMs` 6350); (d)
+  the older NON-conflicting read (its exact carry IS the learned
+  reference) keeps the recency skip — the horizon never moves and the
+  overlapping absence stays unestablished; (e) the TIE ranks are
+  untouched: a read whose identity evidence TIES the horizon with a
+  conflicting carry latches at the round-22 pre-filter
+  (`pid-start-identity-reused`) and a tied same-generation read keeps the
+  skip — neither reaches the guard; (f) the evidence-key boundary: an OLD
+  carried instant (observedIdentityReadEpochMs 6100) beside a FRESH
+  identity evidence (identityReadEpochMs 6350) latches at the pre-filter
+  unchanged — the guard's "older" key is the `evidenceEpochMs` source,
+  never the carried instant.
+- **Finding 2 [P2] Preserve within-read exact conflicts during replay
+  filtering — tools/shell-wait-probe/driver.mjs:8363-8365 — FIXED (the
+  WITHIN-READ CONFLICT RETENTION WITHOUT A REFERENCE).** The reviewer's
+  finding verbatim: "[P2] Preserve within-read exact conflicts during
+  replay filtering — tools/shell-wait-probe/driver.mjs:8363-8365. With a
+  coarse baseline at 6250 and no learned exact reference, an established
+  read can contain exact observation A at 6300 and conflicting carried
+  exact identity B at 6100, without a carried completion bound. The
+  within-read cross-check sets `replacementDetected`, but this filter
+  discards it because every exception requires an existing reference.
+  Using the existing settled-record fixture with this read and a later
+  confirmed absence, `nativeInterruptionGateDInput` returns `settled:
+  true` with no refusals, although `adjudicateLocalExit` returns
+  `pid-start-identity-reused`. Preserve the within-read contradiction
+  independently of whether a reference has already been learned."
+  Confirmed exactly (RED on the same clean clone with the final test
+  bytes): the reviewer's schedule measured the runtime
+  **`unestablished` / `reason: "pid-start-identity-reused"`** with
+  `lastVerifiedPresenceEpochMs` **6250** (the read's own identity evidence
+  6300 > the horizon admits it past the pre-filter gate and the recency
+  filter; the runtime's carry-learning at
+  `local-process-observation.mjs:4076-4088` learns the carried exact B,
+  and the own-exact cross-comparison at `:4148-4190` latches A against it
+  for the legacy interval class — the within-read contradiction the
+  round-17 Finding-4 cross-check mirrors), while the replay of the SAME
+  schedule with the claimed `disappeared` exit measured **`settled: true`
+  with `refusals: []`** — the within-read cross-check set
+  `replacementDetected` WITHOUT a reference, but every bypass exception
+  required `replayLearnedExactReference !== null`, so the `carried <
+  mirrorEnd` guard (carried 6100 < 6250) discarded the read. **The fix:**
+  the recency bypass gains the within-read arm (`driver.mjs:8363-8401`):
+  a `replacementDetected` read whose OWN exact observation definitively
+  differs from its OWN carried exact identity survives the filter
+  INDEPENDENTLY of the reference, under the runtime's own premises — the
+  read's own identity evidence (`identityReadEpochMs ?? readEpochMs`, the
+  same source the runtime's `evidenceEpochMs` consumes) is STRICTLY after
+  the horizon (without a reference the runtime's recency filter skips an
+  older read entirely — the round-37 bypass needs the reference — and a
+  tied read keeps the tie skip, the tie retention never latching), the
+  carry's own window is not definitively stale (`carryLearnStaleDiscarded`
+  — the runtime's stale-carry learning exclusion keeps the reference
+  unset AND the own-exact seeding excluded, so a stale within-read
+  conflict never latches), and the overlap / inconsistent interval
+  classes already refused by name above (the runtime returns the same
+  named facts there). RED→GREEN: the amended bytes measure the same
+  schedule **`settled: false` with `refusals: ["exit-reuse-latched"]`**,
+  matching the runtime's reuse refusal (the established runtime/
+  replay phrase mapping asserted verbatim in the row). **CONTROLS (all
+  measured on the final bytes; the clean-clone RED bytes measure this row
+  green):** (a) WITH a learned exact reference the within-read conflict
+  still refuses on both sides through the EXISTING round-59
+  conflicting-exact channel — runtime `pid-start-identity-reused` /
+  replay `exit-reuse-latched`; (b) AGREEING within-read identities (the
+  carried exact identity equals the observation's own exact generation —
+  the same-generation carry) are not a contradiction: both sides settle
+  the later 7600 absence (`disappeared` / `settled: true`,
+  `refusals: []`); (c) the OWN-exact-only read (no carry at all — no
+  within-read pair) settles byte-identically on both sides; (d) OLD
+  identity evidence (strictly below the horizon): without a reference the
+  runtime's recency skip discards the read (no round-37 bypass applies)
+  and the replay's exception never fires on its own-recency premise —
+  both sides settle; (e) the TIE premise (identity evidence exactly ON
+  the horizon): the runtime's tie retention keeps the skip (never a
+  latch) and the replay's exception never fires on a tie — both sides
+  settle; (f) the STALE carry window ([6100, 6150] completing before the
+  baseline's collection start 6200): the runtime's carry-learning stale
+  exclusion keeps the reference unset and the own-exact seeding excluded,
+  and the replay's `carryLearnStaleDiscarded` premise blocks the
+  exception — both sides settle.
+- **Test-count note:** the repair adds exactly FIVE local test
+  declarations — the F1 RED row (the codex schedule plus the
+  preserved-6250 horizon probe), the F1 six-arm controls row and the F1
+  integration-completion replay-mirror row, plus the F2 RED row (with the
+  verbatim runtime/replay refusal-phrase agreement assertions) and the F2
+  six-arm controls row, all in a new round-64 describe. Local 691 →
+  **696**; native 100; guarded 1 → total 691 + 100 + 1 = 792 →
+  **696 + 100 + 1 = 797**. `rg -c '^\s*test\('
+  tests/shell-wait-local-process.test.mjs` counted 691 at `fe0cbf2a` and
+  696 on the amended bytes (exactly +5, 0 deleted); the pin comment was
+  extended and `shellSuiteSpawnedTestTotal` corrected to 797
+  (`tests/shell-wait-probe.test.mjs:683`).
+- **IMPLICATED EXISTING ROWS:** none — every prior row measured
+  byte-identically (Local SOLO 696/696 exit 0; the `F2 (P2)` name family
+  67/67 including all round-59→63 rows; the `same-second` name family
+  105/105 — zero movement, the new rows join no family; the
+  `integration-completion` name family 84/84); no existing test
+  declaration was changed or deleted.
+- **DEVIATION RECORD:** the RED-draft fixture iteration — the first two
+  targeted RED runs in the clean clone measured 1 pass / 4 fail: the two
+  intended reviewer-schedule failures PLUS two unintended
+  fixture-refusal failures (`admission-start-mismatch` — the draft
+  invocation admission's record-write instants 0.1/0.5 predated the
+  baseline's carried exact creation, the round-20 Finding-3 carried-exact
+  admission check; `ancestry-endpoint-lifetime-unverifiable` — the draft
+  daemon endpoint's startInstantEpochMs 1000 against the companion's 1000
+  fails the hop-1 bound window `companionStart + 1000 > daemonStart`).
+  The fixtures were realigned to the round-63 admission/endpoint schedule
+  (the exact identities `kinfo:1:0` creation 1000 / `kinfo:1:400000`
+  creation 1400, `startOriginMs` 1000 / `firstWritePreciseMs` 1010.5,
+  the daemon `startInstantEpochMs` 2000) and the FINAL RED measurement is
+  the intended 3-pass / 2-fail; NO module byte changed between the runs
+  (local-process-observation.mjs `d2ec9417…` and driver.mjs `2772753f…`
+  constant throughout — only the test file moved
+  `31dcbb0e… → e14c783e… → 554db6ed…`).
+- **Battery (executed 2026-11-14 on the final executable bytes, strictly
+  serial; the probe was never run in parallel with another probe):** the
+  targeted `round 64` pattern = **5 tests, 5 pass, 0 fail**; the clean
+  clone with the FINAL bytes (all four files hash-identical to the
+  worktree: local-process-observation.mjs
+  `0b8b0c73d3c060f090f7f5a395ee2e0d41aca47e2eb06de3815b10ccb6985813`,
+  driver.mjs
+  `25157afbee67ac253d6a1870386c994d92f5dc65e0c9222af15ad4d2113182cd`,
+  tests/shell-wait-local-process.test.mjs
+  `554db6ed020450e975cc4cc07cc2b1076cbe23bebeb242741adccb8d1eb39602`,
+  tests/shell-wait-probe.test.mjs
+  `acdc0c50511ae4556a4a9ecce89991a987185ce2fc0f4cfe5375d0b2eb9b5659`)
+  measured the targeted rows **5 tests, 5 pass, 0 fail, exit 0** and the
+  clean-clone RED copy with the pre-fix modules and the final test bytes
+  measured **5 tests, 3 pass, 2 fail** — the two reviewer-schedule rows
+  exactly as intended while all three controls rows pass (the clone was
+  deleted after the measurements); the targeted `F2 (P2)` name pattern =
+  **67 tests, 67 pass, 0 fail** (65 prior rows + the two new round-64 F2
+  rows); the `same-second` name family = **105 tests, 105 pass, 0 fail**
+  (zero movement); the `integration-completion` name family (the local
+  entry — the documented family gate) = **84 tests, 84 pass, 0 fail**
+  (the F1 replay-mirror row joins it); `node --test
+  tests/test-selection.test.mjs` = **6 tests / 6 pass / 0 fail** exit 0.
+  Local SOLO = **696 tests, 696 pass, 0 fail, exit 0**; native SOLO =
+  **100 tests, 100 pass, 0 fail, exit 0**; probe SOLO = **968 tests, 968
+  pass, 0 fail, exit 0** (1606.3 s) — the spawn rows' internal pin 797
+  holds; the exact guarded spawn CLI
+  (`ZCODE_SHELL_WAIT_PROBE_SELF_TEST=1 NODE_OPTIONS='--test-reporter=spec'
+  node tools/run-test-suite.mjs shell-research`) measured **797 tests,
+  797 pass, 0 fail, exit 0** (185.3 s). `npm run lint` exit 0; `npm run
+  typecheck` exit 0; `git diff --check` exit 0; `npm run
+  check:line-endings` exit 0 (LF verified in 550 tracked files).
+  Prohibited-path diff (`git diff
+  02cd31e8 --stat -- specs/ scripts/ hooks/ skills/ agents/
+  .codex-plugin/ prompts/ schemas/ marketplace/ package.json
+  npm-shrinkwrap.json`) EMPTY (0 bytes of diff). The fix amends the
+  EXISTING route-(c) commit (message unchanged) — no push.
+- **ATTRIBUTION DISCLOSURE:** no attribution case arose this round —
+  every battery entry (the targeted rows, the three name families,
+  test-selection, all three SOLO suites and the guarded CLI) was green on
+  the first final-bytes attempt; no transient spawn/load failure was
+  observed. The two clean-clone RED failures are the intended reviewer
+  schedules, never gate events.
+### 32.76 Codex-review gate round 65 (2026-11-14, one P2 finding on §32.75's amended bytes — review-mwg79y7h-xhtpr5: the replay's recency filter discarding an established read's carried-exact conflict against the learned reference when the read's primary identity is coarse; §32.75 style — add-only; the amended route-(c) commit carries it; message unchanged)
+
+- **Finding [P2] Preserve carried-exact conflicts through the replay recency
+  filter — tools/shell-wait-probe/driver.mjs:8399-8401 — FIXED (the
+  ESTABLISHED CARRIED-EXACT CONFLICT AGAINST THE LEARNED REFERENCE).** The
+  reviewer's finding verbatim: "[P2] Preserve carried-exact conflicts
+  through the replay recency filter —
+  tools/shell-wait-probe/driver.mjs:8399-8401. An established
+  mixed-resolution read can still lose replacement evidence here when its
+  primary identity is coarse. Reproduced with a baseline at 6250 carrying
+  `kinfo:1:0`, a matching-coarse read completing its identity check at 6400
+  but carrying `kinfo:1:400000` dated 6000 without a completion bound, and
+  confirmed absence at 7600: `adjudicateLocalExit` returns
+  `pid-start-identity-reused`, while replay accepts a claimed disappearance
+  with `settled: true` and no refusals. Both established-read bypasses
+  require `candidateExact`, so neither preserves this carried-only
+  conflict. Include the carried exact identity versus the learned reference
+  in the bypass, following the runtime's recency rules." Confirmed exactly
+  against the pre-fix bytes (the cited lines are the `carried < mirrorEnd`
+  recency filter whose bypass condition enumerated exactly FOUR
+  exceptions — the round-59 own-exact arm
+  (`conflictingExactAgainstReference`, requiring the read's OWN exact
+  observation `candidateExact`), the round-60/61 unestablished arm, the
+  round-63 absent arm and the round-64 within-read arm (requiring
+  `candidateExact` versus the carry) — none of which keys on the CARRIED
+  exact identity of an ESTABLISHED read). RED measured on `68e50349` in a
+  clean `git clone --shared` copy under /tmp/r65fix-red — no `git worktree
+  add`; the clone was verified at the full HEAD
+  `68e503492896911e964275a255128af3dbb877bc` with `git status --porcelain`
+  carrying ONLY the overlaid final test bytes and an untracked node_modules
+  symlink for dependency resolution; the pre-fix bytes measured
+  driver.mjs sha256
+  `25157afbee67ac253d6a1870386c994d92f5dc65e0c9222af15ad4d2113182cd` and
+  local-process-observation.mjs sha256
+  `0b8b0c73d3c060f090f7f5a395ee2e0d41aca47e2eb06de3815b10ccb6985813` (both
+  identical to §32.75's recorded GREEN bytes — 68e50349 is that amended
+  commit); the overlaid final test bytes measured
+  `f9a67cbdc5d90e9fc069a1d06d2b2b37f600b04d89b6094e14fdecbdb8cdb1d5`
+  (696 + 2 = 698 `^\s*test\(` declarations; the new row names rg-confirmed
+  at the describe's :34554/:34586); the clone was deleted after the
+  measurements. The targeted `round 65` pattern measured **2 tests, 1
+  pass, 1 fail**: the RED row's runtime assertions PASSED — the reviewer's
+  schedule measured the runtime **`unestablished` /
+  `pid-start-identity-reused` with `lastVerifiedPresenceEpochMs` 6250**
+  (the read's own identity evidence 6400 >= the 6250 horizon admits it
+  through the round-22 pre-filter gate at
+  `local-process-observation.mjs:3685`, whose generic carried-exact
+  comparison `:3877-3891` latches the carried-vs-reference conflict for
+  the LEGACY interval class — a carry without a completion bound is never
+  stale) — and the replay assertion FAILED with the finding's exact
+  outcome **`settled: true`, `refusals: []`** (the `carried < mirrorEnd`
+  filter — carried 6000 < 6250 — discarded the read because every
+  exception required `candidateExact` or a non-established status). The
+  clean-clone RED re-test under /tmp/r65fix-red2 (the PRE-FIX modules with
+  the FINAL test bytes) measured the identical **2 tests, 1 pass, 1 fail**
+  single failure.
+- **PREMISE-SET DERIVATION (item-by-item against the runtime):** the
+  runtime's generic carried-exact block (`local-process-observation.mjs
+  :3877-3891`, reached only inside the `:3685` pre-filter gate) consumes
+  (1) a learned exact reference (`learnedExactReference !== null`) — the
+  replay's `replayLearnedExactReference` seeds from the persisted
+  baseline's admissible exact carry exactly where the runtime seeds from
+  `presence.observedStartIdentity` (`:3555-3573`; the fixture's
+  `kinfo:1:0` carry seeds it on both sides); (2) the CARRIED exact
+  identity parsing exact (`tieCarriedExact !== null`) — the replay's
+  `carriedExactReplay` (the `parseExactStartIdentity` gate at
+  `driver.mjs:7875-7877`); (3) a DEFINITIVE difference against the
+  reference (`startIdentitiesDefinitivelyDiffer`) — the replay's differ
+  check at `driver.mjs:7883-7886`, which is also the arm's
+  `replacementDetected` source; (4) the interval class being anything
+  except definitively STALE (`tieCarriedClass !== 'stale'`) — the replay's
+  `!carryLearnStaleDiscarded` (the stale class: a supplied-valid ordered
+  completion strictly before the horizon's dispatch, or before the whole
+  horizon without a dispatch bound — the overlap and inconsistent classes
+  already refuse by name above the filter and the post class passes the
+  filter on its own carried instant, so the LEGACY class is the only class
+  the arm adds); and (5) the `:3685` gate premise itself — the read's OWN
+  identity evidence (`identityEvidenceEpochMs` = `identityReadEpochMs ??
+  readEpochMs`) AT/AFTER the horizon, TIE-INCLUSIVE (`>=`) — mirrored by
+  `identityReadEpochMs ?? readEpochMs >= mirrorEnd`. The OLD-READ side is
+  preserved: a read whose own identity evidence is strictly below the
+  horizon falls through the round-37 pre-skip exact-evidence bypass into
+  the runtime's established branch, whose legacy class keeps the
+  carried-instant guard (`carriedIdentityEpochMs(read) >=
+  lastPresenceEpochMs`, `:4071`) — an old carried conflict from an old
+  read is NOT replacement evidence there, so the arm's at/after-horizon
+  premise keeps the recency skip byte-identically (the round-62 two-phase
+  alignment). **CHANNEL RELATIONS:** the five bypass arms stay disjoint in
+  their conflict keys — the round-59 arm covers the OWN exact versus the
+  reference, the round-64 arm the own-versus-carry contradiction, the
+  round-60/61 arm the carried exact on unestablished reads, the round-63
+  arm the carried exact on absent reads, and the new arm the carried
+  exact versus the reference on ESTABLISHED reads whose own identity is
+  coarse; the three established-read channels overlap only in the shared
+  latch outcome, never in a premise, and the round-59 channel still owns
+  the own-exact-with-agreeing-carry schedule alone (control (e) measured
+  it refusing with the new arm silent).
+- **The fix:** the recency bypass gains the fifth arm
+  (`driver.mjs:8407-8463` amended): `conflictingEstablishedCarriedAgainstReference`
+  — an established read whose carried exact identity definitively differs
+  from the learned reference, whose carry window is not definitively
+  stale, and whose OWN identity evidence (`identityReadEpochMs ??
+  readEpochMs`) is AT/AFTER the advancing horizon (tie-inclusive, the
+  runtime's `>=` pre-filter gate) — survives the `carried < mirrorEnd`
+  filter and reaches the existing `exit-reuse-latched` refusal. RED→GREEN:
+  the amended bytes measure the same schedule **`settled: false` with
+  `refusals: ["exit-reuse-latched"]`**, matching the runtime's reuse
+  refusal (the runtime itself is byte-identical on this schedule — the
+  runtime `pid-start-identity-reused` / 6250 measured green both sides of
+  the fix).
+- **CONTROLS (all measured on the final bytes; the clean-clone RED bytes
+  measure this row green — none of the arms encodes the fix):** (a) the
+  SAME-GENERATION carry (the carried exact identity IS the learned
+  reference's generation) is no conflict at any resolution — the runtime
+  advances the horizon with the read's own identity evidence
+  (`disappeared` / `lastVerifiedPresenceEpochMs` 6400) and the replay
+  settles the admitted absence (`settled: true`, `refusals: []`); (b) the
+  OLD-EVIDENCE premise — the same carried conflict whose own identity
+  evidence (6100) is strictly below the 6250 horizon — keeps the recency
+  skip on both sides (the runtime's legacy carried-instant guard keeps the
+  old carried conflict non-replacement: `disappeared` / 6250; replay
+  settled, no refusals); (c) the STALE carry window ([5500, 5900]
+  completing strictly before the baseline's collection start 6200) — the
+  runtime's stale class and the replay's `carryLearnStaleDiscarded`
+  premise keep both sides settling; (d) the NO-REFERENCE schedule (the
+  coarse-only baseline carries no exact identity) — the carried exact
+  identity against the unresolvable coarse bound is uncertainty, never
+  positive replacement evidence: the runtime does not latch (a lawful
+  same-generation presence, `disappeared` / 6400) and the replay settles;
+  (e) the OWN-EXACT channel (round 59) is untouched — the read's own exact
+  observation conflicts with the reference while its carried identity
+  AGREES with it: both sides refuse (`pid-start-identity-reused` /
+  `exit-reuse-latched`) with the new arm silent; (f) the ABSENT channel
+  (round 63) is untouched — the identity-bearing absence carrying the
+  conflicting exact generation with its completion at/after the horizon
+  keeps the round-63 arm on both sides (both refuse); (g) the TIED
+  same-generation read (identity evidence exactly ON the horizon, carried
+  identity equal to the reference) keeps the tie skip — both sides settle;
+  (h) the POST-bounded carry ([6300, 6350] starting at/after the horizon)
+  latches through the runtime's post class and passes the replay filter on
+  its own carried instant (6300 >= 6250) — the latch never needed this arm
+  and keeps its outcome byte-identically (both refuse).
+- **Test-count note:** the repair adds exactly TWO local test declarations
+  — the F2 RED row (the reviewer's schedule verbatim, with the
+  runtime/replay refusal-phrase agreement assertions) and the F2
+  eight-arm controls row, all in a new round-65 describe. Local 696 →
+  **698**; native 100; guarded 1 → total 696 + 100 + 1 = 797 → **698 +
+  100 + 1 = 799**. `rg -c '^\s*test\('
+  tests/shell-wait-local-process.test.mjs` counted 696 at `68e50349` and
+  698 on the amended bytes (exactly +2, 0 deleted); the pin comment was
+  extended and `shellSuiteSpawnedTestTotal` corrected to 799
+  (`tests/shell-wait-probe.test.mjs:699`).
+- **IMPLICATED EXISTING ROWS:** none — every prior row measured
+  byte-identically (the `F2 (P2)` name family **69/69** including all
+  round-59→64 rows; the `same-second` name family **105/105** — zero
+  movement, the new rows join no family; the `integration-completion`
+  name family **84/84**; the merged rounds-56–65 targeted pattern
+  **31/31**); no existing test declaration was changed or deleted.
+- **DEVIATION RECORD:** the pipeline briefing's expected premise named
+  `readRecencyAdmitted` (the read's identity evidence STRICTLY after the
+  horizon) for the new arm; the runtime's actual pre-filter gate is
+  TIE-INCLUSIVE (`identityEvidenceEpochMs(read) >= lastPresenceEpochMs`,
+  `local-process-observation.mjs:3685`) — the same source the round-60/61
+  and round-63 arms already mirror with `>= mirrorEnd`, and the round-64
+  F1 controls measured a TIED conflicting carry latching at that
+  pre-filter (`pid-start-identity-reused`) — so a strictly-after premise
+  would have left the identical bug open at the tie. The arm mirrors the
+  runtime's `>=` gate (tie-inclusive), and the tie ranks are still covered
+  byte-identically: a tied read with a CONFLICTING carry latches on both
+  sides (the runtime's pre-filter; the new arm's premise), a tied
+  SAME-GENERATION read keeps the skip on both sides (control (g)). The
+  briefing's remaining expectation — verifying that the fixture's
+  `kinfo:1:0` baseline carry seeds the learned reference on both sides —
+  was confirmed against the runtime's baseline seeding
+  (`local-process-observation.mjs:3555-3573`) and the replay's mirrored
+  seeding (`driver.mjs:7698-7701`) before the RED was measured. No other
+  deviation: the RED fixture was green-lit on the first draft (the
+  intended 1-pass/1-fail targeted measurement, no fixture-refusal
+  failures — the admission schedule was copied from §32.75's realigned
+  round-64 bytes), and NO runtime byte changed (the fix is replay-only;
+  local-process-observation.mjs `0b8b0c73…` constant throughout).
+- **Battery (executed 2026-11-14 on the final executable bytes, strictly
+  serial; the probe was never run in parallel with another probe):** the
+  targeted `round 65` pattern = **2 tests, 2 pass, 0 fail**; the clean
+  clone with the FINAL bytes (all four files hash-identical to the
+  worktree: driver.mjs
+  `b4e1a6f329e4f818a60317dd4614f150a999ada2ed1714a896ef4439b51be750`,
+  local-process-observation.mjs
+  `0b8b0c73d3c060f090f7f5a395ee2e0d41aca47e2eb06de3815b10ccb6985813`,
+  tests/shell-wait-local-process.test.mjs
+  `f9a67cbdc5d90e9fc069a1d06d2b2b37f600b04d89b6094e14fdecbdb8cdb1d5`,
+  tests/shell-wait-probe.test.mjs
+  `07c5172daa6206561057290da946a6ba2e6bd1e6b5f55aa0d1911c57afbbbd67`)
+  measured the targeted rows **2 tests, 2 pass, 0 fail, exit 0** and the
+  clean-clone RED copy with the pre-fix modules and the final test bytes
+  measured **2 tests, 1 pass, 1 fail** — the reviewer-schedule row exactly
+  as intended while the controls row passes (both clones were deleted
+  after the measurements); the targeted `F2 (P2)` name pattern = **69
+  tests, 69 pass, 0 fail** (67 prior rows + the two new round-65 F2
+  rows); the `same-second` name family = **105 tests, 105 pass, 0 fail**
+  (zero movement); the `integration-completion` name family (the local
+  entry — the documented family gate) = **84 tests, 84 pass, 0 fail**;
+  the merged rounds-56–65 targeted pattern = **31 tests, 31 pass, 0
+  fail** (every R57–R64 existing row plus the new round-65 rows in one
+  run); `node --test tests/test-selection.test.mjs` = **6 tests / 6 pass
+  / 0 fail** exit 0. Local SOLO = **698 tests, 698 pass, 0 fail, exit 0**;
+  native SOLO = **100 tests, 100 pass, 0 fail, exit 0**; probe SOLO =
+  **968 tests, 968 pass, 0 fail, exit 0** (1606.8 s) — the spawn rows'
+  internal pin 799 holds; the exact guarded spawn CLI
+  (`ZCODE_SHELL_WAIT_PROBE_SELF_TEST=1 NODE_OPTIONS='--test-reporter=spec'
+  node tools/run-test-suite.mjs shell-research`) measured **799 tests,
+  799 pass, 0 fail, exit 0**. `npm run lint` exit 0; `npm run typecheck`
+  exit 0; `git diff --check` exit 0; `npm run check:line-endings` exit 0
+  (LF verified in 550 tracked files). Prohibited-path diff (`git diff
+  02cd31e8 --stat -- specs/ scripts/ hooks/ skills/ agents/
+  .codex-plugin/ prompts/ schemas/ marketplace/ package.json
+  npm-shrinkwrap.json`) EMPTY (0 bytes of diff). The fix amends the
+  EXISTING route-(c) commit (message unchanged) — no push.
+- **ATTRIBUTION DISCLOSURE:** no attribution case arose this round —
+  every battery entry (the targeted rows, the three name families, the
+  merged rounds-56–65 pattern, test-selection, all three SOLO suites and
+  the guarded CLI) was green on the first final-bytes attempt; no
+  transient spawn/load failure was observed. The two clean-clone RED
+  failures are the intended reviewer schedule, never gate events.
