@@ -7443,6 +7443,27 @@ export const WRAPPED_INTERRUPT_REQUIRED_CASES = Object.freeze(new Set());
 export const DAEMON_WITNESS_RELIANT_CASES = Object.freeze(new Set());
 
 /**
+ * User review PIPM-PR-FIX-REGISTRY (2026-11-05): the ONE membership check
+ * both reliance registries ride. Both registered defaults are frozen Sets
+ (`DAEMON_WITNESS_RELIANT_CASES`, `WRAPPED_INTERRUPT_REQUIRED_CASES`) while
+ * the injectable dependencies historically arrived as arrays — the arms'
+ * former `Array.isArray(...).includes(...)` guard SKIPPED the Set defaults
+ * entirely (a reproduced defect: the real default registration path never
+ * fired). The helper accepts a Set (`has`), a readonly array (`includes`),
+ * and returns FALSE for anything else — a foreign registry value refuses
+ * nothing but is never a silent skip either.
+ * @param {readonly string[] | Set<string> | undefined | null} registry
+ * @param {string | null | undefined} caseName
+ * @returns {boolean}
+ */
+export function registryHas(registry, caseName) {
+  if (caseName === null || caseName === undefined) return false;
+  if (registry instanceof Set) return registry.has(caseName);
+  if (Array.isArray(registry)) return registry.includes(caseName);
+  return false;
+}
+
+/**
  * The frozen §16.4 control-design facts a DECLARED survival-control run
  * requires on the fixture's recorded declaration (native-acceptance Task 3,
  * the preflight arm): the fixture writes its control script from THESE
@@ -7503,8 +7524,7 @@ export async function evaluateLiveLaunchPreflight(input, dependencies = {}) {
   // the mechanism pipeline-testable — the wrapped-gate precedent.)
   const daemonWitnessRequired = dependencies.daemonWitnessReliantCases ?? DAEMON_WITNESS_RELIANT_CASES;
   if (input.case !== null && input.case !== undefined
-    && Array.isArray(/** @type {readonly string[]} */ (daemonWitnessRequired))
-    && /** @type {readonly string[]} */ (daemonWitnessRequired).includes(input.case)) {
+    && registryHas(daemonWitnessRequired, input.case)) {
     return { ok: false, reason: 'the registered design relies on the daemon-hop witness establishment route, which is known unavailable (report §28.22: the route is classified UNSATISFIABLE and no exact-generation mechanism exists to repair it)' };
   }
   // (0) The wrapped-path reliance gate (codex round 4): a case whose
@@ -7512,8 +7532,7 @@ export async function evaluateLiveLaunchPreflight(input, dependencies = {}) {
   // pre-launch — that path cannot establish the exact-target layer on this
   // pin (the registered limitation).
   if (input.case !== null && input.case !== undefined
-    && Array.isArray(/** @type {readonly string[]} */ (wrappedRequired))
-    && /** @type {readonly string[]} */ (wrappedRequired).includes(input.case)) {
+    && registryHas(wrappedRequired, input.case)) {
     return { ok: false, reason: 'the registered design relies on the code-mode-wrapped interrupt path, which is not exact-target attributable on this pin (the wrapped-interrupt limitation)' };
   }
   const fixture = /** @type {any} */ (input)?.fixture;

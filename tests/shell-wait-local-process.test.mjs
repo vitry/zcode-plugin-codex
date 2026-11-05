@@ -16539,6 +16539,51 @@ describe('evidence-completion task 4: the preflight rejects the known-absent wit
     assert.match(String(verdict.reason), /daemon-hop witness establishment route.*known unavailable|known unavailable/u, verdict.reason);
   });
 
+  test('integration-completion preflight registry typing: both reliance registries are Sets the shared membership helper handles — the frozen-empty defaults consult it and refuse nothing (user review PIPM-PR-FIX-REGISTRY)', async () => {
+    const { DAEMON_WITNESS_RELIANT_CASES, WRAPPED_INTERRUPT_REQUIRED_CASES, registryHas } = await import('../tools/shell-wait-probe/driver.mjs');
+    // Both defaults are the frozen-empty Sets the preflight arms consult.
+    assert.ok(DAEMON_WITNESS_RELIANT_CASES instanceof Set, 'the daemon-witness registry default is a Set');
+    assert.ok(WRAPPED_INTERRUPT_REQUIRED_CASES instanceof Set, 'the wrapped-interrupt registry default is a Set');
+    // The helper handles ALL THREE input shapes: Set (the default shape),
+    // array (the injectable-dependency shape), and anything else (false —
+    // never a silent skip).
+    assert.equal(registryHas(DAEMON_WITNESS_RELIANT_CASES, 'rescue-interrupt'), false, 'the frozen-empty default refuses nothing');
+    assert.equal(registryHas(WRAPPED_INTERRUPT_REQUIRED_CASES, 'rescue-interrupt'), false, 'the frozen-empty default refuses nothing');
+    assert.equal(registryHas(new Set(['rescue-interrupt']), 'rescue-interrupt'), true, 'a Set containing the case refuses');
+    assert.equal(registryHas(['rescue-interrupt'], 'rescue-interrupt'), true, 'the array dependency shape stays handled');
+    assert.equal(registryHas(undefined, 'rescue-interrupt'), false, 'a foreign registry value is false, never a skip');
+  });
+
+  test('integration-completion preflight: a SET-injected daemon-witness reliance refuses before any launch (the Set default path pinned — not only the Array shape)', async () => {
+    const verdict = await evaluateLiveLaunchPreflight({
+      case: 'rescue-interrupt', survivalControlSelector: null,
+      fixture: { workspace: '/tmp/x', stdoutCapture: null, record: {}, env: {} },
+    }, { daemonWitnessReliantCases: new Set(['rescue-interrupt']) });
+    assert.equal(verdict.ok, false);
+    assert.match(String(verdict.reason), /daemon-hop witness establishment route.*known unavailable|known unavailable/u, verdict.reason);
+  });
+
+  test('integration-completion preflight: a SET-injected wrapped-interrupt reliance refuses before any launch (the Set default path pinned — not only the Array shape)', async () => {
+    const verdict = await evaluateLiveLaunchPreflight({
+      case: 'rescue-interrupt', survivalControlSelector: null,
+      fixture: { workspace: '/tmp/x', stdoutCapture: null, record: {}, env: {} },
+    }, { wrappedInterruptRequiredCases: new Set(['rescue-interrupt']) });
+    assert.equal(verdict.ok, false);
+    assert.match(String(verdict.reason), /code-mode-wrapped interrupt path, which is not exact-target attributable/u, verdict.reason);
+  });
+
+  test('integration-completion preflight: the UN-INJECTED default dependency consults the membership check — the empty default keeps the case launchable (the real default registration path)', async () => {
+    // No dependency override: both arms consult the FROZEN-EMPTY Set
+    // defaults through the shared membership helper. A case named in
+    // neither default registry passes both arms (the non-rescue case then
+    // takes the registered early-return).
+    const verdict = await evaluateLiveLaunchPreflight({
+      case: 'rescue-baseline', survivalControlSelector: null,
+      fixture: { workspace: '/tmp/x', stdoutCapture: null, record: {}, env: {} },
+    });
+    assert.deepEqual(verdict, { ok: true, reason: null }, `the empty defaults launch the unregistered case (actual ${JSON.stringify(verdict)})`);
+  });
+
   test('integration-completion preflight launch-spy: a missing pinned binary refuses before ANY fixture work or host/provider invocation (both spies stay at zero)', async () => {
     let fixtureCalls = 0;
     let liveCalls = 0;
