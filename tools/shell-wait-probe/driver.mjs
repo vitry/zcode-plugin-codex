@@ -33,7 +33,8 @@ import { EXECUTING_CLOSURE_OBSERVATION_SOURCE, admitStdoutCapture, readDurableOb
 import { CAPTURE_BROKER_ENTRY_VARIABLE, CAPTURE_DIRECTORY_VARIABLE, CAPTURE_ENTRY_VARIABLE, CAPTURE_MAX_BYTES_VARIABLE, CAPTURE_NONCE_VARIABLE, EXECUTING_CLOSURE_PRELOAD_SOURCE, STDOUT_CAPTURE_MAX_BYTES, TERMINAL_ARGV_SELECTOR } from './closure-preload.mjs';
 import { EXECUTING_RELEASE_QUALIFICATION_SOURCE, evaluateSurvivalControl, exactRescueForegroundRenderedExpectation } from './release-qualification.mjs';
 import { EXECUTING_SHAPE_DIAGNOSTIC_SOURCE } from './shape-diagnostic.mjs';
-import { EXECUTING_HELPER_MATERIALIZATION, EXECUTING_LOCAL_PROCESS_OBSERVATION_SOURCE, FAKE_ZCODE_NONCE_VARIABLE, LINUX_BTIME_UNCERTAINTY_MS, LINUX_PROC_RESOLUTION_MS, LOCAL_PROCESS_OBSERVATION_VERSION, SPAWN_ANCESTRY_WITNESS_VERSION, adjudicateLocalDuties, adjudicateLocalExit, admitSpawnAncestryWitness, admitStartupIdentityRecord, composeAncestryJoinForRuntime, observeLocalProcess, parseExactStartIdentity, parseLstartAsUtc, startIdentitiesDefinitivelyDiffer, startIdentityGenerationRelation } from './local-process-observation.mjs';
+import { EXECUTING_HELPER_MATERIALIZATION, EXECUTING_LOCAL_PROCESS_OBSERVATION_SOURCE, FAKE_ZCODE_NONCE_VARIABLE, LINUX_BTIME_UNCERTAINTY_MS, LINUX_PROC_RESOLUTION_MS, LOCAL_PROCESS_OBSERVATION_VERSION, SPAWN_ANCESTRY_WITNESS_SUFFIXES, SPAWN_ANCESTRY_WITNESS_VERSION, adjudicateLocalDuties, adjudicateLocalExit, admitSpawnAncestryWitness, admitStartupIdentityRecord, composeAncestryJoinForRuntime, observeLocalProcess, parseExactStartIdentity, parseLstartAsUtc, startIdentitiesDefinitivelyDiffer, startIdentityGenerationRelation } from './local-process-observation.mjs';
+import { EXACT_READER_VARIABLE, EXECUTING_SPAWN_WITNESS_PRELOAD_SOURCE, WITNESS_TRANSPORT_ENTRY_VARIABLE } from './spawn-witness-preload.mjs';
 
 
 const repositoryRoot = fileURLToPath(new URL('../..', import.meta.url));
@@ -78,7 +79,16 @@ const MAX_CASE_EXCERPTS = 64;
 // observer. The local-process campaign's own construction
 // (zcode-shell-wait-local-observer-v4) stays the separate evidence-closure
 // digest as registered.
-const OBSERVER_DIGEST_TAG = 'zcode-shell-wait-observer-v8';
+// v9 (2026-11-15 §33.7 finding 3): the spawn-witness preload seam's GENERATOR
+// module (spawn-witness-preload.mjs) joins BOTH constructions (module-init
+// snapshot + record-time reread) — the same plan §3 observer-digest duty the
+// closure-preload generator already rides: the generated witness preload
+// source (whose digest the fixture record carries) is produced from those
+// bytes, so the retained observer provenance keeps an alternative binding to
+// the witness capture's executing provenance after fixture disposal deletes
+// the generated file itself. Copying the v8 digest onto these bytes would
+// misattribute the new input.
+const OBSERVER_DIGEST_TAG = 'zcode-shell-wait-observer-v9';
 
 // P2 round-29: module-INIT snapshot of the EXECUTING observer source — the
 // driver module body runs only after evidence.mjs has fully loaded, so this
@@ -114,6 +124,13 @@ const EXECUTING_OBSERVER_PROVENANCE = Object.freeze({
     .update('\0')
     .update(EXECUTING_CLOSURE_PRELOAD_SOURCE)
     .update('\0')
+    // (§33.7 finding 3, v9) the spawn-witness preload seam's generator module
+    // — the SECOND generated-preload seam, adjacent to the closure-preload
+    // generator — joins the construction: the generated witness preload's
+    // bytes are produced from this module, so the provenance binds the
+    // witness capture's executing provenance source.
+    .update(EXECUTING_SPAWN_WITNESS_PRELOAD_SOURCE)
+    .update('\0')
     .update(EXECUTING_LOCAL_PROCESS_RUNTIME_SOURCE)
     .update('\0')
     .update(EXECUTING_DRIVER_SOURCE)
@@ -129,7 +146,7 @@ const EXECUTING_OBSERVER_PROVENANCE = Object.freeze({
     .update('\0')
     .update(executingHelperDigest('scripts/lib/errors.mjs'))
     .digest('hex'),
-  digestInput: `${OBSERVER_DIGEST_TAG} || evidence.mjs || shape-diagnostic.mjs || release-qualification.mjs || closure-observation.mjs || closure-preload.mjs (the extracted generated-preload seam) || local-process-observation.mjs (the concurrent local-observation runtime the held turn executes) || driver.mjs (executing module-init snapshot, NUL-separated) || scripts/lib/fs.mjs + scripts/lib/process.mjs + scripts/lib/errors.mjs (the executing helper bytes: the MATERIALIZED copies when materialization succeeded, else the production files the observer's fallback loads, NUL-separated)`,
+  digestInput: `${OBSERVER_DIGEST_TAG} || evidence.mjs || shape-diagnostic.mjs || release-qualification.mjs || closure-observation.mjs || closure-preload.mjs (the extracted generated-preload seam) || spawn-witness-preload.mjs (the spawn-witness preload seam's generator module) || local-process-observation.mjs (the concurrent local-observation runtime the held turn executes) || driver.mjs (executing module-init snapshot, NUL-separated) || scripts/lib/fs.mjs + scripts/lib/process.mjs + scripts/lib/errors.mjs (the executing helper bytes: the MATERIALIZED copies when materialization succeeded, else the production files the observer's fallback loads, NUL-separated)`,
   model: null,
   reachableToolFamily: null,
 });
@@ -160,12 +177,15 @@ export async function observerProvenance() {
   // mid-run helper edit is detected as sourcesChangedDuringRun and a
   // pre-run helper change changes the whole digest) — never silently
   // attributed.
-  const [evidenceSource, shapeSource, releaseQualificationSource, closureObservationSource, closurePreloadSource, localProcessSource, driverSource, helperFsSource, helperProcessSource, helperErrorsSource] = await Promise.all([
+  const [evidenceSource, shapeSource, releaseQualificationSource, closureObservationSource, closurePreloadSource, spawnWitnessPreloadSource, localProcessSource, driverSource, helperFsSource, helperProcessSource, helperErrorsSource] = await Promise.all([
     readFile(fileURLToPath(new URL('./evidence.mjs', import.meta.url))),
     readFile(fileURLToPath(new URL('./shape-diagnostic.mjs', import.meta.url))),
     readFile(fileURLToPath(new URL('./release-qualification.mjs', import.meta.url))),
     readFile(fileURLToPath(new URL('./closure-observation.mjs', import.meta.url))),
     readFile(fileURLToPath(new URL('./closure-preload.mjs', import.meta.url))),
+    // (§33.7 finding 3, v9) the SAME generator-module input the module-init
+    // snapshot binds, read from the working tree at record time.
+    readFile(fileURLToPath(new URL('./spawn-witness-preload.mjs', import.meta.url))),
     readFile(fileURLToPath(new URL('./local-process-observation.mjs', import.meta.url))),
     readFile(fileURLToPath(new URL('./driver.mjs', import.meta.url))),
     readFile(fileURLToPath(new URL('../../scripts/lib/fs.mjs', import.meta.url))),
@@ -184,6 +204,8 @@ export async function observerProvenance() {
     .update('\0')
     .update(closurePreloadSource)
     .update('\0')
+    .update(spawnWitnessPreloadSource)
+    .update('\0')
     .update(localProcessSource)
     .update('\0')
     .update(driverSource)
@@ -201,7 +223,7 @@ export async function observerProvenance() {
   return {
     revision: 'working-tree-uncommitted',
     digest,
-    digestInput: `${OBSERVER_DIGEST_TAG} || evidence.mjs || shape-diagnostic.mjs || release-qualification.mjs || closure-observation.mjs || closure-preload.mjs (the extracted generated-preload seam) || local-process-observation.mjs (the concurrent local-observation runtime the held turn executes) || driver.mjs (working-tree bytes, NUL-separated) || scripts/lib/fs.mjs + scripts/lib/process.mjs + scripts/lib/errors.mjs (the production helper bytes behind the MATERIALIZED copies the local-observation runtime loads, NUL-separated)`,
+    digestInput: `${OBSERVER_DIGEST_TAG} || evidence.mjs || shape-diagnostic.mjs || release-qualification.mjs || closure-observation.mjs || closure-preload.mjs (the extracted generated-preload seam) || spawn-witness-preload.mjs (the spawn-witness preload seam's generator module) || local-process-observation.mjs (the concurrent local-observation runtime the held turn executes) || driver.mjs (working-tree bytes, NUL-separated) || scripts/lib/fs.mjs + scripts/lib/process.mjs + scripts/lib/errors.mjs (the production helper bytes behind the MATERIALIZED copies the local-observation runtime loads, NUL-separated)`,
     model: null,
     reachableToolFamily: null,
   };
@@ -667,7 +689,18 @@ export async function runShellWaitCase(input, dependencies = {}) {
     // instead of being refused by its own preflight. Task 4's ledger freeze
     // extends the closed set at the STDOUT_CAPTURE_REQUIRED_CASES definition;
     // this threading site needs no further edit.
-    ...(STDOUT_CAPTURE_REQUIRED_CASES.has(caseInput.case) ? { stdoutCapture: true } : {}),
+    // (§33.10, user-review round 3 P2) the REAL-chain spawn-witness capture
+    // rides the SAME closed set: the witness gates CONSUME the capture
+    // environment (the fixture's own fail-closed validation refuses a
+    // witness-only arming), so the entry arms both seams exactly where the
+    // registered I/O1/O2 duty arms the capture — a normal research command on
+    // a capable darwin host captures the exact-generation witnesses at the
+    // REAL launcher→broker and broker→transport hops, and any bridge-less or
+    // non-darwin host keeps the reader's own named fail-closed coarse
+    // degrade. Unlisted cases stay byte-identical (no capture, no witness).
+    ...(STDOUT_CAPTURE_REQUIRED_CASES.has(caseInput.case)
+      ? { stdoutCapture: true, spawnWitness: true }
+      : {}),
     // R3: the live status-wait case NEVER uses the fixture's owning-session
     // reservation — production selects explicit Status targets OWNER-SCOPED,
     // so the job must be created inside the live host session itself (the
@@ -1211,6 +1244,19 @@ function buildCaseRecord(caseInput, fixture, liveFacts, /** @type {'executed' | 
     // digest). A capture-less fixture records no declaration key (schema
     // stability).
     ...(fixtureRecord.closureStdoutCapture ? { stdoutCaptureDeclaration: fixtureRecord.closureStdoutCapture } : {}),
+    // (§33.7 finding 3) the witness-armed fixture's BOUNDED spawn-witness
+    // declaration (the witness preload name + SHA-256, the observer module
+    // name + digest, the transport entry digest, the exact-reader
+    // configuration and the closed variable set — digests and closed
+    // configuration, never private paths) persists beside the
+    // stdoutCaptureDeclaration, mirroring the same survivalControl /
+    // stdoutCapture pattern: fixture disposal deletes the GENERATED preload
+    // file, and the retained record must keep the witness capture
+    // provenance (the observer provenance digest separately binds the
+    // GENERATOR module's bytes — the retained alternative binding to the
+    // executing provenance). A witness-less fixture records no declaration
+    // key (schema stability).
+    ...(fixtureRecord.spawnWitnessCapture ? { spawnWitnessDeclaration: fixtureRecord.spawnWitnessCapture } : {}),
     held: {
       endedBeforeGate: liveFacts.held?.endedBeforeGate ?? null,
       cleanupLabel: liveFacts.held?.cleanupLabel ?? null,
@@ -1467,8 +1513,29 @@ export async function runHeldHostTurn(input) {
   // runtime's ancestry hop can verify generation-compatible lifetimes.
   // Injected captures carry their own markerEpochMs when the instrument's
   // synthetic clocks can express one.
+  // (§33.7 finding 1) the ARMED declaration's exactReaderEnabled fact composes
+  // the closed osSeam opt-in ONCE, hoisted ABOVE the eager identity
+  // establishment (whose first capture attempt runs before the
+  // local-observation section initializes — a closure here must never
+  // reference that section's bindings). The composed osSeams ride EVERY
+  // driver-side OS read: the default marker capture (this closure) and —
+  // through the observerSeamOptions composition below — the composed local
+  // observations and the default held-turn identity reader. Null → the
+  // caller's osSeams are honored exactly as before (byte-identical for every
+  // unarmed and capture-only declaration).
+  const armedExactReaderOsSeams = (/** @type {any} */ (input.localObservation))?.exactReaderEnabled === true
+    ? { ...((/** @type {any} */ (input.localObservationObserverOptions ?? {})).osSeams ?? {}), exactReaderOptIn: true }
+    : null;
   const captureProcessIdentity = input.captureProcessIdentity ?? (async () => {
-    const captured = await captureVerifiedProcessIdentity(/** @type {string} */ (input.processPath), /** @type {string} */ (input.processNonce));
+    // (§33.7 finding 1) the composed osSeams ride the marker's own OS
+    // re-verification: an exact-reader-armed declaration captures the marker
+    // generation at the driver's threaded resolution (the exact form the
+    // ancestry hop's exact mode consumes), never a coarse default. The
+    // composition is HOISTED (below) — this closure must never reference the
+    // local-observation section's bindings: the eager identity establishment
+    // (created before that section) invokes this capture and would hit a
+    // temporal dead zone.
+    const captured = await captureVerifiedProcessIdentity(/** @type {string} */ (input.processPath), /** @type {string} */ (input.processNonce), armedExactReaderOsSeams ?? {});
     if (typeof input.processPath === 'string' && input.processPath.length > 0) {
       try {
         const markerStats = await lstat(/** @type {string} */ (input.processPath));
@@ -2410,8 +2477,21 @@ export async function runHeldHostTurn(input) {
   // observation path offline (a synthetic pid never reaches the real OS)
   // while the runtime dispatches through its own composition. Undefined →
   // the real OS reads, byte-identical behavior.
-  const observerSeamOptions = localObservationDeclaration === null ? {}
-    : ({ ...(input.localObservationObserverOptions ?? {}) });
+  // (§33.7 finding 1) the ARMED declaration's `exactReaderEnabled` fact
+  // threads the §32.2 registered exact-reader opt-in through the closed
+  // osSeam member `exactReaderOptIn` into EVERY driver-side OS read (the
+  // composed local observations and the default held-turn identity reader
+  // ride THIS composition; the default marker capture rides the hoisted
+  // `armedExactReaderOsSeams` above — the SAME composed member), so the
+  // driver's own identity resolution matches the armed chain's emitter
+  // resolution WITHOUT any process-environment mutation. Caller-supplied
+  // osSeams members merge unchanged (an injected kinfoExact seam still
+  // owns its read); unarmed declarations and non-witness arms stay
+  // byte-identical.
+  const callerObserverOptions = localObservationDeclaration === null ? {} : { ...(input.localObservationObserverOptions ?? {}) };
+  const observerSeamOptions = localObservationDeclaration !== null && (/** @type {any} */ (localObservationDeclaration)).exactReaderEnabled === true
+    ? { ...callerObserverOptions, osSeams: /** @type {any} */ (armedExactReaderOsSeams) }
+    : callerObserverOptions;
   const localObserve = localObservationDeclaration === null ? null
     : (input.observeLocalObservationIdentity ?? ((observationInput) => observeLocalProcess({ ...observationInput, ...observerSeamOptions })));
   const localBrokerAdmit = localObservationDeclaration === null ? null
@@ -2628,6 +2708,150 @@ export async function runHeldHostTurn(input) {
       if (brokerAdmission !== null) block.brokerAdmission = localProjectAdmission(brokerAdmission);
       if (budgetController.signal.aborted && cleanup.releasedGate !== true) {
         block.stoppedAt ??= 'turn-ended';
+      }
+      // (§33.7 finding 2 — the DEFAULT path's bounded witness-completion
+      // sequencing) §33.4's measured race: the daemon's own emit (its dynamic
+      // observer import, the bounded visibility poll, the double reads and the
+      // exact bridge) writes its witness record AFTER the transport marker
+      // appears, so this path's ancestry endpoint selection and one-shot
+      // witness admissions ran too early (the measured t+1.27 s admission vs
+      // the t+1.62 s write) and refused with the named missing/unbounded fence
+      // labels. The witness-armed declaration sequences the runtime: BOTH
+      // boundary witness records are awaited under the bounded budget
+      // ({@link SPAWN_WITNESS_SEQUENCING_BOUND_MS}) and the SHARED abort
+      // BEFORE any ancestry endpoint is refreshed and before the one-shot
+      // admissions run. A bound expiry or an aborted turn proceeds
+      // immediately — the downstream admissions then report the honest named
+      // absence; the sequencing itself never fabricates, never retries an
+      // admission and never extends the turn. Capture-only armed declarations
+      // (no witness handle) never enter this block, and an injected
+      // captureProcessIdentity (the §33.4 regression's own waiter) composes
+      // byte-identically on top.
+      if ((/** @type {any} */ (declared)).witnessArmed === true) {
+        // (§33.8 review-mwho2z7d-1hyd1j findings 1+2 — the unified bounded
+        // lookup window) The sequencing deadline is measured on the turn's OWN
+        // MONOTONIC clock (the same `now()` domain every other held-turn
+        // duration uses): a wall-clock step can never inflate, shrink or
+        // shift the bound, and only a TRUE 15-second duration expires it. The
+        // wall clock keeps exactly one duty in this block — the epoch-valued
+        // evidence field (`expiredAtEpochMs`) — and the observed `waitedMs`
+        // stays a monotonic duration. AND every witness existence lookup is
+        // raced against BOTH closers of the sequencing window — the SHARED
+        // abort and this deadline — so a stalled lookup can never bypass the
+        // timeout checks: the winning closer names the outcome exactly as the
+        // loop's own checks would ('turn-ended' | 'bound-expired'), the
+        // losing lookup is detached (its rejection is swallowed by its own
+        // arm) and the turn's exit `finally` is never held by a pending read.
+        // The deadline arm rides the turn's own `sleep` seam — the SAME
+        // bounded-wait convention as the abortable pacing — so instrument
+        // tests drive the bound on the injected held timeline. (§33.9
+        // review-mwhw91b4-bvkm7v finding 1: the DEFAULT sleep's deadline
+        // timer is driver-owned and CANCELLABLE — cleared the moment another
+        // arm wins the race; the injected ride is unchanged.)
+        const sequencingStartedAtMs = now();
+        const sequencingDeadlineRidesInjectedSleep = input.sleep !== undefined;
+        const awaitedWitnessPaths = [
+          join(declared.captureDirectory, `${declared.nonce}${SPAWN_ANCESTRY_WITNESS_SUFFIXES.invocation}`),
+          join(declared.captureDirectory, `${declared.nonce}${SPAWN_ANCESTRY_WITNESS_SUFFIXES['broker-daemon']}`),
+        ];
+        const sequencingDeadlineMs = sequencingStartedAtMs + SPAWN_WITNESS_SEQUENCING_BOUND_MS;
+        const awaitWitnessLookupWithinWindow = async (/** @type {string} */ witnessPath, /** @type {number} */ deadlineMs) => {
+          const lookup = (typeof input.lookupLocalWitnessPresence === 'function'
+            ? input.lookupLocalWitnessPresence
+            : lstat)(witnessPath).then(
+            (stats) => ({ windowClosed: /** @type {null} */ (null), stats }),
+            () => ({ windowClosed: /** @type {null} */ (null), stats: null }),
+          );
+          const remainingMs = Math.max(0, deadlineMs - now());
+          let onAbort = null;
+          const abortArm = new Promise((resolve) => {
+            if (budgetController.signal.aborted) { resolve({ windowClosed: 'turn-ended', stats: null }); return; }
+            onAbort = () => resolve({ windowClosed: 'turn-ended', stats: null });
+            budgetController.signal.addEventListener('abort', onAbort, { once: true });
+          });
+          // (§33.9 review-mwhw91b4-bvkm7v finding 1 — the CANCELLABLE deadline
+          // arm) the losing deadline sleep used to keep RUNNING after the race
+          // settled on the lookup or the abort: the DEFAULT sleep creates a
+          // REFERENCED setTimeout, so a fast-finishing witness-armed turn left
+          // every raced lookup's live 15-second timer behind (the reviewer's
+          // synthetic ~103 ms turn measured two), keeping the CLI or test
+          // process alive after cleanup. The arm is now owned and cancellable:
+          // with the turn's OWN default sleep the deadline rides a
+          // driver-owned timer handle that is CLEARED as soon as the race
+          // settles on another arm (clearing an already-fired handle is the
+          // no-op cleanup of the winning arm's single firing); an INJECTED
+          // sleep keeps the documented ride (the §33.8 instrument convention —
+          // the injected seam owns its own timeline, a virtual sleep carries
+          // no OS timer at all, and reaching into a foreign sleep's internals
+          // would change the seam's own semantics), so the residual-timer
+          // hazard exists only on the default path — exactly the path the
+          // finding measured.
+          let deadlineTimer = null;
+          const deadlineArm = new Promise((resolve) => {
+            const settle = () => resolve({ windowClosed: 'bound-expired', stats: null });
+            if (sequencingDeadlineRidesInjectedSleep === true) {
+              Promise.resolve(sleep(remainingMs)).then(settle, settle);
+              return;
+            }
+            deadlineTimer = setTimeout(settle, remainingMs);
+          });
+          const settled = await Promise.race([lookup, abortArm, deadlineArm]);
+          // (Review round 9, Finding 4 discipline) the abort listener is
+          // RELEASED as soon as the race settles — a completed lookup never
+          // retains its listener until turn teardown.
+          if (onAbort !== null) budgetController.signal.removeEventListener('abort', onAbort);
+          // (§33.9 finding 1) the losing deadline timer is CANCELLED — the
+          // window never leaves a referenced deadline sleep behind.
+          if (deadlineTimer !== null) clearTimeout(deadlineTimer);
+          return settled;
+        };
+        const sequencingOutcome = await (async () => {
+          for (;;) {
+            if (budgetController.signal.aborted) return 'turn-ended';
+            let presentWitnesses = 0;
+            for (const witnessPath of awaitedWitnessPaths) {
+              const lookup = await awaitWitnessLookupWithinWindow(witnessPath, sequencingDeadlineMs);
+              if (lookup.windowClosed !== null) return lookup.windowClosed;
+              if (lookup.stats !== null && lookup.stats.isFile()) presentWitnesses += 1;
+            }
+            // (Gate round 7 — review-mwj26tbg-m3ve3w, the
+            // settlement-vs-deadline straddle) a lookup that settles AFTER
+            // the monotonic deadline but BEFORE its raced timeout callback
+            // runs still wins its race — once an iteration begins past the
+            // deadline the raced window arms a 0 ms timer whose callback
+            // cannot run until the next timer phase, so a microtask-settling
+            // lookup beats it — and the success branch below PRECEDED the
+            // loop's own deadline check, so the reviewer's synthetic held
+            // turn on the default real clock accepted both records with
+            // `outcome: 'witnesses-present'` at `waitedMs: 15100` despite
+            // the 15000-ms bound. The deadline is therefore RECHECKED here,
+            // after lookup settlement and before the success return, with
+            // the SAME monotonic clock, the SAME operands and the SAME
+            // strict-`>` comparison as the loop's own check below: an
+            // in-window settlement pair and the exact-deadline tie keep
+            // their existing semantics (the window is never tightened),
+            // while an expired one names the same 'bound-expired' outcome
+            // the other deadline paths name (the wall-clock evidence field
+            // rides the existing outcome composition unchanged). The recheck
+            // lives at THIS loop's success point — both records settled —
+            // and an already-present witness is not re-queried there.
+            if (presentWitnesses === awaitedWitnessPaths.length && now() > sequencingDeadlineMs) return 'bound-expired';
+            if (presentWitnesses === awaitedWitnessPaths.length) return 'witnesses-present';
+            if (now() > sequencingDeadlineMs) return 'bound-expired';
+            await localPace(25);
+          }
+        })();
+        block.witnessSequencing = {
+          awaitedRoles: ['invocation', 'broker-daemon'],
+          boundMs: SPAWN_WITNESS_SEQUENCING_BOUND_MS,
+          // (§33.8) the monotonic duration, ROUNDED to whole milliseconds —
+          // the same held-timeline convention as every other
+          // `Math.round(now() - ...)` stamp: the monotonic clock's fractional
+          // milliseconds never ride a persisted field.
+          waitedMs: Math.max(0, Math.round(now() - sequencingStartedAtMs)),
+          outcome: sequencingOutcome,
+          ...(sequencingOutcome === 'bound-expired' ? { expiredAtEpochMs: wallClockNow() } : {}),
+        };
       }
       // Review round 3 (Finding 2): the ancestry's lifetime windows need
       // endpoint observations that COVER the downstream creation — the
@@ -9372,6 +9596,26 @@ export const STDOUT_CAPTURE_REQUIRED_CASES = Object.freeze(new Set(['rescue-inte
 export const LOCAL_OBSERVATION_REQUIRED_CASES = Object.freeze(new Set(['rescue-interrupt']));
 
 /**
+ * The BOUNDED budget for the runtime's witness-completion sequencing
+ * (§33.7 finding 2; the witness-armed declaration only): before the default
+ * runHeldHostTurn path selects its ancestry endpoints and performs its
+ * one-shot witness admissions, BOTH spawn-witness records are awaited under
+ * this bound (the same budget the §33.4 regression's injected waiter
+ * documented). A bound expiry is the NAMED sequencing fact
+ * (`witnessSequencing.outcome: 'bound-expired'`) and the downstream
+ * admissions report the honest named absence — the sequencing never
+ * extends the turn (the shared abort short-circuits it) and never
+ * fabricates a witness. (§33.8 review-mwho2z7d-1hyd1j) The bound is
+ * measured on the turn's MONOTONIC clock and every witness existence
+ * lookup is raced against the shared abort and this deadline — a
+ * wall-clock step never shifts the bound and a stalled lookup never
+ * bypasses it. (§33.9 review-mwhw91b4-bvkm7v) The deadline arm itself is
+ * CANCELLABLE: a lookup or abort that wins the race clears the armed
+ * deadline timer, so the window never leaves a referenced sleep behind.
+ */
+export const SPAWN_WITNESS_SEQUENCING_BOUND_MS = 15_000;
+
+/**
  * Compose the local-observation runtime declaration from an ARMED fixture
  * (the executor's own arming source). Returns `null` when the case is not in
  * the closed {@link LOCAL_OBSERVATION_REQUIRED_CASES} map or the fixture
@@ -9379,9 +9623,19 @@ export const LOCAL_OBSERVATION_REQUIRED_CASES = Object.freeze(new Set(['rescue-i
  * and the held turn stays runtime-inert (schema stability), so the runtime's
  * arming is only ever the fixture's OWN declaration (§25.4 item 2: the
  * per-invocation fixture nonce, never a caller-supplied scope).
+ *
+ * (§33.7 findings 1–2) the fixture's OWN witness arming rides the
+ * declaration as two schema-additive facts derived from the fixture's
+ * `spawnWitness` handle (never a caller flag): `exactReaderEnabled` threads
+ * the §32.2 registered opt-in into the driver-side observation setup (the
+ * composed osSeam `exactReaderOptIn` member — the driver's reads resolve at
+ * the SAME resolution the armed chain's emitters capture, with no process
+ * environment mutation), and `witnessArmed` arms the runtime's bounded
+ * witness-completion sequencing (the §33.4 measured race's in-path fix).
+ * A capture-only fixture (no witness handle) composes neither — byte-identical.
  * @param {any} fixture the created fixture handle
  * @param {string} caseLabel the validated case label
- * @returns {{ captureDirectory: string, nonce: string, entryRealpath: string, brokerEntryRealpath: string } | null}
+ * @returns {{ captureDirectory: string, nonce: string, entryRealpath: string, brokerEntryRealpath: string, witnessArmed?: true, exactReaderEnabled?: true } | null}
  */
 export function localObservationDeclarationFor(fixture, caseLabel) {
   if (!LOCAL_OBSERVATION_REQUIRED_CASES.has(caseLabel)) return null;
@@ -9392,7 +9646,16 @@ export function localObservationDeclarationFor(fixture, caseLabel) {
     || typeof nonce !== 'string' || nonce.length === 0
     || typeof entryRealpath !== 'string' || entryRealpath.length === 0
     || typeof brokerEntryRealpath !== 'string' || brokerEntryRealpath.length === 0) return null;
-  return { captureDirectory, nonce, entryRealpath, brokerEntryRealpath };
+  const spawnWitness = /** @type {any} */ (fixture)?.spawnWitness ?? null;
+  const witnessArmed = spawnWitness !== null && typeof spawnWitness === 'object';
+  return {
+    captureDirectory,
+    nonce,
+    entryRealpath,
+    brokerEntryRealpath,
+    ...(witnessArmed ? { witnessArmed: /** @type {const} */ (true) } : {}),
+    ...(witnessArmed && spawnWitness.exactReaderEnabled === true ? { exactReaderEnabled: /** @type {const} */ (true) } : {}),
+  };
 }
 
 /**
@@ -9477,7 +9740,19 @@ export const SURVIVAL_CONTROL_DECLARATION_FACTS = Object.freeze({
  *   - the registered stdout-capture requirement
  *     ({@link STDOUT_CAPTURE_REQUIRED_CASES}) is met by the fixture's
  *     ACTUAL prepared seam (the fixture-generated handle present and its
- *     preload file on disk).
+ *     preload file on disk);
+ *   - (§33.10) a fixture whose record DECLARES the §33.10 spawn-witness
+ *     arming carries the agreeing instrument (the armed witness handle, its
+ *     generated preload file on disk, and the declaration digest equal to
+ *     the handle's) — the agreement composes LAST, and a fixture with no
+ *     witness declaration is not blocked by it. (Review round 5) the
+ *     agreement also verifies the instrument's EXECUTION reality: the
+ *     ON-DISK witness preload bytes hash to the declared digest, and the
+ *     EFFECTIVE launch environment actually loads the witness preload (a
+ *     real `--require` option token for the armed witness path in
+ *     NODE_OPTIONS — a capture-only composition refuses) with the declared
+ *     witness transport configuration present and agreeing (the transport
+ *     entry realpath and the exact-reader opt-in).
  * Cases without registered Task-3 observers are not blocked by them.
  * Native-acceptance Task 3 (report §24.8/§24.11) adds the §24.8 choreography
  * arm: (4) a run that DECLARES the §24.8 completion-gate artifacts rejects
@@ -9556,6 +9831,60 @@ export async function evaluateLiveLaunchPreflight(input, dependencies = {}) {
       return { ok: false, reason: 'the registered stdout capture preload is absent (the exact-output observer is known absent)' };
     }
   }
+  // (Review round 27, Finding 2) the NODE_OPTIONS string is parsed into
+  // its shell-ish OPTION TOKENS (whitespace-separated, ' and " quoting —
+  // backslash escapes inside double quotes — mirroring how Node itself
+  // splits the variable), and a real `--require` OPTION TOKEN must carry
+  // the declared preload path as its argument. The old SUBSTRING check
+  // accepted the fragment hiding inside ANOTHER option's value
+  // (`--title="--require "<path>""` tokenizes as the process title — Node
+  // starts WITHOUT requiring the preload, even if that file does not
+  // exist), permitting a host launch with the mandatory observer known
+  // absent.
+  // (Review round 28, Finding 2) the tokenizer matches Node's ACTUAL
+  // NODE_OPTIONS parsing rules (verified empirically against the running
+  // node binary): double quotes toggle in-string state and are consumed,
+  // a backslash escapes the next character ONLY inside double quotes
+  // (outside them it is an ordinary character), and apostrophes are
+  // ORDINARY characters — never quoting delimiters (`--title=it's` is one
+  // token and `--require '<path>'` fails to load, the apostrophes riding
+  // the filename).
+  // (Review round 5) the tokenizer is FUNCTION-SCOPED (hoisted out of the
+  // local-observation block, a pure function of the string) because the
+  // §33.10 witness-arming agreement gate reuses the exact same parsing for
+  // its own effective-launch-environment verification (the witness
+  // `--require` token).
+  const tokenizeNodeOptions = (/** @type {string} */ value) => {
+    const tokens = [];
+    let current = '';
+    let inString = false;
+    let inEscape = false;
+    let sawUnquotedTabOrNewline = false;
+    for (const character of value) {
+      if (inEscape) { current += character; inEscape = false; continue; }
+      if (inString && character === '\\') { inEscape = true; continue; }
+      if (character === '"') { inString = !inString; continue; }
+      if (!inString && character === ' ') {
+        if (current.length > 0) { tokens.push(current); current = ''; }
+        continue;
+      }
+      // (Review round 30, Finding 2) Node splits NODE_OPTIONS on SPACES
+      // only (verified empirically: `--require\t<path>` is rejected with
+      // `is not allowed in NODE_OPTIONS`, exit 9, BEFORE loading anything)
+      // — a tab or newline outside quotes is an ordinary character that
+      // combines the surrounding options into one invalid token: the
+      // environment is known-invalid and refuses by name.
+      if (!inString && (character === '\t' || character === '\n')) sawUnquotedTabOrNewline = true;
+      current += character;
+    }
+    if (current.length > 0) tokens.push(current);
+    // (Review round 29, Finding 2) an UNFINISHED quoting state means the
+    // environment is already known invalid: Node itself exits code 9
+    // (`invalid value for NODE_OPTIONS` — an unterminated string) BEFORE
+    // loading anything, so such an environment refuses by name instead of
+    // having its truncated tokens accepted.
+    return { tokens, complete: !inString && !inEscape, sawUnquotedTabOrNewline };
+  };
   // (6) The local-settlement capability gate (plan Task 3, §25.3/§25.8; the
   // producer map {@link LOCAL_OBSERVATION_REQUIRED_CASES}): every applicable
   // mandatory local layer (the invocation process, the declared broker
@@ -9660,55 +9989,6 @@ export async function evaluateLiveLaunchPreflight(input, dependencies = {}) {
         return { ok: false, reason: `the capture handle violates the frozen preload contract (${variable}) — the observer would stay inert and write no identity record; known-unobservable configuration` };
       }
     }
-    // (Review round 27, Finding 2) the NODE_OPTIONS string is parsed into
-    // its shell-ish OPTION TOKENS (whitespace-separated, ' and " quoting —
-    // backslash escapes inside double quotes — mirroring how Node itself
-    // splits the variable), and a real `--require` OPTION TOKEN must carry
-    // the declared preload path as its argument. The old SUBSTRING check
-    // accepted the fragment hiding inside ANOTHER option's value
-    // (`--title="--require "<path>""` tokenizes as the process title — Node
-    // starts WITHOUT requiring the preload, even if that file does not
-    // exist), permitting a host launch with the mandatory observer known
-    // absent.
-    // (Review round 28, Finding 2) the tokenizer matches Node's ACTUAL
-    // NODE_OPTIONS parsing rules (verified empirically against the running
-    // node binary): double quotes toggle in-string state and are consumed,
-    // a backslash escapes the next character ONLY inside double quotes
-    // (outside them it is an ordinary character), and apostrophes are
-    // ORDINARY characters — never quoting delimiters (`--title=it's` is one
-    // token and `--require '<path>'` fails to load, the apostrophes riding
-    // the filename).
-    const tokenizeNodeOptions = (/** @type {string} */ value) => {
-      const tokens = [];
-      let current = '';
-      let inString = false;
-      let inEscape = false;
-      let sawUnquotedTabOrNewline = false;
-      for (const character of value) {
-        if (inEscape) { current += character; inEscape = false; continue; }
-        if (inString && character === '\\') { inEscape = true; continue; }
-        if (character === '"') { inString = !inString; continue; }
-        if (!inString && character === ' ') {
-          if (current.length > 0) { tokens.push(current); current = ''; }
-          continue;
-        }
-        // (Review round 30, Finding 2) Node splits NODE_OPTIONS on SPACES
-        // only (verified empirically: `--require\t<path>` is rejected with
-        // `is not allowed in NODE_OPTIONS`, exit 9, BEFORE loading anything)
-        // — a tab or newline outside quotes is an ordinary character that
-        // combines the surrounding options into one invalid token: the
-        // environment is known-invalid and refuses by name.
-        if (!inString && (character === '\t' || character === '\n')) sawUnquotedTabOrNewline = true;
-        current += character;
-      }
-      if (current.length > 0) tokens.push(current);
-      // (Review round 29, Finding 2) an UNFINISHED quoting state means the
-      // environment is already known invalid: Node itself exits code 9
-      // (`invalid value for NODE_OPTIONS` — an unterminated string) BEFORE
-      // loading anything, so such an environment refuses by name instead of
-      // having its truncated tokens accepted.
-      return { tokens, complete: !inString && !inEscape, sawUnquotedTabOrNewline };
-    };
     const declaredPreloadPath = capture.preloadPath;
     const parsedNodeOptions = typeof effectiveEnv.NODE_OPTIONS === 'string' ? tokenizeNodeOptions(effectiveEnv.NODE_OPTIONS) : { tokens: [], complete: false, sawUnquotedTabOrNewline: false };
     const loadsDeclaredPreload = parsedNodeOptions.complete && parsedNodeOptions.tokens.some((/** @type {string} */ token, /** @type {number} */ index, /** @type {string[]} */ tokens) => {
@@ -9779,6 +10059,78 @@ export async function evaluateLiveLaunchPreflight(input, dependencies = {}) {
       return { ok: false, reason: 'the declared capture directory is not private (its permissions are not exactly 0700 on POSIX) — the startup-record readers reject every record the observer writes; known-unobservable configuration' };
     }
   }
+  // (§33.10, user-review round 3 P2) The DECLARED witness-arming agreement
+  // gate: the research entry arms the spawn-witness capture for every
+  // capture-required case (the {@link runShellWaitCase} threading), and the
+  // fixture records the bounded arming declaration
+  // (`record.spawnWitnessCapture` — the survivalControl / stdoutCapture
+  // declaration pattern). A launch whose fixture record DECLARES that arming
+  // must carry the agreeing instrument: the armed witness handle present,
+  // its generated preload file on disk, and the declaration's digest equal to
+  // the handle's. The check composes LAST — every earlier named ground keeps
+  // its refusal — and a fixture with no witness declaration (the pre-§33
+  // capture-only instrument shape) is not blocked by it. Runtime witness
+  // facts (which records the chain emits, whether the hops attribute) stay
+  // facts the launched trial must establish — never preflight guesses.
+  const witnessDeclaration = /** @type {any} */ (fixture.record)?.spawnWitnessCapture ?? null;
+  if (witnessDeclaration !== null && typeof witnessDeclaration === 'object') {
+    const witnessHandle = /** @type {any} */ (fixture)?.spawnWitness ?? null;
+    if (witnessHandle === null || typeof witnessHandle !== 'object' || typeof witnessHandle.preloadPath !== 'string') {
+      return { ok: false, reason: 'the fixture record declares the spawn-witness capture arming but the fixture carries no armed witness handle (the declared instrument is absent) — the wrong instrument' };
+    }
+    const witnessPreloadStats = await lstat(witnessHandle.preloadPath).catch(() => null);
+    if (witnessPreloadStats === null || !witnessPreloadStats.isFile()) {
+      return { ok: false, reason: 'the declared spawn-witness capture preload is absent (the declared instrument artifact is missing on disk) — the wrong instrument' };
+    }
+    if (witnessDeclaration.preloadSha256 !== witnessHandle.preloadSha256) {
+      return { ok: false, reason: 'the fixture arming declaration disagrees with the armed witness handle digest (the declared instrument drifted) — the wrong instrument' };
+    }
+    // (Review round 5, Finding 2) the DECLARED digest must match the artifact
+    // ON DISK: the two cached arming hashes (declaration and handle) agree by
+    // construction — only hashing the bytes Node will actually execute
+    // catches a truncated/replaced witness preload (exactly the adjacent
+    // capture-preload validation's method: read the on-disk bytes, sha256,
+    // compare with the declaration). A read failure (the artifact vanishing
+    // after the lstat above — the file-disappearance race) is the SAME named
+    // refusal, never a crash: a null digest cannot match the declaration.
+    const witnessDiskBytes = await readFile(witnessHandle.preloadPath).catch(() => null);
+    const witnessDiskDigest = witnessDiskBytes !== null ? createHash('sha256').update(witnessDiskBytes).digest('hex') : null;
+    if (witnessDiskDigest === null || witnessDiskDigest !== witnessDeclaration.preloadSha256) {
+      return { ok: false, reason: 'the declared spawn-witness capture preload on disk does not match the arming declaration (the executing witness bytes drifted or were truncated) — the wrong instrument' };
+    }
+    // (Review round 5, Finding 1) the EFFECTIVE launch environment: the
+    // digests may agree while the executor is about to launch with an env
+    // that never RUNS the witness preload — the composed NODE_OPTIONS must
+    // carry a real `--require` option token whose argument is the armed
+    // witness preload path (a capture-only NODE_OPTIONS never loads it), and
+    // the fixture arming's own witness transport configuration (the exact
+    // written set of the arming block: the declared transport entry realpath
+    // and the exact-reader opt-in) must be present in the declared
+    // environment and agree with the armed handle. Known pre-launch
+    // capability, never a runtime measurement — a hosted trial on a
+    // known-inactive instrument (and its missing witnesses plus the 15-second
+    // sequencing wait) is refused before the launch.
+    const witnessEnv = /** @type {any} */ (fixture)?.env ?? null;
+    const parsedWitnessNodeOptions = typeof witnessEnv?.NODE_OPTIONS === 'string' ? tokenizeNodeOptions(witnessEnv.NODE_OPTIONS) : { tokens: [], complete: false, sawUnquotedTabOrNewline: false };
+    const witnessPreloadPath = witnessHandle.preloadPath;
+    const loadsWitnessPreload = parsedWitnessNodeOptions.complete && parsedWitnessNodeOptions.tokens.some((/** @type {string} */ token, /** @type {number} */ index, /** @type {string[]} */ tokens) => {
+      if (token === '--require') return index + 1 < tokens.length && tokens[index + 1] === witnessPreloadPath;
+      return token.startsWith('--require=') && token.slice('--require='.length) === witnessPreloadPath;
+    });
+    if (!loadsWitnessPreload) {
+      return { ok: false, reason: 'the effective launch environment does not LOAD the declared witness preload (NODE_OPTIONS carries no --require option token whose argument is the armed witness preload path — a capture-only NODE_OPTIONS) — the wrong instrument' };
+    }
+    const witnessEnvInputs = [
+      [WITNESS_TRANSPORT_ENTRY_VARIABLE, typeof witnessHandle.transportEntryRealpath === 'string' && witnessHandle.transportEntryRealpath.length > 0 ? witnessHandle.transportEntryRealpath : null],
+      [EXACT_READER_VARIABLE, witnessHandle.exactReaderEnabled === true ? '1' : null],
+    ];
+    for (const [variable, expected] of witnessEnvInputs) {
+      const actual = witnessEnv !== null && typeof witnessEnv === 'object' ? witnessEnv[variable] : undefined;
+      if (expected === null || actual !== expected) {
+        return { ok: false, reason: `the effective launch environment is missing or disagrees on the declared witness transport configuration (${variable}) — the wrong instrument` };
+      }
+    }
+  }
   return { ok: true, reason: null };
 }
 
@@ -9823,6 +10175,7 @@ export async function evaluateLiveLaunchPreflight(input, dependencies = {}) {
  *   localObservation?: { captureDirectory: string, nonce: string, entryRealpath: string, brokerEntryRealpath?: string },
  *   captureLocalObservationIdentity?: (admissionInput: any) => Promise<any>,
  *   admitLocalSpawnWitness?: (witnessInput: { captureDirectory: string, nonce: string, role: 'invocation' | 'broker-daemon' }) => Promise<any>,
+ *   lookupLocalWitnessPresence?: (witnessPath: string) => Promise<import('node:fs').Stats>,
  *   observeLocalObservationIdentity?: (observationInput: any) => Promise<any>,
  *   captureLocalBrokerObservationIdentity?: (admissionInput: any) => Promise<any>,
  *   observeLocalBrokerObservationIdentity?: (observationInput: any) => Promise<any>,

@@ -339,7 +339,7 @@ function classifyKinfoAnswer(answer, nowMs) {
  * never a duty-establishing precondition and never a fallback to a weaker
  * contract.
  * @param {number} pid
- * @param {{ kinfoExact?: (pid: number) => Promise<{ sec: number, usec: number } | { malformed: number } | null> }} [osSeams]
+ * @param {{ kinfoExact?: (pid: number) => Promise<{ sec: number, usec: number } | { malformed: number } | null>, exactReaderOptIn?: boolean }} [osSeams]
  * @returns {Promise<{ state: 'exact', sec: number, usec: number, ms: number } | { state: 'gone' } | { state: 'malformed' } | { state: 'unavailable' }>}
  */
 async function readDarwinKinfoExact(pid, osSeams = {}) {
@@ -354,13 +354,18 @@ async function readDarwinKinfoExact(pid, osSeams = {}) {
     }
   }
   // The real bridge runs ONLY under the registered env opt-in
-  // (`ZCODE_SHELL_WAIT_KINFO_EXACT=1`): plain unit/real-chain runs keep the
-  // ps byte-identical path, and enabling the exact route on a production
+  // (`ZCODE_SHELL_WAIT_KINFO_EXACT=1`) or its closed osSeam equivalent
+  // (`exactReaderOptIn: true` — §33.7 finding 1: the driver-side observation
+  // setup threads the ARMED declaration's exact-reader fact through this
+  // member, so the driver's own reads resolve identities at the SAME
+  // resolution the armed chain's emitters capture, without any process
+  // environment mutation): plain unit/real-chain runs keep the ps
+  // byte-identical path, and enabling the exact route on a production
   // installed host remains the live-trial wiring question (§32; no
   // production call site sets the variable today). The degrading discipline:
   // hosts without developer tools keep the existing ps whole-second
   // behavior, never a duty-establishing precondition.
-  if (process.env.ZCODE_SHELL_WAIT_KINFO_EXACT !== '1') return { state: 'unavailable' };
+  if (process.env.ZCODE_SHELL_WAIT_KINFO_EXACT !== '1' && osSeams.exactReaderOptIn !== true) return { state: 'unavailable' };
   const bridge = [
     'import ctypes, json, sys',
     'class TV(ctypes.Structure):',
@@ -646,7 +651,7 @@ function observedThenGoneError(observedStartIdentity, observedTakenEpochMs, obse
  * under the single canonical `nonce` field shared by capture, re-verification,
  * and termination.
  * @param {number} pid @param {string} expectedNonce @param {string} [nonceVariable]
- * @param {{ platform?: string, ps?: (pid: number) => Promise<{ pid: number, ppid: number, lstart: string }>, environ?: 'present' | 'mismatch' | 'gone', runProcess?: osSeamsRunProcess }} [osSeams]
+ * @param {{ platform?: string, ps?: (pid: number) => Promise<{ pid: number, ppid: number, lstart: string }>, kinfoExact?: (pid: number) => Promise<{ sec: number, usec: number } | { malformed: number } | null>, exactReaderOptIn?: boolean, environ?: 'present' | 'mismatch' | 'gone', runProcess?: osSeamsRunProcess }} [osSeams]
  * @returns {Promise<{ pid: number, ppid: number, startIdentity: string, nonce: string, takenEpochMs: number,
  *       observedStartIdentity?: string, observedIdentityTakenEpochMs?: number, observedIdentityCompletedEpochMs?: number }
  *   | { pid: number, ppid: number, startIdentity: string, coarseStartIdentity: string, nonce: string, takenEpochMs: number,
@@ -1007,10 +1012,16 @@ export async function inspectVerifiedProcessIdentity(pid, expectedNonce, nonceVa
  * Capture one exact process identity from a fake-ZCode process marker file:
  * the single shared entry point for the held-run lifecycle so capture,
  * re-verification, and termination all speak the same nonce-bearing shape.
+ * The optional osSeams ride the marker's own OS re-verification (the same
+ * closed surface the observation layer honors) — §33.7 finding 1 threads the
+ * armed declaration's exact-reader opt-in through it, so a driver-side
+ * capture resolves the marker generation at the SAME resolution the armed
+ * chain's emitters capture, without any process environment mutation.
  * @param {string} processPath @param {string} processNonce
+ * @param {{ kinfoExact?: (pid: number) => Promise<{ sec: number, usec: number } | { malformed: number } | null>, exactReaderOptIn?: boolean }} [osSeams]
  * @returns {Promise<{ pid: number, ppid: number, startIdentity: string, nonce: string }>}
  */
-export async function captureVerifiedProcessIdentity(processPath, processNonce) {
+export async function captureVerifiedProcessIdentity(processPath, processNonce, osSeams = {}) {
   const { readFile: read } = await import('node:fs/promises');
   /** @param {string} code @param {string} message @returns {Error} */
   const coded = (code, message) => /** @type {any} */ (Object.assign(new Error(message), { code }));
@@ -1041,7 +1052,7 @@ export async function captureVerifiedProcessIdentity(processPath, processNonce) 
   }
   let observed;
   try {
-    observed = await inspectVerifiedProcessIdentity(marker.pid, processNonce);
+    observed = await inspectVerifiedProcessIdentity(marker.pid, processNonce, FAKE_ZCODE_NONCE_VARIABLE, osSeams);
   } catch (error) {
     // ROUND-28: a mid-read disappearance at CAPTURE time is the capture-time
     // confirmed-exit shape (no bound generation exists yet to latch for) —
@@ -1072,6 +1083,7 @@ export async function captureVerifiedProcessIdentity(processPath, processNonce) 
  *   environ?: 'present' | 'mismatch' | 'gone',
  *   runProcess?: osSeamsRunProcess,
  *   kinfoExact?: (pid: number) => Promise<{ sec: number, usec: number } | { malformed: number } | null>,
+ *   exactReaderOptIn?: boolean,
  *   abortSignal?: { aborted: boolean },
  * }} TerminationInspectOsSeams
  */
@@ -2161,7 +2173,7 @@ function validateSpawnWitnessRecord(record) {
  *   childNonce: string,
  *   childNonceVariable?: string,
  *   nowEpochMs?: number,
- *   osSeams?: { platform?: string, ps?: (pid: number) => Promise<{ pid: number, ppid: number, lstart: string }>, environ?: 'present' | 'mismatch' | 'gone', runProcess?: osSeamsRunProcess },
+ *   osSeams?: { platform?: string, ps?: (pid: number) => Promise<{ pid: number, ppid: number, lstart: string }>, environ?: 'present' | 'mismatch' | 'gone', runProcess?: osSeamsRunProcess, exactReaderOptIn?: boolean },
  *   linuxClock?: { statText?: string, clkTick?: string, clock?: { btimeMs: number, hz: number } },
  * }} input
  * @returns {Promise<SpawnAncestryWitnessVerdict>}
@@ -2882,7 +2894,7 @@ async function resolveObservationStartInstantMs(startIdentity, deps = {}) {
  *   inspect?: (pid: number, nonce: string) => Promise<{ pid: number, ppid: number, startIdentity: string, nonce: string } | undefined>,
  *   absenceConfirmation?: (pid: number) => Promise<'absent' | 'unconfirmed'>,
  *   linuxClock?: { statText?: string, clkTick?: string, clock?: { btimeMs: number, hz: number } },
- *   osSeams?: { platform?: string, ps?: (pid: number) => Promise<{ pid: number, ppid: number, lstart: string }>, kinfoExact?: (pid: number) => Promise<{ sec: number, usec: number } | { malformed: number } | null>, environ?: 'present' | 'mismatch' | 'gone', runProcess?: osSeamsRunProcess },
+ *   osSeams?: { platform?: string, ps?: (pid: number) => Promise<{ pid: number, ppid: number, lstart: string }>, kinfoExact?: (pid: number) => Promise<{ sec: number, usec: number } | { malformed: number } | null>, exactReaderOptIn?: boolean, environ?: 'present' | 'mismatch' | 'gone', runProcess?: osSeamsRunProcess },
  * }} input
  * @returns {Promise<LocalProcessObservation>}
  */
