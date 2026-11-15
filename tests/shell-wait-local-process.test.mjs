@@ -16371,6 +16371,10 @@ describe('local-settlement task 3 review round 6 (four P2): the replay binds the
     const releaseModule = await import('../tools/shell-wait-probe/release-qualification.mjs');
     const closureObservationModule = await import('../tools/shell-wait-probe/closure-observation.mjs');
     const closurePreloadModule = await import('../tools/shell-wait-probe/closure-preload.mjs');
+    // (§33.7 finding 3, v9) the spawn-witness preload seam's generator module
+    // joins the driver's construction right after the closure-preload
+    // generator — the expectation mirrors the v9 input set.
+    const spawnWitnessPreloadModule = await import('../tools/shell-wait-probe/spawn-witness-preload.mjs');
     assert.match(String(EXECUTING_OBSERVER_PROVENANCE.digestInput), /scripts\/lib\/fs\.mjs/, 'the digest input must NAME the executing helper bindings');
     assert.match(String(EXECUTING_OBSERVER_PROVENANCE.digestInput), /scripts\/lib\/process\.mjs/, 'the digest input must NAME the executing helper bindings');
     assert.match(String(EXECUTING_OBSERVER_PROVENANCE.digestInput), /scripts\/lib\/errors\.mjs/, 'the digest input must NAME the executing helper bindings');
@@ -16379,12 +16383,13 @@ describe('local-settlement task 3 review round 6 (four P2): the replay binds the
     // produce the recorded digest (load-bearing, not just labelled).
     const driverSource = readFileSync(fileURLToPath(new URL('../tools/shell-wait-probe/driver.mjs', import.meta.url)));
     const expected = createHash('sha256')
-      .update('zcode-shell-wait-observer-v8\0')
+      .update('zcode-shell-wait-observer-v9\0')
       .update(evidenceModule.EXECUTING_EVIDENCE_SOURCE).update('\0')
       .update(shapeModule.EXECUTING_SHAPE_DIAGNOSTIC_SOURCE).update('\0')
       .update(releaseModule.EXECUTING_RELEASE_QUALIFICATION_SOURCE).update('\0')
       .update(closureObservationModule.EXECUTING_CLOSURE_OBSERVATION_SOURCE).update('\0')
       .update(closurePreloadModule.EXECUTING_CLOSURE_PRELOAD_SOURCE).update('\0')
+      .update(spawnWitnessPreloadModule.EXECUTING_SPAWN_WITNESS_PRELOAD_SOURCE).update('\0')
       .update(observerModule.EXECUTING_LOCAL_PROCESS_OBSERVATION_SOURCE).update('\0')
       .update(driverSource).update('\0')
       .update(EXECUTING_HELPER_MATERIALIZATION.bytes['scripts/lib/fs.mjs']).update('\0')

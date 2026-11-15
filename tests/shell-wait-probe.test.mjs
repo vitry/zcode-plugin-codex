@@ -759,6 +759,22 @@ function syntheticCaptureEnv(handle) {
   };
 }
 
+/** The EFFECTIVE witness launch environment additions for an armed synthetic
+ * witness handle (review round 5): the witness --require fragment rides the
+ * composed NODE_OPTIONS AFTER the capture preload's fragment (the fixture's
+ * strictly additive composition) and the declared witness transport
+ * variables bind the handle — the shape the preflight's effective-launch-
+ * environment witness verification checks. */
+function syntheticWitnessEnv(captureHandle, witnessHandle) {
+  const BS = String.fromCharCode(92);
+  const quotedWitness = `"` + witnessHandle.preloadPath.replace(new RegExp(BS + BS, 'g'), BS + BS + BS + BS).replace(/"/g, BS + '"') + `"`;
+  return {
+    ZCODE_SHELL_WAIT_WITNESS_TRANSPORT_ENTRY: witnessHandle.transportEntryRealpath,
+    ZCODE_SHELL_WAIT_KINFO_EXACT: witnessHandle.exactReaderEnabled === true ? '1' : undefined,
+    NODE_OPTIONS: `${syntheticCaptureEnv(captureHandle).NODE_OPTIONS} --require ${quotedWitness}`,
+  };
+}
+
 /** @param {string} value */
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -1502,10 +1518,14 @@ if (process.env[selfTestGuard] === '1') {
       const closureSource = await readFile(fileURLToPath(new URL('../tools/shell-wait-probe/closure-observation.mjs', import.meta.url)));
       const driverSource = await readFile(fileURLToPath(new URL('../tools/shell-wait-probe/driver.mjs', import.meta.url)));
       const preloadSource = await readFile(fileURLToPath(new URL('../tools/shell-wait-probe/closure-preload.mjs', import.meta.url)));
-      // v8 (2026-10-30 local-settlement Task 3 review round 6, report
-      // §25.10): the held turn's concurrent local-observation runtime joined
-      // the construction, and the MATERIALIZED executing helper copies
-      // (scripts/lib/{fs,process,errors}.mjs) join it now.
+      // v9 (2026-11-15 §33.7 finding 3): the spawn-witness preload seam's
+      // generator module joined the construction right after the
+      // closure-preload generator (the SECOND generated-preload seam), and
+      // the v8 inputs (2026-10-30 local-settlement Task 3 review round 6,
+      // report §25.10) stay: the held turn's concurrent local-observation
+      // runtime and the MATERIALIZED executing helper copies
+      // (scripts/lib/{fs,process,errors}.mjs).
+      const witnessPreloadSource = await readFile(fileURLToPath(new URL('../tools/shell-wait-probe/spawn-witness-preload.mjs', import.meta.url)));
       const localProcessSource = await readFile(fileURLToPath(new URL('../tools/shell-wait-probe/local-process-observation.mjs', import.meta.url)));
       // (Review round 21, report §25.10) the construction mirrors the
       // driver's `executingHelperDigest`: the MATERIALIZED copy digests when
@@ -1517,7 +1537,7 @@ if (process.env[selfTestGuard] === '1') {
         ? EXECUTING_HELPER_MATERIALIZATION.bytes[relative]
         : createHash('sha256').update(await readFile(fileURLToPath(new URL(`../${relative}`, import.meta.url)))).digest('hex'));
       const expectedDigest = createHash('sha256')
-        .update('zcode-shell-wait-observer-v8\0')
+        .update('zcode-shell-wait-observer-v9\0')
         .update(evidenceSource)
         .update('\0')
         .update(shapeSource)
@@ -1527,6 +1547,8 @@ if (process.env[selfTestGuard] === '1') {
         .update(closureSource)
         .update('\0')
         .update(preloadSource)
+        .update('\0')
+        .update(witnessPreloadSource)
         .update('\0')
         .update(localProcessSource)
         .update('\0')
@@ -6695,6 +6717,7 @@ if (process.env[selfTestGuard] === '1') {
     // observation (the startup-record admission, the OS live observation,
     // the exit adjudication and the bounded duty verdict).
     const { EXECUTING_CLOSURE_PRELOAD_SOURCE: EXECUTING_CLOSURE_PRELOAD_SOURCE_SNAPSHOT } = await import('../tools/shell-wait-probe/closure-preload.mjs');
+    const { EXECUTING_SPAWN_WITNESS_PRELOAD_SOURCE: EXECUTING_SPAWN_WITNESS_PRELOAD_SOURCE_SNAPSHOT } = await import('../tools/shell-wait-probe/spawn-witness-preload.mjs');
     const { EXECUTING_LOCAL_PROCESS_OBSERVATION_SOURCE } = await import('../tools/shell-wait-probe/local-process-observation.mjs');
     // (Review round 21, report §25.10) the constructions mirror the driver's
     // `executingHelperDigest`: the MATERIALIZED copy digests when
@@ -6705,8 +6728,8 @@ if (process.env[selfTestGuard] === '1') {
       ? materialization.bytes[relative]
       : createHash('sha256').update(readFileSync(fileURLToPath(new URL(`../${relative}`, import.meta.url)))).digest('hex'));
     const executingHelperDigest = executingHelperDigestWith(EXECUTING_HELPER_MATERIALIZATION);
-    const digestV8With = (/** @type {{ dir: string | null, bytes: Record<string, string> }} */ materialization) => (evidenceBytes, shapeBytes, oracleBytes, closureBytes, preloadBytes, driverBytes) => createHash('sha256')
-      .update('zcode-shell-wait-observer-v8\0')
+    const digestV8With = (/** @type {{ dir: string | null, bytes: Record<string, string> }} */ materialization) => (evidenceBytes, shapeBytes, oracleBytes, closureBytes, preloadBytes, witnessPreloadBytes, driverBytes) => createHash('sha256')
+      .update('zcode-shell-wait-observer-v9\0')
       .update(evidenceBytes)
       .update('\0')
       .update(shapeBytes)
@@ -6716,6 +6739,10 @@ if (process.env[selfTestGuard] === '1') {
       .update(closureBytes)
       .update('\0')
       .update(preloadBytes)
+      .update('\0')
+      // (§33.7 finding 3, v9) the spawn-witness preload seam's generator
+      // module joins right after the closure-preload generator.
+      .update(witnessPreloadBytes)
       .update('\0')
       .update(EXECUTING_LOCAL_PROCESS_OBSERVATION_SOURCE)
       .update('\0')
@@ -6729,11 +6756,11 @@ if (process.env[selfTestGuard] === '1') {
       .update('\0')
       .update(executingHelperDigestWith(materialization)('scripts/lib/errors.mjs'))
       .digest('hex');
-    const digestV8 = (evidenceBytes, shapeBytes, oracleBytes, closureBytes, preloadBytes, driverBytes) => digestV8With(EXECUTING_HELPER_MATERIALIZATION)(evidenceBytes, shapeBytes, oracleBytes, closureBytes, preloadBytes, driverBytes);
+    const digestV8 = (evidenceBytes, shapeBytes, oracleBytes, closureBytes, preloadBytes, witnessPreloadBytes, driverBytes) => digestV8With(EXECUTING_HELPER_MATERIALIZATION)(evidenceBytes, shapeBytes, oracleBytes, closureBytes, preloadBytes, witnessPreloadBytes, driverBytes);
 
     test('the executing digest binds the shape-diagnostic, release-qualification, closure-observation, extracted closure-preload AND local-process runtime bytes under the versioned v8 construction (round 6 adds the executing helper copies)', () => {
       const driverBytes = readFileSync(driverPath);
-      const expected = digestV8(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, EXECUTING_RELEASE_QUALIFICATION_SOURCE, EXECUTING_CLOSURE_OBSERVATION_SOURCE, EXECUTING_CLOSURE_PRELOAD_SOURCE_SNAPSHOT, driverBytes);
+      const expected = digestV8(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, EXECUTING_RELEASE_QUALIFICATION_SOURCE, EXECUTING_CLOSURE_OBSERVATION_SOURCE, EXECUTING_CLOSURE_PRELOAD_SOURCE_SNAPSHOT, EXECUTING_SPAWN_WITNESS_PRELOAD_SOURCE_SNAPSHOT, driverBytes);
       assert.equal(EXECUTING_OBSERVER_PROVENANCE.digest, expected,
         'the digest must hash the executing evidence + shape-diagnostic + release-qualification + closure-observation + closure-preload + driver module-init bytes');
       assert.match(String(EXECUTING_OBSERVER_PROVENANCE.digestInput), /shape-diagnostic\.mjs/u,
@@ -6744,7 +6771,7 @@ if (process.env[selfTestGuard] === '1') {
         'the digest input description must name the closure-observation capture helper');
       assert.match(String(EXECUTING_OBSERVER_PROVENANCE.digestInput), /closure-preload\.mjs/u,
         'the digest input description must name the extracted preload module');
-      assert.match(String(EXECUTING_OBSERVER_PROVENANCE.digestInput), /v8|version/u,
+      assert.match(String(EXECUTING_OBSERVER_PROVENANCE.digestInput), /v9|version/u,
         'the construction version must be recorded explicitly');
       assert.match(String(EXECUTING_OBSERVER_PROVENANCE.digestInput), /local-process-observation\.mjs/u,
         'the digest input description must name the local-process runtime the held turn executes');
@@ -6761,10 +6788,10 @@ if (process.env[selfTestGuard] === '1') {
       // `bytes ?? ''` formula produced a different digest under this seam,
       // failing the assertions in the supported environment).
       const driverBytes = readFileSync(driverPath);
-      const underSeam = digestV8With({ dir: null, bytes: {} })(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, EXECUTING_RELEASE_QUALIFICATION_SOURCE, EXECUTING_CLOSURE_OBSERVATION_SOURCE, EXECUTING_CLOSURE_PRELOAD_SOURCE_SNAPSHOT, driverBytes);
+      const underSeam = digestV8With({ dir: null, bytes: {} })(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, EXECUTING_RELEASE_QUALIFICATION_SOURCE, EXECUTING_CLOSURE_OBSERVATION_SOURCE, EXECUTING_CLOSURE_PRELOAD_SOURCE_SNAPSHOT, EXECUTING_SPAWN_WITNESS_PRELOAD_SOURCE_SNAPSHOT, driverBytes);
       assert.equal(EXECUTING_OBSERVER_PROVENANCE.digest, underSeam,
         'with materialization unavailable the construction binds the PRODUCTION helper digest strings — the driver\'s own fallback loads those very modules, so the expectation and the executing digest agree at rest in BOTH states');
-      const available = digestV8(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, EXECUTING_RELEASE_QUALIFICATION_SOURCE, EXECUTING_CLOSURE_OBSERVATION_SOURCE, EXECUTING_CLOSURE_PRELOAD_SOURCE_SNAPSHOT, driverBytes);
+      const available = digestV8(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, EXECUTING_RELEASE_QUALIFICATION_SOURCE, EXECUTING_CLOSURE_OBSERVATION_SOURCE, EXECUTING_CLOSURE_PRELOAD_SOURCE_SNAPSHOT, EXECUTING_SPAWN_WITNESS_PRELOAD_SOURCE_SNAPSHOT, driverBytes);
       assert.equal(EXECUTING_OBSERVER_PROVENANCE.digest, available,
         'the available-materialization state keeps its existing equality');
     });
@@ -6783,19 +6810,19 @@ if (process.env[selfTestGuard] === '1') {
         'a construction without the release-qualification and closure bytes must not reproduce the executing digest');
       const mutatedOracle = Buffer.concat([EXECUTING_RELEASE_QUALIFICATION_SOURCE, Buffer.from('\n')]);
       assert.notEqual(
-        digestV8(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, mutatedOracle, EXECUTING_CLOSURE_OBSERVATION_SOURCE, EXECUTING_CLOSURE_PRELOAD_SOURCE_SNAPSHOT, driverBytes),
+        digestV8(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, mutatedOracle, EXECUTING_CLOSURE_OBSERVATION_SOURCE, EXECUTING_CLOSURE_PRELOAD_SOURCE_SNAPSHOT, EXECUTING_SPAWN_WITNESS_PRELOAD_SOURCE_SNAPSHOT, driverBytes),
         EXECUTING_OBSERVER_PROVENANCE.digest,
         'a release-qualification-only byte change must change the digest',
       );
       const mutatedClosure = Buffer.concat([EXECUTING_CLOSURE_OBSERVATION_SOURCE, Buffer.from('\n')]);
       assert.notEqual(
-        digestV8(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, EXECUTING_RELEASE_QUALIFICATION_SOURCE, mutatedClosure, EXECUTING_CLOSURE_PRELOAD_SOURCE_SNAPSHOT, driverBytes),
+        digestV8(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, EXECUTING_RELEASE_QUALIFICATION_SOURCE, mutatedClosure, EXECUTING_CLOSURE_PRELOAD_SOURCE_SNAPSHOT, EXECUTING_SPAWN_WITNESS_PRELOAD_SOURCE_SNAPSHOT, driverBytes),
         EXECUTING_OBSERVER_PROVENANCE.digest,
         'a closure-observation-only byte change must change the digest',
       );
       assert.notEqual(
-        digestV8(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, readFileSync(oraclePath), EXECUTING_CLOSURE_OBSERVATION_SOURCE, EXECUTING_CLOSURE_PRELOAD_SOURCE_SNAPSHOT, driverBytes),
-        digestV8(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, mutatedOracle, EXECUTING_CLOSURE_OBSERVATION_SOURCE, EXECUTING_CLOSURE_PRELOAD_SOURCE_SNAPSHOT, driverBytes),
+        digestV8(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, readFileSync(oraclePath), EXECUTING_CLOSURE_OBSERVATION_SOURCE, EXECUTING_CLOSURE_PRELOAD_SOURCE_SNAPSHOT, EXECUTING_SPAWN_WITNESS_PRELOAD_SOURCE_SNAPSHOT, driverBytes),
+        digestV8(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, mutatedOracle, EXECUTING_CLOSURE_OBSERVATION_SOURCE, EXECUTING_CLOSURE_PRELOAD_SOURCE_SNAPSHOT, EXECUTING_SPAWN_WITNESS_PRELOAD_SOURCE_SNAPSHOT, driverBytes),
       );
     });
 
@@ -6807,7 +6834,7 @@ if (process.env[selfTestGuard] === '1') {
       const { EXECUTING_CLOSURE_PRELOAD_SOURCE } = await import('../tools/shell-wait-probe/closure-preload.mjs');
       const driverBytes = readFileSync(driverPath);
       const withPreload = createHash('sha256')
-        .update('zcode-shell-wait-observer-v8\0')
+        .update('zcode-shell-wait-observer-v9\0')
         .update(EXECUTING_EVIDENCE_SOURCE)
         .update('\0')
         .update(EXECUTING_SHAPE_DIAGNOSTIC_SOURCE)
@@ -6817,6 +6844,8 @@ if (process.env[selfTestGuard] === '1') {
         .update(EXECUTING_CLOSURE_OBSERVATION_SOURCE)
         .update('\0')
         .update(EXECUTING_CLOSURE_PRELOAD_SOURCE)
+        .update('\0')
+        .update(EXECUTING_SPAWN_WITNESS_PRELOAD_SOURCE_SNAPSHOT)
         .update('\0')
         .update(EXECUTING_LOCAL_PROCESS_OBSERVATION_SOURCE)
         .update('\0')
@@ -6863,6 +6892,50 @@ if (process.env[selfTestGuard] === '1') {
       assert.match(String(recordTime.digestInput), /local-process-observation\.mjs/u,
         'the record-time reader must hash the local-process runtime the held turn executes too (the v7 binding)');
       assert.equal(recordTime.model, null, 'the requested/effective model stays unknown in the observer provenance');
+    });
+
+    test('the executing digest binds the SPAWN-WITNESS preload generator module bytes (§33.7 finding 3; the v9 input) — the retained alternative binding to the witness capture provenance', () => {
+      // (§33.7 finding 3) the spawn-witness preload seam's generator module is
+      // the SECOND generated-preload seam: the generated witness preload
+      // bytes (whose digest the fixture record's spawnWitnessCapture block —
+      // now the persisted spawnWitnessDeclaration — carries) are produced from
+      // THIS module, so its bytes must join BOTH constructions. A construction
+      // without them must not reproduce the executing digest, and the
+      // digest-input description must name the module.
+      const driverBytes = readFileSync(driverPath);
+      assert.equal(EXECUTING_OBSERVER_PROVENANCE.digest,
+        digestV8(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, EXECUTING_RELEASE_QUALIFICATION_SOURCE, EXECUTING_CLOSURE_OBSERVATION_SOURCE, EXECUTING_CLOSURE_PRELOAD_SOURCE_SNAPSHOT, EXECUTING_SPAWN_WITNESS_PRELOAD_SOURCE_SNAPSHOT, driverBytes),
+        'the digest must bind the spawn-witness preload generator module bytes');
+      assert.notEqual(
+        digestV8(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, EXECUTING_RELEASE_QUALIFICATION_SOURCE, EXECUTING_CLOSURE_OBSERVATION_SOURCE, EXECUTING_CLOSURE_PRELOAD_SOURCE_SNAPSHOT, Buffer.concat([EXECUTING_SPAWN_WITNESS_PRELOAD_SOURCE_SNAPSHOT, Buffer.from('\n')]), driverBytes),
+        EXECUTING_OBSERVER_PROVENANCE.digest,
+        'a witness-preload-only byte change must change the digest (the generator module is load-bearing)');
+      const withoutWitnessInput = createHash('sha256')
+        .update('zcode-shell-wait-observer-v9\0')
+        .update(EXECUTING_EVIDENCE_SOURCE)
+        .update('\0')
+        .update(EXECUTING_SHAPE_DIAGNOSTIC_SOURCE)
+        .update('\0')
+        .update(EXECUTING_RELEASE_QUALIFICATION_SOURCE)
+        .update('\0')
+        .update(EXECUTING_CLOSURE_OBSERVATION_SOURCE)
+        .update('\0')
+        .update(EXECUTING_CLOSURE_PRELOAD_SOURCE_SNAPSHOT)
+        .update('\0')
+        .update(EXECUTING_LOCAL_PROCESS_OBSERVATION_SOURCE)
+        .update('\0')
+        .update(driverBytes)
+        .update('\0')
+        .update(executingHelperDigest('scripts/lib/fs.mjs'))
+        .update('\0')
+        .update(executingHelperDigest('scripts/lib/process.mjs'))
+        .update('\0')
+        .update(executingHelperDigest('scripts/lib/errors.mjs'))
+        .digest('hex');
+      assert.notEqual(withoutWitnessInput, EXECUTING_OBSERVER_PROVENANCE.digest,
+        'a construction without the witness-preload generator bytes must not reproduce the digest (the §33.7 finding-3 gap)');
+      assert.match(String(EXECUTING_OBSERVER_PROVENANCE.digestInput), /spawn-witness-preload\.mjs/u,
+        'the digest input description must name the witness preload generator module');
     });
   });
 
@@ -11572,6 +11645,81 @@ process.exit(result.status ?? 1);
         { createFixture: async () => plainFixture, executeLiveCase: async () => facts },
       );
       assert.equal('stdoutCaptureDeclaration' in plain, false, 'a capture-less record carries no declaration key');
+    });
+
+    test('the persisted case record carries the bounded spawn-witness declaration and survives a reload (§33.7 finding 3, codex gate round 1 on the task-4 completion bytes)', async (t) => {
+      // Mirror of the stdoutCaptureDeclaration pattern (§33.7 finding 3): the
+      // witness-armed fixture records a BOUNDED spawnWitnessCapture block
+      // (the witness preload name + SHA-256, the observer module name +
+      // digest, the transport entry digest, the exact-reader configuration,
+      // the closed variable set, the selector wording — digests and closed
+      // configuration, never the private paths). buildCaseRecord must persist
+      // it beside the stdoutCaptureDeclaration, because fixture disposal
+      // deletes the GENERATED preload file and the retained record would
+      // otherwise lose the witness capture provenance (the observer
+      // provenance digest separately binds the GENERATOR module's bytes —
+      // the retained alternative binding to the executing provenance). A
+      // witness-less record carries NO declaration key (schema stability) and
+      // the existing closureStdoutCapture persistence is untouched.
+      const { runShellWaitCase } = await import('../tools/shell-wait-probe/driver.mjs');
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-witnessdecl-persist-'));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const facts = mapFacts(wiringRollouts());
+      const witnessDeclaration = {
+        preload: 'spawn-ancestry-witness-preload.cjs',
+        preloadSha256: 'd'.repeat(64),
+        observerModule: 'local-process-observation.mjs',
+        observerModuleSha256: 'e'.repeat(64),
+        transportEntrySha256: 'f'.repeat(64),
+        exactReaderVariable: 'ZCODE_SHELL_WAIT_KINFO_EXACT',
+        exactReaderEnabled: true,
+        transportEntryDeclared: true,
+        selector: 'the fixture-only capture environment present AND the gated role entry (invocation: the declared launcher realpath with argv [invoke-prepared, rescue]; broker-daemon: the declared broker realpath with argv [broker, config]) AND the role\'s child gate (the declared broker/transport entry spawn) — the observer module\'s emitSpawnAncestryWitness, never a hand-written record',
+        environmentVariables: ['ZCODE_SHELL_WAIT_WITNESS_TRANSPORT_ENTRY', 'ZCODE_SHELL_WAIT_KINFO_EXACT'],
+      };
+      const persistFixture = {
+        workspace: '/private/tmp/t3-witnessdecl-ws', codexHome: '/private/tmp/t3-witnessdecl-home',
+        installedRoot: '/private/tmp/t3-witnessdecl-installed', env: { HOME: '/private/tmp/t3-witnessdecl-home' },
+        record: { variant: 'candidate', appliedArtifacts: [], closureStdoutCapture: {
+          preload: 'closure-stdout-preload.cjs', preloadSha256: 'a'.repeat(64), maxBytes: 65536,
+          gate: { argv: ['invoke-prepared', 'rescue'], declaredEntryRealpathSha256: 'b'.repeat(64), selector: 'fixture-only capture environment present AND realpath(argv[1]) equal to the declared installed launcher realpath AND argv exactly [invoke-prepared, rescue]' },
+          environmentVariables: ['ZCODE_SHELL_WAIT_CAPTURE_DIR'],
+        }, spawnWitnessCapture: witnessDeclaration },
+        stdoutCapture: { captureDirectory: '/private/tmp/t3-witnessdecl/capture', nonce: 'c'.repeat(64), preloadPath: '/private/tmp/t3-witnessdecl/closure-stdout-preload.cjs', entryRealpath: '/private/tmp/t3-witnessdecl/launcher.mjs', maxBytes: 65536 },
+        dispose: async () => {},
+      };
+      const persisted = await runShellWaitCase(
+        { case: 'rescue-interrupt', codexBinary: process.execPath, sourceSha: 'a'.repeat(40), workerDurationMs: 420_000, capMs: 3_600_000, pollMs: 3_600_000, budgetMs: 1_200_000, output: root },
+        { createFixture: async () => persistFixture, executeLiveCase: async () => facts },
+      );
+      assert.deepEqual(persisted.spawnWitnessDeclaration, witnessDeclaration,
+        'the bounded witness declaration persists beside the capture provenance');
+      // The existing stdoutCaptureDeclaration persistence is untouched on the
+      // same armed record (the two declarations ride side by side).
+      assert.deepEqual(persisted.stdoutCaptureDeclaration, persistFixture.record.closureStdoutCapture,
+        'the existing tap declaration persistence is byte-identical on the witness-armed record');
+      // Reload the RETAINED record from disk (post-disposal): the declaration
+      // survives (the witness provenance outlives the deleted preload).
+      const { readdir: listDir, readFile: readBytes } = await import('node:fs/promises');
+      const recordName = (await listDir(root)).find((name) => name.endsWith('.record.json'));
+      const reloaded = JSON.parse(await readBytes(join(root, recordName), 'utf8'));
+      assert.deepEqual(reloaded.spawnWitnessDeclaration, witnessDeclaration);
+      assert.deepEqual(reloaded.stdoutCaptureDeclaration, persistFixture.record.closureStdoutCapture);
+      // Schema stability: a witness-less fixture (no spawnWitnessCapture
+      // block) produces a record with NO witness declaration key.
+      const plainRoot = await mkdtemp(join(tmpdir(), 'shell-wait-witnessdecl-plain-'));
+      t.after(() => rm(plainRoot, { recursive: true, force: true }));
+      const plainFixture = {
+        workspace: '/private/tmp/t3-witnessdecl-plain-ws', codexHome: '/private/tmp/t3-witnessdecl-plain-home',
+        installedRoot: '/private/tmp/t3-witnessdecl-plain-installed', env: { HOME: '/private/tmp/t3-witnessdecl-plain-home' },
+        record: { variant: 'candidate', appliedArtifacts: [] },
+        dispose: async () => {},
+      };
+      const plain = await runShellWaitCase(
+        { case: 'rescue-interrupt', codexBinary: process.execPath, sourceSha: 'a'.repeat(40), workerDurationMs: 420_000, capMs: 3_600_000, pollMs: 3_600_000, budgetMs: 1_200_000, output: plainRoot },
+        { createFixture: async () => plainFixture, executeLiveCase: async () => facts },
+      );
+      assert.equal('spawnWitnessDeclaration' in plain, false, 'a witness-less record carries no witness declaration key');
     });
 
     test('the mapper computes and persists the host-delivery admission and the closed ordering facts', () => {
@@ -29860,6 +30008,2548 @@ describe('cleanup-boundary attribution for exit-code settlements (round-9 review
       rejected(seventeen, 'a 17-statement cell stays over the per-cell statement bound');
       assert.equal(inspectCallShape(seventeen).coverage, 'over-scope', 'the classifier names the over-scope state');
       assert.equal(SHAPE_DIAGNOSTIC_SCHEMA_VERSION, 1, 'the diagnostic contract stays the additive v1 baseline (no semantic reassignment)');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Real-fixture spawn-witness wiring (user-review task 4 completion): the
+  // REAL installed-plugin chain — the marketplace snapshot built from the
+  // pinned source SHA and installed by the EXACT pinned Codex binary — driven
+  // end to end through the REAL installed hooks and the REAL launcher
+  // entries captures REAL spawn-boundary witness records at its own
+  // companion→daemon (hop 1) and daemon→transport (hop 2) boundaries, and
+  // the runtime admission + the offline replay re-verify them. The witness
+  // emitter is a fixture-generated SECOND preload (research-only, generated
+  // into the disposable fixture exactly like the §19.3 capture preload,
+  // whose bytes stay untouched — the §28.4 prohibition-4 pin); the exact
+  // reader arms through the fixture-scope env opt-in and degrades
+  // fail-closed off-darwin or on any bridge failure. No host or provider is
+  // launched: the chain is the real production companion CLI against the
+  // fake ZCode transport (the same shape the live path drives).
+  // -------------------------------------------------------------------------
+  describe('real-fixture spawn-witness wiring (user-review task 4)', async () => {
+    const { createShellWaitFixture, PUBLIC_RESULT_SENTINEL } = await import('../tools/shell-wait-probe/fixture.mjs');
+    const { runHeldHostTurn, mapShellWaitLiveFacts, runShellWaitCase, localObservationDeclarationFor, evaluateLiveLaunchPreflight, nativeInterruptionGateDInput } = await import('../tools/shell-wait-probe/driver.mjs');
+    const { admitSpawnAncestryWitness, captureVerifiedProcessIdentity, observeLocalProcess, parseExactStartIdentity, FAKE_ZCODE_NONCE_VARIABLE } = await import('../tools/shell-wait-probe/local-process-observation.mjs');
+    const { spawn: spawnNode } = await import('node:child_process');
+    const { randomBytes, createHash: sha256 } = await import('node:crypto');
+    const { copyFile, lstat, realpath } = await import('node:fs/promises');
+    const { realpathSync } = await import('node:fs');
+
+    /** The closed fixture-only variable names the witness arming composes (the new preload's own gates). */
+    const prepareTtyShim = new URL('./fixtures/prepare-tty-shim.mjs', import.meta.url).href;
+    const WITNESS_TRANSPORT_ENTRY_VARIABLE = 'ZCODE_SHELL_WAIT_WITNESS_TRANSPORT_ENTRY';
+    /** The §32.2 registered exact-reader opt-in (the reader's own env gate; fixture-scope here). */
+    const EXACT_READER_VARIABLE = 'ZCODE_SHELL_WAIT_KINFO_EXACT';
+    const CAPTURE_DIRECTORY_VARIABLE = 'ZCODE_SHELL_WAIT_CAPTURE_DIR';
+    const CAPTURE_NONCE_VARIABLE = 'ZCODE_SHELL_WAIT_CAPTURE_NONCE';
+    const CAPTURE_ENTRY_VARIABLE = 'ZCODE_SHELL_WAIT_CAPTURE_ENTRY_REALPATH';
+    const CAPTURE_MAX_BYTES_VARIABLE = 'ZCODE_SHELL_WAIT_CAPTURE_MAX_BYTES';
+    const CAPTURE_BROKER_ENTRY_VARIABLE = 'ZCODE_SHELL_WAIT_CAPTURE_BROKER_ENTRY_REALPATH';
+    /** The role-selected witness record suffixes (the observer's own file contract). */
+    const WITNESS_INVOCATION_SUFFIX = '.spawn-witness.json';
+    const WITNESS_BROKER_SUFFIX = '.spawn-witness-broker.json';
+
+    /** The injected isolated production setup: a fast ready outcome (setup is not part of the ancestry chain). */
+    const fakeIsolatedSetup = () => Promise.resolve({ sessionEstablished: true, launcherDescriptorPublished: true, setupAttempts: 1, roleStatus: 'ready', capVerified: true });
+
+    /**
+     * A fast seam-injected installer that materializes the REAL production
+     * entry bytes the capture/witness gates realpath (the §19.3 pattern) —
+     * used ONLY by the environment-composition control, whose subject is the
+     * composed env, never the installed chain. The main end-to-end test uses
+     * the REAL marketplace build + install with NO injected build/install
+     * dependency.
+     */
+    const fastRealBytesInstaller = async ({ codexHome, cleanSource }) => {
+      const installed = join(codexHome, 'plugins', 'cache', 'vitry', 'zcode', '0.1.0');
+      await mkdir(join(installed, 'agents'), { recursive: true });
+      for (const skill of ['rescue', 'review', 'adversarial-review', 'status']) {
+        await mkdir(join(installed, 'skills', skill), { recursive: true });
+        await cp(join(cleanSource, 'skills', skill, 'SKILL.md'), join(installed, 'skills', skill, 'SKILL.md'));
+      }
+      await cp(join(cleanSource, 'agents', 'zcode-rescue.toml.template'), join(installed, 'agents', 'zcode-rescue.toml.template'));
+      await mkdir(join(installed, 'skills', 'rescue'), { recursive: true });
+      await cp(join(cleanSource, 'skills', 'rescue', 'launcher.mjs'), join(installed, 'skills', 'rescue', 'launcher.mjs'));
+      // (§33.7 finding 2's default-path row extends the payload) the REAL
+      // chain rows that RUN the installed entries need the whole production
+      // scripts tree (the hooks import scripts/lib/*; the broker daemon
+      // imports its own lib deps) — a recursive copy of the same clean-source
+      // bytes, never a synthesized one.
+      await cp(join(cleanSource, 'scripts'), join(installed, 'scripts'), { recursive: true });
+      await cp(join(cleanSource, 'hooks'), join(installed, 'hooks'), { recursive: true });
+      await cp(join(cleanSource, 'schemas'), join(installed, 'schemas'), { recursive: true });
+      // The plugin payload's OWN runtime dependency (the marketplace snapshot
+      // ships it; the chain's fs-lock machinery requires it) plus that
+      // package's own bare requires. The clean detached source has no
+      // node_modules, so the copies come from THIS test's repository
+      // materialization.
+      await mkdir(join(installed, 'node_modules'), { recursive: true });
+      for (const dependency of ['fs-native-extensions', 'which-runtime', 'require-addon', 'bare-addon-resolve', 'bare-module-resolve', 'bare-semver']) {
+        await cp(join(repositoryRoot, 'node_modules', dependency), join(installed, 'node_modules', dependency), { recursive: true });
+      }
+      await writeFile(join(codexHome, 'config.toml'), '[plugins."zcode@vitry"]\nenabled = true\n', 'utf8');
+      return { pluginVersion: '0.1.0' };
+    };
+    const fastBuildSnapshot = async ({ output: snapshotOutput, sourceSha }) => {
+      await mkdir(join(snapshotOutput, '.agents', 'plugins'), { recursive: true });
+      await writeFile(join(snapshotOutput, '.agents', 'plugins', 'provenance.json'), `${JSON.stringify({ sourceSha })}\n`, 'utf8');
+    };
+
+    /** Spawn one real process, collect its bounded output, feed optional stdin. */
+    const runRealProcess = (command, args, { cwd, env, stdin } = {}) => new Promise((resolveRun, rejectRun) => {
+      const child = spawnNode(command, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'], shell: false });
+      let stdout = ''; let stderr = '';
+      child.stdout.on('data', (chunk) => { stdout += chunk; });
+      child.stderr.on('data', (chunk) => { stderr += chunk; });
+      if (stdin === undefined) child.stdin.end(); else child.stdin.end(stdin);
+      child.once('error', rejectRun);
+      child.once('exit', (code) => resolveRun({ code, stdout, stderr }));
+    });
+
+    /** Run one REAL installed hook process with its JSON event on stdin. */
+    const runInstalledHook = (installedRoot, script, event, env, workspace) => runRealProcess(process.execPath, [join(installedRoot, 'hooks', script)], { cwd: workspace, env, stdin: `${JSON.stringify(event)}\n` })
+      .then((run) => {
+        if (run.code !== 0) throw new Error(`the real hook ${script} exited ${run.code}: ${run.stderr.slice(0, 400)}`);
+        return run;
+      });
+
+    test('the REAL installed chain emits REAL boundary witnesses at its own hops and the runtime admission + replay re-verify them', { timeout: 540_000 }, async (t) => {
+      const repositorySha = spawnSync('git', ['rev-parse', 'HEAD'], { env: isolatedBaseEnv(), encoding: 'utf8' }).stdout.trim();
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-witness-real-chain-'));
+      t.after(() => { try { rm(root, { recursive: true, force: true }); } catch { /* disposed */ } });
+      const output = join(root, 'output');
+      await mkdir(output, { mode: 0o700 });
+      const codexBinary = join(repositoryRoot, 'node_modules', '@openai', 'codex', 'bin', 'codex.js');
+      // The REAL fixture: NO injected build/install dependency — the
+      // marketplace snapshot is built from the pinned source SHA and the
+      // plugin is installed through the exact pinned Codex binary.
+      const fixture = await createShellWaitFixture({
+        sourceRoot: repositoryRoot, sourceSha: repositorySha, codexBinary,
+        output, variant: 'candidate', capMs: 3_600_000, pollMs: 3_600_000,
+        stdoutCapture: true, spawnWitness: true,
+      }, { runSetup: fakeIsolatedSetup });
+      t.after(() => fixture.dispose());
+      const armedEnv = fixture.env;
+      const captureNonce = (/** @type {any} */ (fixture)).stdoutCapture.nonce;
+      const launcherRealpath = (/** @type {any} */ (fixture)).stdoutCapture.entryRealpath;
+      const declaration = localObservationDeclarationFor(fixture, 'rescue-interrupt');
+      assert.ok(declaration, 'the armed fixture declares the local-observation seam');
+      const preflight = await evaluateLiveLaunchPreflight({ case: 'rescue-interrupt', survivalControlSelector: null, fixture });
+      assert.deepEqual(preflight, { ok: true, reason: null }, `the REAL armed fixture passes its own preflight (${preflight.reason ?? ''})`);
+
+      // The REAL chain's environment: the armed env (capture + witness
+      // preloads + the exact opt-in) plus the fake-ZCode/fake-Codex
+      // choreography variables the live path composes.
+      const workspace = fixture.workspace;
+      const parentSession = 'witness-real-parent';
+      const parentTurn = `${parentSession}-turn`;
+      const childSession = 'witness-real-child';
+      const transportNonce = randomBytes(32).toString('hex');
+      const gatePath = join(root, 'completion.gate');
+      const gateReachedPath = join(root, 'completion.reached');
+      const processPath = join(root, 'transport-process.json');
+      await writeFile(gatePath, 'hold', 'utf8');
+      await writeFile(gateReachedPath, '', 'utf8');
+      const childThread = {
+        id: childSession, sessionId: parentSession, parentThreadId: parentSession, ephemeral: false, preview: '', projectId: null,
+        historyMode: 'legacy', modelProvider: 'openai', createdAt: 1, updatedAt: 2, recencyAt: 2,
+        status: { type: 'active', activeFlags: [] }, path: null, cwd: realpathSync(workspace),
+        source: { subAgent: { thread_spawn: { parent_thread_id: parentSession, depth: 1, agent_path: '/root/zcode_rescue_task', agent_nickname: null, agent_role: 'zcode-rescue' } } },
+        canAcceptDirectInput: null, threadSource: null, agentNickname: null, agentRole: 'zcode-rescue', gitInfo: null, name: null, turns: [],
+      };
+      const chainEnv = {
+        ...armedEnv,
+        CODEX_APP_SERVER_PATH: process.execPath,
+        CODEX_APP_SERVER_ARGS_JSON: JSON.stringify([join(repositoryRoot, 'tests', 'fixtures', 'fake-codex-app-server.mjs')]),
+        FAKE_CODEX_THREAD_LIST_RESULTS_JSON: JSON.stringify({ data: [], nextCursor: null, backwardsCursor: null }),
+        FAKE_CODEX_THREAD_JSON: JSON.stringify(childThread),
+        FAKE_ZCODE_COMPLETION_GATE: gatePath,
+        FAKE_ZCODE_COMPLETION_GATE_REACHED: gateReachedPath,
+        FAKE_ZCODE_PROCESS_FILE: processPath,
+        FAKE_ZCODE_PROCESS_NONCE: transportNonce,
+      };
+      const hookEnv = { ...chainEnv };
+      delete hookEnv.CODEX_THREAD_ID;
+
+      const rescueTask = 'capture the real ancestry chain';
+      const rescuePrompt = `$zcode:rescue --wait --fresh ${rescueTask}`;
+      const envelope = `${JSON.stringify({ version: 4, source: 'explicit', task: rescueTask, options: { hostPlacement: 'foreground', companionExecution: 'foreground', resume: 'fresh' }, continuationTarget: null })}\n`;
+
+      // (§33.7 finding 1 — the masking removed) the test process environment
+      // stays UNTOUCHED: the driver-side reads are armed by the DECLARATION's
+      // own exactReaderEnabled fact (the runtime threads the closed osSeam
+      // opt-in into its observations and its default marker capture), so the
+      // writer/driver identity resolutions match through the instrument's
+      // declared seam — never a global process.env mutation. The armed
+      // fixture's own env keeps the writer-side emitters exact.
+      const trackedPids = new Set();
+      t.after(() => {
+        for (const pid of trackedPids) { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } }
+      });
+
+      let launcherPid = null;
+      let launcherChild = null;
+      let invocationResult = null;
+      let preparedResult = null;
+      let launchOutcome = null;
+      const held = await runHeldHostTurn({
+        gatePath,
+        gateReachedPath,
+        processPath,
+        processNonce: transportNonce,
+        holdMs: 60_000,
+        budgetMs: 240_000,
+        // The §24.8 scheduled cutoff: the planned observation endpoint bounds
+        // the natural-exit watcher, whose deadline rejection is then the
+        // EXPECTED named missing-exit outcome — the production fact this
+        // natural-completion shape produces (the broker keeps the transport
+        // alive for its own idle window after the launcher exits) — never a
+        // turn failure.
+        measurementCutoffSchedule: true,
+        // The REAL chain's boundary emitters finish their OWN bounded capture
+        // work (the child-visibility poll, the OS-verified double reads and
+        // the exact bridge — a few hundred milliseconds) slightly AFTER the
+        // transport's marker appears. The runtime's endpoint reads must
+        // POSTDATE the witness writes for the §25.7 capture-window fence to
+        // bind the daemon hop, so the injected capture (the documented seam;
+        // otherwise byte-equal to the default marker capture) waits for BOTH
+        // witness records (bounded) before the real capture. The bound expiry
+        // keeps the honest capture path — a witness that never materializes
+        // is the named missing fact downstream. (§33.7 finding 2 records the
+        // in-path bounded sequencing that makes the DEFAULT path honest; this
+        // injected waiter stays as the existing control.) The capture's own
+        // OS re-verification rides the declaration's exactReaderEnabled fact
+        // through the closed osSeam opt-in — the test-process environment
+        // stays untouched (§33.7 finding 1).
+        captureProcessIdentity: async () => {
+          const witnessPaths = [
+            join(declaration.captureDirectory, `${captureNonce}${WITNESS_INVOCATION_SUFFIX}`),
+            join(declaration.captureDirectory, `${captureNonce}${WITNESS_BROKER_SUFFIX}`),
+          ];
+          const witnessDeadlineMs = Date.now() + 15_000;
+          for (;;) {
+            let witnessesPresent = true;
+            for (const witnessPath of witnessPaths) {
+              try { await lstat(witnessPath); } catch { witnessesPresent = false; }
+            }
+            if (witnessesPresent || Date.now() > witnessDeadlineMs) break;
+            await new Promise((resolve) => setTimeout(resolve, 50));
+          }
+          const captured = await captureVerifiedProcessIdentity(processPath, transportNonce, declaration.exactReaderEnabled === true ? { exactReaderOptIn: true } : {});
+          try {
+            const markerStats = await lstat(processPath);
+            if (markerStats !== null && Number.isFinite(markerStats.mtimeMs)) {
+              return { ...captured, markerEpochMs: Math.round(markerStats.mtimeMs) };
+            }
+          } catch { /* the marker vanished between the capture and the read — the ancestry hop stays honest */ }
+          return captured;
+        },
+        launch: async () => ({
+          result: (async () => {
+            // The REAL installed hooks record the session/turn/child authority.
+            await runInstalledHook(fixture.installedRoot, 'session-lifecycle-hook.mjs', {
+              session_id: parentSession, cwd: workspace, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', source: 'startup',
+            }, hookEnv, workspace);
+            await runInstalledHook(fixture.installedRoot, 'user-prompt-hook.mjs', {
+              session_id: parentSession, turn_id: parentTurn, cwd: workspace, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', prompt: rescuePrompt,
+            }, hookEnv, workspace);
+            // The REAL launcher process plans the rescue (the real planner
+            // against the fake Codex app-server). The preparation's private
+            // PTY transport rides the registered fixture TTY shim (the same
+            // real-launcher-process pattern the integration suite uses).
+            const prepared = await runRealProcess(process.execPath, [launcherRealpath, 'prepare', 'rescue'], {
+              cwd: workspace,
+              env: { ...chainEnv, CODEX_THREAD_ID: parentSession, NODE_OPTIONS: `${chainEnv.NODE_OPTIONS ?? ''} --import=${prepareTtyShim}`.trim() },
+              stdin: envelope,
+            });
+            preparedResult = prepared;
+            await runInstalledHook(fixture.installedRoot, 'subagent-hook.mjs', {
+              session_id: parentSession, turn_id: parentTurn, cwd: workspace, hook_event_name: 'SubagentStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits',
+              agent_id: childSession, agent_type: 'zcode-rescue',
+            }, hookEnv, workspace);
+            // The REAL launcher process reserves the prepared rescue: THIS
+            // process is the invocation-boundary witness writer, its detached
+            // daemon spawn the witnessed hop-1 child. The fake-ZCode
+            // completion gate holds the rescue (and therefore the writer and
+            // the whole chain) until the held turn releases it.
+            const invocation = await new Promise((resolveInvocation) => {
+              const child = spawnNode(process.execPath, [launcherRealpath, 'invoke-prepared', 'rescue'], { cwd: workspace, env: { ...chainEnv, CODEX_THREAD_ID: childSession }, stdio: ['pipe', 'pipe', 'pipe'], shell: false });
+              launcherChild = child;
+              launcherPid = child.pid;
+              trackedPids.add(child.pid);
+              let invocationStdout = ''; let invocationStderr = '';
+              child.stdout.on('data', (chunk) => { invocationStdout += chunk; });
+              child.stderr.on('data', (chunk) => { invocationStderr += chunk; });
+              child.once('error', (error) => resolveInvocation({ code: -1, stdout: invocationStdout, stderr: `${invocationStderr}${String(error)}` }));
+              child.once('exit', (code) => resolveInvocation({ code, stdout: invocationStdout, stderr: invocationStderr }));
+            });
+            invocationResult = invocation;
+            return invocation;
+          })().then((value) => { launchOutcome = { kind: 'resolved', value }; return value; }, (error) => { launchOutcome = { kind: 'rejected', error }; throw error; }),
+          terminate: async () => { try { launcherChild?.kill('SIGKILL'); } catch { /* gone */ } },
+        }),
+        waitForGate: async () => {},
+        localObservation: declaration,
+      });
+      const block = held.cleanup.localObservation;
+      assert.ok(block, 'the armed runtime persisted its local-observation block');
+      // The REAL chain completed: the foreground reservation returned the
+      // fake-ZCode public sentinel result and exited zero.
+      assert.ok(launchOutcome, 'the REAL chain launch settled');
+      if (launchOutcome.kind === 'rejected') {
+        assert.fail(`the REAL chain launch rejected: ${launchOutcome.error instanceof Error ? launchOutcome.error.message : String(launchOutcome.error)}`);
+      }
+      assert.ok(preparedResult, 'the REAL prepare launcher process ran to exit');
+      assert.equal(preparedResult.code, 0, `the REAL prepare launcher process succeeds (measured: ${preparedResult.code} stdout ${preparedResult.stdout.slice(0, 240)} stderr ${preparedResult.stderr.slice(0, 600)})`);
+      assert.ok(invocationResult, 'the REAL launcher invocation ran to exit');
+      assert.equal(invocationResult.code, 0, `the REAL invoke-prepared reservation succeeds (measured: ${invocationResult.code} stdout ${invocationResult.stdout.slice(0, 240)} stderr ${invocationResult.stderr.slice(0, 300)})`);
+      assert.ok(invocationResult.stdout.includes(PUBLIC_RESULT_SENTINEL), 'the foreground reservation returns the fake-ZCode public sentinel');
+      assert.equal(block.admission?.status, 'established', `the REAL launcher's own startup record admits (actual ${JSON.stringify(block.admission?.status ?? null)} ${block.admission?.reason ?? ''})`);
+      assert.equal(block.brokerAdmission?.status, 'established', `the REAL daemon's own startup record admits (actual ${JSON.stringify(block.brokerAdmission?.status ?? null)} ${block.brokerAdmission?.reason ?? ''})`);
+
+      // The runtime admitted BOTH REAL boundary witnesses and persists their
+      // digest-only projections. (THE WIRING REGRESSION: on unwired bytes
+      // this is exactly where the design-consistent failure lands — the REAL
+      // chain ran, captured no witness record, and the runtime admission
+      // reports the named `spawn-witness-missing` fact.)
+      assert.ok(block.spawnWitnesses, 'the runtime block carries the spawn-witness projections');
+      assert.equal(block.spawnWitnesses.companion?.status, 'established', `the REAL invocation-boundary witness admits in the runtime (actual ${JSON.stringify(block.spawnWitnesses.companion ?? null)})`);
+      assert.equal(block.spawnWitnesses.daemon?.status, 'established', `the REAL daemon-boundary witness admits in the runtime (actual ${JSON.stringify(block.spawnWitnesses.daemon ?? null)})`);
+      assert.equal(JSON.stringify(block.spawnWitnesses).includes(captureNonce), false, 'the raw capture nonce never enters the persisted projections');
+      assert.equal(JSON.stringify(block.spawnWitnesses).includes(transportNonce), false, 'the raw transport nonce never enters the persisted projections');
+
+      // The armed composition facts (asserted after the chain so the
+      // witness-capture failure above is always the FIRST unwired-bytes
+      // failure): the fixture-scope env arms the exact reader, declares the
+      // transport entry, and carries the witness handle.
+      const witnessHandle = /** @type {any} */ (fixture).spawnWitness;
+      assert.ok(witnessHandle, 'the armed fixture carries the spawn-witness handle');
+      assert.equal(witnessHandle.exactReaderEnabled, true, 'the arming declares the exact-reader enablement');
+      assert.equal(armedEnv[EXACT_READER_VARIABLE], '1', 'the fixture-scope env arms the exact reader');
+      assert.ok(armedEnv[WITNESS_TRANSPORT_ENTRY_VARIABLE], 'the declared transport entry rides the armed env');
+      const transportEntryRealpath = await realpath(armedEnv[WITNESS_TRANSPORT_ENTRY_VARIABLE]);
+      assert.equal(transportEntryRealpath, armedEnv[WITNESS_TRANSPORT_ENTRY_VARIABLE], 'the declared transport entry is the resolved realpath');
+
+      // The DIRECT admissions expose the identities for the authenticity web.
+      const invocationWitness = await admitSpawnAncestryWitness({ captureDirectory: declaration.captureDirectory, nonce: captureNonce });
+      const daemonWitness = await admitSpawnAncestryWitness({ captureDirectory: declaration.captureDirectory, nonce: captureNonce, role: 'broker-daemon' });
+      assert.equal(invocationWitness.status, 'established', `the REAL invocation witness admits (actual ${invocationWitness.status} ${invocationWitness.reason ?? ''})`);
+      assert.equal(daemonWitness.status, 'established', `the REAL daemon witness admits (actual ${daemonWitness.status} ${daemonWitness.reason ?? ''})`);
+      // AUTHENTICITY (never a hand-edited boolean): every writer/child pid
+      // agrees with the INDEPENDENTLY machined real artifacts — the test's own
+      // spawn handle, the capture preload's startup records (two separate
+      // capture paths), and the fake-ZCode transport's own marker file.
+      assert.equal(block.admission.identity.pid, launcherPid, 'the invocation startup record is the REAL launcher process the test spawned');
+      assert.equal(invocationWitness.identity.writerPid, launcherPid, 'the hop-1 writer is the REAL launcher process itself (never the prepare process, never a stand-in)');
+      assert.equal(invocationWitness.identity.childPid, block.brokerAdmission.identity.pid, 'the witnessed hop-1 child is the REAL spawned daemon generation (its own startup record)');
+      assert.equal(invocationWitness.identity.childPpid, launcherPid, 'the capture-time kernel parent link binds the real spawn');
+      assert.equal(daemonWitness.identity.writerPid, block.brokerAdmission.identity.pid, 'the hop-2 writer is the REAL daemon process');
+      const transportMarker = JSON.parse(await readFile(processPath, 'utf8'));
+      trackedPids.add(transportMarker.pid);
+      assert.equal(daemonWitness.identity.childPid, transportMarker.pid, 'the witnessed hop-2 child is the REAL fake-ZCode transport (its own marker)');
+      assert.equal(daemonWitness.identity.childPpid, block.brokerAdmission.identity.pid, 'the hop-2 kernel parent link binds the daemon spawn');
+      // The daemon lingers by production design (its own idle timeout) — the
+      // tracked-pid teardown kills it with the transport.
+      trackedPids.add(block.brokerAdmission.identity.pid);
+
+      // The REAL record binds its scope: a byte-copy under a foreign nonce
+      // refuses by name (the records are not trivially portable evidence).
+      const foreignDir = join(root, 'foreign-capture');
+      await mkdir(foreignDir, { mode: 0o700 });
+      const foreignNonce = randomBytes(32).toString('hex');
+      await copyFile(join(declaration.captureDirectory, `${captureNonce}${WITNESS_INVOCATION_SUFFIX}`), join(foreignDir, `${foreignNonce}${WITNESS_INVOCATION_SUFFIX}`));
+      const foreignAdmission = await admitSpawnAncestryWitness({ captureDirectory: foreignDir, nonce: foreignNonce });
+      assert.equal(foreignAdmission.status, 'invalid', `a foreign-scope copy of the REAL record refuses (actual ${foreignAdmission.status})`);
+      assert.equal(foreignAdmission.reason, 'spawn-witness-nonce-mismatch', 'the named scope-binding refusal is unchanged on the REAL record bytes');
+
+      const ancestry = block.ancestry;
+      assert.ok(ancestry, 'the runtime ancestry verdict persisted');
+      // (§33.9 review-mwhw91b4-bvkm7v finding 2) the exact establishment is
+      // gated on the EXPLICIT bridge-capability probe: a capable host keeps
+      // the exact assertions, a darwin host whose one bounded bridge read
+      // classified unavailable verifies the named degraded outcome below
+      // (substantive assertions, never a skip), and off-darwin the platform
+      // dispatch is unchanged.
+      const darwinBridge = await darwinExactBridgeProbe();
+      if (process.platform === 'darwin' && darwinBridge.capable === true) {
+        // The EXACT establishment (the §32 route-(c) collapse): both REAL
+        // witnesses declare exactness, carry the closed kinfo forms for both
+        // generations, and the runtime composition attributes BOTH hops
+        // through the spawn-boundary-capture witness class.
+        assert.equal(invocationWitness.identity.startIdentityExact, true, `the REAL hop-1 witness is exact (actual ${JSON.stringify({ exact: invocationWitness.identity.startIdentityExact, writer: invocationWitness.identity.writerStartIdentity, child: invocationWitness.identity.childStartIdentity })})`);
+        assert.equal(daemonWitness.identity.startIdentityExact, true, `the REAL hop-2 witness is exact (actual ${JSON.stringify({ exact: daemonWitness.identity.startIdentityExact, writer: daemonWitness.identity.writerStartIdentity, child: daemonWitness.identity.childStartIdentity })})`);
+        const writerExact = parseExactStartIdentity(invocationWitness.identity.writerStartIdentity);
+        const childExact = parseExactStartIdentity(invocationWitness.identity.childStartIdentity);
+        const daemonChildExact = parseExactStartIdentity(daemonWitness.identity.childStartIdentity);
+        assert.ok(writerExact !== null && childExact !== null && daemonChildExact !== null, 'both REAL witnesses carry the closed exact forms');
+        assert.equal(invocationWitness.identity.childOsStartInstantMs, childExact.ms, 'the recorded child instant resolves from its own exact identity');
+        assert.ok(invocationWitness.identity.firstWriteEpochMs >= writerExact.ms, 'the exact writer continuity holds on the real chain');
+        assert.ok(invocationWitness.identity.boundaryEpochMs >= childExact.ms, 'the exact child continuity holds on the real chain');
+        assert.ok(daemonWitness.identity.boundaryEpochMs >= daemonChildExact.ms, 'the exact hop-2 child continuity holds on the real chain');
+        const hop1 = ancestry.hops.find((hop) => hop.hop === 'companion-to-daemon');
+        const hop2 = ancestry.hops.find((hop) => hop.hop === 'daemon-to-transport');
+        assert.equal(hop1?.status, 'established', `the REAL hop 1 establishes (actual ${JSON.stringify(hop1 ?? null)})`);
+        assert.equal(hop1?.witnessClass, 'spawn-boundary-capture', 'the REAL hop 1 rides the spawn-boundary-capture witness class');
+        assert.equal(hop2?.status, 'established', `the REAL hop 2 establishes through the exact collapse (actual ${JSON.stringify(hop2 ?? null)})`);
+        assert.equal(hop2?.witnessClass, 'spawn-boundary-capture', 'the REAL hop 2 rides the spawn-boundary-capture witness class');
+        assert.equal(ancestry.companionToTransportAttributed, true, 'the REAL two-hop chain attributes end to end');
+      } else if (process.platform === 'darwin') {
+        // (§33.9 finding 2) the named DEGRADED darwin outcome — this host's
+        // exact bridge is NOT capable (the probe's real bounded read
+        // classified unavailable): the REAL witnesses still admit and stay
+        // the coarse ps form, the arming is declared but never manufactured
+        // into exactness, and the attribution rides the MEASURED per-hop
+        // adjudication (the same discipline as the non-darwin dispatch — the
+        // §33.9 degraded real-chain row verifies this outcome end to end).
+        assert.equal(invocationWitness.identity.startIdentityExact, false, `the REAL hop-1 witness stays coarse on the degraded bridge (actual ${JSON.stringify({ exact: invocationWitness.identity.startIdentityExact })})`);
+        assert.equal(daemonWitness.identity.startIdentityExact, false, 'the REAL hop-2 witness stays coarse on the degraded bridge');
+        assert.equal(parseExactStartIdentity(invocationWitness.identity.writerStartIdentity), null, 'no exact form rides the degraded hop-1 writer identity');
+        assert.equal(parseExactStartIdentity(invocationWitness.identity.childStartIdentity), null, 'no exact form rides the degraded hop-1 child identity');
+        assert.equal(parseExactStartIdentity(daemonWitness.identity.childStartIdentity), null, 'no exact form rides the degraded hop-2 child identity');
+        const expectedDegradedAttribution = block.duties?.settled === true && ancestry.hops.every((hop) => hop.status === 'established');
+        assert.equal(ancestry.companionToTransportAttributed, expectedDegradedAttribution, 'the degraded attribution rides the measured per-hop outcomes, never an unconditional claim');
+      } else {
+        // The named NON-DARWIN fact (never a fake green): the exact reader
+        // never engages off-darwin, the REAL records stay coarse, and the
+        // composition's expectations derive from the measured coarse instants
+        // under the registered per-hop predicates.
+        assert.equal(invocationWitness.identity.startIdentityExact, false, 'off-darwin the REAL witness stays coarse by the reader\'s own platform dispatch');
+        assert.equal(daemonWitness.identity.startIdentityExact, false, 'off-darwin the REAL daemon witness stays coarse');
+        assert.equal(parseExactStartIdentity(invocationWitness.identity.childStartIdentity), null, 'the coarse identity is never the exact form');
+        const expectedNonDarwinAttribution = block.duties?.settled === true && ancestry.hops.every((hop) => hop.status === 'established');
+        assert.equal(ancestry.companionToTransportAttributed, expectedNonDarwinAttribution, 'the attribution rides the measured per-hop outcomes, never an unconditional claim');
+      }
+      // The duty aggregate: every applicable duty binds (the startup
+      // generation gates are unchanged by the witness route).
+      const duties = block.duties;
+      assert.ok(duties, 'the runtime duty aggregate persisted');
+      if (process.platform === 'darwin') {
+        for (const duty of duties.duties) {
+          assert.equal(duty.status, 'established', `the REAL ${duty.duty} duty establishes (actual ${JSON.stringify(duty)})`);
+        }
+      }
+      // (§33.7 finding 1) the DECLARATION carries the fixture's own witness
+      // arming — the exactReaderEnabled fact is what threads the driver-side
+      // reads' exact resolution (no process.env mutation anywhere in this
+      // test), and witnessArmed arms the runtime's bounded sequencing.
+      // Asserted AFTER the ancestry so the unwired bytes' RED lands at the
+      // hop establishment first (the review's predicted writer-foreign
+      // refusal), never at a seam-fact assertion.
+      assert.equal(declaration.exactReaderEnabled, true, 'the runtime declaration carries the exact-reader enablement');
+      assert.equal(declaration.witnessArmed, true, 'the runtime declaration carries the witness arming');
+      // (§33.7 finding 2) the sequencing fact rides the block even under the
+      // injected waiter (the in-path bounded sequencing composes on top —
+      // here the records were already present, so the wait returned
+      // immediately).
+      assert.equal(block.witnessSequencing?.outcome, 'witnesses-present', `the in-path sequencing fact persisted (actual ${JSON.stringify(block.witnessSequencing ?? null)})`);
+      assert.equal(block.witnessSequencing?.boundMs, 15_000, 'the sequencing bound is the closed constant');
+
+      // The replay: the persisted record survives serialize reload and the
+      // offline join re-verifies the REAL persisted witnesses (no
+      // spawn-witness refusal may ride the replay).
+      const liveFacts = mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', pollMs: 3_600_000, waitPolicy: null, interruptBaselineSelector: null, survivalControlSelector: null },
+        held, { status: 'inconclusive', inconclusive: { reason: 'the offline path never runs the evidence scan' }, facts: null },
+        null, null, fixture, [], [],
+      );
+      const persisted = await runShellWaitCase(
+        { case: 'rescue-interrupt', codexBinary: process.execPath, sourceSha: repositorySha, workerDurationMs: 420_000, capMs: 3_600_000, pollMs: 3_600_000, budgetMs: 1_200_000, output },
+        { createFixture: async () => fixture, executeLiveCase: async () => liveFacts },
+      );
+      assert.equal(persisted.status, 'executed');
+      const recordName = (await readdir(output)).find((name) => name.endsWith('.record.json'));
+      assert.ok(recordName, 'the executed record persisted');
+      const reloaded = JSON.parse(await readFile(join(output, recordName), 'utf8'));
+      assert.ok(reloaded.localProcess?.spawnWitnesses, 'the REAL witness projections survive serialize reload');
+      assert.equal(reloaded.localProcess.spawnWitnesses.companion?.status, 'established', 'the REAL invocation projection survives reload established');
+      assert.equal(reloaded.localProcess.spawnWitnesses.daemon?.status, 'established', 'the REAL daemon projection survives reload established');
+      const joined = nativeInterruptionGateDInput(reloaded);
+      assert.ok(joined.localProcessDuties, 'the armed block composes the local-duty input');
+      const replayRefusals = joined.localProcessDuties.refusals;
+      assert.equal(replayRefusals.some((reason) => String(reason).startsWith('spawn-witness-')), false,
+        `the replay re-verifies the REAL persisted witnesses — no spawn-witness refusal rides (actual ${JSON.stringify(replayRefusals)})`);
+      // The attribution persists: the two REAL witnessed hops keep the local
+      // layer free of the unattributed refusal. (The replay's settlement is
+      // the FULL gate-D join — its other legs (here the honest production
+      // fact that the transport outlives the observation window in a natural
+      // completion) are measured facts outside this regression's claims.)
+      if (ancestry.companionToTransportAttributed === true) {
+        assert.equal(replayRefusals.includes('ancestry-hops-unattributed'), false,
+          `the persisted two-hop attribution rides the replay (actual ${JSON.stringify(replayRefusals)})`);
+      } else {
+        assert.ok(replayRefusals.includes('ancestry-hops-unattributed'), 'the unattributed chain stays honestly unsettled on the replay');
+      }
+
+    });
+
+    test('the DEFAULT capture path sequences the witness emissions in-path: the armed chain through the unmodified fixture/driver path admits both REAL boundary witnesses and establishes both hops with no injected waiter and no environment mutation', { timeout: 540_000 }, async (t) => {
+      // (§33.7 finding 2) §33.4's measured race, reproduced through the DEFAULT
+      // runHeldHostTurn path: the daemon's own emit (its dynamic observer
+      // import + bounded visibility poll + double reads + exact bridge) writes
+      // its witness record AFTER the transport marker appears, so the
+      // unsequenced default path selected its ancestry endpoints and performed
+      // its one-shot witness admissions too early (the measured t+1.27 s
+      // admission vs the t+1.62 s write) and the daemon-boundary witness
+      // reported the named missing fact. The fix integrates the bounded
+      // sequencing INTO that path (the witness-armed declaration awaits BOTH
+      // records under the closed bound before any endpoint refresh/admission);
+      // this regression exercises EXACTLY that path: no injected
+      // captureProcessIdentity (the default marker capture runs), no witness
+      // waiter of any kind, and no process.env mutation (the §33.7 finding-1
+      // threading arms the driver-side reads). The REAL spawn chain runs the
+      // same real production entries as the main end-to-end regression (the
+      // fast materialized installer — the real entry bytes, hooks, launcher,
+      // broker and transport; the marketplace build itself is covered by the
+      // main regression and is not this row's subject).
+      const repositorySha = spawnSync('git', ['rev-parse', 'HEAD'], { env: isolatedBaseEnv(), encoding: 'utf8' }).stdout.trim();
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-witness-default-path-'));
+      t.after(() => { try { rm(root, { recursive: true, force: true }); } catch { /* disposed */ } });
+      const output = join(root, 'output');
+      await mkdir(output, { mode: 0o700 });
+      const codexBinary = process.execPath;
+      const fixture = await createShellWaitFixture({
+        sourceRoot: repositoryRoot, sourceSha: repositorySha, codexBinary,
+        output, variant: 'candidate', capMs: 3_600_000, pollMs: 3_600_000,
+        stdoutCapture: true, spawnWitness: true,
+      }, { buildSnapshot: fastBuildSnapshot, installPlugin: fastRealBytesInstaller, runSetup: fakeIsolatedSetup });
+      t.after(() => fixture.dispose());
+      const armedEnv = fixture.env;
+      const captureNonce = (/** @type {any} */ (fixture)).stdoutCapture.nonce;
+      const launcherRealpath = (/** @type {any} */ (fixture)).stdoutCapture.entryRealpath;
+      const declaration = localObservationDeclarationFor(fixture, 'rescue-interrupt');
+      assert.ok(declaration, 'the armed fixture declares the local-observation seam');
+
+      const workspace = fixture.workspace;
+      const parentSession = 'witness-default-parent';
+      const parentTurn = `${parentSession}-turn`;
+      const childSession = 'witness-default-child';
+      const transportNonce = randomBytes(32).toString('hex');
+      const gatePath = join(root, 'completion.gate');
+      const gateReachedPath = join(root, 'completion.reached');
+      const processPath = join(root, 'transport-process.json');
+      await writeFile(gatePath, 'hold', 'utf8');
+      await writeFile(gateReachedPath, '', 'utf8');
+      const childThread = {
+        id: childSession, sessionId: parentSession, parentThreadId: parentSession, ephemeral: false, preview: '', projectId: null,
+        historyMode: 'legacy', modelProvider: 'openai', createdAt: 1, updatedAt: 2, recencyAt: 2,
+        status: { type: 'active', activeFlags: [] }, path: null, cwd: realpathSync(workspace),
+        source: { subAgent: { thread_spawn: { parent_thread_id: parentSession, depth: 1, agent_path: '/root/zcode_rescue_task', agent_nickname: null, agent_role: 'zcode-rescue' } } },
+        canAcceptDirectInput: null, threadSource: null, agentNickname: null, agentRole: 'zcode-rescue', gitInfo: null, name: null, turns: [],
+      };
+      const chainEnv = {
+        ...armedEnv,
+        CODEX_APP_SERVER_PATH: process.execPath,
+        CODEX_APP_SERVER_ARGS_JSON: JSON.stringify([join(repositoryRoot, 'tests', 'fixtures', 'fake-codex-app-server.mjs')]),
+        FAKE_CODEX_THREAD_LIST_RESULTS_JSON: JSON.stringify({ data: [], nextCursor: null, backwardsCursor: null }),
+        FAKE_CODEX_THREAD_JSON: JSON.stringify(childThread),
+        FAKE_ZCODE_COMPLETION_GATE: gatePath,
+        FAKE_ZCODE_COMPLETION_GATE_REACHED: gateReachedPath,
+        FAKE_ZCODE_PROCESS_FILE: processPath,
+        FAKE_ZCODE_PROCESS_NONCE: transportNonce,
+      };
+      const hookEnv = { ...chainEnv };
+      delete hookEnv.CODEX_THREAD_ID;
+
+      const rescueTask = 'capture the default-path ancestry chain';
+      const rescuePrompt = `$zcode:rescue --wait --fresh ${rescueTask}`;
+      const envelope = `${JSON.stringify({ version: 4, source: 'explicit', task: rescueTask, options: { hostPlacement: 'foreground', companionExecution: 'foreground', resume: 'fresh' }, continuationTarget: null })}\n`;
+
+      const trackedPids = new Set();
+      t.after(() => {
+        for (const pid of trackedPids) { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } }
+      });
+
+      let launcherChild = null;
+      let preparedResult = null;
+      let invocationResult = null;
+      let launchOutcome = null;
+      const held = await runHeldHostTurn({
+        gatePath,
+        gateReachedPath,
+        processPath,
+        processNonce: transportNonce,
+        holdMs: 60_000,
+        budgetMs: 240_000,
+        measurementCutoffSchedule: true,
+        // NO captureProcessIdentity injection: the DEFAULT marker capture runs
+        // (it threads the declaration's exact-reader opt-in itself), and the
+        // in-path bounded sequencing is the ONLY ordering mechanism — the
+        // exact subject of this regression.
+        launch: async () => ({
+          result: (async () => {
+            await runInstalledHook(fixture.installedRoot, 'session-lifecycle-hook.mjs', {
+              session_id: parentSession, cwd: workspace, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', source: 'startup',
+            }, hookEnv, workspace);
+            await runInstalledHook(fixture.installedRoot, 'user-prompt-hook.mjs', {
+              session_id: parentSession, turn_id: parentTurn, cwd: workspace, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', prompt: rescuePrompt,
+            }, hookEnv, workspace);
+            const prepared = await runRealProcess(process.execPath, [launcherRealpath, 'prepare', 'rescue'], {
+              cwd: workspace,
+              env: { ...chainEnv, CODEX_THREAD_ID: parentSession, NODE_OPTIONS: `${chainEnv.NODE_OPTIONS ?? ''} --import=${prepareTtyShim}`.trim() },
+              stdin: envelope,
+            });
+            preparedResult = prepared;
+            await runInstalledHook(fixture.installedRoot, 'subagent-hook.mjs', {
+              session_id: parentSession, turn_id: parentTurn, cwd: workspace, hook_event_name: 'SubagentStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits',
+              agent_id: childSession, agent_type: 'zcode-rescue',
+            }, hookEnv, workspace);
+            const invocation = await new Promise((resolveInvocation) => {
+              const child = spawnNode(process.execPath, [launcherRealpath, 'invoke-prepared', 'rescue'], { cwd: workspace, env: { ...chainEnv, CODEX_THREAD_ID: childSession }, stdio: ['pipe', 'pipe', 'pipe'], shell: false });
+              launcherChild = child;
+              trackedPids.add(child.pid);
+              let invocationStdout = ''; let invocationStderr = '';
+              child.stdout.on('data', (chunk) => { invocationStdout += chunk; });
+              child.stderr.on('data', (chunk) => { invocationStderr += chunk; });
+              child.once('error', (error) => resolveInvocation({ code: -1, stdout: invocationStdout, stderr: `${invocationStderr}${String(error)}` }));
+              child.once('exit', (code) => resolveInvocation({ code, stdout: invocationStdout, stderr: invocationStderr }));
+            });
+            invocationResult = invocation;
+            return invocation;
+          })().then((value) => { launchOutcome = { kind: 'resolved', value }; return value; }, (error) => { launchOutcome = { kind: 'rejected', error }; throw error; }),
+          terminate: async () => { try { launcherChild?.kill('SIGKILL'); } catch { /* gone */ } },
+        }),
+        waitForGate: async () => {},
+        localObservation: declaration,
+      });
+      const block = held.cleanup.localObservation;
+      assert.ok(block, 'the armed runtime persisted its local-observation block');
+      assert.ok(launchOutcome, 'the REAL chain launch settled');
+      if (launchOutcome.kind === 'rejected') {
+        assert.fail(`the REAL chain launch rejected: ${launchOutcome.error instanceof Error ? launchOutcome.error.message : String(launchOutcome.error)}`);
+      }
+      assert.ok(preparedResult, 'the REAL prepare launcher process ran to exit');
+      assert.equal(preparedResult.code, 0, `the REAL prepare launcher process succeeds (measured: ${preparedResult.code} stdout ${preparedResult.stdout.slice(0, 240)} stderr ${preparedResult.stderr.slice(0, 600)})`);
+      assert.ok(invocationResult, 'the REAL launcher invocation ran to exit');
+      assert.equal(invocationResult.code, 0, `the REAL invoke-prepared reservation succeeds (measured: ${invocationResult.code} stdout ${invocationResult.stdout.slice(0, 240)} stderr ${invocationResult.stderr.slice(0, 300)})`);
+      assert.ok(invocationResult.stdout.includes(PUBLIC_RESULT_SENTINEL), 'the foreground reservation returns the fake-ZCode public sentinel');
+      assert.equal(block.admission?.status, 'established', `the REAL launcher's own startup record admits (actual ${JSON.stringify(block.admission?.status ?? null)} ${block.admission?.reason ?? ''})`);
+      assert.equal(block.brokerAdmission?.status, 'established', `the REAL daemon's own startup record admits (actual ${JSON.stringify(block.brokerAdmission?.status ?? null)} ${block.brokerAdmission?.reason ?? ''})`);
+
+      // THE DEFAULT-PATH SEQUENCING REGRESSION: on the unsequenced bytes this
+      // is exactly where the §33.4 race landed — the one-shot admissions ran
+      // before the daemon's emit finished and the daemon-boundary witness
+      // reported the named missing/unbounded fact. The in-path bounded
+      // sequencing orders the endpoint reads and the admissions after BOTH
+      // witness writes. (The declaration-fact assertions ride below the
+      // witness assertions, so the unwired bytes' RED lands at the §33.4
+      // race's admission first, never at a seam-fact assertion.)
+      assert.ok(block.spawnWitnesses, 'the runtime block carries the spawn-witness projections');
+      assert.equal(block.spawnWitnesses.companion?.status, 'established', `the REAL invocation-boundary witness admits through the default path (actual ${JSON.stringify(block.spawnWitnesses.companion ?? null)})`);
+      assert.equal(block.spawnWitnesses.daemon?.status, 'established', `the REAL daemon-boundary witness admits through the default path (actual ${JSON.stringify(block.spawnWitnesses.daemon ?? null)})`);
+      assert.equal(declaration.witnessArmed, true, 'the declaration arms the in-path witness sequencing');
+      assert.equal(declaration.exactReaderEnabled, true, 'the declaration carries the exact-reader enablement');
+      // The sequencing fact: the block records the bounded in-path wait (the
+      // named outcome is witnesses-present; a bound expiry would be the named
+      // 'bound-expired' fact and the admissions would then report the honest
+      // absence — never a hang).
+      assert.ok(block.witnessSequencing, 'the in-path witness sequencing fact persisted');
+      assert.equal(block.witnessSequencing.outcome, 'witnesses-present', `the sequencing awaited both records (actual ${JSON.stringify(block.witnessSequencing)})`);
+      assert.equal(block.witnessSequencing.boundMs, 15_000, 'the sequencing bound is the closed constant');
+      assert.equal(Number.isSafeInteger(block.witnessSequencing.waitedMs), true, 'the sequencing records its measured wait');
+      assert.equal(JSON.stringify(block.spawnWitnesses).includes(captureNonce), false, 'the raw capture nonce never enters the persisted projections');
+
+      const ancestry = block.ancestry;
+      assert.ok(ancestry, 'the runtime ancestry verdict persisted');
+      // (§33.9 review-mwhw91b4-bvkm7v finding 2) the exact establishment is
+      // gated on the EXPLICIT bridge-capability probe (the capable host keeps
+      // the exact assertions verbatim; the unavailable bridge verifies the
+      // named degraded outcome; off-darwin the dispatch is unchanged).
+      const darwinBridge = await darwinExactBridgeProbe();
+      if (process.platform === 'darwin' && darwinBridge.capable === true) {
+        // The EXACT establishment through the DEFAULT path: both REAL
+        // witnesses declare exactness and the runtime composition attributes
+        // BOTH hops through the spawn-boundary-capture witness class (the
+        // driver-side reads armed by the declaration's threaded opt-in — the
+        // marker capture included).
+        assert.equal(ancestry.hops.find((hop) => hop.hop === 'companion-to-daemon')?.status, 'established',
+          `the REAL hop 1 establishes through the default path (actual ${JSON.stringify(ancestry.hops.find((hop) => hop.hop === 'companion-to-daemon') ?? null)})`);
+        const hop2 = ancestry.hops.find((hop) => hop.hop === 'daemon-to-transport');
+        assert.equal(hop2?.status, 'established', `the REAL hop 2 establishes through the default path (actual ${JSON.stringify(hop2 ?? null)})`);
+        assert.equal(hop2?.witnessClass, 'spawn-boundary-capture', 'the REAL hop 2 rides the spawn-boundary-capture witness class');
+        assert.equal(ancestry.companionToTransportAttributed, true, 'the REAL two-hop chain attributes end to end through the default path');
+      } else if (process.platform === 'darwin') {
+        // (§33.9 finding 2) the named DEGRADED darwin outcome through the
+        // DEFAULT path: the REAL witnesses still admit (asserted above) and
+        // stay the coarse ps form — the direct admission re-reads the REAL
+        // persisted record and verifies the degraded identity form, the
+        // arming stays declared while the measured identities degraded (the
+        // enablement is the route arming, never a fabricated exactness
+        // claim), and the attribution rides the measured per-hop outcomes.
+        const degradedInvocation = await admitSpawnAncestryWitness({ captureDirectory: declaration.captureDirectory, nonce: captureNonce });
+        assert.equal(degradedInvocation.status, 'established', `the REAL invocation witness still admits on the degraded bridge (actual ${degradedInvocation.status} ${degradedInvocation.reason ?? ''})`);
+        assert.equal(degradedInvocation.identity?.startIdentityExact, false, 'the REAL witness stays coarse on the degraded bridge');
+        assert.equal(parseExactStartIdentity(degradedInvocation.identity?.childStartIdentity), null, 'no exact form rides the degraded witness child identity');
+        assert.equal(declaration.exactReaderEnabled, true, 'the arming stays declared while the measured identities degraded');
+        const expectedDegradedAttribution = block.duties?.settled === true && ancestry.hops.every((hop) => hop.status === 'established');
+        assert.equal(ancestry.companionToTransportAttributed, expectedDegradedAttribution, 'the degraded attribution rides the measured per-hop outcomes');
+      } else {
+        // The named NON-DARWIN fact: the exact reader never engages
+        // off-darwin (the reader's own platform dispatch — the threaded
+        // opt-in included) and the attribution rides the measured per-hop
+        // outcomes, never an unconditional claim.
+        const expectedNonDarwinAttribution = block.duties?.settled === true && ancestry.hops.every((hop) => hop.status === 'established');
+        assert.equal(ancestry.companionToTransportAttributed, expectedNonDarwinAttribution, 'the attribution rides the measured per-hop outcomes, never an unconditional claim');
+      }
+
+      // The replay: the persisted record survives serialize reload and the
+      // offline join re-verifies the REAL persisted witnesses (no
+      // spawn-witness refusal may ride the replay).
+      const liveFacts = mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', pollMs: 3_600_000, waitPolicy: null, interruptBaselineSelector: null, survivalControlSelector: null },
+        held, { status: 'inconclusive', inconclusive: { reason: 'the offline path never runs the evidence scan' }, facts: null },
+        null, null, fixture, [], [],
+      );
+      const persisted = await runShellWaitCase(
+        { case: 'rescue-interrupt', codexBinary: process.execPath, sourceSha: repositorySha, workerDurationMs: 420_000, capMs: 3_600_000, pollMs: 3_600_000, budgetMs: 1_200_000, output },
+        { createFixture: async () => fixture, executeLiveCase: async () => liveFacts },
+      );
+      assert.equal(persisted.status, 'executed');
+      const recordName = (await readdir(output)).find((name) => name.endsWith('.record.json'));
+      assert.ok(recordName, 'the executed record persisted');
+      const reloaded = JSON.parse(await readFile(join(output, recordName), 'utf8'));
+      assert.equal(reloaded.localProcess?.spawnWitnesses?.companion?.status, 'established', 'the REAL invocation projection survives reload established');
+      assert.equal(reloaded.localProcess?.spawnWitnesses?.daemon?.status, 'established', 'the REAL daemon projection survives reload established');
+      // (§33.7 finding 3) the witness declaration persists into the case
+      // record and survives the reload (the same serialize→reload regression).
+      assert.ok(reloaded.spawnWitnessDeclaration, 'the armed record carries the persisted spawn-witness declaration');
+      assert.equal(reloaded.spawnWitnessDeclaration.preload, 'spawn-ancestry-witness-preload.cjs', 'the declaration names the witness preload');
+      assert.equal(reloaded.spawnWitnessDeclaration.exactReaderEnabled, true, 'the declaration carries the exact-reader configuration');
+      const joined = nativeInterruptionGateDInput(reloaded);
+      assert.ok(joined.localProcessDuties, 'the armed block composes the local-duty input');
+      const replayRefusals = joined.localProcessDuties.refusals;
+      assert.equal(replayRefusals.some((reason) => String(reason).startsWith('spawn-witness-')), false,
+        `the replay re-verifies the REAL persisted witnesses — no spawn-witness refusal rides (actual ${JSON.stringify(replayRefusals)})`);
+      if (ancestry.companionToTransportAttributed === true) {
+        assert.equal(replayRefusals.includes('ancestry-hops-unattributed'), false,
+          `the persisted two-hop attribution rides the replay (actual ${JSON.stringify(replayRefusals)})`);
+      } else {
+        assert.ok(replayRefusals.includes('ancestry-hops-unattributed'), 'the unattributed chain stays honestly unsettled on the replay');
+      }
+    });
+
+    test('the DEGRADED bridge outcome through the REAL chain: with the exact bridge unavailable on BOTH sides (the writer emitters and the driver reads) the armed default path still admits both coarse REAL witnesses, establishes through the coarse witness route and re-verifies on the replay', { timeout: 540_000 }, async (t) => {
+      // (§33.9 review-mwhw91b4-bvkm7v finding 2) the SUPPORTED degraded
+      // configuration the ungated rows missed: a darwin host where the exact
+      // bridge is unavailable (no python3/CLT shim or a failed bridge read)
+      // degrades BOTH identity resolutions consistently — the readDarwinKinfoExact
+      // discipline keeps the ps whole-second path and the exact route is an
+      // enhancement, never a duty-establishing precondition. On a capable
+      // host this row simulates that host faithfully through the module's own
+      // failure surfaces: the WRITER-side emitters' real bridge subprocess
+      // fails (a broken interpreter env rides the chain env — the same
+      // nonzero-exit/failure classification a bridge-less host produces) and
+      // the DRIVER-side reads' bridge is unavailable through the closed
+      // osSeam surface (`localObservationObserverOptions` — the caller's own
+      // documented member; an injected kinfoExact seam owns its read), so
+      // writer and driver identities degrade TOGETHER exactly as on a real
+      // bridge-less host. The measured degraded contract: the REAL chain
+      // still emits and admits both boundary witnesses (coarse ps forms, no
+      // exact claim manufactured anywhere), the in-path sequencing still
+      // completes, the composition establishes through the coarse witness
+      // route, and the replay re-verifies the persisted witnesses. Off-darwin
+      // the exact reader never engages at all — the same coarse real-chain
+      // shape, measured without the simulation surfaces mattering.
+      const unavailableBridge = async () => { throw new Error('the simulated unavailable exact bridge'); };
+      const repositorySha = spawnSync('git', ['rev-parse', 'HEAD'], { env: isolatedBaseEnv(), encoding: 'utf8' }).stdout.trim();
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-witness-degraded-'));
+      t.after(() => { try { rm(root, { recursive: true, force: true }); } catch { /* disposed */ } });
+      const output = join(root, 'output');
+      await mkdir(output, { mode: 0o700 });
+      const codexBinary = process.execPath;
+      const fixture = await createShellWaitFixture({
+        sourceRoot: repositoryRoot, sourceSha: repositorySha, codexBinary,
+        output, variant: 'candidate', capMs: 3_600_000, pollMs: 3_600_000,
+        stdoutCapture: true, spawnWitness: true,
+      }, { buildSnapshot: fastBuildSnapshot, installPlugin: fastRealBytesInstaller, runSetup: fakeIsolatedSetup });
+      t.after(() => fixture.dispose());
+      const armedEnv = fixture.env;
+      const captureNonce = (/** @type {any} */ (fixture)).stdoutCapture.nonce;
+      const launcherRealpath = (/** @type {any} */ (fixture)).stdoutCapture.entryRealpath;
+      const declaration = localObservationDeclarationFor(fixture, 'rescue-interrupt');
+      assert.ok(declaration, 'the armed fixture declares the local-observation seam');
+      assert.equal(declaration.witnessArmed, true, 'the declaration arms the in-path witness sequencing');
+      assert.equal(declaration.exactReaderEnabled, true, 'the arming stays declared — the degradation is measured, never a manufactured claim');
+
+      const workspace = fixture.workspace;
+      const parentSession = 'witness-degraded-parent';
+      const parentTurn = `${parentSession}-turn`;
+      const childSession = 'witness-degraded-child';
+      const transportNonce = randomBytes(32).toString('hex');
+      const gatePath = join(root, 'completion.gate');
+      const gateReachedPath = join(root, 'completion.reached');
+      const processPath = join(root, 'transport-process.json');
+      await writeFile(gatePath, 'hold', 'utf8');
+      await writeFile(gateReachedPath, '', 'utf8');
+      const childThread = {
+        id: childSession, sessionId: parentSession, parentThreadId: parentSession, ephemeral: false, preview: '', projectId: null,
+        historyMode: 'legacy', modelProvider: 'openai', createdAt: 1, updatedAt: 2, recencyAt: 2,
+        status: { type: 'active', activeFlags: [] }, path: null, cwd: realpathSync(workspace),
+        source: { subAgent: { thread_spawn: { parent_thread_id: parentSession, depth: 1, agent_path: '/root/zcode_rescue_task', agent_nickname: null, agent_role: 'zcode-rescue' } } },
+        canAcceptDirectInput: null, threadSource: null, agentNickname: null, agentRole: 'zcode-rescue', gitInfo: null, name: null, turns: [],
+      };
+      // The WRITER-side degrade: the bridge subprocess inherits this env and
+      // fails the same way a bridge-less host's python3 does (a fatal
+      // interpreter init → the nonzero-exit classification → unavailable).
+      const chainEnv = {
+        ...armedEnv,
+        CODEX_APP_SERVER_PATH: process.execPath,
+        CODEX_APP_SERVER_ARGS_JSON: JSON.stringify([join(repositoryRoot, 'tests', 'fixtures', 'fake-codex-app-server.mjs')]),
+        FAKE_CODEX_THREAD_LIST_RESULTS_JSON: JSON.stringify({ data: [], nextCursor: null, backwardsCursor: null }),
+        FAKE_CODEX_THREAD_JSON: JSON.stringify(childThread),
+        FAKE_ZCODE_COMPLETION_GATE: gatePath,
+        FAKE_ZCODE_COMPLETION_GATE_REACHED: gateReachedPath,
+        FAKE_ZCODE_PROCESS_FILE: processPath,
+        FAKE_ZCODE_PROCESS_NONCE: transportNonce,
+        PYTHONHOME: '/nonexistent-zcode-bridge-degrade',
+      };
+      const hookEnv = { ...chainEnv };
+      delete hookEnv.CODEX_THREAD_ID;
+
+      const rescueTask = 'capture the degraded-bridge ancestry chain';
+      const rescuePrompt = `$zcode:rescue --wait --fresh ${rescueTask}`;
+      const envelope = `${JSON.stringify({ version: 4, source: 'explicit', task: rescueTask, options: { hostPlacement: 'foreground', companionExecution: 'foreground', resume: 'fresh' }, continuationTarget: null })}\n`;
+
+      const trackedPids = new Set();
+      t.after(() => {
+        for (const pid of trackedPids) { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } }
+      });
+
+      let launcherChild = null;
+      let preparedResult = null;
+      let invocationResult = null;
+      let launchOutcome = null;
+      const held = await runHeldHostTurn({
+        gatePath,
+        gateReachedPath,
+        processPath,
+        processNonce: transportNonce,
+        holdMs: 60_000,
+        budgetMs: 240_000,
+        measurementCutoffSchedule: true,
+        // The DRIVER-side degrade (the closed caller surface): the injected
+        // kinfoExact seam owns every driver-side exact read (the §33.7
+        // finding-1 composition threads `localObservationObserverOptions`
+        // into the endpoint observations, the default marker capture and the
+        // default identity reader), so the driver's identity resolution
+        // degrades to the ps coarse path — consistently with the writer side.
+        localObservationObserverOptions: { osSeams: { kinfoExact: unavailableBridge } },
+        launch: async () => ({
+          result: (async () => {
+            await runInstalledHook(fixture.installedRoot, 'session-lifecycle-hook.mjs', {
+              session_id: parentSession, cwd: workspace, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', source: 'startup',
+            }, hookEnv, workspace);
+            await runInstalledHook(fixture.installedRoot, 'user-prompt-hook.mjs', {
+              session_id: parentSession, turn_id: parentTurn, cwd: workspace, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', prompt: rescuePrompt,
+            }, hookEnv, workspace);
+            const prepared = await runRealProcess(process.execPath, [launcherRealpath, 'prepare', 'rescue'], {
+              cwd: workspace,
+              env: { ...chainEnv, CODEX_THREAD_ID: parentSession, NODE_OPTIONS: `${chainEnv.NODE_OPTIONS ?? ''} --import=${prepareTtyShim}`.trim() },
+              stdin: envelope,
+            });
+            preparedResult = prepared;
+            await runInstalledHook(fixture.installedRoot, 'subagent-hook.mjs', {
+              session_id: parentSession, turn_id: parentTurn, cwd: workspace, hook_event_name: 'SubagentStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits',
+              agent_id: childSession, agent_type: 'zcode-rescue',
+            }, hookEnv, workspace);
+            const invocation = await new Promise((resolveInvocation) => {
+              const child = spawnNode(process.execPath, [launcherRealpath, 'invoke-prepared', 'rescue'], { cwd: workspace, env: { ...chainEnv, CODEX_THREAD_ID: childSession }, stdio: ['pipe', 'pipe', 'pipe'], shell: false });
+              launcherChild = child;
+              trackedPids.add(child.pid);
+              let invocationStdout = ''; let invocationStderr = '';
+              child.stdout.on('data', (chunk) => { invocationStdout += chunk; });
+              child.stderr.on('data', (chunk) => { invocationStderr += chunk; });
+              child.once('error', (error) => resolveInvocation({ code: -1, stdout: invocationStdout, stderr: `${invocationStderr}${String(error)}` }));
+              child.once('exit', (code) => resolveInvocation({ code, stdout: invocationStdout, stderr: invocationStderr }));
+            });
+            invocationResult = invocation;
+            return invocation;
+          })().then((value) => { launchOutcome = { kind: 'resolved', value }; return value; }, (error) => { launchOutcome = { kind: 'rejected', error }; throw error; }),
+          terminate: async () => { try { launcherChild?.kill('SIGKILL'); } catch { /* gone */ } },
+        }),
+        waitForGate: async () => {},
+        localObservation: declaration,
+      });
+      const block = held.cleanup.localObservation;
+      assert.ok(block, 'the armed runtime persisted its local-observation block');
+      assert.ok(launchOutcome, 'the REAL chain launch settled');
+      if (launchOutcome.kind === 'rejected') {
+        assert.fail(`the REAL chain launch rejected: ${launchOutcome.error instanceof Error ? launchOutcome.error.message : String(launchOutcome.error)}`);
+      }
+      assert.ok(preparedResult, 'the REAL prepare launcher process ran to exit');
+      assert.equal(preparedResult.code, 0, `the REAL prepare launcher process succeeds on the degraded bridge (measured: ${preparedResult.code} stdout ${preparedResult.stdout.slice(0, 240)} stderr ${preparedResult.stderr.slice(0, 600)})`);
+      assert.ok(invocationResult, 'the REAL launcher invocation ran to exit');
+      assert.equal(invocationResult.code, 0, `the REAL invoke-prepared reservation succeeds on the degraded bridge (measured: ${invocationResult.code} stdout ${invocationResult.stdout.slice(0, 240)} stderr ${invocationResult.stderr.slice(0, 300)})`);
+      assert.ok(invocationResult.stdout.includes(PUBLIC_RESULT_SENTINEL), 'the foreground reservation returns the fake-ZCode public sentinel');
+      assert.equal(block.admission?.status, 'established', `the REAL launcher's own startup record admits (actual ${JSON.stringify(block.admission?.status ?? null)} ${block.admission?.reason ?? ''})`);
+      assert.equal(block.brokerAdmission?.status, 'established', `the REAL daemon's own startup record admits (actual ${JSON.stringify(block.brokerAdmission?.status ?? null)} ${block.admission?.reason ?? ''})`);
+
+      // THE DEGRADED WITNESS CONTRACT: the emitters' exact bridge failed (the
+      // simulated no-bridge host) and the records are still emitted — the
+      // coarse ps forms — and still admitted. A missing witness would be the
+      // named failure; a manufactured exact claim would be worse.
+      assert.ok(block.spawnWitnesses, 'the runtime block carries the spawn-witness projections');
+      assert.equal(block.spawnWitnesses.companion?.status, 'established', `the degraded invocation-boundary witness admits (actual ${JSON.stringify(block.spawnWitnesses.companion ?? null)})`);
+      assert.equal(block.spawnWitnesses.daemon?.status, 'established', `the degraded daemon-boundary witness admits (actual ${JSON.stringify(block.spawnWitnesses.daemon ?? null)})`);
+      assert.ok(block.witnessSequencing, 'the in-path witness sequencing fact persisted on the degraded bridge');
+      assert.equal(block.witnessSequencing.outcome, 'witnesses-present', `the sequencing awaited both records on the degraded bridge (actual ${JSON.stringify(block.witnessSequencing)})`);
+      assert.equal(block.witnessSequencing.boundMs, 15_000, 'the sequencing bound is the closed constant');
+      const degradedInvocationWitness = await admitSpawnAncestryWitness({ captureDirectory: declaration.captureDirectory, nonce: captureNonce });
+      const degradedDaemonWitness = await admitSpawnAncestryWitness({ captureDirectory: declaration.captureDirectory, nonce: captureNonce, role: 'broker-daemon' });
+      assert.equal(degradedInvocationWitness.status, 'established', `the REAL invocation witness admits on the degraded bridge (actual ${degradedInvocationWitness.status} ${degradedInvocationWitness.reason ?? ''})`);
+      assert.equal(degradedDaemonWitness.status, 'established', `the REAL daemon witness admits on the degraded bridge (actual ${degradedDaemonWitness.status} ${degradedDaemonWitness.reason ?? ''})`);
+      assert.equal(degradedInvocationWitness.identity?.startIdentityExact, false, `the degraded invocation witness stays the coarse ps form (actual ${JSON.stringify({ exact: degradedInvocationWitness.identity?.startIdentityExact })})`);
+      assert.equal(degradedDaemonWitness.identity?.startIdentityExact, false, 'the degraded daemon witness stays the coarse ps form');
+      assert.equal(parseExactStartIdentity(degradedInvocationWitness.identity?.writerStartIdentity), null, 'no exact form rides the degraded writer identity');
+      assert.equal(parseExactStartIdentity(degradedInvocationWitness.identity?.childStartIdentity), null, 'no exact form rides the degraded child identity');
+      assert.equal(parseExactStartIdentity(degradedDaemonWitness.identity?.childStartIdentity), null, 'no exact form rides the degraded daemon witness child identity');
+      assert.equal(degradedInvocationWitness.identity?.writerPid, block.admission.identity.pid, 'the degraded hop-1 writer is still the REAL launcher process');
+      assert.equal(degradedInvocationWitness.identity?.childPid, block.brokerAdmission.identity.pid, 'the degraded witnessed hop-1 child is still the REAL spawned daemon generation');
+
+      const ancestry = block.ancestry;
+      assert.ok(ancestry, 'the runtime ancestry verdict persisted on the degraded bridge');
+      // The degraded composition: the attribution rides the MEASURED per-hop
+      // outcomes (the same discipline as the non-darwin dispatch — the
+      // coarse witness route either establishes both hops and attributes, or
+      // the named refusal honestly unsettles the replay below).
+      const expectedDegradedAttribution = block.duties?.settled === true && ancestry.hops.every((hop) => hop.status === 'established');
+      assert.equal(ancestry.companionToTransportAttributed, expectedDegradedAttribution, `the degraded attribution rides the measured per-hop outcomes (actual ${JSON.stringify({ attributed: ancestry.companionToTransportAttributed, hops: ancestry.hops.map((hop) => ({ hop: hop.hop, status: hop.status, reason: hop.reason })) })})`);
+      // The degraded composition: the coarse witness route is FAIL-CLOSED —
+      // whole-second facts cannot draw the witness route's generation
+      // continuities, so an unestablished hop refuses with one of the NAMED
+      // coarse-ambiguity classes (the measured degraded shape on this host,
+      // stable across runs up to WHICH label a hop lands on: the
+      // parent-continuity `spawn-witness-parent-generation-ambiguous`, the
+      // marker binding `spawn-witness-marker-generation-ambiguous`, the
+      // child-creation ordering `spawn-witness-child-generation-ambiguous`,
+      // or the plain window `generation-lifetime-unverifiable`) — never a
+      // witness-machinery failure (never writer-foreign, nonce-mismatch,
+      // missing, unadmitted, capture-unbounded or route-unsatisfiable). The
+      // aggregate follows the hops: unattributed → the local-duty verdict
+      // honestly unsettles with the named ancestry refusal (the replay
+      // asserts it below); fully established → settled.
+      const degradedCoarseClasses = ['spawn-witness-parent-generation-ambiguous', 'spawn-witness-marker-generation-ambiguous', 'spawn-witness-child-generation-ambiguous', 'generation-lifetime-unverifiable'];
+      for (const hop of ancestry.hops) {
+        assert.equal(hop.status === 'established' || degradedCoarseClasses.includes(hop.reason), true,
+          `the degraded ${hop.hop} outcome stays within the named coarse-degrade classes (actual ${JSON.stringify(hop)})`);
+      }
+      if (process.platform === 'darwin') {
+        // The degraded duty statuses (the §33.4 row's own darwin discipline):
+        // the exact bridge is not a duty-establishing precondition — the
+        // status-based duties establish through the coarse generation binding.
+        for (const duty of block.duties?.duties ?? []) {
+          assert.equal(duty.status, 'established', `the degraded ${duty.duty} duty establishes (actual ${JSON.stringify(duty)})`);
+        }
+        assert.equal(block.duties?.settled, ancestry.companionToTransportAttributed, `the aggregate settles exactly with the measured attribution (actual ${JSON.stringify({ settled: block.duties?.settled ?? null, attributed: ancestry.companionToTransportAttributed, ancestryRefusal: (/** @type {any} */ (block.duties))?.ancestryRefusal ?? null })})`);
+      }
+
+      // The degraded replay: the persisted coarse witnesses survive serialize
+      // reload and the offline join re-verifies them.
+      const liveFacts = mapShellWaitLiveFacts(
+        { case: 'rescue-interrupt', pollMs: 3_600_000, waitPolicy: null, interruptBaselineSelector: null, survivalControlSelector: null },
+        held, { status: 'inconclusive', inconclusive: { reason: 'the offline path never runs the evidence scan' }, facts: null },
+        null, null, fixture, [], [],
+      );
+      const persisted = await runShellWaitCase(
+        { case: 'rescue-interrupt', codexBinary: process.execPath, sourceSha: repositorySha, workerDurationMs: 420_000, capMs: 3_600_000, pollMs: 3_600_000, budgetMs: 1_200_000, output },
+        { createFixture: async () => fixture, executeLiveCase: async () => liveFacts },
+      );
+      assert.equal(persisted.status, 'executed');
+      const recordName = (await readdir(output)).find((name) => name.endsWith('.record.json'));
+      assert.ok(recordName, 'the executed record persisted');
+      const reloaded = JSON.parse(await readFile(join(output, recordName), 'utf8'));
+      assert.equal(reloaded.localProcess?.spawnWitnesses?.companion?.status, 'established', 'the degraded invocation projection survives reload established');
+      assert.equal(reloaded.localProcess?.spawnWitnesses?.daemon?.status, 'established', 'the degraded daemon projection survives reload established');
+      const joined = nativeInterruptionGateDInput(reloaded);
+      assert.ok(joined.localProcessDuties, 'the degraded block composes the local-duty input');
+      const replayRefusals = joined.localProcessDuties.refusals;
+      assert.equal(replayRefusals.some((reason) => String(reason).startsWith('spawn-witness-')), false,
+        `the replay re-verifies the degraded REAL persisted witnesses — no spawn-witness refusal rides (actual ${JSON.stringify(replayRefusals)})`);
+      if (ancestry.companionToTransportAttributed === true) {
+        assert.equal(replayRefusals.includes('ancestry-hops-unattributed'), false,
+          `the degraded two-hop attribution rides the replay (actual ${JSON.stringify(replayRefusals)})`);
+      } else {
+        assert.ok(replayRefusals.includes('ancestry-hops-unattributed'), 'the unattributed degraded chain stays honestly unsettled on the replay');
+      }
+    });
+
+    test('the witness arming is strictly additive: the unarmed composition carries no witness machinery and the armed composition extends the capture environment additively', { timeout: 120_000 }, async (t) => {
+      const repositorySha = spawnSync('git', ['rev-parse', 'HEAD'], { env: isolatedBaseEnv(), encoding: 'utf8' }).stdout.trim();
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-witness-arming-'));
+      t.after(() => { try { rm(root, { recursive: true, force: true }); } catch { /* disposed */ } });
+      const makeFixture = async (extra) => {
+        const output = join(root, `output-${extra.spawnWitness === true ? 'armed' : 'plain'}`);
+        await mkdir(output, { mode: 0o700 });
+        return createShellWaitFixture({
+          sourceRoot: repositoryRoot, sourceSha: repositorySha, codexBinary: process.execPath,
+          output, variant: 'candidate', capMs: null, stdoutCapture: true, ...extra,
+        }, { buildSnapshot: fastBuildSnapshot, installPlugin: fastRealBytesInstaller, runSetup: fakeIsolatedSetup });
+      };
+      const unarmed = await makeFixture({});
+      t.after(() => unarmed.dispose());
+      const armed = await makeFixture({ spawnWitness: true });
+      t.after(() => armed.dispose());
+
+      // The UNARMED composition: the capture environment exactly as the
+      // §19.3/§25.4 seam always composed it — no witness preload fragment, no
+      // exact-reader variable, no declared transport entry, no record block.
+      const captureVariables = [CAPTURE_DIRECTORY_VARIABLE, CAPTURE_NONCE_VARIABLE, CAPTURE_ENTRY_VARIABLE, CAPTURE_MAX_BYTES_VARIABLE, CAPTURE_BROKER_ENTRY_VARIABLE];
+      for (const variable of captureVariables) {
+        assert.ok(unarmed.env[variable], `the unarmed env keeps the ${variable} capture variable`);
+        assert.ok(armed.env[variable], `the armed env keeps ${variable}`);
+      }
+      assert.equal((unarmed.env.NODE_OPTIONS ?? '').includes('--require'), true, 'the unarmed env loads the capture preload');
+      assert.equal((unarmed.env.NODE_OPTIONS.match(/--require/g) ?? []).length, 1, 'the unarmed env loads exactly one preload');
+      assert.equal((armed.env.NODE_OPTIONS.match(/--require/g) ?? []).length, 2, 'the armed env loads exactly two preloads');
+      assert.equal(unarmed.env[EXACT_READER_VARIABLE], undefined, 'the unarmed env never arms the exact reader');
+      assert.equal(unarmed.env[WITNESS_TRANSPORT_ENTRY_VARIABLE], undefined, 'the unarmed env never declares a transport entry');
+      assert.equal((/** @type {any} */ (unarmed.record)).spawnWitnessCapture, undefined, 'the unarmed record carries no witness block');
+      assert.equal((/** @type {any} */ (unarmed)).spawnWitness, undefined, 'the unarmed fixture carries no witness handle');
+
+      // The ARMED composition: every capture fact unchanged, exactly ONE
+      // additional --require preload argument, and the closed witness block.
+      for (const variable of captureVariables) {
+        assert.ok(armed.env[variable], `the armed env keeps ${variable}`);
+      }
+      const unarmedArguments = parseNodeOptionsArguments(unarmed.env.NODE_OPTIONS ?? '').map((argument) => argument.logical);
+      const armedArguments = parseNodeOptionsArguments(armed.env.NODE_OPTIONS ?? '').map((argument) => argument.logical);
+      assert.equal(armedArguments.length, unarmedArguments.length + 2, `the armed env adds exactly the witness --require pair (measured ${JSON.stringify({ unarmed: unarmedArguments, armed: armedArguments })})`);
+      // The two fixtures own DIFFERENT disposable roots (their preload paths
+      // differ per fixture by design), so additivity is asserted on the
+      // argument STRUCTURE: the armed prefix repeats the capture preload's
+      // require pair shape, and the added pair is the witness preload's.
+      assert.equal(unarmedArguments[0], '--require', 'the unarmed fragment opens with the require flag');
+      assert.equal(unarmedArguments[1].endsWith('closure-stdout-preload.cjs'), true, 'the unarmed fragment requires the capture preload');
+      assert.equal(armedArguments[0], '--require', 'the armed fragment keeps the require flag');
+      assert.equal(armedArguments[1].endsWith('closure-stdout-preload.cjs'), true, 'the armed fragment requires the capture preload');
+      assert.equal(armedArguments[2], '--require', 'the added pair opens with the require flag');
+      const witnessPreloadPath = armedArguments[3];
+      assert.equal(witnessPreloadPath.endsWith('spawn-ancestry-witness-preload.cjs'), true, `the added pair requires the witness preload (actual ${witnessPreloadPath})`);
+      const witnessPreloadBytes = await readFile(witnessPreloadPath);
+      assert.equal(sha256('sha256').update(witnessPreloadBytes).digest('hex'), (/** @type {any} */ (armed.record)).spawnWitnessCapture.preloadSha256, 'the record pins the executing witness preload bytes');
+      assert.equal(armed.env[EXACT_READER_VARIABLE], '1', 'the armed env arms the exact reader');
+      assert.ok(armed.env[WITNESS_TRANSPORT_ENTRY_VARIABLE], 'the armed env declares the transport entry');
+      const armedHandle = /** @type {any} */ (armed).spawnWitness;
+      assert.ok(armedHandle, 'the armed fixture carries the witness handle');
+      assert.equal(armedHandle.preloadPath, witnessPreloadPath, 'the handle names the composed preload path');
+      assert.equal(armedHandle.exactReaderEnabled, true, 'the handle declares the exact-reader enablement');
+      assert.equal(armedHandle.transportEntryRealpath, await realpath(armed.env[WITNESS_TRANSPORT_ENTRY_VARIABLE]), 'the handle names the resolved transport entry');
+      const recordBlock = (/** @type {any} */ (armed.record)).spawnWitnessCapture;
+      assert.equal(recordBlock.exactReaderVariable, EXACT_READER_VARIABLE, 'the record block names the exact-reader variable');
+      assert.deepEqual(recordBlock.environmentVariables, [WITNESS_TRANSPORT_ENTRY_VARIABLE, EXACT_READER_VARIABLE], 'the record block lists the closed witness-variable set');
+      // The witness preload is a SEPARATE artifact from the §19.3 capture
+      // preload: the capture preload's bytes are untouched by the witness
+      // route (the §28.4 prohibition-4 pin) and the witness preload carries
+      // no stdout-capture machinery.
+      const capturePreloadPath = unarmedArguments[1];
+      const capturePreloadBytes = await readFile(capturePreloadPath);
+      assert.notEqual(witnessPreloadPath, capturePreloadPath, 'the witness preload is its own artifact');
+      assert.equal(capturePreloadBytes.includes('spawn-witness') || capturePreloadBytes.includes('SpawnAncestryWitness'), false, 'the capture preload carries no witness machinery');
+      assert.equal(witnessPreloadBytes.includes('captureSha256'), false, 'the witness preload carries no stdout-capture machinery');
+    });
+
+    test('a capture directory without a witness record admits the named missing fact (the unwired state is a named absence, never a pass)', async (t) => {
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-witness-missing-'));
+      t.after(() => { try { rm(root, { recursive: true, force: true }); } catch { /* disposed */ } });
+      const captureDirectory = join(root, 'capture');
+      await mkdir(captureDirectory, { mode: 0o700 });
+      const nonce = randomBytes(32).toString('hex');
+      const missing = await admitSpawnAncestryWitness({ captureDirectory, nonce });
+      assert.equal(missing.status, 'missing', `the unwired capture state is the named MISSING fact (actual ${missing.status})`);
+      assert.equal(missing.reason, 'spawn-witness-missing', 'the standing missing-record label is unchanged');
+      const missingDaemon = await admitSpawnAncestryWitness({ captureDirectory, nonce, role: 'broker-daemon' });
+      assert.equal(missingDaemon.status, 'missing', 'the daemon-boundary role reports its own missing fact');
+      assert.equal(missingDaemon.reason, 'spawn-witness-missing', 'the daemon-boundary missing label is unchanged');
+    });
+
+    test('the exact-reader opt-in env gate: the real bridge without the env keeps the coarse ps record and with the env emits the exact form (darwin; off-darwin the coarse record is the named fact)', { timeout: 60_000 }, async (t) => {
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-witness-envgate-'));
+      t.after(() => { try { rm(root, { recursive: true, force: true }); } catch { /* disposed */ } });
+      const nonce = randomBytes(32).toString('hex');
+      // A REAL grandchild (the witnessed child) carrying its OWN nonce
+      // variable, alive through both emit arms.
+      const grandchild = spawnNode(process.execPath, ['--input-type=module', '--eval', 'await new Promise((resolve) => setTimeout(resolve, 20_000));'], {
+        env: { ...isolatedBaseEnv(), [FAKE_ZCODE_NONCE_VARIABLE]: nonce }, stdio: 'ignore',
+      });
+      t.after(() => { try { grandchild.kill('SIGKILL'); } catch { /* gone */ } });
+      // A REAL writer process (a small bounded environment so the pinned
+      // `ps eww` environ read sees the capture nonce): it calls the observer
+      // module's own emitter at a real spawn boundary it owns.
+      const observerUrl = pathToFileURL(fileURLToPath(new URL('../tools/shell-wait-probe/local-process-observation.mjs', import.meta.url))).href;
+      const writerScript = [
+        `import { emitSpawnAncestryWitness } from ${JSON.stringify(observerUrl)};`,
+        'const [captureDirectory, nonce, childPid] = process.argv.slice(2);',
+        'const verdict = await emitSpawnAncestryWitness({ captureDirectory, nonce, role: \'invocation\', childPid: Number(childPid), childNonce: nonce, childNonceVariable: \'FAKE_ZCODE_PROCESS_NONCE\' });',
+        'process.stdout.write(JSON.stringify({ status: verdict.status, reason: verdict.reason, identity: verdict.identity }));',
+      ].join('\n');
+      const writerPath = join(root, 'witness-writer.mjs');
+      await writeFile(writerPath, writerScript, { mode: 0o700 });
+      const runWriter = async (captureDirectory, exactArmed) => {
+        const writerEnv = { ...isolatedBaseEnv(root), [CAPTURE_NONCE_VARIABLE]: nonce };
+        if (exactArmed) writerEnv[EXACT_READER_VARIABLE] = '1';
+        const run = await runRealProcess(process.execPath, [writerPath, captureDirectory, nonce, String(grandchild.pid)], { cwd: root, env: writerEnv });
+        assert.equal(run.code, 0, `the real writer process succeeds (measured: ${run.code} ${run.stderr.slice(0, 300)})`);
+        return JSON.parse(run.stdout);
+      };
+      // Arm 1 — WITHOUT the opt-in env: the real bridge never runs; the
+      // record stays the ps coarse form on every platform.
+      const coarseDir = join(root, 'coarse');
+      await mkdir(coarseDir, { mode: 0o700 });
+      const coarse = await runWriter(coarseDir, false);
+      assert.equal(coarse.status, 'established', `the env-gated writer emits without the exact opt-in (actual ${coarse.status} ${coarse.reason ?? ''})`);
+      assert.equal(coarse.identity?.startIdentityExact, false, 'without the env the real bridge never runs: the record stays coarse');
+      assert.equal(parseExactStartIdentity(coarse.identity?.childStartIdentity), null, 'the coarse identity is never the exact form');
+      // Arm 2 — WITH the opt-in env: on a bridge-capable darwin host the REAL
+      // kinfo bridge answers and the record carries the closed exact forms for
+      // both generations; on a darwin host whose bounded bridge read
+      // classified unavailable the record stays the coarse ps form (the
+      // §33.9 finding-2 gate — the named degraded outcome, never a skip);
+      // off-darwin the env is inert by the reader's own platform dispatch —
+      // the coarse record IS the honest outcome, never a manufactured claim.
+      const exactDir = join(root, 'exact');
+      await mkdir(exactDir, { mode: 0o700 });
+      const armed = await runWriter(exactDir, true);
+      assert.equal(armed.status, 'established', `the opt-in writer emits (actual ${armed.status} ${armed.reason ?? ''})`);
+      const darwinBridge = await darwinExactBridgeProbe();
+      if (process.platform === 'darwin' && darwinBridge.capable === true) {
+        assert.equal(armed.identity?.startIdentityExact, true, `the opt-in record is exact (actual ${JSON.stringify({ exact: armed.identity?.startIdentityExact, writer: armed.identity?.writerStartIdentity, child: armed.identity?.childStartIdentity })})`);
+        const childExact = parseExactStartIdentity(armed.identity?.childStartIdentity);
+        const writerExact = parseExactStartIdentity(armed.identity?.writerStartIdentity);
+        assert.ok(childExact !== null && writerExact !== null, 'both generations carry the closed exact forms under the opt-in');
+        assert.equal(armed.identity.childOsStartInstantMs, childExact.ms, 'the exact child instant resolves from its own identity');
+      } else if (process.platform === 'darwin') {
+        assert.equal(armed.identity?.startIdentityExact, false, `the opt-in record stays coarse on the degraded bridge (actual ${JSON.stringify({ exact: armed.identity?.startIdentityExact, child: armed.identity?.childStartIdentity })})`);
+        assert.equal(parseExactStartIdentity(armed.identity?.childStartIdentity), null, 'no exact form rides the degraded child identity');
+        assert.equal(parseExactStartIdentity(armed.identity?.writerStartIdentity), null, 'no exact form rides the degraded writer identity');
+      } else {
+        assert.equal(armed.identity?.startIdentityExact, false, 'off-darwin the armed env never manufactures exactness');
+        assert.equal(parseExactStartIdentity(armed.identity?.childStartIdentity), null, 'off-darwin the identity stays the coarse ps form');
+      }
+    });
+
+    test('the THREADED exact-reader enablement: the closed osSeam opt-in arms the driver-side reads without any environment mutation (darwin exact; the absent member keeps the coarse env-gate path byte-identical; off-darwin the opt-in is inert by the platform dispatch)', { timeout: 60_000 }, async (t) => {
+      // (§33.7 finding 1) the driver-side observation setup threads the
+      // declaration's exactReaderEnabled fact through the closed osSeam
+      // member — this row pins the SEAM itself against a REAL observed child:
+      // with the member the real bridge answers (darwin) and the observation
+      // is exact; without the member AND without the environment the
+      // byte-identical coarse path stays (the env gate is unchanged); with
+      // the env the equivalence holds (the member adds a route, never
+      // replaces one). The premise (no environment mutation) is asserted
+      // explicitly so a future env leak fails HERE, not as a mystery exact
+      // read.
+      assert.equal(process.env[EXACT_READER_VARIABLE], undefined, 'the test-process premise: the exact-reader env is never set by this suite');
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-witness-thread-'));
+      t.after(() => { try { rm(root, { recursive: true, force: true }); } catch { /* disposed */ } });
+      // A REAL observed child carrying its own nonce, alive through all arms.
+      const nonce = randomBytes(32).toString('hex');
+      const observedChild = spawnNode(process.execPath, ['--input-type=module', '--eval', 'await new Promise((resolve) => setTimeout(resolve, 20_000));'], {
+        env: { ...isolatedBaseEnv(root), [FAKE_ZCODE_NONCE_VARIABLE]: nonce }, stdio: 'ignore',
+      });
+      t.after(() => { try { observedChild.kill('SIGKILL'); } catch { /* gone */ } });
+      const observe = (osSeams) => observeLocalProcess({ pid: observedChild.pid, nonce, nonceVariable: FAKE_ZCODE_NONCE_VARIABLE, ...(osSeams === undefined ? {} : { osSeams }) });
+      // Arm 1 — the threaded member, NO environment: on a bridge-capable
+      // darwin host the real bridge answers and the read is exact; on a
+      // darwin host whose bounded bridge read classified unavailable the read
+      // stays the coarse ps form (the §33.9 finding-2 gate — the named
+      // degraded outcome); off-darwin the member is inert by the reader's own
+      // platform dispatch (the coarse read is the named fact).
+      const threaded = await observe({ exactReaderOptIn: true });
+      assert.equal(threaded.status, 'established', `the threaded read observes (actual ${JSON.stringify(threaded)})`);
+      const darwinBridge = await darwinExactBridgeProbe();
+      if (process.platform === 'darwin' && darwinBridge.capable === true) {
+        assert.equal(parseExactStartIdentity(threaded.observation?.startIdentity) !== null, true,
+          `the threaded opt-in read is exact (actual ${JSON.stringify({ identity: threaded.observation?.startIdentity })})`);
+      } else if (process.platform === 'darwin') {
+        assert.equal(parseExactStartIdentity(threaded.observation?.startIdentity), null, `the threaded opt-in read stays coarse on the degraded bridge (actual ${JSON.stringify({ identity: threaded.observation?.startIdentity })})`);
+      } else {
+        assert.equal(parseExactStartIdentity(threaded.observation?.startIdentity), null, 'off-darwin the threaded opt-in is inert (the coarse read is the named fact)');
+      }
+      // Arm 2 — NO member, NO environment: the byte-identical coarse path
+      // (the env-gate discipline unchanged for every unarmed caller).
+      const coarse = await observe(undefined);
+      assert.equal(coarse.status, 'established', `the unthreaded read observes (actual ${JSON.stringify(coarse)})`);
+      assert.equal(parseExactStartIdentity(coarse.observation?.startIdentity), null, 'without the member and without the env the read stays the coarse ps form');
+      // Arm 3 — the environment equivalence: the env opt-in alone still arms
+      // the real bridge (a child process arm, since the test process itself
+      // must stay unmutated).
+      const observerUrl = pathToFileURL(fileURLToPath(new URL('../tools/shell-wait-probe/local-process-observation.mjs', import.meta.url))).href;
+      const readerScript = [
+        `import { observeLocalProcess } from ${JSON.stringify(observerUrl)};`,
+        `import { FAKE_ZCODE_NONCE_VARIABLE } from ${JSON.stringify(observerUrl)};`,
+        'const [pid, nonce] = process.argv.slice(2);',
+        `const verdict = await observeLocalProcess({ pid: Number(pid), nonce, nonceVariable: FAKE_ZCODE_NONCE_VARIABLE });`,
+        'process.stdout.write(JSON.stringify({ status: verdict.status, startIdentity: verdict.observation?.startIdentity ?? null }));',
+      ].join('\n');
+      const readerPath = join(root, 'env-reader.mjs');
+      await writeFile(readerPath, readerScript, { mode: 0o700 });
+      const envReader = await runRealProcess(process.execPath, [readerPath, String(observedChild.pid), nonce], {
+        cwd: root,
+        env: { ...isolatedBaseEnv(root), [EXACT_READER_VARIABLE]: '1' },
+      });
+      assert.equal(envReader.code, 0, `the env-armed reader process succeeds (measured: ${envReader.code} ${envReader.stderr.slice(0, 300)})`);
+      const envRead = JSON.parse(envReader.stdout);
+      assert.equal(envRead.status, 'established', 'the env-armed read observes');
+      if (process.platform === 'darwin' && darwinBridge.capable === true) {
+        assert.equal(parseExactStartIdentity(envRead.startIdentity) !== null, true,
+          `the env opt-in alone still arms the exact route (actual ${JSON.stringify(envRead)})`);
+      } else if (process.platform === 'darwin') {
+        assert.equal(parseExactStartIdentity(envRead.startIdentity), null, `the env-armed read stays coarse on the degraded bridge (actual ${JSON.stringify(envRead)})`);
+      } else {
+        assert.equal(parseExactStartIdentity(envRead.startIdentity), null, 'off-darwin the env opt-in stays inert (the coarse read is the named fact)');
+      }
+    });
+
+    // ---------------------------------------------------------------------
+    // (§33.8 review-mwho2z7d-1hyd1j findings 1+2) the bounded witness
+    // sequencing window's unit regressions. The reviewer's two P2 findings on
+    // the §33.7 sequencing bytes: (1) a stalled witness existence lookup
+    // bypasses BOTH timeout checks and the shared abort — the turn's exit
+    // `finally` awaits `localRuntimeSettled`, so the entire turn remains
+    // pending even after cleanup starts; (2) the deadline was compared on the
+    // WALL clock, so a system wall-clock step inflates or shrinks the bound
+    // (a simulated +60 s adjustment produced `bound-expired` immediately).
+    // The synthetic arms inject EVERY local-observation seam (the instrument
+    // pattern — synthetic identities never reach the real OS) and drive the
+    // held timeline on a virtual monotonic clock PAIRED with the injected
+    // sleep (the abortableSleep convention: bounded waits resolve on the
+    // INJECTED sleep, so the sequencing deadline arm advances the same
+    // timeline — the virtual clock pairing is what makes the 15 s bound
+    // deterministic and fast). The wall seam is injected separately: it owns
+    // ONLY the epoch-valued evidence field in these rows, which is exactly
+    // the separation the fix enforces.
+    // ---------------------------------------------------------------------
+    const { SPAWN_ANCESTRY_WITNESS_SUFFIXES } = await import('../tools/shell-wait-probe/local-process-observation.mjs');
+    const { SPAWN_WITNESS_SEQUENCING_BOUND_MS } = await import('../tools/shell-wait-probe/driver.mjs');
+    const WALL_BASE = 1_700_000_000_000;
+    const realSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+    /**
+     * One synthetic witness-armed held turn. Every local-observation seam is
+     * injected (established on the synthetic scope — phase 1/2/3 complete in
+     * a few microtask hops, so the sequencing window is the row's subject),
+     * the transport identity is the synthetic eager capture, and the clocks
+     * the sequencing window consumes are injectable. Returns the held record,
+     * its local-observation block, the seam probes, the disposable root and
+     * the awaited witness paths (the caller registers the root's cleanup).
+     */
+    const runWitnessSequencingTurn = async ({
+      virtualClock = true,
+      wallClockNow = null,
+      lookupLocalWitnessPresence = null,
+      witnessArmed = true,
+      holdMs = 50_000,
+      budgetMs = 600_000,
+      waitForGateDelayMs = 0,
+      pendingGate = false,
+      wallFlip = null,
+      materializeWitnessesBeforeTurn = false,
+      materializeWitnessesAfterMs = null,
+    } = {}) => {
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-witness-seq-'));
+      const captureDirectory = join(root, 'capture');
+      await mkdir(captureDirectory, { mode: 0o700 });
+      const nonce = randomBytes(32).toString('hex');
+      const transportNonce = `transport-${nonce.slice(0, 16)}`;
+      const declaration = {
+        captureDirectory,
+        nonce,
+        entryRealpath: '/synthetic/rescue/launcher.mjs',
+        brokerEntryRealpath: '/synthetic/scripts/zcode-broker.mjs',
+        ...(witnessArmed ? { witnessArmed: /** @type {const} */ (true) } : {}),
+      };
+      const gatePath = join(root, 'completion.gate');
+      await writeFile(gatePath, 'hold', 'utf8');
+      const probes = { lookupCalls: 0, lookupSettled: 0 };
+      // The virtual monotonic timeline: `now` reads it and the injected sleep
+      // ADVANCES it by the slept amount (the held-turn duration domain).
+      let virtualMs = 0;
+      const virtualNow = () => virtualMs;
+      const virtualSleep = async (ms) => { virtualMs += Math.max(0, ms); };
+      // The wall seam: the rows that simulate a wall-clock step flip the
+      // offset through BOTH triggers — the injected lookup's first call (the
+      // sequencing deadline is already computed by then: the flip lands
+      // strictly AFTER the deadline, synchronously inside the first lookup —
+      // the deterministic GREEN trigger) and a real 50 ms timer (the
+      // clone-visible trigger: on the pre-fix bytes the injected lookup seam
+      // is inert, so the flip must also land through an existing surface).
+      let wallOffsetMs = 0;
+      const mutableWallClockNow = () => WALL_BASE + wallOffsetMs;
+      const flipWall = () => {
+        if (wallFlip === null || wallOffsetMs === wallFlip) return;
+        wallOffsetMs = wallFlip;
+      };
+      const flipTimer = wallFlip === null ? null : setTimeout(flipWall, 50);
+      const establishedAdmission = (role, pid) => ({
+        class: 'startup-identity', status: 'established',
+        identity: { role, pid, ppid: process.pid, nonce, entryRealpath: '/synthetic/rescue/launcher.mjs', firstWriteEpochMs: 1, startOriginMs: 1 },
+      });
+      const establishedObservation = (pid, nonceValue) => ({
+        class: 'os-live-observation', status: 'established',
+        observation: { pid, nonce: nonceValue, startIdentity: 'synthetic-start-identity', alive: true, readEpochMs: 1, readStartedEpochMs: 1 },
+        queried: { pid, nonce: nonceValue },
+      });
+      const witnessPaths = [
+        join(captureDirectory, `${nonce}${SPAWN_ANCESTRY_WITNESS_SUFFIXES.invocation}`),
+        join(captureDirectory, `${nonce}${SPAWN_ANCESTRY_WITNESS_SUFFIXES['broker-daemon']}`),
+      ];
+      if (materializeWitnessesBeforeTurn) {
+        for (const witnessPath of witnessPaths) {
+          await writeFile(witnessPath, '{}\n', 'utf8');
+        }
+      }
+      // The mid-window materialization hook: the witness records appear AFTER
+      // the turn started (a REAL timer) — the slow in-bound waiter control's
+      // premise. The timer is armed BEFORE the turn so the writes land inside
+      // the sequencing window, and always cleared on the helper's exit.
+      const materializeTimer = materializeWitnessesAfterMs === null ? null : setTimeout(() => {
+        Promise.all(witnessPaths.map((witnessPath) => writeFile(witnessPath, '{}\n', 'utf8'))).catch(() => { /* the row's own window closed */ });
+      }, materializeWitnessesAfterMs);
+      try {
+        let resolveLaunchResult = null;
+        const held = await runHeldHostTurn({
+          gatePath,
+          processNonce: transportNonce,
+          holdMs,
+          budgetMs,
+          ...(pendingGate
+            ? { waitForGate: () => new Promise(() => {}) }
+            : (waitForGateDelayMs > 0
+              ? { waitForGate: async () => { await realSleep(waitForGateDelayMs); } }
+              : { waitForGate: async () => {} })),
+          captureProcessIdentity: async () => ({ pid: 4207, ppid: process.pid, nonce: transportNonce, startIdentity: 'synthetic-start-identity' }),
+          readProcessIdentity: async () => undefined,
+          waitForProcessExit: async () => {},
+          launch: async () => {
+            const result = new Promise((resolve) => { resolveLaunchResult = resolve; });
+            return { result, terminate: async () => { resolveLaunchResult?.({ code: 0, stdout: '', stderr: '' }); } };
+          },
+          releaseGate: async () => { resolveLaunchResult?.({ code: 0, stdout: '', stderr: '' }); },
+          ...(virtualClock ? { now: virtualNow, sleep: virtualSleep } : {}),
+          ...(wallClockNow !== null ? { wallClockNow } : (wallFlip !== null ? { wallClockNow: mutableWallClockNow } : {})),
+          localObservation: declaration,
+          captureLocalObservationIdentity: async () => establishedAdmission('invocation', 4100),
+          observeLocalObservationIdentity: async () => establishedObservation(4100, nonce),
+          captureLocalBrokerObservationIdentity: async () => establishedAdmission('broker-daemon', 4101),
+          observeLocalBrokerObservationIdentity: async () => establishedObservation(4101, nonce),
+          observeLocalTransportObservationIdentity: async () => establishedObservation(4207, transportNonce),
+          ...(lookupLocalWitnessPresence !== null
+            ? {
+              lookupLocalWitnessPresence: async (witnessPath) => {
+                probes.lookupCalls += 1;
+                flipWall();
+                const stats = await lookupLocalWitnessPresence(witnessPath);
+                probes.lookupSettled += 1;
+                return stats;
+              },
+            }
+            : {}),
+        });
+        return {
+          held,
+          block: held.cleanup.localObservation,
+          probes,
+          root,
+          captureDirectory,
+          nonce,
+          witnessPaths,
+        };
+      } finally {
+        if (flipTimer !== null) clearTimeout(flipTimer);
+        if (materializeTimer !== null) clearTimeout(materializeTimer);
+      }
+    };
+
+    test('a stalled witness lookup cannot bypass the sequencing window: each lookup is raced against the shared abort and the deadline, the winning closer names the outcome, and a pending lookup never holds the turn exit (the wall clock is held constant throughout)', { timeout: 120_000 }, async (t) => {
+      // (§33.8 finding 1) The lookup seam pends FOREVER; the wall clock is
+      // FROZEN (the pre-fix deadline was wall arithmetic, so with a held wall
+      // the bound could never fire — the RED lands at the outcome); the
+      // monotonic bound expires through the raced deadline arm. The turn must
+      // RETURN while the lookup is still pending — the exit `finally` awaits
+      // the runtime task, so a pending lookup that held it would hang the
+      // whole turn past its hold and budget.
+      const { held, block, probes, root } = await runWitnessSequencingTurn({
+        wallClockNow: () => WALL_BASE,
+        lookupLocalWitnessPresence: () => new Promise(() => {}),
+      });
+      t.after(() => { try { rm(root, { recursive: true, force: true }); } catch { /* disposed */ } });
+      assert.equal(held.budgetExpired, false, 'the turn completed on its own hold, never through the budget');
+      assert.ok(block.witnessSequencing, 'the sequencing fact persisted');
+      assert.equal(block.witnessSequencing.outcome, 'bound-expired', `the raced deadline arm named the bound-expired outcome (actual ${JSON.stringify(block.witnessSequencing)})`);
+      assert.equal(block.witnessSequencing.boundMs, SPAWN_WITNESS_SEQUENCING_BOUND_MS, 'the sequencing bound is the closed constant');
+      assert.equal(block.witnessSequencing.waitedMs >= SPAWN_WITNESS_SEQUENCING_BOUND_MS - 100 && block.witnessSequencing.waitedMs <= SPAWN_WITNESS_SEQUENCING_BOUND_MS + 100, true, `the bound expired at its full monotonic duration within one pacing quantum (actual ${block.witnessSequencing.waitedMs})`);
+      assert.equal(block.witnessSequencing.expiredAtEpochMs, WALL_BASE, 'the epoch evidence field rides the (frozen) WALL clock while the deadline was monotonic');
+      assert.ok(probes.lookupCalls >= 1, `the raced lookup seam was exercised (actual ${probes.lookupCalls} calls)`);
+      assert.equal(probes.lookupSettled, 0, 'the pending lookup NEVER settled — the turn returned without it (the exit finally was not held)');
+      assert.deepEqual(block.witnessSequencing.awaitedRoles, ['invocation', 'broker-daemon'], 'the awaited roles are unchanged');
+    });
+
+    test('a forward wall-clock adjustment can never expire the sequencing bound prematurely: the bound expires only after its full monotonic duration (the simulated +60 s step)', { timeout: 120_000 }, async (t) => {
+      // (§33.8 finding 2) The wall clock jumps +60 s right after the
+      // sequencing deadline is computed. On the pre-fix bytes the NEXT wall
+      // comparison expired the bound immediately (the measured RED: waitedMs
+      // 60000 — the wall delta, never a duration); on the amended bytes the
+      // deadline is monotonic, so the bound runs its FULL duration and the
+      // epoch evidence field still carries the JUMPED wall instant.
+      const { block, probes, root } = await runWitnessSequencingTurn({
+        wallFlip: 60_000,
+        lookupLocalWitnessPresence: async (witnessPath) => lstat(witnessPath).catch(() => null),
+        waitForGateDelayMs: 200,
+      });
+      t.after(() => { try { rm(root, { recursive: true, force: true }); } catch { /* disposed */ } });
+      assert.ok(block.witnessSequencing, 'the sequencing fact persisted');
+      assert.equal(block.witnessSequencing.outcome, 'bound-expired', `the bound still expires under the jumped wall (actual ${JSON.stringify(block.witnessSequencing)})`);
+      assert.equal(block.witnessSequencing.waitedMs >= SPAWN_WITNESS_SEQUENCING_BOUND_MS - 100 && block.witnessSequencing.waitedMs <= SPAWN_WITNESS_SEQUENCING_BOUND_MS + 100, true, `the expiry is the FULL monotonic duration, never the premature wall jump (actual ${block.witnessSequencing.waitedMs})`);
+      assert.ok(block.witnessSequencing.waitedMs >= SPAWN_WITNESS_SEQUENCING_BOUND_MS && block.witnessSequencing.waitedMs <= SPAWN_WITNESS_SEQUENCING_BOUND_MS + 100,
+        `the waited duration is the bound within one pacing quantum (actual ${block.witnessSequencing.waitedMs})`);
+      assert.equal(block.witnessSequencing.expiredAtEpochMs, WALL_BASE + 60_000, 'the epoch evidence field carries the JUMPED wall instant while the duration was monotonic');
+      assert.ok(probes.lookupCalls >= 1, `the lookup seam was exercised through the jumped wall (actual ${probes.lookupCalls} calls)`);
+    });
+
+    test('a backward wall-clock adjustment can never extend the sequencing bound: the bound still expires at its full monotonic duration (the simulated -60 s step)', { timeout: 120_000 }, async (t) => {
+      // (§33.8 finding 2, the backward control) The wall clock jumps -60 s
+      // after the sequencing deadline is computed: on the pre-fix bytes the
+      // comparison `wallClockNow() > deadline` could never fire (the bound
+      // was EXTENDED past the turn) and the loop rode the abort instead —
+      // the measured RED lands at the outcome; on the amended bytes the
+      // monotonic bound expires at its true duration and the epoch evidence
+      // field carries the BACKWARD-jumped wall instant.
+      const { block, probes, root } = await runWitnessSequencingTurn({
+        wallFlip: -60_000,
+        lookupLocalWitnessPresence: async (witnessPath) => lstat(witnessPath).catch(() => null),
+        waitForGateDelayMs: 200,
+      });
+      t.after(() => { try { rm(root, { recursive: true, force: true }); } catch { /* disposed */ } });
+      assert.ok(block.witnessSequencing, 'the sequencing fact persisted');
+      assert.equal(block.witnessSequencing.outcome, 'bound-expired', `the backward step cannot extend the bound past the turn (actual ${JSON.stringify(block.witnessSequencing)})`);
+      assert.equal(block.witnessSequencing.waitedMs >= SPAWN_WITNESS_SEQUENCING_BOUND_MS - 100 && block.witnessSequencing.waitedMs <= SPAWN_WITNESS_SEQUENCING_BOUND_MS + 100, true, `the expiry is the FULL monotonic duration (actual ${block.witnessSequencing.waitedMs})`);
+      assert.equal(block.witnessSequencing.expiredAtEpochMs, WALL_BASE - 60_000, 'the epoch evidence field carries the BACKWARD-jumped wall instant');
+      assert.ok(probes.lookupCalls >= 1, `the lookup seam was exercised through the backward step (actual ${probes.lookupCalls} calls)`);
+    });
+
+    test('the normal witnesses-present path is unchanged: with both witness records materialized the raced lookups still return witnesses-present (real clock, the default lookup)', { timeout: 60_000 }, async (t) => {
+      // (§33.8 control) The production default lookup (no seam) on the REAL
+      // clocks: the witnesses exist before the turn, so the very first raced
+      // lookups find both records and the loop returns witnesses-present with
+      // a sub-bound wait and no epoch field — the raced window never preempts
+      // a completed read, and the pre-fix loop passes this arm identically.
+      const { block, root } = await runWitnessSequencingTurn({
+        virtualClock: false,
+        holdMs: 1_000,
+        materializeWitnessesBeforeTurn: true,
+      });
+      t.after(() => { try { rm(root, { recursive: true, force: true }); } catch { /* disposed */ } });
+      assert.ok(block.witnessSequencing, 'the sequencing fact persisted');
+      assert.equal(block.witnessSequencing.outcome, 'witnesses-present', `the present witnesses are returned unchanged (actual ${JSON.stringify(block.witnessSequencing)})`);
+      assert.equal(block.witnessSequencing.waitedMs < SPAWN_WITNESS_SEQUENCING_BOUND_MS, true, `the completion is far below the bound (actual ${block.witnessSequencing.waitedMs})`);
+      assert.equal('expiredAtEpochMs' in block.witnessSequencing, false, 'no epoch field rides a witnesses-present outcome');
+      assert.equal(block.witnessSequencing.boundMs, SPAWN_WITNESS_SEQUENCING_BOUND_MS, 'the sequencing bound is the closed constant');
+      assert.deepEqual(block.witnessSequencing.awaitedRoles, ['invocation', 'broker-daemon'], 'the awaited roles are unchanged');
+    });
+
+    test('a slow lookup that completes within the bound is never preempted by the deadline arm: witnesses appearing mid-window still yield witnesses-present', { timeout: 60_000 }, async (t) => {
+      // (§33.8 control — the finding-2 interplay guarantee) The lookup seam is
+      // SLOW (150 ms per call — always well within the 15 s bound) and the
+      // witness records materialize ~450 ms into the window: the deadline arm
+      // must fire ONLY at the true bound, never preempt an in-bound
+      // completion, so the row yields witnesses-present with a measured wait
+      // far below the bound. The pre-fix bytes pass this arm through the
+      // plain loop (the seam is inert there) — the arm is the amended bytes'
+      // own guarantee.
+      const { block, root } = await runWitnessSequencingTurn({
+        virtualClock: false,
+        holdMs: 1_500,
+        lookupLocalWitnessPresence: async (witnessPath) => { await realSleep(150); return lstat(witnessPath); },
+        materializeWitnessesAfterMs: 450,
+      });
+      t.after(() => { try { rm(root, { recursive: true, force: true }); } catch { /* disposed */ } });
+      assert.ok(block.witnessSequencing, 'the sequencing fact persisted');
+      assert.equal(block.witnessSequencing.outcome, 'witnesses-present', `the in-bound slow waiter completes as witnesses-present (actual ${JSON.stringify(block.witnessSequencing)})`);
+      assert.equal(block.witnessSequencing.waitedMs < SPAWN_WITNESS_SEQUENCING_BOUND_MS, true, `the completion is far below the bound (actual ${block.witnessSequencing.waitedMs})`);
+      assert.equal('expiredAtEpochMs' in block.witnessSequencing, false, 'no epoch field rides a witnesses-present outcome');
+    });
+
+    test('the shared abort still short-circuits the window over a pending lookup: a budget expiry resolves the raced lookup, names turn-ended and the turn returns', { timeout: 60_000 }, async (t) => {
+      // (§33.8 finding 1, the abort arm) The lookup seam pends; the turn's
+      // budget expires: the raced abort arm resolves the pending lookup's
+      // await, the loop names turn-ended, and the turn RETURNS inside its
+      // budget. The pre-fix loop names the same outcome through its loop-top
+      // check (the seam is inert there — the measured RED lands at the seam
+      // wiring, the §33.7 finding-3 pattern), so the OUTCOME assertions pass
+      // on both byte sets and the pending-lookup race is the amended bytes'
+      // own proof.
+      const { held, block, probes, root } = await runWitnessSequencingTurn({
+        virtualClock: false,
+        holdMs: 5_000,
+        budgetMs: 400,
+        pendingGate: true,
+        lookupLocalWitnessPresence: () => new Promise(() => {}),
+      });
+      t.after(() => { try { rm(root, { recursive: true, force: true }); } catch { /* disposed */ } });
+      assert.equal(held.budgetExpired, true, 'the turn ended through the budget expiry');
+      assert.ok(block.witnessSequencing, 'the sequencing fact persisted');
+      assert.equal(block.witnessSequencing.outcome, 'turn-ended', `the abort named the turn-ended outcome (actual ${JSON.stringify(block.witnessSequencing)})`);
+      assert.equal(block.witnessSequencing.waitedMs < SPAWN_WITNESS_SEQUENCING_BOUND_MS, true, `the abort landed inside the bound (actual ${block.witnessSequencing.waitedMs})`);
+      assert.equal('expiredAtEpochMs' in block.witnessSequencing, false, 'no epoch field rides a turn-ended outcome');
+      assert.ok(probes.lookupCalls >= 1, `the pending lookup was requested (actual ${probes.lookupCalls} calls)`);
+      assert.equal(probes.lookupSettled, 0, 'the pending lookup never settled — the abort arm released the await');
+    });
+
+    test('the plain-loop abort arm is unchanged: a budget expiry with the default lookups names turn-ended inside the bound (no seam)', { timeout: 60_000 }, async (t) => {
+      // (§33.8 control) The SAME budget-expiry shape through the DEFAULT
+      // lookups (no injected seam): the loop names turn-ended inside the
+      // bound on BOTH byte sets — the shared abort's short-circuit is
+      // unchanged by the raced window.
+      const { held, block, root } = await runWitnessSequencingTurn({
+        virtualClock: false,
+        holdMs: 5_000,
+        budgetMs: 400,
+        pendingGate: true,
+      });
+      t.after(() => { try { rm(root, { recursive: true, force: true }); } catch { /* disposed */ } });
+      assert.equal(held.budgetExpired, true, 'the turn ended through the budget expiry');
+      assert.ok(block.witnessSequencing, 'the sequencing fact persisted');
+      assert.equal(block.witnessSequencing.outcome, 'turn-ended', `the plain-loop abort named the turn-ended outcome (actual ${JSON.stringify(block.witnessSequencing)})`);
+      assert.equal(block.witnessSequencing.waitedMs < SPAWN_WITNESS_SEQUENCING_BOUND_MS, true, `the abort landed inside the bound (actual ${block.witnessSequencing.waitedMs})`);
+      assert.equal('expiredAtEpochMs' in block.witnessSequencing, false, 'no epoch field rides a turn-ended outcome');
+    });
+
+    test('a capture-only (unarmed) declaration never enters the sequencing block: the block carries no witnessSequencing key (schema stability)', { timeout: 60_000 }, async (t) => {
+      // (§33.8 control) The structural gate: a declaration WITHOUT the
+      // witness arming never enters the sequencing block — the key does not
+      // exist on the persisted block.
+      const { block, root } = await runWitnessSequencingTurn({ witnessArmed: false });
+      t.after(() => { try { rm(root, { recursive: true, force: true }); } catch { /* disposed */ } });
+      assert.ok(block, 'the local-observation block persisted for the armed capture');
+      assert.equal(block.witnessSequencing, undefined, 'an unarmed declaration carries no witnessSequencing key');
+    });
+
+    // ---------------------------------------------------------------------
+    // (§33.9 review-mwhw91b4-bvkm7v finding 2 — the bridge-capability probe)
+    // The new exact-identity assertions assumed every darwin host is
+    // bridge-capable: `readDarwinKinfoExact` DELIBERATELY returns unavailable
+    // on a darwin host without a working python3/Command-Line-Tools bridge
+    // (the degrade discipline — the exact route is an enhancement, never a
+    // precondition), so the ungated assertions failed on that supported
+    // degraded configuration. The gate is ONE bounded real probe, run at most
+    // once per process: a live fixture-owned child carries its own nonce, the
+    // module's OWN opt-in path (the threaded osSeam member — never a process
+    // environment mutation) drives one real read of it, and the identity form
+    // is classified — capable iff the established read carries the closed
+    // exact form. An unavailable bridge read (no python3/CLT shim, a failed
+    // bridge call, a malformed answer) classifies NOT capable and the gated
+    // rows verify the named degraded outcome instead — never a skip. The
+    // probe is bounded (the bridge's own five-second timeout; the child is
+    // killed on every exit) and fast (a bridge-less host fails the subprocess
+    // in milliseconds). Off-darwin the platform dispatch owns the arm: the
+    // probe reads nothing and reports `probed: false`. The observe seam is
+    // injectable so the NOT-capable classification is provable on a capable
+    // host too (the seam-simulated unavailable-bridge control below).
+    // ---------------------------------------------------------------------
+    const probeDarwinExactBridge = async ({ observe = observeLocalProcess } = {}) => {
+      if (process.platform !== 'darwin') return { platform: process.platform, probed: false, capable: false };
+      const nonce = randomBytes(32).toString('hex');
+      const child = spawnNode(process.execPath, ['--input-type=module', '--eval', 'console.log(\'ready\'); await new Promise((resolve) => setTimeout(resolve, 20_000));'], {
+        env: { ...isolatedBaseEnv(), [FAKE_ZCODE_NONCE_VARIABLE]: nonce }, stdio: ['ignore', 'pipe', 'ignore'],
+      });
+      try {
+        // (the §33.9 iteration disclosure) the FIRST probe shape read the child
+        // immediately after the spawn: a ps read inside the fork-exec window
+        // can miss the process entirely and classify a WORKING bridge NOT
+        // capable (the first full-probe SOLO measured exactly that — four gated
+        // rows silently routed to the degraded branch against exact actuals).
+        // The probe now handshakes: the child prints its own ready line AFTER
+        // it is exec'd (the environ ps sees), the probe awaits it bounded, and
+        // an unestablished verdict retries ONCE after a short real wait before
+        // the classification is final; an unestablished verdict after the
+        // handshake is an INSTRUMENT failure (never bridge evidence) and throws
+        // loudly — the not-capable classification comes ONLY from an
+        // established read whose identity is not the exact form, the true
+        // no-bridge signal on every host.
+        const ready = new Promise((resolveReady) => {
+          child.stdout?.once('data', () => resolveReady(true));
+          child.once('exit', () => resolveReady(false));
+          child.once('error', () => resolveReady(false));
+        });
+        const childReady = await Promise.race([ready, new Promise((resolveReady) => setTimeout(() => resolveReady(false), 5_000))]);
+        if (childReady !== true) throw new Error('the bridge-capability probe child never became ready');
+        /** @type {any} */
+        let verdict = null;
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          verdict = await observe({ pid: child.pid, nonce, nonceVariable: FAKE_ZCODE_NONCE_VARIABLE, osSeams: { exactReaderOptIn: true } });
+          if (verdict?.status === 'established') break;
+          await new Promise((resolveWait) => setTimeout(resolveWait, 150));
+        }
+        if (verdict?.status !== 'established') {
+          throw new Error(`the bridge-capability probe read never established (last verdict ${JSON.stringify({ status: verdict?.status ?? null, reason: verdict?.reason ?? null })})`);
+        }
+        const capable = parseExactStartIdentity(verdict.observation?.startIdentity) !== null;
+        return {
+          platform: 'darwin',
+          probed: true,
+          capable,
+          ...(typeof verdict.observation?.startIdentity === 'string' ? { observedStartIdentity: verdict.observation.startIdentity } : {}),
+        };
+      } finally {
+        try { child.kill('SIGKILL'); } catch { /* gone */ }
+      }
+    };
+    // The LAZY memoization: the probe runs on the FIRST gated row's await, not
+    // at registration — an eagerly started probe's 20-second child cannot span
+    // the gap to a late suite's first gated row (the first full-probe SOLO's
+    // second event: the witness describe sits at the file's end, so an eager
+    // probe was consumed ~27 minutes after its child had self-terminated —
+    // the loud instrument throw, never a silent wrong classification). One
+    // probe per process, created exactly when first needed.
+    let darwinExactBridgeProbePromise = null;
+    const darwinExactBridgeProbe = () => {
+      if (darwinExactBridgeProbePromise === null) darwinExactBridgeProbePromise = probeDarwinExactBridge();
+      return darwinExactBridgeProbePromise;
+    };
+
+    // ---------------------------------------------------------------------
+    // (§33.9 review-mwhw91b4-bvkm7v finding 1 — the leftover deadline timers)
+    // the raced window's deadline arm rode the turn's own sleep seam: with
+    // the DEFAULT sleep every raced lookup armed a REFERENCED 15-second
+    // setTimeout that kept RUNNING after the race settled on the lookup or
+    // the abort, so a fast-finishing witness-armed turn left live timers
+    // behind that kept the CLI or test process alive after cleanup (the
+    // reviewer's synthetic ~103 ms turn measured two). These rows measure the
+    // leak directly on the REAL clocks (the default sleep — the leak's own
+    // path) through a PAIRED-TIMER SPY around the turn: the driver's default
+    // sleep creates its timers through the global setTimeout at call time, so
+    // the spy pairs every setTimeout the turn creates against its firing or
+    // its clear — a fired timer no longer holds the event loop and leaves the
+    // live set at its own firing, and a cleared one leaves it at the clear.
+    // After the turn the spy SETTLES briefly (a real, unspied timer) so every
+    // SHORT in-flight arm — the driver's own ≤100 ms teardown-adjacent pacing
+    // ticks (a pre-existing, out-of-scope residue one in-flight `localPace`
+    // hop leaves at the exit abort) and the settle's own timer — fires and
+    // leaves the set; a 15-SECOND deadline leak cannot fire inside the settle,
+    // so what remains is exactly the leak the finding names. Unlike a
+    // whole-process resource census the spy is self-contained per row: prior
+    // rows' leaked timers can neither inflate nor deflate it (the first RED
+    // clone run measured exactly that census artifact — a leaking prior row's
+    // 15-second timers expired inside the NEXT row's baseline and moved its
+    // delta by their count — so the instrument moved to the paired spy before
+    // the recorded RED). The winning-arm controls ride the same spy: a
+    // deadline that truly fires (the real 15 s bound) leaves nothing, an abort
+    // that wins clears the armed timer, and the unarmed declaration never
+    // arms the window at all (zero deadline-timer surface).
+    // ---------------------------------------------------------------------
+    const spyUnpairedTimeouts = async (runTurn) => {
+      const realSetTimeout = globalThis.setTimeout;
+      const realClearTimeout = globalThis.clearTimeout;
+      const live = new Set();
+      globalThis.setTimeout = /** @type {typeof globalThis.setTimeout} */ ((fn, ms, ...rest) => {
+        const handle = realSetTimeout(() => { live.delete(handle); fn(); }, ms, ...rest);
+        live.add(handle);
+        return handle;
+      });
+      globalThis.clearTimeout = /** @type {typeof globalThis.clearTimeout} */ ((handle) => {
+        live.delete(handle);
+        return realClearTimeout(handle);
+      });
+      try {
+        await runTurn();
+        // The bounded settle INSIDE the spied window (through the REAL timer,
+        // never counted): the ≤100 ms pacing residue fires and leaves the set;
+        // a 15-second deadline leak cannot.
+        await new Promise((resolve) => realSetTimeout(resolve, 200));
+      } finally {
+        globalThis.setTimeout = realSetTimeout;
+        globalThis.clearTimeout = realClearTimeout;
+      }
+      return live.size;
+    };
+
+    test('a fast witness-armed turn leaves NO referenced deadline timer behind: every raced deadline arm is cleared when a lookup wins (the default sleep, the real clocks, the paired-timer spy)', { timeout: 60_000 }, async (t) => {
+      // (§33.9 finding 1, the reviewer's scenario) the witnesses materialize
+      // ~80 ms into the window on the REAL clocks: the loop races a handful of
+      // lookups (each arming a deadline sleep), the witnesses-present
+      // completion wins, and the turn settles ~600 ms after it started. On
+      // the pre-fix bytes every losing deadline sleep stayed a referenced
+      // 15-second timer (the measured RED below); on the amended bytes the
+      // spy counts zero timers the turn created and never fired nor cleared
+      // (after the bounded settle).
+      /** @type {any} */
+      let turn = null;
+      const unpaired = await spyUnpairedTimeouts(async () => {
+        turn = await runWitnessSequencingTurn({
+          virtualClock: false,
+          holdMs: 600,
+          materializeWitnessesAfterMs: 80,
+        });
+      });
+      const { block, root } = turn;
+      t.after(() => { try { rm(root, { recursive: true, force: true }); } catch { /* disposed */ } });
+      assert.ok(block.witnessSequencing, 'the sequencing fact persisted');
+      assert.equal(block.witnessSequencing.outcome, 'witnesses-present', `the fast completion won the window (actual ${JSON.stringify(block.witnessSequencing)})`);
+      assert.equal(block.witnessSequencing.waitedMs < SPAWN_WITNESS_SEQUENCING_BOUND_MS, true, `the completion landed inside the bound (actual ${block.witnessSequencing.waitedMs})`);
+      assert.equal(unpaired, 0, `no deadline timer outlives the settled window un-fired and un-cleared (actual ${unpaired} unpaired timers)`);
+    });
+
+    test('a deadline arm that truly fires leaves nothing behind: the real 15 s bound expires exactly once, names bound-expired and the spy counts zero unpaired timers', { timeout: 120_000 }, async (t) => {
+      // (§33.9 finding 1, the deadline-wins control) the lookup seam pends and
+      // the deadline arm rides the DEFAULT path's own timer to its FULL real
+      // duration: it fires exactly once (the single raced 'bound-expired'
+      // outcome — the spy removes the handle at its own firing), the
+      // post-race clear of the fired handle is the no-op cleanup, and no
+      // referenced timer outlives the settled turn. This control passes on
+      // the pre-fix bytes too (the fired timer is gone either way) — the
+      // losing-arm rows are the finding's own RED.
+      /** @type {any} */
+      let turn = null;
+      const unpaired = await spyUnpairedTimeouts(async () => {
+        turn = await runWitnessSequencingTurn({
+          virtualClock: false,
+          holdMs: 16_000,
+          lookupLocalWitnessPresence: () => new Promise(() => {}),
+        });
+      });
+      const { block, probes, root } = turn;
+      t.after(() => { try { rm(root, { recursive: true, force: true }); } catch { /* disposed */ } });
+      assert.ok(block.witnessSequencing, 'the sequencing fact persisted');
+      assert.equal(block.witnessSequencing.outcome, 'bound-expired', `the fired deadline arm named the bound-expired outcome (actual ${JSON.stringify(block.witnessSequencing)})`);
+      assert.equal(block.witnessSequencing.waitedMs >= SPAWN_WITNESS_SEQUENCING_BOUND_MS - 100 && block.witnessSequencing.waitedMs <= SPAWN_WITNESS_SEQUENCING_BOUND_MS + 100, true, `the bound expired at its full real duration (actual ${block.witnessSequencing.waitedMs})`);
+      assert.ok(probes.lookupCalls >= 1, `the pending lookup was requested (actual ${probes.lookupCalls} calls)`);
+      assert.equal(unpaired, 0, `the fired deadline arm leaves no referenced timer behind (actual ${unpaired} unpaired timers)`);
+    });
+
+    test('an abort that wins the race clears the armed deadline timer: a budget-expiry turn over a pending lookup settles with zero unpaired timers', { timeout: 60_000 }, async (t) => {
+      // (§33.9 finding 1, the abort arm) the lookup seam pends; the turn's
+      // budget expires at 400 ms and the raced abort arm wins: the deadline
+      // sleep armed at the lookup must be CANCELLED, not left running. On the
+      // pre-fix bytes the armed 15-second timer outlived the settled turn
+      // (the measured RED below); on the amended bytes the spy counts zero.
+      /** @type {any} */
+      let turn = null;
+      const unpaired = await spyUnpairedTimeouts(async () => {
+        turn = await runWitnessSequencingTurn({
+          virtualClock: false,
+          holdMs: 5_000,
+          budgetMs: 400,
+          pendingGate: true,
+          lookupLocalWitnessPresence: () => new Promise(() => {}),
+        });
+      });
+      const { held, block, probes, root } = turn;
+      t.after(() => { try { rm(root, { recursive: true, force: true }); } catch { /* disposed */ } });
+      assert.equal(held.budgetExpired, true, 'the turn ended through the budget expiry');
+      assert.ok(block.witnessSequencing, 'the sequencing fact persisted');
+      assert.equal(block.witnessSequencing.outcome, 'turn-ended', `the abort named the turn-ended outcome (actual ${JSON.stringify(block.witnessSequencing)})`);
+      assert.ok(probes.lookupCalls >= 1, `the pending lookup was requested (actual ${probes.lookupCalls} calls)`);
+      assert.equal(unpaired, 0, `the abort's win cleared the armed deadline timer (actual ${unpaired} unpaired timers)`);
+    });
+
+    test('an unarmed declaration never arms the sequencing window at all: the spy counts zero unpaired timers across the settled turn (zero deadline-timer surface)', { timeout: 60_000 }, async (t) => {
+      // (§33.9 finding 1, the unarmed structural control) the capture-only
+      // declaration never enters the witness block: no lookup, no deadline
+      // arm, zero deadline-timer surface — the spy measures the settled turn
+      // at zero. Passes on both byte sets.
+      /** @type {any} */
+      let turn = null;
+      const unpaired = await spyUnpairedTimeouts(async () => {
+        turn = await runWitnessSequencingTurn({
+          virtualClock: false,
+          holdMs: 600,
+          witnessArmed: false,
+        });
+      });
+      const { block, root } = turn;
+      t.after(() => { try { rm(root, { recursive: true, force: true }); } catch { /* disposed */ } });
+      assert.equal(block.witnessSequencing, undefined, 'an unarmed declaration carries no witnessSequencing key');
+      assert.equal(unpaired, 0, `the unarmed turn arms no deadline timer (actual ${unpaired} unpaired timers)`);
+    });
+
+    // ---------------------------------------------------------------------
+    // (§33.13 review-mwj26tbg-m3ve3w finding 1 — the settlement-vs-deadline
+    // straddle) A raced witness lookup can settle AFTER the sequencing
+    // deadline while its timeout callback has not run: once an iteration
+    // begins past the deadline the raced window arms a 0 ms timer whose
+    // callback cannot run until the next timer phase, so a lookup that
+    // settles in microtasks wins the race — and the success branch preceded
+    // the loop's own deadline check, so both records were accepted with
+    // `outcome: 'witnesses-present'` at a `waitedMs` past the 15000-ms bound
+    // (the reviewer's synthetic held turn on the default real clock measured
+    // `waitedMs: 15100`). The rows below reproduce that exact ordering on
+    // the REAL clocks deterministically: the lookup seam arms a sync loop
+    // block relative to its own first call (the sequencing deadline is
+    // `first call + 15000 ms` within a sub-millisecond skew), the block
+    // freezes the event loop ACROSS the deadline instant — no timer
+    // callback, pacing tick or lookup settlement can run inside it — flips
+    // the seam's presence flag SYNCHRONOUSLY inside the frozen span, and
+    // releases strictly after the deadline, so the first post-release
+    // iteration starts strictly past the deadline with BOTH witnesses
+    // present and each lookup settling in microtasks (the armed 0 ms
+    // timeout callbacks cannot run before them). The seam returns a
+    // synthetic stats shape — the loop consumes `stats.isFile()` only —
+    // with NO real I/O, which is what pins the settlement to pure
+    // microtask work and makes the ordering deterministic. The amended
+    // bytes recheck the SAME monotonic clock with the SAME strict-`>`
+    // comparison as the loop's own check AFTER lookup settlement and BEFORE
+    // the success return; the last row proves an in-window settlement pair
+    // is returned unchanged.
+    // ---------------------------------------------------------------------
+    const runDeadlineStraddleTurn = async ({
+      blockArmAfterFirstCallMs,
+      blockHoldMs,
+      invocationPresentFromStart = false,
+      holdMs = 17_000,
+    } = {}) => {
+      let blockArmed = false;
+      let present = false;
+      const invocationSuffix = SPAWN_ANCESTRY_WITNESS_SUFFIXES.invocation;
+      return runWitnessSequencingTurn({
+        virtualClock: false,
+        holdMs,
+        wallClockNow: () => WALL_BASE,
+        lookupLocalWitnessPresence: async (witnessPath) => {
+          if (!blockArmed) {
+            blockArmed = true;
+            // The sync block: armed at first-call + blockArmAfterFirstCallMs,
+            // it freezes the loop for blockHoldMs — a span that covers the
+            // sequencing deadline — sets the presence flag INSIDE the frozen
+            // span (no iteration can observe it before the release) and
+            // releases after it (or, on the control row, strictly before the
+            // deadline).
+            setTimeout(() => {
+              const spinStart = Date.now();
+              while (Date.now() - spinStart < blockHoldMs - 20) { /* frozen across the deadline */ }
+              present = true;
+              while (Date.now() - spinStart < blockHoldMs) { /* released past the deadline */ }
+            }, blockArmAfterFirstCallMs);
+          }
+          if (witnessPath.endsWith(invocationSuffix) && invocationPresentFromStart === true) return { isFile: () => true };
+          return present ? { isFile: () => true } : null;
+        },
+      });
+    };
+
+    test('a lookup that settles after the monotonic deadline but before its timeout callback runs can no longer return witnesses-present: the bound is rechecked after lookup settlement and before the success return (review round 7, finding 1 — the settlement straddle, the default real clock)', { timeout: 120_000 }, async (t) => {
+      // The block spans first-call + [14.5 s, 15.05 s] — the sequencing
+      // deadline sits inside it, so the loop is frozen at the crossing and
+      // the first post-release iteration starts strictly past the deadline
+      // with both witnesses present. On the pre-fix bytes the success branch
+      // accepted the pair (`witnesses-present` at a waitedMs past the bound —
+      // the RED); on the amended bytes the settlement recheck names the same
+      // bound-expired outcome the other deadline paths name.
+      const { held, block, probes, root } = await runDeadlineStraddleTurn({
+        blockArmAfterFirstCallMs: 14_500,
+        blockHoldMs: 550,
+      });
+      t.after(() => { try { rm(root, { recursive: true, force: true }); } catch { /* disposed */ } });
+      assert.equal(held.budgetExpired, false, 'the turn completed on its own hold, never through the budget');
+      assert.ok(block.witnessSequencing, 'the sequencing fact persisted');
+      assert.equal(block.witnessSequencing.outcome, 'bound-expired', `the settled lookups cannot return witnesses-present past the bound (actual ${JSON.stringify(block.witnessSequencing)})`);
+      assert.equal(block.witnessSequencing.boundMs, SPAWN_WITNESS_SEQUENCING_BOUND_MS, 'the sequencing bound is the closed constant');
+      assert.ok(block.witnessSequencing.waitedMs >= SPAWN_WITNESS_SEQUENCING_BOUND_MS - 100,
+        `the expiry is recorded at the true monotonic duration (actual ${block.witnessSequencing.waitedMs})`);
+      assert.equal(block.witnessSequencing.expiredAtEpochMs, WALL_BASE, 'the epoch evidence field rides the (frozen) WALL clock while the recheck was monotonic');
+      assert.deepEqual(block.witnessSequencing.awaitedRoles, ['invocation', 'broker-daemon'], 'the awaited roles are unchanged');
+      assert.ok(probes.lookupCalls >= 2, `both raced lookups were requested (actual ${probes.lookupCalls} calls)`);
+      assert.ok(probes.lookupSettled >= 2, `both settled lookups drove the recheck (actual ${probes.lookupSettled} settlements)`);
+    });
+
+    test('the settlement recheck keeps the staggered crossing honest: the first witness settles inside the window, the second after the deadline — the success point rechecks the bound and the earlier file is not re-queried (review round 7, finding 1 — the staggered crossing arm)', { timeout: 120_000 }, async (t) => {
+      // The directed trade-off, made explicit: the loop's success point is
+      // BOTH records settled, the recheck lives exactly there, and an
+      // already-present witness is NOT re-queried at it. With the invocation
+      // record present from the first iteration and the broker-daemon record
+      // appearing only inside the block, the pre-fix bytes accepted the pair
+      // past the bound; the amended bytes name bound-expired at the same
+      // success point.
+      const { block, probes, root } = await runDeadlineStraddleTurn({
+        blockArmAfterFirstCallMs: 14_500,
+        blockHoldMs: 550,
+        invocationPresentFromStart: true,
+      });
+      t.after(() => { try { rm(root, { recursive: true, force: true }); } catch { /* disposed */ } });
+      assert.ok(block.witnessSequencing, 'the sequencing fact persisted');
+      assert.equal(block.witnessSequencing.outcome, 'bound-expired', `the staggered crossing names bound-expired at the success point (actual ${JSON.stringify(block.witnessSequencing)})`);
+      assert.equal(block.witnessSequencing.expiredAtEpochMs, WALL_BASE, 'the epoch evidence field rides the (frozen) WALL clock while the recheck was monotonic');
+      assert.ok(probes.lookupCalls >= 2, `both raced lookups were requested (actual ${probes.lookupCalls} calls)`);
+      assert.ok(probes.lookupSettled >= 2, `both settled lookups drove the recheck (actual ${probes.lookupSettled} settlements)`);
+    });
+
+    test('the settlement recheck never tightens the window: a lookup pair that both settle strictly before the deadline still returns witnesses-present with no epoch field (review round 7, finding 1 — the in-window control)', { timeout: 120_000 }, async (t) => {
+      // The SAME construction with the block released strictly INSIDE the
+      // window (first-call + [14.4 s, 14.75 s]): the first post-release
+      // iteration settles both lookups present ~250 ms before the deadline,
+      // and the recheck — the same clock, the same strict-`>` comparison as
+      // the loop's own check — passes it unchanged as witnesses-present on
+      // BOTH byte sets. A tie at the exact deadline keeps the loop check's
+      // own semantics (the recheck expressions are identical, so the tie
+      // behaves identically); the raced deadline ARM at the tie keeps its
+      // existing §33.8 semantics (a timer scheduled at the deadline instant
+      // names bound-expired when it wins the race).
+      const { block, probes, root } = await runDeadlineStraddleTurn({
+        blockArmAfterFirstCallMs: 14_400,
+        blockHoldMs: 350,
+        invocationPresentFromStart: true,
+      });
+      t.after(() => { try { rm(root, { recursive: true, force: true }); } catch { /* disposed */ } });
+      assert.ok(block.witnessSequencing, 'the sequencing fact persisted');
+      assert.equal(block.witnessSequencing.outcome, 'witnesses-present', `the in-window settlement pair is returned unchanged (actual ${JSON.stringify(block.witnessSequencing)})`);
+      assert.equal(block.witnessSequencing.waitedMs < SPAWN_WITNESS_SEQUENCING_BOUND_MS, true, `the completion stays strictly inside the bound (actual ${block.witnessSequencing.waitedMs})`);
+      assert.equal('expiredAtEpochMs' in block.witnessSequencing, false, 'no epoch field rides a witnesses-present outcome');
+      assert.ok(probes.lookupCalls >= 2, `both raced lookups were requested (actual ${probes.lookupCalls} calls)`);
+      assert.ok(probes.lookupSettled >= 2, `both settled lookups completed inside the window (actual ${probes.lookupSettled} settlements)`);
+    });
+
+    test('the seam-simulated unavailable exact bridge drives the named degraded outcome: the armed read lands on the byte-identical coarse path and the capability probe classifies it not-capable', { timeout: 60_000 }, async (t) => {
+      // (§33.9 finding 2, the degraded-arm control) a REAL observed child and
+      // the module's OWN degrade branch (an unavailable exact read falls to
+      // the ps coarse path — readDarwinKinfoExact's seam surface makes the
+      // unavailability injectable on every host): the opt-in-armed read still
+      // ESTABLISHES, its identity is the coarse ps form byte-identically to
+      // the unarmed read, and the capability probe driven through the same
+      // unavailable surface classifies NOT capable — the exact deterministic
+      // arm the gated rows' degraded branch verifies on a bridge-less darwin
+      // host.
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-witness-bridge-degrade-'));
+      t.after(() => { try { rm(root, { recursive: true, force: true }); } catch { /* disposed */ } });
+      const nonce = randomBytes(32).toString('hex');
+      const observedChild = spawnNode(process.execPath, ['--input-type=module', '--eval', 'await new Promise((resolve) => setTimeout(resolve, 20_000));'], {
+        env: { ...isolatedBaseEnv(root), [FAKE_ZCODE_NONCE_VARIABLE]: nonce }, stdio: 'ignore',
+      });
+      t.after(() => { try { observedChild.kill('SIGKILL'); } catch { /* gone */ } });
+      const unavailableBridge = async () => { throw new Error('the simulated unavailable exact bridge'); };
+      const degradedArmed = await observeLocalProcess({ pid: observedChild.pid, nonce, nonceVariable: FAKE_ZCODE_NONCE_VARIABLE, osSeams: { exactReaderOptIn: true, kinfoExact: unavailableBridge } });
+      const unarmed = await observeLocalProcess({ pid: observedChild.pid, nonce, nonceVariable: FAKE_ZCODE_NONCE_VARIABLE });
+      assert.equal(degradedArmed.status, 'established', `the opt-in-armed read still establishes over the unavailable bridge (actual ${JSON.stringify(degradedArmed.status)})`);
+      assert.equal(unarmed.status, 'established', `the unarmed coarse read establishes (actual ${JSON.stringify(unarmed.status)})`);
+      assert.equal(parseExactStartIdentity(degradedArmed.observation?.startIdentity), null, `the degraded armed read stays the coarse ps form (actual ${JSON.stringify(degradedArmed.observation?.startIdentity ?? null)})`);
+      assert.equal(degradedArmed.observation?.startIdentity, unarmed.observation?.startIdentity, 'the degraded armed identity is the BYTE-IDENTICAL coarse path (the unarmed ps read)');
+      const probe = await probeDarwinExactBridge({ observe: (input) => observeLocalProcess({ ...input, osSeams: { ...(/** @type {any} */ (input).osSeams ?? {}), kinfoExact: unavailableBridge } }) });
+      if (process.platform === 'darwin') {
+        assert.equal(probe.probed, true, 'the darwin probe ran its bounded real read');
+        assert.equal(probe.capable, false, `the unavailable bridge classifies NOT capable (actual ${JSON.stringify(probe)})`);
+      } else {
+        assert.equal(probe.probed, false, 'off-darwin the probe stays dispatched (no probe read ran)');
+        assert.equal(probe.capable, false, 'off-darwin the probe reports not-capable (the platform dispatch owns the arm)');
+      }
+    });
+
+    // ---------------------------------------------------------------------
+    // (§33.10, user-review round 3 P2) The RESEARCH ENTRY wires the
+    // real-chain capture: runShellWaitCase composes `spawnWitness: true`
+    // exactly for the closed capture-required set (the witness gates consume
+    // the capture environment — the fixture's own fail-closed coupling), so
+    // a normal research command arms the REAL launcher→broker and
+    // broker→transport witness capture; the live preflight verifies the
+    // DECLARED arming (the agreement arm — the wrong-instrument refusal
+    // family); and the launch-spy keeps that refusal at zero hosted calls.
+    // Offline: no host/provider is ever launched here; the real fixture is
+    // exercised through the seam-injected fast installer (the §33.2
+    // environment-composition-control pattern), never a live launch.
+    // ---------------------------------------------------------------------
+    test('the research entry composes the witness arming exactly for the closed capture-required cases (the §20.8 ride)', async (t) => {
+      const { SHELL_WAIT_CASES, STDOUT_CAPTURE_REQUIRED_CASES } = await import('../tools/shell-wait-probe/driver.mjs');
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-entry-witness-'));
+      t.after(() => { try { rm(root, { recursive: true, force: true }); } catch { /* disposed */ } });
+      const fakeFixture = {
+        workspace: join(root, 'ws'), codexHome: join(root, 'home'), installedRoot: join(root, 'installed'),
+        env: { HOME: root }, record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
+        dispose: async () => {},
+      };
+      const captured = [];
+      for (const label of SHELL_WAIT_CASES) {
+        const output = join(root, `output-${label}`);
+        await mkdir(output, { mode: 0o700 });
+        await runShellWaitCase({
+          case: label, codexBinary: process.execPath, sourceSha: 'a'.repeat(40),
+          // The registered per-case windows (the codex-round-2 arming row's
+          // persistCase pattern): the baseline case keeps its plain 60000
+          // observation window, every other case rides the bounded
+          // 3600000 pair.
+          workerDurationMs: 420_000,
+          ...(label === 'rescue-baseline'
+            ? { capMs: null, pollMs: 60_000, budgetMs: 720_000 }
+            : { capMs: 3_600_000, pollMs: 3_600_000, budgetMs: 1_200_000 }),
+          output,
+        }, {
+          createFixture: async (fixtureInput) => { captured.push({ label, fixtureInput }); return fakeFixture; },
+          executeLiveCase: async () => ({ inconclusive: null, evidence: { count: 0, truncated: false, excerpts: [] } }),
+        });
+      }
+      assert.equal(captured.length, SHELL_WAIT_CASES.length, 'every registered case was threaded through the entry exactly once');
+      for (const { label, fixtureInput } of captured) {
+        if (STDOUT_CAPTURE_REQUIRED_CASES.has(label)) {
+          assert.equal(fixtureInput.stdoutCapture, true, `${label}: the registered capture requirement arms the seam at preparation`);
+          assert.equal(fixtureInput.spawnWitness, true, `${label}: the research entry arms the real-chain spawn-witness capture with the capture seam (the witness gates consume the capture environment)`);
+        } else {
+          assert.equal(Object.hasOwn(fixtureInput, 'stdoutCapture'), false, `${label}: a case with no registered capture requirement stays byte-identical (no capture key)`);
+          assert.equal(Object.hasOwn(fixtureInput, 'spawnWitness'), false, `${label}: a case with no registered capture requirement stays byte-identical (no witness key)`);
+        }
+      }
+      // The closed set itself: exactly the registered I/O1/O2 designs.
+      assert.deepEqual([...STDOUT_CAPTURE_REQUIRED_CASES].sort(), ['rescue-interrupt', 'rescue-long', 'rescue-repeat'],
+        'the witness arming rides the closed capture-required set (the named real-chain criterion), never an ad-hoc list');
+    });
+
+    test('the entry-shaped input arms the REAL fixture: the generated witness preload, the record declaration and the exact-reader opt-in ride the composed capture (the unarmed control stays byte-identical)', { timeout: 180_000 }, async (t) => {
+      const { SPAWN_WITNESS_PRELOAD_FILE_NAME } = await import('../tools/shell-wait-probe/spawn-witness-preload.mjs');
+      const repositorySha = spawnSync('git', ['rev-parse', 'HEAD'], { env: isolatedBaseEnv(), encoding: 'utf8' }).stdout.trim();
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-entry-real-fixture-'));
+      t.after(() => { try { rm(root, { recursive: true, force: true }); } catch { /* disposed */ } });
+      // The ENTRY-shaped input: captured from the entry itself (a stub
+      // createFixture records exactly what runShellWaitCase composes for the
+      // registered interrupt case), then handed VERBATIM to the REAL fixture
+      // composer through the seam-injected fast installer (no real install,
+      // no host — the instrument the environment-composition control uses).
+      const output = join(root, 'output');
+      await mkdir(output, { mode: 0o700 });
+      let entryInput = null;
+      await runShellWaitCase({
+        case: 'rescue-interrupt', codexBinary: process.execPath, sourceSha: repositorySha,
+        workerDurationMs: 420_000, capMs: 3_600_000, pollMs: 3_600_000, budgetMs: 1_200_000,
+        output,
+      }, {
+        createFixture: async (fixtureInput) => { entryInput = fixtureInput; return { workspace: join(root, 'ws'), codexHome: join(root, 'home'), installedRoot: join(root, 'installed'), env: { HOME: root }, record: {}, dispose: async () => {} }; },
+        executeLiveCase: async () => ({ inconclusive: null, evidence: { count: 0, truncated: false, excerpts: [] } }),
+      });
+      assert.ok(entryInput, 'premise: the entry composed the fixture input');
+      const makeFixture = async (input, label) => {
+        const fixtureOutput = join(root, `fixture-output-${label}`);
+        await mkdir(fixtureOutput, { mode: 0o700 });
+        return createShellWaitFixture({ ...input, output: fixtureOutput }, { buildSnapshot: fastBuildSnapshot, installPlugin: fastRealBytesInstaller, runSetup: fakeIsolatedSetup });
+      };
+      const armed = await makeFixture(entryInput, 'armed');
+      t.after(() => armed.dispose());
+      // The control: the SAME entry-shaped input with the witness key absent
+      // — the pre-§33.10 shape (schema stability, byte-identical composition).
+      const { spawnWitness, ...plainInput } = entryInput;
+      assert.equal(spawnWitness, true, 'premise: the entry-shaped input carries the witness arming');
+      const plain = await makeFixture(plainInput, 'plain');
+      t.after(() => plain.dispose());
+
+      // The ARMED composition through the entry: the REAL generated witness
+      // preload on disk, the record declaration, the exact-reader opt-in and
+      // the declared transport entry — all ADDITIVE to the capture seam.
+      const armedRecord = /** @type {any} */ (armed.record);
+      const armedHandle = /** @type {any} */ (armed).spawnWitness;
+      assert.ok(armedRecord.spawnWitnessCapture, 'the entry-created fixture record declares the spawn-witness capture arming');
+      assert.equal(armedRecord.spawnWitnessCapture.preload, SPAWN_WITNESS_PRELOAD_FILE_NAME, 'the declaration names the witness preload artifact');
+      assert.ok(armedHandle, 'the entry-created fixture carries the armed witness handle');
+      assert.equal(armedHandle.exactReaderEnabled, true, 'the armed handle declares the exact-reader enablement');
+      const witnessPreloadBytes = await readFile(armedHandle.preloadPath);
+      assert.equal(sha256('sha256').update(witnessPreloadBytes).digest('hex'), armedHandle.preloadSha256, 'the handle pins the generated witness preload bytes on disk');
+      assert.equal(armedRecord.spawnWitnessCapture.preloadSha256, armedHandle.preloadSha256, 'the record declaration agrees with the armed handle digest');
+      assert.equal(armed.env[EXACT_READER_VARIABLE], '1', 'the armed env arms the exact reader');
+      assert.equal(await realpath(armed.env[WITNESS_TRANSPORT_ENTRY_VARIABLE]), armedHandle.transportEntryRealpath, 'the armed env declares the resolved transport entry');
+      assert.equal(((/** @type {string} */ (armed.env.NODE_OPTIONS)).match(/--require/g) ?? []).length, 2, 'the armed composition loads exactly the two preloads (capture first, witness second)');
+      assert.ok((/** @type {string} */ (armed.env.NODE_OPTIONS)).indexOf('closure-stdout-preload.cjs') < (/** @type {string} */ (armed.env.NODE_OPTIONS)).indexOf(SPAWN_WITNESS_PRELOAD_FILE_NAME), 'the witness fragment is appended AFTER the capture preload fragment');
+      const armedDeclaration = localObservationDeclarationFor(armed, 'rescue-interrupt');
+      assert.ok(armedDeclaration, 'the armed fixture composes the runtime declaration');
+      assert.equal(armedDeclaration.witnessArmed, true, 'the entry-created declaration arms the runtime witness sequencing');
+      assert.equal(armedDeclaration.exactReaderEnabled, true, 'the entry-created declaration threads the exact-reader opt-in');
+      // The entry-created fixture passes its own live preflight (the
+      // §33.10 agreement arm verifies the declared arming positively).
+      const armedPreflight = await evaluateLiveLaunchPreflight({ case: 'rescue-interrupt', survivalControlSelector: null, fixture: armed });
+      assert.deepEqual(armedPreflight, { ok: true, reason: null }, `the entry-created fixture passes its own preflight (actual ${JSON.stringify(armedPreflight)})`);
+
+      // The UNARMED control: no witness block, no handle, exactly one
+      // preload, no exact-reader env, no witnessArmed member.
+      const plainRecord = /** @type {any} */ (plain.record);
+      assert.equal(plainRecord.spawnWitnessCapture, undefined, 'the unarmed control record carries no witness block');
+      assert.equal((/** @type {any} */ (plain)).spawnWitness, undefined, 'the unarmed control carries no witness handle');
+      assert.equal(((/** @type {string} */ (plain.env.NODE_OPTIONS)).match(/--require/g) ?? []).length, 1, 'the unarmed control loads exactly the capture preload');
+      assert.equal(plain.env[EXACT_READER_VARIABLE], undefined, 'the unarmed control never arms the exact reader');
+      assert.equal(localObservationDeclarationFor(plain, 'rescue-interrupt')?.witnessArmed, undefined, 'the unarmed control composes no witnessArmed member');
+    });
+
+    test('the live preflight verifies the DECLARED witness arming: a record declaring the capture without the agreeing armed instrument refuses pre-launch by name (the agreement arm)', async (t) => {
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-witness-preflight-'));
+      t.after(() => { try { rm(root, { recursive: true, force: true }); } catch { /* disposed */ } });
+      const workspace = join(root, 'ws');
+      const dataRoot = join(root, 'data-root');
+      await mkdir(workspace, { mode: 0o700 });
+      await mkdir(dataRoot, { mode: 0o700 });
+      // The capture-armed base (the directDesign row's real-bytes shape):
+      // BOTH stand-in artifacts on disk, digests bound into the handles, the
+      // record declarations and the effective env — so every EARLIER named
+      // ground passes and ONLY the witness agreement arm decides.
+      const captureBytes = '// the executing capture preload stand-in\n';
+      const witnessBytes = '// the generated witness preload stand-in\n';
+      const capturePath = join(root, 'closure-stdout-preload.cjs');
+      const witnessPath = join(root, 'spawn-ancestry-witness-preload.cjs');
+      await writeFile(capturePath, captureBytes, { mode: 0o600 });
+      await writeFile(witnessPath, witnessBytes, { mode: 0o600 });
+      const captureSha = sha256('sha256').update(captureBytes).digest('hex');
+      const witnessSha = sha256('sha256').update(witnessBytes).digest('hex');
+      const base = armSyntheticFixture({
+        workspace, codexHome: join(root, 'home'), installedRoot: join(root, 'installed'),
+        env: { ZCODE_DATA_ROOT: dataRoot }, record: { variant: 'candidate', appliedArtifacts: [] },
+      });
+      const boundCapture = { ...base.stdoutCapture, preloadPath: capturePath, preloadSha256: captureSha };
+      // (Review round 5) the positive instrument's environment is the REAL
+      // ARMED shape — the capture env PLUS the witness --require fragment
+      // riding the composed NODE_OPTIONS and the declared witness transport
+      // variables (syntheticWitnessEnv) — never the capture-only composition
+      // the preflight now refuses by name.
+      const withWitness = (witness) => ({
+        ...base,
+        stdoutCapture: boundCapture,
+        env: { ...base.env, ...syntheticCaptureEnv(boundCapture), ...(witness === undefined ? {} : syntheticWitnessEnv(boundCapture, witness)) },
+        record: { ...base.record, closureStdoutCapture: { ...base.record.closureStdoutCapture, preloadSha256: captureSha }, spawnWitnessCapture: { preload: 'spawn-ancestry-witness-preload.cjs', preloadSha256: witnessSha } },
+        ...(witness === undefined ? {} : { spawnWitness: witness }),
+      });
+      const positive = withWitness({ preloadPath: witnessPath, preloadSha256: witnessSha, transportEntryRealpath: '/private/tmp/entry-fixture/tests/fixtures/fake-zcode-cli.mjs', exactReaderEnabled: true });
+      const verdictPositive = await evaluateLiveLaunchPreflight({ case: 'rescue-interrupt', survivalControlSelector: null, fixture: positive });
+      assert.deepEqual(verdictPositive, { ok: true, reason: null }, `a declared AND fully backed witness instrument passes (actual ${JSON.stringify(verdictPositive)})`);
+      // (a) The declared arming with NO armed handle: the declared instrument
+      // is absent — refused by name.
+      const verdictUnhandled = await evaluateLiveLaunchPreflight({ case: 'rescue-interrupt', survivalControlSelector: null, fixture: withWitness(undefined) });
+      assert.equal(verdictUnhandled.ok, false, `a declared-but-unhandled instrument must refuse (actual ${JSON.stringify(verdictUnhandled)})`);
+      assert.match(String(verdictUnhandled.reason), /no armed witness handle/u, verdictUnhandled.reason);
+      assert.match(String(verdictUnhandled.reason), /wrong instrument/u, verdictUnhandled.reason);
+      // (b) The armed handle whose generated preload is missing on disk.
+      const verdictMissing = await evaluateLiveLaunchPreflight({ case: 'rescue-interrupt', survivalControlSelector: null, fixture: withWitness({ preloadPath: join(root, 'gone.cjs'), preloadSha256: witnessSha, transportEntryRealpath: '/private/tmp/entry-fixture/tests/fixtures/fake-zcode-cli.mjs', exactReaderEnabled: true }) });
+      assert.equal(verdictMissing.ok, false, `a declared instrument with an absent preload must refuse (actual ${JSON.stringify(verdictMissing)})`);
+      assert.match(String(verdictMissing.reason), /declared spawn-witness capture preload is absent/u, verdictMissing.reason);
+      // (c) The armed handle whose digest DISAGREES with the declaration
+      // (a drifted/replaced instrument).
+      const verdictDrifted = await evaluateLiveLaunchPreflight({ case: 'rescue-interrupt', survivalControlSelector: null, fixture: withWitness({ preloadPath: witnessPath, preloadSha256: sha256('sha256').update('// other bytes\n').digest('hex'), transportEntryRealpath: '/private/tmp/entry-fixture/tests/fixtures/fake-zcode-cli.mjs', exactReaderEnabled: true }) });
+      assert.equal(verdictDrifted.ok, false, `a digest-disagreeing instrument must refuse (actual ${JSON.stringify(verdictDrifted)})`);
+      assert.match(String(verdictDrifted.reason), /disagrees with the armed witness handle digest/u, verdictDrifted.reason);
+      // The control: a capture-only fixture with NO witness declaration (the
+      // pre-§33.10 instrument shape) is not blocked by the agreement arm.
+      const captureOnly = { ...base, stdoutCapture: boundCapture, env: { ...base.env, ...syntheticCaptureEnv(boundCapture) }, record: { ...base.record, closureStdoutCapture: { ...base.record.closureStdoutCapture, preloadSha256: captureSha } } };
+      const verdictCaptureOnly = await evaluateLiveLaunchPreflight({ case: 'rescue-interrupt', survivalControlSelector: null, fixture: captureOnly });
+      assert.deepEqual(verdictCaptureOnly, { ok: true, reason: null }, `a capture-only fixture with no witness declaration stays unblocked (actual ${JSON.stringify(verdictCaptureOnly)})`);
+    });
+
+    test('launch-spy: the DEFAULT live path refuses a declared-but-unbacked witness instrument before any host/provider invocation (zero hosted calls; the fixture is disposed)', { timeout: 120_000 }, async (t) => {
+      const previousGate = process.env.ZCODE_SHELL_WAIT_E2E;
+      process.env.ZCODE_SHELL_WAIT_E2E = '1';
+      let fixtureCalls = 0;
+      try {
+        const root = await mkdtemp(join(tmpdir(), 'shell-wait-witness-spy-'));
+        t.after(() => { try { rm(root, { recursive: true, force: true }); } catch { /* disposed */ } });
+        const workspace = join(root, 'ws');
+        const dataRoot = join(root, 'data-root');
+        const output = join(root, 'output');
+        await mkdir(workspace, { mode: 0o700 });
+        await mkdir(dataRoot, { mode: 0o700 });
+        await mkdir(output, { mode: 0o700 });
+        // The capture-armed instrument whose record DECLARES the witness
+        // arming but carries NO witness handle — the entry-produced arming
+        // without its backing instrument. The DEFAULT executor (the only
+        // host-launch site) runs the preflight and refuses BEFORE the
+        // version probe and the held turn.
+        const captureBytes = '// the executing capture preload stand-in\n';
+        const capturePath = join(root, 'closure-stdout-preload.cjs');
+        await writeFile(capturePath, captureBytes, { mode: 0o600 });
+        const captureSha = sha256('sha256').update(captureBytes).digest('hex');
+        const base = armSyntheticFixture({
+          workspace, codexHome: join(root, 'home'), installedRoot: join(root, 'installed'),
+          env: { ZCODE_DATA_ROOT: dataRoot }, record: { variant: 'candidate', appliedArtifacts: [] },
+        });
+        const boundCapture = { ...base.stdoutCapture, preloadPath: capturePath, preloadSha256: captureSha };
+        const declaringUnbacked = {
+          ...base,
+          stdoutCapture: boundCapture,
+          env: { ...base.env, ...syntheticCaptureEnv(boundCapture) },
+          record: { ...base.record, closureStdoutCapture: { ...base.record.closureStdoutCapture, preloadSha256: captureSha }, spawnWitnessCapture: { preload: 'spawn-ancestry-witness-preload.cjs', preloadSha256: captureSha } },
+          dispose: async () => {},
+        };
+        await assert.rejects(
+          runShellWaitCase(
+            { case: 'rescue-interrupt', codexBinary: process.execPath, sourceSha: 'a'.repeat(40), workerDurationMs: 420_000, capMs: 3_600_000, pollMs: 3_600_000, budgetMs: 1_200_000, output },
+            { createFixture: async () => { fixtureCalls += 1; return declaringUnbacked; } },
+          ),
+          /no armed witness handle/u,
+        );
+        assert.equal(fixtureCalls, 1, 'the fixture was created once and then disposed by the refusal path');
+        // The refusal persists its redacted failed record (the failure path
+        // never erases evidence) with the held fields NULL — the version
+        // probe and the held turn never ran: zero hosted calls.
+        const recordName = (await readdir(output)).find((name) => name.endsWith('.record.json'));
+        assert.ok(recordName, 'the failed record persisted');
+        const persisted = JSON.parse(await readFile(join(output, recordName), 'utf8'));
+        assert.equal(persisted.status, 'failed', 'the refusal rides the record as the named failed status');
+        assert.match(String(persisted.inconclusive?.detail ?? persisted.inconclusive?.reason ?? ''), /no armed witness handle/u, JSON.stringify(persisted.inconclusive));
+        assert.equal(persisted.cleanup?.fixtureDisposed, true, 'the refusal path disposed the fixture');
+        assert.equal(persisted.held?.cleanupLabel, null, 'the held turn NEVER ran (zero hosted calls)');
+        assert.equal(persisted.provenance?.codexVersion, null, 'the version probe NEVER ran (zero hosted calls)');
+      } finally {
+        if (previousGate === undefined) delete process.env.ZCODE_SHELL_WAIT_E2E;
+        else process.env.ZCODE_SHELL_WAIT_E2E = previousGate;
+      }
+    });
+
+    test('the live preflight verifies the EFFECTIVE witness launch environment: a declared witness instrument over a capture-only NODE_OPTIONS refuses pre-launch by name while the capture-only face without a witness declaration stays unblocked (review round 5, finding 1 — the effective-env capture-only arm)', async (t) => {
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-witness-effective-'));
+      t.after(() => { try { rm(root, { recursive: true, force: true }); } catch { /* disposed */ } });
+      const workspace = join(root, 'ws');
+      const dataRoot = join(root, 'data-root');
+      await mkdir(workspace, { mode: 0o700 });
+      await mkdir(dataRoot, { mode: 0o700 });
+      // The same stand-in shape as the agreement arm: every EARLIER named
+      // ground passes (both artifacts on disk, digests bound, the capture
+      // env armed) so ONLY the effective-witness-environment arm decides.
+      const captureBytes = '// the executing capture preload stand-in\n';
+      const witnessBytes = '// the generated witness preload stand-in\n';
+      const capturePath = join(root, 'closure-stdout-preload.cjs');
+      const witnessPath = join(root, 'spawn-ancestry-witness-preload.cjs');
+      await writeFile(capturePath, captureBytes, { mode: 0o600 });
+      await writeFile(witnessPath, witnessBytes, { mode: 0o600 });
+      const captureSha = sha256('sha256').update(captureBytes).digest('hex');
+      const witnessSha = sha256('sha256').update(witnessBytes).digest('hex');
+      const base = armSyntheticFixture({
+        workspace, codexHome: join(root, 'home'), installedRoot: join(root, 'installed'),
+        env: { ZCODE_DATA_ROOT: dataRoot }, record: { variant: 'candidate', appliedArtifacts: [] },
+      });
+      const boundCapture = { ...base.stdoutCapture, preloadPath: capturePath, preloadSha256: captureSha };
+      const armedHandle = { preloadPath: witnessPath, preloadSha256: witnessSha, transportEntryRealpath: join(root, 'transport-entry'), exactReaderEnabled: true };
+      // The reviewer's exact construction: the declared witness instrument
+      // over the CAPTURE-ONLY effective environment — the composed
+      // NODE_OPTIONS carries the capture preload's --require token but NO
+      // witness token, so the witness preload never runs at the launch.
+      const declaredOverCaptureOnly = {
+        ...base,
+        stdoutCapture: boundCapture,
+        env: { ...base.env, ...syntheticCaptureEnv(boundCapture) },
+        record: { ...base.record, closureStdoutCapture: { ...base.record.closureStdoutCapture, preloadSha256: captureSha }, spawnWitnessCapture: { preload: 'spawn-ancestry-witness-preload.cjs', preloadSha256: witnessSha } },
+        spawnWitness: armedHandle,
+      };
+      const verdict = await evaluateLiveLaunchPreflight({ case: 'rescue-interrupt', survivalControlSelector: null, fixture: declaredOverCaptureOnly });
+      assert.equal(verdict.ok, false, `a declared witness instrument over a capture-only NODE_OPTIONS must refuse (actual ${JSON.stringify(verdict)})`);
+      assert.match(String(verdict.reason), /does not LOAD the declared witness preload/u, verdict.reason);
+      assert.match(String(verdict.reason), /capture-only NODE_OPTIONS/u, verdict.reason);
+      assert.match(String(verdict.reason), /wrong instrument/u, verdict.reason);
+      // The contrast: the SAME capture-only environment WITHOUT the witness
+      // declaration (the pre-§33.10 face) stays unblocked.
+      const captureOnly = { ...base, stdoutCapture: boundCapture, env: { ...base.env, ...syntheticCaptureEnv(boundCapture) }, record: { ...base.record, closureStdoutCapture: { ...base.record.closureStdoutCapture, preloadSha256: captureSha } } };
+      const verdictCaptureOnly = await evaluateLiveLaunchPreflight({ case: 'rescue-interrupt', survivalControlSelector: null, fixture: captureOnly });
+      assert.deepEqual(verdictCaptureOnly, { ok: true, reason: null }, `the capture-only face without a witness declaration stays unblocked (actual ${JSON.stringify(verdictCaptureOnly)})`);
+    });
+
+    test('the live preflight verifies the DECLARED witness transport configuration in the effective launch environment: a missing or disagreeing witness transport variable refuses pre-launch by name and the fully armed environment passes (review round 5, finding 1 — the effective-env transport arm)', async (t) => {
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-witness-transport-'));
+      t.after(() => { try { rm(root, { recursive: true, force: true }); } catch { /* disposed */ } });
+      const workspace = join(root, 'ws');
+      const dataRoot = join(root, 'data-root');
+      await mkdir(workspace, { mode: 0o700 });
+      await mkdir(dataRoot, { mode: 0o700 });
+      const captureBytes = '// the executing capture preload stand-in\n';
+      const witnessBytes = '// the generated witness preload stand-in\n';
+      const capturePath = join(root, 'closure-stdout-preload.cjs');
+      const witnessPath = join(root, 'spawn-ancestry-witness-preload.cjs');
+      await writeFile(capturePath, captureBytes, { mode: 0o600 });
+      await writeFile(witnessPath, witnessBytes, { mode: 0o600 });
+      const captureSha = sha256('sha256').update(captureBytes).digest('hex');
+      const witnessSha = sha256('sha256').update(witnessBytes).digest('hex');
+      const base = armSyntheticFixture({
+        workspace, codexHome: join(root, 'home'), installedRoot: join(root, 'installed'),
+        env: { ZCODE_DATA_ROOT: dataRoot }, record: { variant: 'candidate', appliedArtifacts: [] },
+      });
+      const boundCapture = { ...base.stdoutCapture, preloadPath: capturePath, preloadSha256: captureSha };
+      const armedHandle = { preloadPath: witnessPath, preloadSha256: witnessSha, transportEntryRealpath: join(root, 'transport-entry'), exactReaderEnabled: true };
+      // The NODE_OPTIONS side of the witness arming is SATISFIED here (both
+      // --require tokens, capture first) so ONLY the declared transport
+      // configuration decides — the fixture arming's own written set:
+      // the transport entry realpath and the exact-reader opt-in.
+      const bothPreloadsNodeOptions = `${syntheticCaptureEnv(boundCapture).NODE_OPTIONS} --require ${witnessPath}`;
+      const withWitnessEnv = (envOverrides) => ({
+        ...base,
+        stdoutCapture: boundCapture,
+        env: { ...base.env, ...syntheticCaptureEnv(boundCapture), NODE_OPTIONS: bothPreloadsNodeOptions, ...envOverrides },
+        record: { ...base.record, closureStdoutCapture: { ...base.record.closureStdoutCapture, preloadSha256: captureSha }, spawnWitnessCapture: { preload: 'spawn-ancestry-witness-preload.cjs', preloadSha256: witnessSha } },
+        spawnWitness: armedHandle,
+      });
+      // (a) BOTH witness transport variables missing.
+      const verdictMissing = await evaluateLiveLaunchPreflight({ case: 'rescue-interrupt', survivalControlSelector: null, fixture: withWitnessEnv({}) });
+      assert.equal(verdictMissing.ok, false, `a missing witness transport configuration must refuse (actual ${JSON.stringify(verdictMissing)})`);
+      assert.match(String(verdictMissing.reason), /witness transport configuration/u, verdictMissing.reason);
+      assert.match(String(verdictMissing.reason), new RegExp(escapeRegExp(WITNESS_TRANSPORT_ENTRY_VARIABLE), 'u'), verdictMissing.reason);
+      assert.match(String(verdictMissing.reason), /wrong instrument/u, verdictMissing.reason);
+      // (b) the transport entry present, the exact-reader opt-in missing.
+      const verdictNoReader = await evaluateLiveLaunchPreflight({ case: 'rescue-interrupt', survivalControlSelector: null, fixture: withWitnessEnv({ [WITNESS_TRANSPORT_ENTRY_VARIABLE]: armedHandle.transportEntryRealpath }) });
+      assert.equal(verdictNoReader.ok, false, `a missing exact-reader opt-in must refuse (actual ${JSON.stringify(verdictNoReader)})`);
+      assert.match(String(verdictNoReader.reason), /witness transport configuration/u, verdictNoReader.reason);
+      assert.match(String(verdictNoReader.reason), new RegExp(escapeRegExp(EXACT_READER_VARIABLE), 'u'), verdictNoReader.reason);
+      // (c) the transport entry DISAGREES with the declared instrument.
+      const verdictDisagreeing = await evaluateLiveLaunchPreflight({ case: 'rescue-interrupt', survivalControlSelector: null, fixture: withWitnessEnv({ [WITNESS_TRANSPORT_ENTRY_VARIABLE]: join(root, 'foreign-transport-entry'), [EXACT_READER_VARIABLE]: '1' }) });
+      assert.equal(verdictDisagreeing.ok, false, `a transport entry disagreeing with the declaration must refuse (actual ${JSON.stringify(verdictDisagreeing)})`);
+      assert.match(String(verdictDisagreeing.reason), /witness transport configuration/u, verdictDisagreeing.reason);
+      assert.match(String(verdictDisagreeing.reason), new RegExp(escapeRegExp(WITNESS_TRANSPORT_ENTRY_VARIABLE), 'u'), verdictDisagreeing.reason);
+      // (d) the control: the FULLY armed environment (both --require tokens,
+      // both transport variables agreeing with the handle) passes — the real
+      // composer's exact shape.
+      const verdictArmed = await evaluateLiveLaunchPreflight({ case: 'rescue-interrupt', survivalControlSelector: null, fixture: withWitnessEnv({ [WITNESS_TRANSPORT_ENTRY_VARIABLE]: armedHandle.transportEntryRealpath, [EXACT_READER_VARIABLE]: '1' }) });
+      assert.deepEqual(verdictArmed, { ok: true, reason: null }, `the fully armed environment passes (actual ${JSON.stringify(verdictArmed)})`);
+    });
+
+    test('the live preflight hashes the ON-DISK witness preload before accepting it: a truncated or replaced preload artifact refuses pre-launch by name while the intact artifact passes (review round 5, finding 2 — the on-disk digest arm)', async (t) => {
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-witness-disk-'));
+      t.after(() => { try { rm(root, { recursive: true, force: true }); } catch { /* disposed */ } });
+      const workspace = join(root, 'ws');
+      const dataRoot = join(root, 'data-root');
+      await mkdir(workspace, { mode: 0o700 });
+      await mkdir(dataRoot, { mode: 0o700 });
+      const captureBytes = '// the executing capture preload stand-in\n';
+      const witnessBytes = '// the generated witness preload stand-in\n';
+      const capturePath = join(root, 'closure-stdout-preload.cjs');
+      const witnessPath = join(root, 'spawn-ancestry-witness-preload.cjs');
+      await writeFile(capturePath, captureBytes, { mode: 0o600 });
+      await writeFile(witnessPath, witnessBytes, { mode: 0o600 });
+      const captureSha = sha256('sha256').update(captureBytes).digest('hex');
+      const witnessSha = sha256('sha256').update(witnessBytes).digest('hex');
+      const base = armSyntheticFixture({
+        workspace, codexHome: join(root, 'home'), installedRoot: join(root, 'installed'),
+        env: { ZCODE_DATA_ROOT: dataRoot }, record: { variant: 'candidate', appliedArtifacts: [] },
+      });
+      const boundCapture = { ...base.stdoutCapture, preloadPath: capturePath, preloadSha256: captureSha };
+      const armedHandle = { preloadPath: witnessPath, preloadSha256: witnessSha, transportEntryRealpath: join(root, 'transport-entry'), exactReaderEnabled: true };
+      const armed = {
+        ...base,
+        stdoutCapture: boundCapture,
+        env: { ...base.env, ...syntheticCaptureEnv(boundCapture), ...syntheticWitnessEnv(boundCapture, armedHandle) },
+        record: { ...base.record, closureStdoutCapture: { ...base.record.closureStdoutCapture, preloadSha256: captureSha }, spawnWitnessCapture: { preload: 'spawn-ancestry-witness-preload.cjs', preloadSha256: witnessSha } },
+        spawnWitness: armedHandle,
+      };
+      // The CONTROL: the intact artifact passes (the cached agreement is the
+      // real agreement — the declaration binds the executing bytes).
+      const verdictIntact = await evaluateLiveLaunchPreflight({ case: 'rescue-interrupt', survivalControlSelector: null, fixture: armed });
+      assert.deepEqual(verdictIntact, { ok: true, reason: null }, `the intact witness preload passes (actual ${JSON.stringify(verdictIntact)})`);
+      // (a) TRUNCATED after fixture creation: the cached arming hashes still
+      // agree with each other — only the on-disk bytes catch the drift.
+      await writeFile(witnessPath, witnessBytes.slice(0, 10), { mode: 0o600 });
+      const verdictTruncated = await evaluateLiveLaunchPreflight({ case: 'rescue-interrupt', survivalControlSelector: null, fixture: armed });
+      assert.equal(verdictTruncated.ok, false, `a truncated witness preload must refuse (actual ${JSON.stringify(verdictTruncated)})`);
+      assert.match(String(verdictTruncated.reason), /spawn-witness capture preload on disk does not match the arming declaration/u, verdictTruncated.reason);
+      assert.match(String(verdictTruncated.reason), /wrong instrument/u, verdictTruncated.reason);
+      // (b) REPLACED after fixture creation (foreign bytes, the declaration
+      // still attributing the run to the original bytes).
+      await writeFile(witnessPath, '// replaced by an imposter preload\n', { mode: 0o600 });
+      const verdictReplaced = await evaluateLiveLaunchPreflight({ case: 'rescue-interrupt', survivalControlSelector: null, fixture: armed });
+      assert.equal(verdictReplaced.ok, false, `a replaced witness preload must refuse (actual ${JSON.stringify(verdictReplaced)})`);
+      assert.match(String(verdictReplaced.reason), /spawn-witness capture preload on disk does not match the arming declaration/u, verdictReplaced.reason);
+      assert.match(String(verdictReplaced.reason), /wrong instrument/u, verdictReplaced.reason);
+    });
+
+    test('the witness preload read failure stays a NAMED pre-launch refusal: an artifact that vanishes (or turns unreadable) after the presence check refuses by name, never crashing the preflight (review round 5, finding 2 — the read-race arm)', async (t) => {
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-witness-readrace-'));
+      t.after(() => { try { rm(root, { recursive: true, force: true }); } catch { /* disposed */ } });
+      const workspace = join(root, 'ws');
+      const dataRoot = join(root, 'data-root');
+      await mkdir(workspace, { mode: 0o700 });
+      await mkdir(dataRoot, { mode: 0o700 });
+      const captureBytes = '// the executing capture preload stand-in\n';
+      const witnessBytes = '// the generated witness preload stand-in\n';
+      const capturePath = join(root, 'closure-stdout-preload.cjs');
+      const witnessPath = join(root, 'spawn-ancestry-witness-preload.cjs');
+      await writeFile(capturePath, captureBytes, { mode: 0o600 });
+      await writeFile(witnessPath, witnessBytes, { mode: 0o600 });
+      const captureSha = sha256('sha256').update(captureBytes).digest('hex');
+      const witnessSha = sha256('sha256').update(witnessBytes).digest('hex');
+      const base = armSyntheticFixture({
+        workspace, codexHome: join(root, 'home'), installedRoot: join(root, 'installed'),
+        env: { ZCODE_DATA_ROOT: dataRoot }, record: { variant: 'candidate', appliedArtifacts: [] },
+      });
+      const boundCapture = { ...base.stdoutCapture, preloadPath: capturePath, preloadSha256: captureSha };
+      const armedHandle = { preloadPath: witnessPath, preloadSha256: witnessSha, transportEntryRealpath: join(root, 'transport-entry'), exactReaderEnabled: true };
+      const armed = {
+        ...base,
+        stdoutCapture: boundCapture,
+        env: { ...base.env, ...syntheticCaptureEnv(boundCapture), ...syntheticWitnessEnv(boundCapture, armedHandle) },
+        record: { ...base.record, closureStdoutCapture: { ...base.record.closureStdoutCapture, preloadSha256: captureSha }, spawnWitnessCapture: { preload: 'spawn-ancestry-witness-preload.cjs', preloadSha256: witnessSha } },
+        spawnWitness: armedHandle,
+      };
+      // The lstat succeeded (the file existed at the presence check) but the
+      // bytes are gone by the digest read — the vanished-artifact race. The
+      // injected read bomb fails ONLY the witness path (the capture gate's
+      // own read passes through), so the named ground is the witness arm's.
+      const readBomb = async (/** @type {string} */ path) => {
+        if (path === witnessPath) {
+          throw Object.assign(new Error('the witness artifact vanished mid-preflight'), { code: 'ENOENT' });
+        }
+        return readFile(path);
+      };
+      const verdict = await evaluateLiveLaunchPreflight({ case: 'rescue-interrupt', survivalControlSelector: null, fixture: armed }, { readFile: readBomb });
+      assert.equal(verdict.ok, false, `a witness artifact that vanishes after the presence check must refuse by name (actual ${JSON.stringify(verdict)})`);
+      assert.match(String(verdict.reason), /spawn-witness capture preload on disk does not match the arming declaration/u, verdict.reason);
+      assert.match(String(verdict.reason), /wrong instrument/u, verdict.reason);
+    });
+
+    // ---------------------------------------------------------------------
+    // (§33.12, codex review gate round 6 — review-mwiwpb8b-wt5i6w, 1×P2) The
+    // generated witness preload's ESM face: replacing `CP.spawn` updates only
+    // the CommonJS export, so an EARLIER inherited NODE_OPTIONS preload that
+    // initializes the node:child_process ESM namespace leaves the named
+    // `spawn` import of ESM consumers (the production scripts/lib/process.mjs
+    // form: `import { spawn } from 'node:child_process'`) pointing at the
+    // ORIGINAL spawn — the REAL spawn boundaries would produce no witnesses
+    // despite passing preflight. The regression runs REAL processes: the
+    // early inherited preload, the GENERATED witness preload and the ESM
+    // consumer ride NODE_OPTIONS exactly as the armed chain composes them
+    // (the inherited preload first, the witness fragment appended last), the
+    // gated invocation role selects the consumer through the preload's own
+    // entry/argv gate, and the interception is observed through the
+    // seam-injected stub observer (the §33.2 pattern: the observer URL is a
+    // generation-time input of the generated preload — the REAL observer
+    // stays bound at the fixture layer and is untouched here).
+    // ---------------------------------------------------------------------
+    /** One ESM-face scenario stage inside one disposable root: the stand-in
+     * broker, the stub observer, the early inherited preload (when composed)
+     * and the GENERATED witness preload. The generated preload reaches the
+     * stub through the same dynamic-import seam the real observer rides. */
+    const prepareEsmFaceStage = async (t, { early, withWitness }) => {
+      const { writeSpawnWitnessPreload } = await import('../tools/shell-wait-probe/spawn-witness-preload.mjs');
+      const root = await mkdtemp(join(tmpdir(), 'shell-wait-witness-esm-face-'));
+      t.after(() => { try { rm(root, { recursive: true, force: true }); } catch { /* disposed */ } });
+      const captureDirectory = join(root, 'capture');
+      await mkdir(captureDirectory, { mode: 0o700 });
+      const nonce = 'a'.repeat(64);
+      // The stand-in broker: an EXECUTABLE child the consumer's spawn
+      // succeeds on (the wrapper bookkeeps only live pids — a failed spawn
+      // is never bookkept), carrying the invocation child gate's exact
+      // [brokerEntry, config] argv shape.
+      const brokerPath = join(root, 'broker-stand-in.sh');
+      await writeFile(brokerPath, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+      const brokerRealpath = realpathSync(brokerPath);
+      const interceptionRecord = join(root, 'witness-interception.log');
+      const chainRecord = join(root, 'early-chain.log');
+      const stubObserver = join(root, 'stub-observer.mjs');
+      await writeFile(stubObserver, [
+        "import { appendFileSync } from 'node:fs';",
+        `const RECORD = ${JSON.stringify(interceptionRecord)};`,
+        'export async function emitSpawnAncestryWitness(input) {',
+        "  appendFileSync(RECORD, `emit:${input.role}:${input.childPid}\\n`);",
+        "  return { status: 'established', reason: null };",
+        '}',
+        '',
+      ].join('\n'), { mode: 0o600 });
+      const fragments = [];
+      if (early === 'esm-init') {
+        const earlyPath = join(root, 'early-inherited-preload.cjs');
+        await writeFile(earlyPath, earlyEsmInitSource, { mode: 0o600 });
+        fragments.push(`--require "${earlyPath}"`);
+      } else if (early === 'patcher') {
+        const earlyPath = join(root, 'early-inherited-preload.cjs');
+        await writeFile(earlyPath, earlyPatcherSource(chainRecord), { mode: 0o600 });
+        fragments.push(`--require "${earlyPath}"`);
+      }
+      let witnessPath = null;
+      if (withWitness) {
+        const witness = await writeSpawnWitnessPreload(root, { observerUrl: pathToFileURL(stubObserver).href });
+        witnessPath = witness.path;
+        fragments.push(witness.nodeOptionsFragment);
+      }
+      return { root, captureDirectory, nonce, brokerRealpath, interceptionRecord, chainRecord, witnessPath, nodeOptions: fragments.join(' ') };
+    };
+    /** The EARLY inherited preload that only INITIALIZES the ESM namespace
+     * (the finding's exact mechanism: a dynamic import inside an earlier
+     * --require preload creates the builtin's ESM facade — snapshotting the
+     * then-current exports — before the witness preload runs). */
+    const earlyEsmInitSource = "import('node:child_process').catch(function () {});\n";
+    /** The EARLY inherited preload that ALSO patches and syncs spawn (a
+     * foreign instrument of the same shape): proves the composition order —
+     * the LAST installer of the export owns the ESM face after its sync —
+     * and that the witness sync never clobbers the earlier wrapper (the
+     * wrapper chain stays intact and the earlier bookkeeping still runs). */
+    const earlyPatcherSource = (chainRecord) => [
+      "var FS = require('node:fs');",
+      "var CP = require('node:child_process');",
+      'var originalSpawn = CP.spawn;',
+      "import('node:child_process').catch(function () {});",
+      'CP.spawn = function patchedEarlySpawn() {',
+      `  try { FS.appendFileSync(${JSON.stringify(chainRecord)}, 'early-wrap\\n'); } catch (error) { /* bookkeeping never affects the spawn */ }`,
+      '  return originalSpawn.apply(this, arguments);',
+      '};',
+      "require('node:module').syncBuiltinESMExports();",
+      '',
+    ].join('\n');
+    /** Run one consumer as the GATED invocation entry (the preload's own
+     * entry/argv selector: realpath(argv[1]) equals the declared entry and
+     * argv is exactly [invoke-prepared, rescue]) spawning the stand-in
+     * broker through the child gate's argv shape. The ESM form is the
+     * production scripts/lib/process.mjs import shape; the CJS form is the
+     * contrast face. Bounded poll, then a closed report. */
+    const runEsmFaceConsumer = async (stage, { form, deadlineMs }) => {
+      // The extension carries the module format (the CJS contrast form rides
+      // .cjs — a require-shaped file named .mjs would load as ESM).
+      const consumerPath = join(stage.root, `${form}-consumer.${form === 'esm' ? 'mjs' : 'cjs'}`);
+      const body = [
+        `const BROKER = ${JSON.stringify(stage.brokerRealpath)};`,
+        `const RECORD = ${JSON.stringify(stage.interceptionRecord)};`,
+        `const CHAIN = ${JSON.stringify(stage.chainRecord)};`,
+        `const child = spawn(BROKER, [BROKER, 'config'], { stdio: 'ignore' });`,
+        `const deadline = Date.now() + ${deadlineMs};`,
+        '(async () => {',
+        '  while (!existsSync(RECORD) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));',
+        '  let lines = 0;',
+        "  try { lines = readFileSync(RECORD, 'utf8').split('\\n').filter(Boolean).length; } catch { /* the named absence: no interception record */ }",
+        '  let chainWraps = 0;',
+        "  try { chainWraps = readFileSync(CHAIN, 'utf8').split('\\n').filter(Boolean).length; } catch { /* no foreign wrapper bookkeeping */ }",
+        '  process.stdout.write(JSON.stringify({ pid: child.pid ?? null, interceptions: lines, chainWraps }));',
+        '})();',
+        '',
+      ].join('\n');
+      const source = form === 'esm'
+        ? [`import { spawn } from 'node:child_process';`, `import { existsSync, readFileSync } from 'node:fs';`, body].join('\n')
+        : [`const { spawn } = require('node:child_process');`, `const { existsSync, readFileSync } = require('node:fs');`, body].join('\n');
+      await writeFile(consumerPath, source, { mode: 0o600 });
+      const env = {
+        ...isolatedBaseEnv(),
+        [CAPTURE_DIRECTORY_VARIABLE]: stage.captureDirectory,
+        [CAPTURE_NONCE_VARIABLE]: stage.nonce,
+        [CAPTURE_ENTRY_VARIABLE]: realpathSync(consumerPath),
+        [CAPTURE_BROKER_ENTRY_VARIABLE]: stage.brokerRealpath,
+        NODE_OPTIONS: stage.nodeOptions,
+      };
+      const run = await runRealProcess(process.execPath, [consumerPath, 'invoke-prepared', 'rescue'], { cwd: stage.root, env });
+      if (run.code !== 0) throw new Error(`the ${form} consumer exited ${run.code}: ${run.stderr.slice(0, 400)}`);
+      return JSON.parse(run.stdout);
+    };
+
+    test('the generated witness preload keeps the node:child_process ESM named spawn binding synchronized with its installed wrapper: an earlier inherited preload that initializes the ESM namespace no longer bypasses the witness (review round 6, finding 1 — the ESM namespace arm)', async (t) => {
+      // (1) THE FINDING: the early inherited preload initializes the ESM
+      // namespace (the facade snapshots the ORIGINAL spawn), then the
+      // witness preload installs its wrapper — the ESM named `spawn` import
+      // must reach the WRAPPER (one stub-observer interception through the
+      // gated invocation role), never the original spawn.
+      const finding = await prepareEsmFaceStage(t, { early: 'esm-init', withWitness: true });
+      const findingRun = await runEsmFaceConsumer(finding, { form: 'esm', deadlineMs: 5_000 });
+      assert.ok(findingRun.pid !== null && findingRun.pid > 0, `the consumer's spawn must succeed (actual ${JSON.stringify(findingRun)})`);
+      assert.equal(findingRun.interceptions, 1, `the ESM named spawn import must be intercepted by the witness wrapper (actual ${JSON.stringify(findingRun)})`);
+      // (2) THE CONTROL (the current design face — byte-unchanged): no early
+      // preload; the ESM facade is created after the wrapper install and
+      // the interception holds identically.
+      const plain = await prepareEsmFaceStage(t, { early: null, withWitness: true });
+      const plainRun = await runEsmFaceConsumer(plain, { form: 'esm', deadlineMs: 5_000 });
+      assert.equal(plainRun.interceptions, 1, `the no-early-preload design face stays intercepted (actual ${JSON.stringify(plainRun)})`);
+      // (3) THE CJS CONTRAST (never broken): the CommonJS consumer reaches
+      // the patched export directly — interception holds with the early
+      // preload present, exactly as before.
+      const cjs = await prepareEsmFaceStage(t, { early: 'esm-init', withWitness: true });
+      const cjsRun = await runEsmFaceConsumer(cjs, { form: 'cjs', deadlineMs: 5_000 });
+      assert.equal(cjsRun.interceptions, 1, `the CJS consumer keeps reaching the wrapper (actual ${JSON.stringify(cjsRun)})`);
+      // (4) THE CAPTURE-ONLY ABSENCE (no witness preload): no interception
+      // record EVER appears — the named absence, never a fabricated witness
+      // from the early preload alone — and the spawn itself is untouched.
+      const captureOnly = await prepareEsmFaceStage(t, { early: 'esm-init', withWitness: false });
+      const captureOnlyRun = await runEsmFaceConsumer(captureOnly, { form: 'esm', deadlineMs: 1_200 });
+      assert.ok(captureOnlyRun.pid !== null && captureOnlyRun.pid > 0, `the spawn runs normally without the witness preload (actual ${JSON.stringify(captureOnlyRun)})`);
+      assert.equal(captureOnlyRun.interceptions, 0, 'no witness preload composes no interception record (the named absence)');
+      await assert.rejects(() => readFile(captureOnly.interceptionRecord), /ENOENT/u, 'the interception record must never materialize without the witness preload');
+    });
+
+    test("the witness preload's builtin-ESM sync composes with an earlier foreign preload that also patches and syncs spawn: the last installer owns the ESM face and the wrapper chain stays intact (review round 6, finding 1 — the chaining/ordering arm)", async (t) => {
+      // The foreign early wrapper patches spawn and calls its OWN sync (any
+      // inherited instrument of that shape), THEN the witness wrapper
+      // installs and syncs: the ESM face must be the LAST installer (the
+      // witness wrapper — one stub interception) while the foreign wrapper
+      // keeps running INSIDE the chain (the witness wrapper's originalSpawn
+      // call still books the early-wrap record). A sync-less witness install
+      // would leave the ESM face on the FOREIGN wrapper — the harm shape:
+      // witness interceptions 0 while the foreign bookkeeping still runs.
+      const stage = await prepareEsmFaceStage(t, { early: 'patcher', withWitness: true });
+      const run = await runEsmFaceConsumer(stage, { form: 'esm', deadlineMs: 5_000 });
+      assert.equal(run.interceptions, 1, `the witness wrapper owns the ESM face after its sync (actual ${JSON.stringify(run)})`);
+      assert.equal(run.chainWraps, 1, `the earlier foreign wrapper keeps running inside the chain (actual ${JSON.stringify(run)})`);
     });
   });
 

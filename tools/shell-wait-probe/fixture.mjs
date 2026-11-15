@@ -53,6 +53,12 @@ import {
   STDOUT_CAPTURE_MAX_BYTES,
   writeClosurePreload,
 } from './closure-observation.mjs';
+import {
+  EXACT_READER_VARIABLE,
+  SPAWN_WITNESS_PRELOAD_FILE_NAME,
+  WITNESS_TRANSPORT_ENTRY_VARIABLE,
+  writeSpawnWitnessPreload,
+} from './spawn-witness-preload.mjs';
 import { buildMarketplaceSnapshot } from '../../scripts/build-marketplace-snapshot.mjs';
 import { renderManagedRescueRole } from '../../scripts/lib/managed-agent-role.mjs';
 import { runProcess } from '../../scripts/lib/process.mjs';
@@ -368,7 +374,7 @@ async function assertPrivateEmptyOutput(output) {
 /**
  * Validate and normalize the fixture input before any filesystem side effect.
  * @param {ShellWaitFixtureInput} input
- * @returns {{ sourceRoot: string, sourceSha: string, codexBinary: string, output: string, variant: 'baseline'|'candidate', commandSkillVariant: 'baseline'|'candidate', waitPolicy: string | null, survivalControl: boolean, stdoutCapture: boolean, capMs: number|null, pollMs: number, reserveStatusJob: boolean, statusQueryTimeoutMs: number|null, authSource: string }}
+ * @returns {{ sourceRoot: string, sourceSha: string, codexBinary: string, output: string, variant: 'baseline'|'candidate', commandSkillVariant: 'baseline'|'candidate', waitPolicy: string | null, survivalControl: boolean, stdoutCapture: boolean, spawnWitness: boolean, capMs: number|null, pollMs: number, reserveStatusJob: boolean, statusQueryTimeoutMs: number|null, authSource: string }}
  */
 function validateFixtureInput(input) {
   if (!input || typeof input !== 'object') throw invalidFixtureInput('the fixture input must be an object.');
@@ -426,6 +432,22 @@ function validateFixtureInput(input) {
   if (input.stdoutCapture !== undefined && typeof input.stdoutCapture !== 'boolean') {
     throw invalidFixtureInput('stdoutCapture must be a boolean when present.');
   }
+  // The §33 spawn-witness seam (user-review task 4 completion): a closed
+  // opt-in flag. When set, the fixture ALSO generates the passive
+  // spawn-boundary witness preload into its own disposable root, appends its
+  // NODE_OPTIONS fragment AFTER the capture preload's, and composes the
+  // witness env (the declared transport entry + the §32.2 exact-reader
+  // opt-in). The witness gates CONSUME the capture environment (the scope
+  // nonce and the declared entries), so the arming requires the stdout
+  // capture seam — a witness-only fixture fails closed here, never arms
+  // half a seam.
+  if (input.spawnWitness !== undefined && typeof input.spawnWitness !== 'boolean') {
+    throw invalidFixtureInput('spawnWitness must be a boolean when present.');
+  }
+  const spawnWitness = input.spawnWitness === true;
+  if (spawnWitness && input.stdoutCapture !== true) {
+    throw invalidFixtureInput('spawnWitness requires the stdoutCapture seam (the witness gates consume the capture environment).');
+  }
   // The R3 status-wait setup seam: reserve one actually owned held job through
   // the production command path in the owning session. The explicit query
   // timeout is REQUIRED with the reservation (the rendered Status invocation
@@ -451,6 +473,7 @@ function validateFixtureInput(input) {
     waitPolicy: waitPolicy ?? null,
     survivalControl,
     stdoutCapture: input.stdoutCapture === true,
+    spawnWitness,
     capMs: input.capMs ?? null,
     pollMs,
     reserveStatusJob,
@@ -691,6 +714,47 @@ export async function createShellWaitFixture(input, dependencies = {}) {
       };
     }
 
+    // The §33 spawn-witness seam (user-review task 4 completion): the
+    // fixture-GENERATED second preload reaches the REAL installed chain's
+    // spawn boundaries (the Companion→daemon hop inside the launcher process;
+    // the daemon→transport hop inside the daemon) without touching one
+    // production byte and without changing the capture preload's bytes. The
+    // composition is strictly ADDITIVE: the capture env above is untouched,
+    // the witness NODE_OPTIONS fragment is appended AFTER the capture
+    // preload's, and the record carries only the bounded provenance (digests
+    // and the closed variable set — never private paths).
+    /** @type {{ preloadPath: string, preloadSha256: string, transportEntryRealpath: string, exactReaderEnabled: boolean } | null} */
+    let spawnWitnessHandle = null;
+    if (prepared.spawnWitness === true) {
+      const transportEntryRealpath = await realpath(FAKE_ZCODE_PATH);
+      const observerUrl = pathToFileURL(fileURLToPath(new URL('./local-process-observation.mjs', import.meta.url))).href;
+      const witnessPreload = await writeSpawnWitnessPreload(temporary, { observerUrl });
+      const existingWitnessOptions = typeof /** @type {Record<string, unknown>} */ (env).NODE_OPTIONS === 'string' && /** @type {Record<string, unknown>} */ (env).NODE_OPTIONS.length > 0 ? `${/** @type {Record<string, unknown>} */ (env).NODE_OPTIONS} ` : '';
+      Object.assign(env, {
+        [WITNESS_TRANSPORT_ENTRY_VARIABLE]: transportEntryRealpath,
+        [EXACT_READER_VARIABLE]: '1',
+        NODE_OPTIONS: `${existingWitnessOptions}${witnessPreload.nodeOptionsFragment}`,
+      });
+      spawnWitnessHandle = Object.freeze({
+        preloadPath: witnessPreload.path,
+        preloadSha256: witnessPreload.sha256,
+        transportEntryRealpath,
+        exactReaderEnabled: true,
+      });
+      /** @type {Record<string, unknown>} */ (record).spawnWitnessCapture = {
+        preload: SPAWN_WITNESS_PRELOAD_FILE_NAME,
+        preloadSha256: witnessPreload.sha256,
+        observerModule: 'local-process-observation.mjs',
+        observerModuleSha256: sha256(readFileSync(fileURLToPath(new URL('./local-process-observation.mjs', import.meta.url)), 'utf8')),
+        transportEntrySha256: sha256(transportEntryRealpath),
+        exactReaderVariable: EXACT_READER_VARIABLE,
+        exactReaderEnabled: true,
+        transportEntryDeclared: true,
+        selector: 'the fixture-only capture environment present AND the gated role entry (invocation: the declared launcher realpath with argv [invoke-prepared, rescue]; broker-daemon: the declared broker realpath with argv [broker, config]) AND the role\'s child gate (the declared broker/transport entry spawn) — the observer module\'s emitSpawnAncestryWitness, never a hand-written record',
+        environmentVariables: [WITNESS_TRANSPORT_ENTRY_VARIABLE, EXACT_READER_VARIABLE],
+      };
+    }
+
     // The §16.4 I1 survival-control support: the fixture OWNS the control's
     // command bytes and writes its bounded script into the disposable fixture
     // root BEFORE the held turn runs (disposal removes it with the home). The
@@ -770,6 +834,7 @@ export async function createShellWaitFixture(input, dependencies = {}) {
       ...(statusJob === null ? {} : { statusJob, owningSessionId: /** @type {string} */ (owningSessionId) }),
       ...(survivalControlPath === null ? {} : { survivalControlPath }),
       ...(stdoutCaptureHandle === null ? {} : { stdoutCapture: stdoutCaptureHandle }),
+      ...(spawnWitnessHandle === null ? {} : { spawnWitness: spawnWitnessHandle }),
       dispose: async () => {
         if (disposed) return;
         disposed = true;
@@ -1287,6 +1352,7 @@ export async function releaseCompletionGate(gatePath) {
  *   statusQueryTimeoutMs?: number,
  *   authSource?: string,
  *   stdoutCapture?: boolean,
+ *   spawnWitness?: boolean,
  * }} ShellWaitFixtureInput
  * @typedef {{
  *   buildSnapshot?: (context: { cleanSource: string, output: string, sourceSha: string, env: NodeJS.ProcessEnv }) => Promise<unknown>,
@@ -1305,6 +1371,7 @@ export async function releaseCompletionGate(gatePath) {
  *   owningSessionId?: string,
  *   survivalControlPath?: string,
  *   stdoutCapture?: { preloadPath: string, preloadSha256: string, captureDirectory: string, nonce: string, maxBytes: number, entryRealpath: string },
+ *   spawnWitness?: { preloadPath: string, preloadSha256: string, transportEntryRealpath: string, exactReaderEnabled: boolean },
  *   dispose: () => Promise<void>,
  *   record: Record<string, unknown>,
  * }} ShellWaitFixtureHandle

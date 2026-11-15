@@ -32826,3 +32826,1342 @@ No push.
   the guarded CLI) was green on the first final-bytes attempt; no
   transient spawn/load failure was observed. The two clean-clone RED
   failures are the intended reviewer schedule, never gate events.
+
+## 33. 2026-11-15 user-directed task-4 completion: the REAL installed-plugin chain wired into the
+spawn-boundary witness capture and the exact reader, the end-to-end real-chain regression and the
+honest production limits (offline; zero model turns, zero live launches)
+
+### 33.1 The review adjudication and the wiring-feasibility investigation (the measured code facts)
+
+- **The finding this section closes:** the user review held that the route-(c)/route-(b) capture was
+  proven only on stand-in process chains, that the REAL installed-plugin path was not wired into the
+  witness emission or the exact reader enablement, and that §32.6's re-scoping of the original
+  plan's
+  Task 4 ("production wiring") could not discharge it — the actual research fixture wiring and its
+  regression were owed, or a concrete blocked investigation. This section takes the WIRE route (the
+  user's stated preference) and records, below, the byte-level code facts that make the wiring
+  reachable without one production change.
+- **The REAL fixture startup path:** `createShellWaitFixture` (tools/shell-wait-probe/fixture.mjs)
+  builds the marketplace snapshot from the clean detached source worktree at the caller's pinned SHA
+  and installs through the EXACT chosen Codex binary into an isolated `CODEX_HOME`. The REAL spawn
+  chain: the launcher invocation (`node <installed>/skills/rescue/launcher.mjs invoke-prepared
+  rescue`) runs the Companion in-process; `ensureZCodeBroker` (scripts/zcode-broker.mjs:600) →
+  `spawnDaemon` (scripts/lib/process.mjs:83) → `child_process.spawn(node, [zcode-broker.mjs,
+  configPath], { detached: true, stdio: 'ignore' })` is **hop 1**; the daemon's `spawnZCodeProtocol`
+  (scripts/lib/zcode-protocol.mjs:494) → `spawnProcess` (scripts/lib/process.mjs:66) →
+  `child_process.spawn(node, [fake-zcode-cli.mjs, 'app-server'], …)` is **hop 2**. Both boundaries
+  live INSIDE production processes; `scripts/` and `skills/` are read-only for this research.
+- **The reachability measurement (live experiment on this host, Node v24.14.0):** a
+  fixture-generated
+  CJS `--require` preload's patch of `require('node:child_process').spawn` INTERCEPTS the ESM
+  `import { spawn } from 'node:child_process'` the production modules use — the patched wrapper
+  observed a production-shaped `spawnDaemon` call's child handle. The two parent processes already
+  run under the fixture-composed environment (the §19.3 capture seam and the §25.4 identity records
+  reach exactly these processes), so a SECOND fixture-generated preload can emit the witnesses AT
+  the
+  real boundaries: the writer self-verifies its own identity in its own process, and the child
+  verification sees the REAL spawned daemon/transport through the same `ps` double reads. No
+  production byte changes; no launch choreography changes (the spawn call itself is forwarded
+  untouched, and the emitter's own bounded work runs after the child handle exists).
+- **The wiring adjudication: WIRE.** The blocked-route conditions named in the task (a boundary
+  reachable only from inside unreachable production code) do not hold: both parent processes are
+  instrumentable from the fixture-owned environment layer. §29.9 Finding 1's narrowed wording and
+  §32.6's re-scope stand as history; the capture-side fixture wiring they described as "already
+  wired" for the stand-in chain is now wired for the REAL installed chain too.
+
+### 33.2 The fixture-generated spawn-witness preload (the new capture seam; research-only; additive)
+
+- **The module:** tools/shell-wait-probe/spawn-witness-preload.mjs (NEW) — the generated CJS preload
+  source, its writer and the closed env contract, under the same disciplines as closure-preload.mjs
+  (pure generated text; the observer module is reached only through the dynamic import of the
+  absolute URL baked in at generation time; module-init provenance snapshot
+  `EXECUTING_SPAWN_WITNESS_PRELOAD_SOURCE`). The preload is a SECOND artifact: the §19.3 capture
+  preload's bytes are untouched (the §28.4 prohibition-4 source-level pin still passes; the capture
+  preload carries no witness machinery and the witness preload carries no stdout-capture machinery —
+  both asserted by the new arming control).
+- **The role gates (the §19.3 P1-gate discipline mirrored):** the invocation role = the entry
+  realpaths to the DECLARED installed launcher realpath AND `argv.slice(2)` deep-equals
+  `['invoke-prepared','rescue']` (the frozen §19.3 selector); the broker-daemon role = the entry
+  realpaths to the DECLARED installed broker realpath AND argv is exactly `[broker, config]` (the
+  §25.4 broker selector). Every other process — hooks, the prepare launcher, the transport itself —
+  installs NOTHING.
+- **The child gates:** hop 1 witnesses the spawn whose first argument realpaths to the declared
+  broker entry with exactly `[brokerEntry, configPath]`; hop 2 witnesses the spawn matching the
+  declared transport entry with `'app-server'` among its arguments — the `'app-server'`
+  discriminator
+  exists because the discovery `'--version'` probe is a same-entry spawn and a probe child must
+  never
+  take the one-witness-per-role slot (the record file is wx-exclusive per role). The declared child
+  nonces: the capture scope nonce (hop 1, verified through `ZCODE_SHELL_WAIT_CAPTURE_NONCE`) and the
+  transport's own `FAKE_ZCODE_PROCESS_NONCE` value (hop 2, verified through that variable).
+- **The emission discipline:** the ORIGINAL spawn always runs first and its child handle is returned
+  unchanged; the matched child triggers exactly ONE `emitSpawnAncestryWitness` through the observer
+  module (the same OS-verified double reads, the same bounded visibility poll, the same
+  wx-exclusive 0600 record). Every failed or refused emission is the NAMED ABSENCE of the record at
+  the runtime's admission — never a thrown preload error, never a fabricated witness, and no
+  stdout/stderr/exit-behavior change of any kind.
+- **The exact reader's enablement (fixture-scope env):** the arming composes
+  `ZCODE_SHELL_WAIT_KINFO_EXACT=1` — the §32.2 registered opt-in — into the fixture env, so the REAL
+  chain's emitters capture the closed exact forms on darwin; non-darwin and any bridge failure
+  degrade fail-closed to the ps whole-second path (the reader's own dispatch and the §32.4 family
+  are unchanged, and the new env-gate control pins: without the env the real bridge never runs; with
+  it the exact forms appear on darwin; off-darwin the armed env manufactures nothing).
+
+### 33.3 The fixture arming (strictly additive; the executor and replay unchanged)
+
+- tools/shell-wait-probe/fixture.mjs: the closed opt-in input `spawnWitness: true` — REQUIRED to be
+  armed together with `stdoutCapture` (the witness gates consume the capture environment; a
+  witness-only arming fails closed at validation). The arming appends the witness `--require`
+  fragment AFTER the capture preload's in `NODE_OPTIONS`, composes
+  `ZCODE_SHELL_WAIT_WITNESS_TRANSPORT_ENTRY` (the fake-ZCode transport's resolved realpath) and the
+  exact-reader variable, and records the bounded provenance block `record.spawnWitnessCapture` (the
+  preload digest, the observer module digest, the transport entry digest, the closed variable set,
+  the selector wording — never private paths). The handle exposes the private paths for the
+  driver-side composition.
+- The DRIVER needs NO changes: the §29 integration already admits both capture-side records
+  (`admitLocalSpawnWitness` → the full `validateSpawnWitnessRecord` invariant family), persists
+  their
+  digest-only projections (`block.spawnWitnesses`), composes the ancestry from the admitted
+  verdicts,
+  and the replay re-verifies the persisted projections from their own fields. This section completes
+  the CAPTURE side the §29 map named as the executor's admit-then-forward input.
+
+### 33.4 The end-to-end real-chain regression (the RED→GREEN record; the new focused family)
+
+- **The family:** `real-fixture spawn-witness wiring (user-review task 4)`
+  (tests/shell-wait-probe.test.mjs) — FOUR tests. (1) The main end-to-end: the REAL marketplace
+  snapshot built from the pinned source SHA and installed by the EXACT pinned binary (NO injected
+  build/install dependency), the REAL installed hooks (`session-lifecycle-hook` → `user-prompt-hook`
+  → `subagent-hook`) recording the session/turn/child authority, the REAL launcher processes
+  (`prepare rescue` through the registered fixture TTY shim — the same real-launcher-process pattern
+  the integration suite uses — then `invoke-prepared rescue` under the armed env), the fake-ZCode
+  completion gate holding the chain through the held turn's §24.8 scheduled observation, and then
+  the runtime admission + composition + persistence + serialize→reload replay over the REAL records.
+  (2) The strictly-additive arming control (the unarmed composition carries no witness machinery;
+  the armed composition adds exactly the witness require pair and the two variables). (3) The named
+  missing-witness admission control (the unwired state is the named absence, never a pass). (4) The
+  exact-reader env-gate control through a REAL writer process (a small bounded environment so the
+  pinned `ps eww` environ read sees the capture nonce; coarse without the env; the exact forms under
+  the opt-in on darwin; off-darwin the coarse record is the named fact).
+- **The measured authenticity web (pinned by the passing assertions, this host, darwin):** the hop-1
+  witness's `writerPid` equals the REAL launcher process the test itself spawned (never the prepare
+  process, never a stand-in); its witnessed child equals the daemon's OWN independently machined
+  startup record's pid (`identity-broker.json`, written by the §25.4 capture preload — two separate
+  capture paths observing the same kernel facts); the capture-time kernel parent link binds the real
+  spawn; the hop-2 witness's writer equals the REAL daemon and its witnessed child equals the
+  fake-ZCode transport's own marker pid; BOTH records declare `startIdentityExact: true` with the
+  closed `kinfo:<sec>:<usec>` forms for both generations; the runtime composition attributes BOTH
+  hops with `witnessClass: 'spawn-boundary-capture'` and `companionToTransportAttributed: true`; the
+  duty aggregate settles with the exact-identity bindings (all three duties established); the
+  persisted projections carry the nonces digest-only, survive serialize→reload, and the replay
+  re-verifies them — NO `spawn-witness-*` refusal rides the replay and the persisted two-hop
+  attribution holds. The honest production fact that the transport outlives the observation window
+  in a NATURAL completion (the broker keeps the protocol for its own idle window after the launcher
+  exits) rides the replay as the `transport-exit-unestablished` fact — outside this regression's
+  claims, never softened.
+- **The instrument sequencing (the test's own documented injectable seams, recorded honestly):** the
+  injected `captureProcessIdentity` waits (bounded 15 s) for BOTH witness records before performing
+  the real marker capture, so the runtime's endpoint reads POSTDATE the witness writes and the
+  §25.7 capture-window fence binds the daemon hop. The measured race this avoids: the runtime's
+  one-shot admission ran at t+1.27 s while the daemon's own emit (its bounded visibility poll + the
+  double reads + the exact bridge) wrote at t+1.62 s — the unsequenced shape refuses with the named
+  `spawn-witness-capture-unbounded` fence label. The turn rides `measurementCutoffSchedule: true`
+  (the junction precedent), under which the natural-exit watcher's deadline rejection is the
+  EXPECTED named missing-exit outcome — never a turn failure. Both seams are instrument-scope; the
+  driver's bytes are unchanged.
+- **RED→GREEN under the clean-clone discipline:** `git clone --shared` of the worktree at f46d4ec0
+  into /tmp/task4w-red (deleted after the battery; no `git worktree add`), the NEW test file copied
+  in, the implementation left at HEAD: the focused family ran **2 pass / 2 fail** with the
+  design-consistent values — the REAL chain completed end to end and the runtime's
+  invocation-boundary witness admission reported
+  `{"status":"missing","reason":"spawn-witness-missing"}`
+  (the named absence on the unwired bytes), and the armed composition's preload count measured
+  `1 !== 2` — while the two controls passed. On the wired bytes the same family ran **4 pass / 0
+  fail / 0 skipped, exit 0**.
+- **The iteration disclosure (cause-directed, never label changes):** the first three clone RED
+  iterations aborted on the TEST's own chain-startup mechanics — the hook permission set
+  (`acceptEdits`, the Codex closed permission vocabulary), the per-process `CODEX_THREAD_ID`, the
+  canonical (realpath) child-thread cwd, the TTY-shim specifier resolution from this entry's
+  directory, and the fast installer's payload materialization (hooks/scripts/schemas + the
+  `fs-native-extensions` dependency closure) — each fixed in the test before the recorded RED; the
+  final clone run and the wired worktree run then produced the recorded values on their first
+  attempt. No transient spawn/load failure was observed in any final-bytes gate entry.
+
+### 33.5 The gate battery (executed 2026-11-15 in this worktree on the exact pre-commit bytes; strictly
+  serial)
+
+- `node --test --test-name-pattern='same-second-completion|integration-completion'
+  tests/shell-wait-local-process.test.mjs` = **156 tests, 156 pass, 0 fail** (the §28/§32 witness
+  families hold unchanged on the new bytes); `node --test tests/test-selection.test.mjs` = **6/6**.
+  SOLO: tests/shell-wait-local-process.test.mjs = **698 tests, 698 pass, 0 fail, 0 skipped, exit
+  0**;
+  tests/shell-wait-native-interruption.test.mjs = **100 tests, 100 pass, 0 fail, exit 0**;
+  tests/shell-wait-probe.test.mjs = **972 tests, 972 pass, 0 fail, 0 skipped, exit 0** — the probe
+  entry's own count moved 968 → 972 through the four registered rows, and the spawned-suite total
+  pin **799 is UNCHANGED** (the probe entry contributes exactly the guarded marker under the guard
+  env; the guarded spawn CLI ran inside the SOLO probe run and held the pin).
+- `npm run lint` exit 0; `npm run typecheck` exit 0; `git diff --check` exit 0;
+  `node scripts/check-line-endings.mjs` exit 0 (LF verified in 551 tracked files — the
+  committed-state count including the new preload module). Prohibited-path
+  diffs: `git diff 02cd31e8 --stat -- specs/ scripts/ hooks/ skills/ agents/ .codex-plugin/ prompts/
+  schemas/ marketplace/ package.json npm-shrinkwrap.json` EMPTY (0 bytes) and the same diff against
+  `9c337403` EMPTY (0 bytes).
+
+### 33.6 The honest limits (the §32.7 obligations carried forward verbatim in substance; nothing
+  softened)
+
+- **The production installed-host boundary remains UNWIRED and stays exactly where §28.6/§32.6
+  placed it** — the live-trial wiring question. This section wires the RESEARCH FIXTURE's real
+  chain: the fixture-generated preload rides the fixture-composed environment into the real
+  production processes at their real spawn boundaries, which is the research instrument's reach. NO
+  production call site emits witnesses and `ZCODE_SHELL_WAIT_KINFO_EXACT` still has no production
+  call site. The §32.7 remaining-E-blockers list is carried forward unchanged: (1) the **0.163.0
+  binary re-provisioning/re-pin** (§30.4), (2) **the production capture/activation wiring** (§32.6 —
+  NOT discharged by this section; what this section discharges is the ORIGINAL Task 4's fixture-side
+  capture wiring and its regression), and (3) **new user launch authority** for the finite E launch.
+  The E slot remains UNSPENT; no launch is claimed by this section.
+- **What the route-(b)/(c) readiness now has:** the same-second daemon-hop ancestry's offline proof
+  no longer rests on stand-in chains — the REAL installed chain's both-hop attribution is pinned end
+  to end (capture at the real boundaries, runtime admission, composition, persistence, replay). The
+  production acceptance question is UNCHANGED: same-second real-interruption acceptance still has
+  not passed, production still cannot be enabled, and `do-not-adopt-yet` stands.
+- **The wiring's own scope limits, named:** the witness preload reaches only processes whose
+  environments the research fixture composes; a process launched outside the composed environment
+  carries no witness machinery (its absence is the named missing fact at the admission); the gates
+  are closed selectors over the frozen §19.3/§25.4 argv/entry shapes plus the declared
+  broker/transport entries — no process enumeration, no fabricated nonce authority, no added launch
+  delay beyond the emitter's own bounded visibility poll, and no change to the capture preload's
+  bytes or to any production byte.
+
+### 33.7 Codex-review gate round 1 (2026-11-15, three P2 findings on §33.2–§33.4's amended bytes,
+review-mwhfddwo-emptdf; §32.10/§32.11 style — add-only; the amended task-4 commit carries them;
+message unchanged)
+
+- **Finding 1 [P2 — the driver-side identity resolution stayed coarse] — FIXED by threading the
+  exact-reader enablement into the driver-side observation setup.** The reviewer's finding verbatim:
+  "On Darwin, `spawnWitness: true` enables exact identities only in child processes through
+  `fixture.env`. Driver-side observations still consult the driver's own `process.env`, so they
+  retain coarse identities. `establishThroughSpawnWitness` compares the writer identity strings
+  directly and rejects this pairing as `spawn-witness-writer-foreign`. The regression masks this by
+  separately modifying the test process's environment. Thread the exact-reader enablement into the
+  driver-side observation setup and cover the armed fixture without that extra global mutation."
+  Confirmed exactly: the armed emitters captured the closed exact forms (fixture.env) while every
+  driver-side read (the endpoint observations, the default marker capture, the default held-turn
+  identity reader) consulted the DRIVER's own process.env, so `establishThroughSpawnWitness`'s
+  unconditional writer-identity equality compared an exact `kinfo:<sec>:<usec>` record against a
+  coarse ps string and refused; the end-to-end row masked the asymmetry by setting
+  `process.env[EXACT_READER_VARIABLE] = '1'` in the test process. **The fix (driver/observer bytes —
+  the research instrument; the fixture's env composition STAYS: it is the writer-side arming the
+  finding itself acknowledges):** (a) the observer's exact gate (readDarwinKinfoExact,
+  local-process-observation.mjs) honors the closed osSeam member `exactReaderOptIn: true` as the
+  DECLARED equivalent of the registered env opt-in — the env gate stays byte-identical for every
+  other caller, an injected `kinfoExact` seam still owns its read, and non-darwin stays inert by the
+  platform dispatch; (b) `captureVerifiedProcessIdentity` grows the closed optional osSeams
+  parameter (the marker's own OS re-verification rides the same surface); (c)
+  `localObservationDeclarationFor` threads the fixture's OWN witness arming as two schema-additive
+  declaration facts (`witnessArmed`, `exactReaderEnabled` — derived from the spawnWitness handle's
+  own flag, never a caller input), and `runHeldHostTurn` composes the opt-in ONCE (the hoisted
+  `armedExactReaderOsSeams`) into EVERY driver-side OS read: the default marker capture, the
+  composed local observations (observerSeamOptions) and the default held-turn identity reader —
+  one mechanism, no process-environment mutation. **The masking is removed:** the end-to-end row no
+  longer touches `process.env` anywhere and asserts the premise (the variable is undefined in the
+  test process). **RED→GREEN:** on the clean clone the REAL hop 1 refused with the review's
+  predicted label (actual `{"hop":"companion-to-daemon","status":"unestablished","reason":
+  "spawn-witness-writer-foreign"}`); on the amended bytes both hops establish through
+  `spawn-boundary-capture` with `companionToTransportAttributed: true`, the duties establish, and
+  the replay is clean. The new seam row pins the member's arms against a REAL observed child: the
+  threaded opt-in is exact on darwin; WITHOUT the member and without the env the byte-identical
+  coarse path stays; the env opt-in alone still arms (the equivalence — a child-process arm, the
+  test process stays unmutated); off-darwin the member is inert (the named coarse fact).
+  **Controls:** coarse mode unchanged (no member + no env = the ps form); non-darwin degrade
+  unchanged (the platform dispatch — the seam row's named arms and the family's off-darwin branch);
+  existing driver-side behavior zero-regression (local SOLO 698/698; the focused families 156/156).
+- **Finding 2 [P2 — the default path raced the witness emissions] — FIXED by the bounded in-path
+  sequencing through the existing declaration seam.** The reviewer's finding verbatim: "When the
+  transport marker appears before this asynchronous emission finishes, the default `runHeldHostTurn`
+  path can select ancestry endpoints and perform its one-shot witness admissions too early,
+  producing missing witnesses or `spawn-witness-capture-unbounded`. Section 33.4 records this actual
+  timing failure. The new regression avoids it only through an injected witness-file waiter that the
+  normal fixture/driver path never installs. Integrate bounded sequencing into that path and
+  exercise it without replacing `captureProcessIdentity`." Confirmed exactly: §33.4's measured race
+  (the admission at t+1.27 s vs the emit's write at t+1.62 s) is a property of the DEFAULT path's
+  ordering — the endpoint refresh and the one-shot admissions ran whenever the phase-3 loop exited,
+  and only the row's injected `captureProcessIdentity` waiter ordered them after the writes.
+  **The fix:** the declaration's `witnessArmed` fact arms the runtime's sequencing — BEFORE the
+  ancestry endpoint refresh and the one-shot witness admissions, BOTH boundary witness records are
+  awaited under the closed bound {@link SPAWN_WITNESS_SEQUENCING_BOUND_MS} = 15000 (the injected
+  waiter's own documented budget) and the SHARED abort; the block records the schema-additive
+  `witnessSequencing` fact (awaitedRoles ['invocation','broker-daemon'], boundMs, measured waitedMs,
+  outcome `'witnesses-present'` | `'bound-expired'` | `'turn-ended'`); a bound expiry or an aborted
+  turn proceeds IMMEDIATELY and the downstream admissions report the honest named absence — never a
+  hang, never a fabricated witness, never an extended turn. `captureProcessIdentity` is NOT
+  replaced: the new regression runs the DEFAULT capture, and the §33.4 row's injected waiter
+  composes byte-identically on top (the sequencing runs first and records its fact in both shapes).
+  **RED→GREEN:** the NEW default-path regression (the REAL production chain through the fast
+  materialized installer — the real entry bytes, hooks, launcher, broker and transport; NO injected
+  waiter, NO environment mutation) refused on the clone with the named absence the race produces
+  (actual `{"status":"missing","reason":"spawn-witness-missing"}` — this run's late emitter was the
+  invocation hop; §33.4's measured landing was the daemon hop at t+1.62 s: the same unsequenced-race
+  class, which hop is late varies with the emission timing, and the sequencing covers BOTH); on the
+  amended bytes both witnesses admit through the default path, the sequencing fact records
+  `witnesses-present` with its measured wait, both hops establish (darwin: `spawn-boundary-capture`)
+  and the replay is clean. **Controls:** the injected-waiter row unchanged (the merged family 6/6);
+  witness-less armed cases are unaffected (a capture-only declaration never enters the block — the
+  gating is structural); the bounded expiry is the named `bound-expired` outcome, never a hang.
+- **Finding 3 [P2 — the witness declaration never persisted] — FIXED by the declaration persistence
+  and the v9 provenance input.** The reviewer's finding verbatim: "`spawnWitnessCapture` exists only
+  on the temporary fixture handle: `buildCaseRecord` whitelists `closureStdoutCapture` but never
+  copies this new declaration. Consequently, serialized records lose the witness preload digest and
+  exact-reader configuration, and disposal deletes the preload itself. Neither observer provenance
+  construction hashes the new preload module, so there is no retained alternative binding to its
+  executing bytes. Persist the bounded declaration and assert its survival in the serialize/reload
+  regression." Confirmed exactly: the fixture record carried the block but `buildCaseRecord`
+  whitelisted only `closureStdoutCapture` (driver.mjs), so the serialized record lost the witness
+  preload digest and the exact-reader configuration, and both provenance constructions (the
+  module-init snapshot and the record-time reader) hashed the closure-preload generator but not the
+  witness-preload generator. **The fix:** `buildCaseRecord` whitelists
+  `spawnWitnessDeclaration: fixtureRecord.spawnWitnessCapture` beside the existing
+  `stdoutCaptureDeclaration` (the survivalControl/stdoutCapture mirror; digests and closed
+  configuration only — never private paths); both provenance constructions hash the spawn-witness
+  preload seam's GENERATOR module (spawn-witness-preload.mjs) right after the closure-preload
+  generator under the bumped tag `zcode-shell-wait-observer-v9` (both `digestInput` descriptions
+  name the new input). **The disposal relationship, stated honestly:** fixture disposal still
+  deletes the GENERATED preload file — nothing retains the file; the retained bindings are (a) the
+  persisted declaration's digests (the generated source's SHA-256 and the observer module's digest)
+  and (b) the v9 observer provenance binding the GENERATOR module's executing bytes (the same plan
+  §3 duty the closure-preload generator already rides; the local observer provenance already binds
+  the emission's EXECUTING module — local-process-observation.mjs — and is unchanged). **RED→GREEN:**
+  the serialize/reload row (the exact stdoutCaptureDeclaration pattern, a hand-built armed fixture
+  through `runShellWaitCase`) refused on the clone (`the bounded witness declaration persists beside
+  the capture provenance` — actual undefined) and establishes on the amended bytes: deepEqual on the
+  persisted AND the reloaded record, the existing closureStdoutCapture persistence byte-identical on
+  the same armed record, and a witness-less record carries NO declaration key (schema stability).
+  The four digest rows refused on the clone with the construction mismatch (executing digest
+  `57e5b9fb28fb754da6bcc694dec6a65f7c5c3b60c6d7ae6c44077507eebeab4d` — the pre-fix v8 construction
+  on the clone — vs the v9 expectation
+  `c0687262f004013bb02e94ae94ff3750978530c5bfa7095701b815679e6867ec`) and establish on the amended
+  bytes: the executing digest `457ef035344c72c263f82782993691325915423445a95db215b1433cd186a8de`
+  reproduces from the v9 construction, a witness-preload-only byte change moves it, a construction
+  WITHOUT the input does not reproduce it, and the record-time reader agrees at rest. **Controls:**
+  corrupt/missing digests refuse by name at the admission (the standing shape family — the
+  foreign-scope copy refusing `spawn-witness-nonce-mismatch` rides the main row); no-witness records
+  carry no key (additive).
+- **RED→GREEN under the clean-clone discipline:** `git clone --shared` of this worktree at 10695446
+  into /tmp/r1w-red (deleted after the battery; no `git worktree add`), the new/changed test file
+  copied in (the ONLY overlay — the implementation stayed at HEAD), node_modules symlinked: the
+  consolidated targeted battery (the four new rows + the changed rows + the standing
+  witness/capture controls, one pattern) = **13 rows, 5 pass / 8 fail, exit 1 (207.2 s)** with the
+  design-consistent values above — the three controls (the arming control, the missing-witness
+  control, the env-gate control), the helper-binding negative row and the record-time equality row
+  passed on the clone; on the amended bytes the SAME 13 rows ran **13 pass / 0 fail / 0 skipped,
+  exit 0**.
+- **Movement enumeration (honest):** NO prior-row verdict changed. The edited existing rows are
+  exactly the construction mirrors the v9 bump requires (the probe entry's three pre-existing
+  digest rows now construct the v9 expectation with the new input and the version regex moves v8 →
+  v9; the local entry's F4 row mirrors the same v9 construction) plus the end-to-end row's own
+  masking removal (the env mutation deleted; the declaration/sequencing facts asserted; the
+  injected capture threads the declared opt-in). The four NEW rows: the default-path sequencing
+  regression, the declaration serialize/reload regression, the witness-preload generator binding
+  pin, and the threaded-enablement seam row. The probe entry's own count moved 972 → 976 (+4; 0
+  deleted); the local entry stays 698 (one row edited in place) and the native entry stays 100.
+- **The gate battery (executed 2026-11-15 in this worktree on the exact amended bytes; strictly
+  serial):** focused `same-second-completion|integration-completion` = **156 tests, 156 pass,
+  0 fail** (the §28/§32 witness families hold unchanged); `node --test tests/test-selection.test.mjs`
+  = **6/6**. SOLO: tests/shell-wait-local-process.test.mjs = **698 tests, 698 pass, 0 fail,
+  0 skipped, exit 0**; tests/shell-wait-native-interruption.test.mjs = **100 tests, 100 pass,
+  0 fail, exit 0**; tests/shell-wait-probe.test.mjs = **976 tests, 976 pass, 0 fail, 0 skipped,
+  exit 0** (1843.6 s); the guarded spawn CLI measured directly under the registered guard env =
+  **799 tests, 799 pass, 0 fail, exit 0 — the spawned-suite total pin 799 is UNCHANGED** (698 +
+  100 + 1; the four new rows are probe-entry rows and never enter the spawned total; the unguarded
+  CLI additionally measured 1774/1774 = 698 + 100 + 976 on the same bytes). `npm run lint` exit 0;
+  `npm run typecheck` exit 0; `git diff --check` exit 0; `node scripts/check-line-endings.mjs`
+  exit 0 (LF verified in 551 tracked files). Prohibited-path diffs: `git diff 02cd31e8 --stat --
+  specs/ scripts/ hooks/ skills/ agents/ .codex-plugin/ prompts/ schemas/ marketplace/ package.json
+  npm-shrinkwrap.json` EMPTY (0 bytes) and the same diff against `9c337403` EMPTY (0 bytes). The
+  fixes amend the EXISTING task-4 commit (message bytes unchanged; the parent stays f46d4ec0; the
+  working tree clean) — no push.
+- **The iteration disclosure (cause-directed, never label changes):** three pre-battery
+  corrections, all inside this round's new bytes before the recorded runs: (1) MY first driver
+  composition referenced the local-observation section's `observerSeamOptions` from the
+  default-capture closure — the eager identity establishment (created before that section
+  initializes) invoked it inside the temporal dead zone, the establishment recorded
+  `identity-capture-failed`, and the post-gate fallback threw the named MARKER_ABSENT at t+1 ms;
+  fixed by hoisting the composed osSeams (`armedExactReaderOsSeams`) above the establishment — a
+  real ordering bug in my first fix bytes, never a test flake. (2) The default-path row's fast
+  installer payload (previously sized for the environment-composition control, which never RUNS the
+  installed entries) was missing the production `scripts/lib/*` modules the real hooks import
+  (ERR_MODULE_NOT_FOUND on `plugin-data.mjs`); the installer now copies the whole clean-source
+  `scripts/` tree (the same real bytes). (3) The first clone RED landed on MY seam-fact assertions
+  before the review-predicted failures (the assertion order masked the design-consistent values);
+  the rows were reordered so the RED lands at the hop establishment / the witness admission / the
+  digest equality / the declaration persistence — then the final RED above was recorded on the
+  final test bytes. One transient gate event: the FIRST full probe SOLO reported 975/976 with
+  `an unrelated quoted value containing spaces survives byte-for-byte` failing (the row's NESTED
+  spawned suite exited 1; no assertion of this round's findings was involved); the same-row SOLO
+  rerun passed 1/1 exit 0 and the clean full-probe rerun passed 976/976 — attributed as a transient
+  nested-spawn/load failure; no test touching the three findings' behavior failed and no labels
+  changed.
+
+### 33.8 Codex-review gate round 2 (2026-11-15, two P2 findings on §33.7's amended bytes,
+review-mwho2z7d-1hyd1j, the unbounded witness existence lookups and the wall-clock sequencing
+deadline; §33.7 style — add-only; the amended task-4 commit carries them; message unchanged)
+
+- **Finding 1 [P2 — the witness existence lookups bypassed both timeout checks and the shared
+  abort] — FIXED by racing each lookup inside the bounded sequencing window.** The reviewer's
+  finding verbatim: "For a witness-armed turn, a stalled `lstat` bypasses both timeout checks and
+  the shared abort. Since the exit `finally` awaits `localRuntimeSettled`, the entire turn remains
+  pending even after cleanup starts. A reproduction with a pending witness lookup remained
+  unresolved beyond the turn budget. Race each lookup against cancellation and the sequencing
+  deadline, preserving the corresponding named outcome." Confirmed by the pre-fix bytes: the
+  sequencing loop awaited the module-level `lstat` DIRECTLY (driver.mjs:2731 pre-fix) — the only
+  await in the whole detached runtime task NOT already bounded (every admission/observation rides
+  the `localBoundedOperation` abort race, every pacing hop rides the abort-aware `localPace`), so
+  a pending lookup held the loop past the loop-top abort check, past the deadline comparison and
+  past the shared abort, and the exit `finally`'s `await localRuntimeSettled` kept the whole turn
+  pending beyond the turn budget. **The fix (designed WITH finding 2 as ONE mechanism — a single
+  per-lookup window helper, never stacked patches):** every per-path witness existence lookup is
+  raced inside `awaitWitnessLookupWithinWindow` against BOTH closers of the window — the SHARED
+  abort (`abortArm`) and the sequencing deadline (`deadlineArm`) — one
+  `Promise.race([lookup, abortArm, deadlineArm])` per lookup; the winning closer names the outcome
+  exactly as the loop's own checks would (`'turn-ended'` on the abort, `'bound-expired'` on the
+  deadline), the losing lookup is detached (its rejection is swallowed by its own arm — never an
+  unhandled rejection), and the abort listener is RELEASED the moment the race settles (the
+  round-9 finding-4 listener-release discipline). The loop's own checks are preserved verbatim
+  (the abort check at the loop top, the deadline check after the lookups), so the raced arms and
+  the loop checks name the SAME outcomes on the SAME clock; a pending lookup can never extend the
+  loop, the task or the turn exit. **The instrument seam:** the per-path lookup composes through
+  the schema-additive `HeldTurnInput.lookupLocalWitnessPresence` member (the `admitWitnessSeam`
+  instrument pattern — the injectable seam keeps the mechanism pipeline-testable); the default
+  composes the REAL `lstat` with byte-identical semantics (an ENOENT is the not-yet-materialized
+  absence, exactly the pre-fix `catch`). **The premise disclosure (honest):** the pending-lookup
+  premise is only injectable through the seam this fix introduces — on the pre-fix bytes the seam
+  is inert — so the clean-clone RED for this finding lands at (a) the deadline shape (the
+  frozen-wall arm below) and (b) the seam wiring (`lookupCalls: 0` in the abort arm — the §33.7
+  finding-3 pattern), never at a literal turn hang (the pre-fix loop's own pacing still settles an
+  UNSTALLED loop; the hang requires the stall only the seam can inject). The amended bytes prove
+  the finding's own scenario end to end: the turn RETURNS while the injected lookup is still
+  pending (`lookupSettled: 0` at assert time) — the exit `finally` is not held by the pending
+  read, and the window's deadline arm named `bound-expired` over the still-pending lookup.
+- **Finding 2 [P2 — the sequencing deadline ran on the wall clock] — FIXED by the monotonic
+  clock.** The reviewer's finding verbatim: "If the system wall clock changes during sequencing,
+  this deadline no longer enforces a 15-second duration: a forward adjustment expires it
+  prematurely, while a backward adjustment extends it. Premature expiry triggers the one-shot
+  admissions before valid witnesses finish writing. A simulated 60-second forward adjustment
+  produced `bound-expired` immediately. Use the existing monotonic `now()` for elapsed time and
+  deadline comparisons, retaining wall-clock timestamps only for epoch-valued evidence." Confirmed
+  exactly: the pre-fix block stamped `sequencingStartedAtMs = wallClockNow()`, compared
+  `wallClockNow() > sequencingDeadlineMs` and derived `waitedMs` from the wall arithmetic. **The
+  fix:** the started instant, the deadline comparison and the waited duration ride the turn's own
+  MONOTONIC `now()` — the driver's documented default (Node's `performance.now()`, never the
+  wall-clock `Date.now()` that can step under NTP/clock changes) and the SAME clock domain every
+  other held-turn duration uses — while the wall clock keeps exactly ONE duty in the block: the
+  epoch-valued evidence field `expiredAtEpochMs`. **The field-semantics disclosure (the §33.7
+  `witnessSequencing` record handoff):** the persisted field SET is unchanged (awaitedRoles,
+  boundMs, waitedMs, outcome, the conditional expiredAtEpochMs); the VALUE DOMAIN of `waitedMs`
+  moves from a wall-clock delta to a monotonic duration, ROUNDED to whole milliseconds by the
+  driver's own held-timeline convention (`Math.round(now() - ...)` — the monotonic clock's
+  fractional milliseconds never ride a persisted field, and the §33.7 row's
+  `Number.isSafeInteger(waitedMs)` pin holds unchanged); `expiredAtEpochMs` remains the wall-clock
+  epoch (the backward-step control measures the NEGATIVE-offset epoch value — the field honestly
+  follows the wall clock it is defined on); `boundMs` stays the closed 15000. **The
+  {@link SPAWN_WITNESS_SEQUENCING_BOUND_MS} disclosure:** the constant's VALUE is unchanged
+  (15000); its ENFORCEMENT changes from wall-clock arithmetic to the monotonic deadline raced
+  inside the lookup window — the documented semantics (a bounded, never-extended,
+  never-fabricating sequencing that never extends the turn) are unchanged; the constant's doc
+  comment names this round.
+- **The unified design (one clock source, one window):** the deadline arm rides the turn's own
+  `sleep` seam — the SAME bounded-wait convention the abortable pacing documents (bounded waits
+  resolve on the INJECTED sleep, so instrument tests run their schedules deterministically) —
+  hence the regression rows drive the 15 s bound on a virtual monotonic clock PAIRED with the
+  injected sleep (each slept millisecond advances the same held timeline; the bound expires
+  deterministically in real milliseconds). **The finding-interplay guarantee (the reviewer's F2
+  note):** the deadline arm can fire only after the true remaining duration on the held timeline,
+  so a slow lookup completing WITHIN the bound is never preempted — the dedicated control row
+  materializes both records ~450 ms into a window whose lookups take 150 ms each and measures
+  `witnesses-present` far below the bound; the premature-expiry hazard structurally cannot trigger
+  the one-shot admissions before valid witnesses finish writing, and a slow INJECTED waiter that
+  completes in-bound still composes `witnesses-present` unchanged.
+- **RED→GREEN under the clean-clone discipline:** `git clone --shared` of this worktree into
+  /tmp/r2w-red (deleted after the battery; no `git worktree add`), checkout e8e13d9d, the
+  new/changed test file copied in (the ONLY overlay — the implementation stayed at HEAD),
+  node_modules symlinked: the consolidated new-row battery (8 rows, one name pattern) = **8 tests,
+  4 pass / 4 fail, exit 1 (~3.8 s)** with the design-consistent values — the stalled-lookup row
+  refused at the outcome (actual `"turn-ended"`, expected `"bound-expired"`, waitedMs 0 — the
+  FROZEN wall clock can never expire the pre-fix wall-based deadline, so the loop rode the abort);
+  the forward-jump row refused at the duration (`waitedMs` actual **60000** — the reviewer's own
+  premature-expiry number: the simulated +60 s step expired the bound immediately, before any true
+  duration elapsed); the backward-jump row refused at the outcome (actual `"turn-ended"` — the
+  −60 s step EXTENDED the bound past the turn); the abort-arm row refused at the seam wiring
+  (`the pending lookup was requested (actual 0 calls)`); the four controls (the witnesses-present
+  path through the default lookups, the slow in-bound waiter, the plain-loop abort arm, the
+  unarmed schema stability) passed on the clone. On the amended bytes the SAME 8 rows ran **8
+  pass / 0 fail / 0 skipped, exit 0** (per-row measured: 5.4 ms / 213.7 ms / 212.1 ms / 1004.1 ms
+  / 1505.0 ms / 419.6 ms / 418.4 ms / 12.8 ms — the virtual-clock rows settle the 15 s bound on
+  the injected held timeline in real milliseconds).
+- **Movement enumeration (honest):** NO prior-row verdict changed. The two §33.7 end-to-end rows
+  ran unchanged on the amended bytes (inside the merged targeted regression below) and their
+  sequencing facts record `witnesses-present` through the raced lookups — the arms never preempt a
+  completed read. The probe entry's own count moved 976 → **984** (+8; 0 deleted — all eight
+  §33.8 rows are probe-entry rows and never enter the spawned total: the spawned-suite total pin
+  **799 = 698 + 100 + 1 is UNCHANGED**, re-measured directly under the guard env); the local entry
+  stays 698; the native entry stays 100; the derived unguarded shell-suite aggregate moves
+  1774 → **1782** (= 698 + 100 + 984, riding the three SOLO runs' own measured totals).
+- **The gate battery (executed 2026-11-15 in this worktree on the exact final bytes; strictly
+  serial):** the 8 new rows = **8 pass / 0 fail, exit 0**; the §33.7 13-row set + the witness
+  family + the new rows merged targeted regression (one name pattern) = **21 tests, 21 pass,
+  0 fail, exit 0** (219.3 s); the local entry's witness family + the F4 v9-construction row merged
+  targeted regression = **175 tests, 175 pass, 0 fail, exit 0** (15.4 s); the focused
+  `same-second-completion|integration-completion` families = **156 tests, 156 pass, 0 fail,
+  exit 0** (14.7 s); `node --test tests/test-selection.test.mjs` = **6/6**; SOLO:
+  tests/shell-wait-local-process.test.mjs = **698 tests, 698 pass, 0 fail, exit 0**;
+  tests/shell-wait-native-interruption.test.mjs = **100 tests, 100 pass, 0 fail, exit 0**;
+  tests/shell-wait-probe.test.mjs = **984 tests, 984 pass, 0 fail, 0 skipped, exit 0 (1837.6 s)**
+  — the spawned-suite assertions inside it (the guarded 799-pin rows) passed on these bytes; the
+  guarded spawn CLI measured directly under `ZCODE_SHELL_WAIT_PROBE_SELF_TEST=1` = **799 tests,
+  799 pass, 0 fail, exit 0 — the spawned-suite total pin 799 UNCHANGED**. `npm run lint` exit 0;
+  `npm run typecheck` exit 0; `git diff --check` exit 0; `node scripts/check-line-endings.mjs`
+  exit 0 (LF verified in 551 tracked files). Prohibited-path diffs: `git diff 02cd31e8 --stat --
+  specs/ scripts/ hooks/ skills/ agents/ .codex-plugin/ prompts/ schemas/ marketplace/
+  package.json npm-shrinkwrap.json` EMPTY (0 bytes) and the same diff against `9c337403` EMPTY
+  (0 bytes). The fixes amend the EXISTING task-4 commit (message bytes unchanged; the parent stays
+  f46d4ec0; the working tree clean) — no push.
+- **The iteration disclosure (cause-directed, never label changes):** three corrections, all
+  inside this round's new bytes before the recorded runs: (1) the first clone RED run exposed a
+  test-side ordering bug in MY slow-waiter control (the materialization timer was armed only after
+  `runWitnessSequencingTurn` returned — i.e. after the whole turn had already completed — so the
+  row measured `turn-ended` at the hold's end instead of the in-bound `witnesses-present`); fixed
+  by arming the mid-window materialization hook INSIDE the helper before the turn starts, and the
+  recorded RED above was measured on the final test bytes. (2) The abort arm originally asserted
+  the seam-call count inside a CONTROL row, which would have made a control RED on the clone; the
+  row was split into the pending-lookup seam row (the finding-1 abort arm; its clone RED is the
+  honest seam-wiring refusal) and the plain-loop abort control (the default lookups; passes on
+  both byte sets). (3) The FIRST merged targeted run on the amended bytes refused at the §33.7
+  default-path row's `Number.isSafeInteger(waitedMs)` pin — the monotonic `performance.now()`
+  carries fractional milliseconds the pre-fix wall arithmetic never did; fixed by the driver's own
+  `Math.round` held-timeline convention (the disclosure above), never by touching a §33.7 row.
+  One gate event: the FIRST `npm run typecheck` flagged `import('node:fs/promises').Stats` (the
+  namespace has no `Stats` member under the pinned types); corrected to the repository's own
+  `import('node:fs').Stats` convention (the fixture.mjs Stats-annotation precedent) — a JSDoc-only
+  change with no runtime delta — and the ENTIRE battery above was re-run on the exact final bytes;
+  no test touching the two findings' behavior failed and no labels changed.
+### 33.9 Codex-review gate round 3 (2026-11-15, two P2 findings on §33.8's amended bytes,
+review-mwhw91b4-bvkm7v, the uncancellable deadline-timer sleep and the ungated darwin
+exact-identity assertions; §33.8 style — add-only; the amended task-4 commit carries them;
+message unchanged)
+
+- **Finding 1 [P2 — Cancel deadline timers when the lookup or abort wins] — FIXED by the
+  driver-owned cancellable deadline arm.** The reviewer's finding verbatim: "When a witness-armed
+  turn finishes or aborts before the sequencing deadline, `Promise.race` leaves each losing
+  deadline sleep running. The default sleep creates a referenced `setTimeout`, so these timers
+  keep the CLI or test process alive after cleanup. A synthetic turn returning in approximately
+  103 ms left two referenced 15-second timers. Use a cancellable deadline timer and clear it when
+  another arm wins, or share one cancellable timer across the sequencing window." Confirmed by
+  the pre-fix bytes: the per-lookup deadline arm was `Promise.resolve(sleep(remainingMs))`
+  (driver.mjs:2757-2761 pre-fix) — raced against the lookup and the abort but structurally
+  UNCANCELLABLE: the race releases only the winner, each losing sleep kept running, and with the
+  turn's DEFAULT sleep (`input.sleep ?? ((ms) => new Promise((resolve) =>
+  setTimeout(resolve, ms)))`) every losing arm stayed a REFERENCED 15-second timer — a
+  fast-finishing witness-armed turn left one per raced lookup (the recorded RED below measured
+  TEN on the reviewer's own scenario shape at its ~100 ms scale) and the abort arm left one —
+  keeping the CLI or the test process alive up to fifteen seconds after cleanup. **The fix (one
+  mechanism, disclosed by seam provenance):** the deadline arm is now OWNED and cancellable inside
+  `awaitWitnessLookupWithinWindow` — a hoisted per-window fact
+  `sequencingDeadlineRidesInjectedSleep = input.sleep !== undefined` selects the timing source:
+  an INJECTED sleep keeps the §33.8 ride byte-identical (`Promise.resolve(sleep(remainingMs))` —
+  the documented instrument convention; the virtual-clock rows drive the bound on the injected
+  held timeline), while the DEFAULT path arms a driver-owned `setTimeout(settle, remainingMs)`
+  whose handle is CLEARED unconditionally after the race (`if (deadlineTimer !== null)
+  clearTimeout(deadlineTimer)`): a lost arm's timer is cancelled (zero referenced residue), and a
+  winning arm's already-fired handle clears as the no-op cleanup of its single firing. The
+  per-lookup arm structure (the §33.8 documented shape) is kept — the reviewer's first
+  alternative — because each arm is single-settlement and is cleared at its own race settle, so
+  at most ONE live deadline timer exists at any instant and ZERO survive any settle boundary; the
+  shared-window-timer alternative would have restructured every lookup arm for the same
+  residual-zero property. **The tradeoff disclosure (honest):** one mechanism cannot both ride a
+  FOREIGN sleep's timeline and cancel that sleep's underlying timer — the seam contract returns
+  only a Promise, and reaching into a foreign sleep's internals would change the seam's own
+  semantics — so the split is by seam provenance: the residual-timer hazard exists only on the
+  DEFAULT path (exactly the path the finding measured); an injected instrument sleep owns its own
+  timeline (a virtual sleep is pure arithmetic and carries no OS timer at all; a test injecting a
+  real-timer sleep would own that timer itself). The {@link SPAWN_WITNESS_SEQUENCING_BOUND_MS}
+  doc comment names the round (the bound's value, its monotonic clock and its raced-window
+  semantics unchanged). **The census/spy rows (the leak's own path, measured):** four new rows run
+  the §33.8 synthetic sequencing turn on the REAL clocks (the default sleep) through a PAIRED-TIMER
+  SPY around the turn — every setTimeout the turn creates is paired against its firing or its
+  clear, a bounded in-window settle lets the driver's own ≤100 ms teardown-adjacent pacing arms
+  fire (a PRE-EXISTING, out-of-scope residue disclosed below), and the count after the settle
+  isolates exactly the 15-second deadline leak: the fast-finishing row (the reviewer's scenario —
+  witnesses materialize ~80 ms into the window, the witnesses-present completion wins) must count
+  ZERO; the deadline-wins control (the lookup seam pends, the real bound fires exactly once at
+  its full duration) counts ZERO on both byte sets (a fired timer is gone either way); the
+  abort-wins row (the budget expiry over a pending lookup) must count ZERO; the unarmed structural
+  control counts ZERO on both byte sets (the capture-only declaration never arms the window).
+- **Finding 2 [P2 — Gate exact-identity assertions on bridge availability] — FIXED by the explicit
+  bridge-capability probe and the gated degraded verification.** The reviewer's finding verbatim:
+  "On macOS without working Python/Command Line Tools, `readDarwinKinfoExact` deliberately returns
+  unavailable and preserves the coarse identity. This assertion instead treats every Darwin host
+  as bridge-capable, causing the new research tests to fail on that supported degraded
+  configuration. The new threaded-reader and real-chain rows make the same assumption. Check
+  bridge capability explicitly and verify the degraded outcome when unavailable, retaining
+  exact-identity assertions on capable hosts." Confirmed by rg: every darwin branch of the new
+  research rows assumed the bridge — six sites across four rows (the §33.4 end-to-end row's
+  exact-establishment branch, the §33.7 default-path row's darwin branch, the env-gate row's
+  opt-in arm, the threaded row's arm 1 and its env-reader arm, and the §33.4 row's darwin
+  duties branch — the last verified NOT to assume the bridge: the duty statuses are status-based
+  and the measured degraded run's three duty statuses establish, so it stays ungated). **The probe
+  design (one bounded real read, at most once per process):** `probeDarwinExactBridge` — a live
+  fixture-owned child carries its own nonce, the module's OWN threaded opt-in path
+  (`osSeams: { exactReaderOptIn: true }` — never a process-environment mutation) drives ONE real
+  read of it, and the identity form is classified: capable iff the established read carries the
+  closed exact form; an unavailable bridge (no python3/CLT shim, a failed bridge call, a malformed
+  answer) classifies NOT capable. The probe is bounded by the bridge's own five-second timeout,
+  fast on a bridge-less host (the subprocess fails in milliseconds — the measured capable-host
+  probe answered in ~31 ms), and the child is killed on every exit; the result is memoized (one
+  probe per process, consumed by every gated row), and the observe seam is injectable so the
+  NOT-capable classification is provable on a capable host too. Off-darwin the platform dispatch
+  owns the arm — the probe reads nothing (`probed: false`) and every dispatch branch is
+  byte-identical. **The gate:** each of the five exact-identity sites branches three ways —
+  `darwin && capable` → the existing exact assertions VERBATIM (zero acceptance reduction);
+  `darwin && !capable` → the SUBSTANTIVE degraded verification (never a skip): the REAL witnesses
+  still admit and stay the coarse ps form (`startIdentityExact` false, no closed exact form
+  anywhere — the default-path row re-reads the REAL persisted record through the direct
+  admission), the arming stays declared (`exactReaderEnabled` true — the enablement is the route
+  arming, never a fabricated exactness claim), and the hop/attribution outcomes ride the measured
+  per-hop adjudication (the same discipline as the standing non-darwin dispatch); non-darwin →
+  unchanged. **The degraded real-chain row (the new measured evidence):** the supported degraded
+  configuration is exercised END TO END through the REAL chain on a capable host by degrading BOTH
+  identity resolutions consistently — the writer-side emitters through the REAL bridge-failure
+  surface (a broken interpreter env rides the chain env; the bridge subprocess exits nonzero and
+  the reader's catch classifies unavailable — the same classification a missing python3/CLT shim
+  produces) and the driver-side reads through the closed osSeam surface
+  (`localObservationObserverOptions` — the §33.7 composition's own documented member; an injected
+  `kinfoExact` seam owns its read), exactly the consistent degrade a real bridge-less host
+  produces. The MEASURED degraded contract: the REAL chain still emits and admits both boundary
+  witnesses (coarse ps forms, no exact claim manufactured anywhere), the in-path sequencing still
+  completes `witnesses-present`, and the coarse witness route is FAIL-CLOSED — whole-second facts
+  cannot draw the witness route's generation continuities, so the hops refuse with the NAMED
+  coarse-ambiguity classes (across the runs: `spawn-witness-parent-generation-ambiguous`,
+  `spawn-witness-marker-generation-ambiguous`, `spawn-witness-child-generation-ambiguous` — WHICH
+  label a hop lands on varies with the boundary write's second; the family is stable, the
+  machinery failures — writer-foreign, nonce-mismatch, missing, unadmitted, capture-unbounded,
+  route-unsatisfiable — never appear), the attribution is honestly false, the local-duty aggregate
+  follows the hops (the three status-based duties still establish; the aggregate unsettles with
+  the named ancestry refusal), and the replay re-verifies the persisted coarse witnesses with the
+  honest unattributed refusal. **The seam-simulated control row:** the module's OWN degrade branch
+  driven deterministically on every host (an unavailable `kinfoExact` seam): the opt-in-armed read
+  still ESTABLISHES on the byte-identical coarse path (its identity EQUALS the unarmed ps read's)
+  and the capability probe driven through the same unavailable surface classifies NOT capable. **The
+  RED construction disclosure (honest):** the no-bridge darwin premise is NOT reachable on this
+  host — the probe's own live answer is that the host IS bridge-capable (`/usr/bin/python3` with
+  the Command Line Tools ctypes bridge answered the closed exact form in ~31 ms) — so the
+  finding-2 RED is measured through the degrade surfaces themselves, exactly the ones a real
+  bridge-less host trips: the standalone probe evaluated the OLD ungated assertion shapes
+  (verbatim from the pre-fix rows) against the degraded outputs and BOTH FAILED with the
+  reviewer's predicted contradiction — the threaded arm: `the threaded opt-in read is exact
+  (actual {"identity":"Sun Nov 15 15:18:48 2026"})` — the raw ps lstart string where the closed
+  exact form was asserted; the writer-child arm: `the opt-in record is exact (actual
+  {"exact":false,"writer":"Sun Nov 15 15:18:48 2026","child":"Sun Nov 15 15:18:48 2026"})` —
+  while the NEW gate classified not-capable and the degraded assertions verified byte-identically
+  (the degraded armed identity EQUALS the unarmed ps read on both arms). The suite's gated rows
+  additionally ran on the clone (capable host) through the verbatim exact assertions — all green
+  in the RED battery below — no acceptance reduced anywhere.
+- **RED→GREEN under the clean-clone discipline:** `git clone --shared` of this worktree into
+  /tmp/r3w-red (deleted after the battery; no `git worktree add`), checkout 3e1546a9, the
+  new/changed test file copied in (the ONLY overlay — the implementation stayed at HEAD),
+  node_modules symlinked: the consolidated merged targeted battery (one name pattern; the §33.7
+  13-row set + the §33.8 8 rows + this round's 6 new rows) = **27 tests, 25 pass / 2 fail,
+  exit 1 (312.1 s)** with the design-consistent values — the fast-finishing window row refused at
+  **10 unpaired timers** (its ~100 ms window raced 10 lookups; every losing deadline sleep stayed
+  referenced) and the abort-wins row refused at **1 unpaired timer**; on the amended bytes the
+  SAME 27 rows ran **27 pass / 0 fail / 0 skipped, exit 0 (299.5 s)** — zero unpaired timers on
+  every arm and the exact assertions verbatim on the capable host. The finding-2 standalone probe
+  (the values above) closed the finding-2 RED.
+- **Movement enumeration (honest):** NO prior-row verdict changed. Four rows are edited IN PLACE
+  (the §33.4 end-to-end row, the §33.7 default-path row, the env-gate row, the threaded row): each
+  gains the capability gate and the degraded arm while its capable branch keeps the exact
+  assertions byte-verbatim (the clone RED battery's 25 passes include all four gated rows through
+  those verbatim branches). Six NEW rows: the fast-finishing finding row, the deadline-wins
+  control, the abort-wins row, the unarmed structural control (the four spy rows), the degraded
+  real-chain row and the seam-simulated degraded control. The probe entry's own count moves
+  984 → **990** (+6; 0 deleted); the local entry stays 698 (re-measured 698/698); the native entry
+  stays 100 (re-measured 100/100); the spawned-suite total pin **799 = 698 + 100 + 1 is
+  UNCHANGED** (the six new rows are probe-entry rows and never enter the spawned total); the
+  derived unguarded shell-suite aggregate moves 1782 → **1788** (= 698 + 100 + 990, riding the
+  three SOLO runs' own measured totals).
+- **The gate battery (executed 2026-11-15/16 in this worktree on the exact final bytes; strictly
+  serial):** the merged 27-row targeted regression = **27 tests, 27 pass, 0 fail, exit 0
+  (299.5 s)** (on the clone the same pattern = the recorded RED above); the focused
+  `same-second-completion|integration-completion` families = the local entry **156 tests, 156
+  pass, 0 fail, exit 0** and the three-entry union **159 tests, 159 pass, 0 fail, exit 0**;
+  `node --test tests/test-selection.test.mjs` = **6/6**; SOLO:
+  tests/shell-wait-local-process.test.mjs = **698 tests, 698 pass, 0 fail, 0 skipped, exit 0
+  (120.8 s)** — the first run measured 697/698 with the PRE-EXISTING local row `F4 (P2) RED →
+  a transiently FAILED refresh…` (the §25.10-era registration) refusing on its interval-boundary
+  replay classification
+  (`exit-reuse-carried-instant-outside-interval` — a row this round never touched; the same-row
+  rerun passed 1/1 and the clean full rerun passed 698/698 — the standing transient
+  attribution); tests/shell-wait-native-interruption.test.mjs = **100 tests, 100 pass, 0 fail,
+  0 skipped, exit 0 (64.4 s)**; tests/shell-wait-probe.test.mjs = **990 tests, 990 pass, 0 fail,
+  0 skipped, exit 0 (1903.9 s, the clean rerun)** — the first run measured 989/990 with the
+  suite-selection row `a quoted underscore reporter alias is replaced` failing on its NESTED
+  spawned suite's exit (1 !== 0 — the §33.7-recorded transient nested-spawn shape; no assertion
+  of this round's findings was involved; the same-row rerun passed 1/1 and the clean full
+  rerun passed 990/990) — the spawned-suite assertions inside it (the guarded 799-pin rows)
+  passed on these bytes; the guarded spawn CLI measured directly under
+  `ZCODE_SHELL_WAIT_PROBE_SELF_TEST=1` = **799 tests, 799 pass, 0 fail, 0 skipped, exit 0
+  (185.8 s) — the spawned-suite total pin 799 UNCHANGED**. `npm run lint` exit 0;
+  `npm run typecheck` exit 0; `git diff --check` exit 0; `node scripts/check-line-endings.mjs`
+  exit 0 (LF verified in 551 tracked files). Prohibited-path diffs: `git diff 02cd31e8 --stat --
+  specs/ scripts/ hooks/ skills/ agents/ .codex-plugin/ prompts/ schemas/ marketplace/
+  package.json npm-shrinkwrap.json` EMPTY (0 bytes) and the same diff against `9c337403` EMPTY
+  (0 bytes). The fixes amend the EXISTING task-4 commit (message bytes unchanged; the parent
+  stays f46d4ec0; the working tree clean) — no push.
+- **The iteration disclosure (cause-directed, never label changes):** four instrument
+  corrections, all inside this round's new bytes before the recorded runs: (1) the first leak
+  instrument was a whole-process resource census (`process.getActiveResourcesInfo()` delta around
+  the turn) — the first clone run measured the census ARTIFACT: the deadline-wins CONTROL failed
+  at **−10** because the PRIOR row's leaked 15-second timers expired inside the control's
+  pre-turn baseline (a delta census inherits another row's leak) — the instrument moved to the
+  paired-timer spy (a per-window setTimeout/clearTimeout pairing prior rows cannot touch) before
+  the recorded RED. (2) The spy's unarmed control initially counted the driver's own PRE-EXISTING
+  residue — one in-flight ≤50 ms `localPace` pacing tick left by a losing `abortableSleep` arm at
+  the exit teardown's abort (a benign, pre-existing driver property outside this finding's
+  scope) — the spy's bounded in-window settle now lets every short arm fire before the count, so
+  the count isolates the 15-second deadline leak the finding names. (3) The degraded real-chain
+  row's first assertions over-expected the coarse witness route (the local-duty aggregate
+  settling) — the measured shape is the FAIL-CLOSED coarse ambiguity refusal (the §28.22/§32
+  discipline recorded above) — the row asserts the named coarse-degrade class family and the
+  measured aggregate, never by touching a §33.7/§33.8 row. One battery event: the FIRST 27-row
+  RED run failed the degraded row at its own class-list gap (the child-creation label missing
+  from the row's named family) — the family was completed on this round's own test bytes and the
+  recorded RED above was re-measured on the final bytes; no behavior assertion of either finding
+  changed and no labels were touched.
+  (4) the probe instrument took THREE corrections across the full-probe SOLO runs, each measured
+  and each fixed on this round's own test bytes before the recorded battery: (i) the FIRST shape
+  read the child immediately after the spawn and lost the fork-exec startup race — the first
+  full SOLO measured **986/990** with all four gated rows routed to the degraded branch against
+  EXACT actuals (a ps read inside the window missed the child entirely and classified a WORKING
+  bridge NOT capable — every refusal printed the true exact form it was refused, e.g. `the opt-in
+  record stays coarse on the degraded bridge (actual {"exact":true,"child":"kinfo:…"})`); (ii)
+  the handshake fix exposed the second flaw — the probe started EAGERLY at describe registration
+  while its consumer rows sit at the file's end, so in the SECOND full SOLO the 20-second probe
+  child had self-terminated ~27 minutes before the first gated row consumed the memoized result
+  (`970/970` with the whole witness describe failing at the probe's own loud instrument throw —
+  the read of the dead child named `{"status":"absent","reason":"process-absent"}` — thrown
+  loudly by design, never a silent wrong classification); (iii) the FINAL shape runs the probe
+  LAZILY (created on the first gated row's await — one probe per process, never spanning a
+  collection-to-consumption gap), handshakes (the child prints its own ready line after it is
+  exec'd — the environ ps sees — awaited bounded), retries an unestablished verdict ONCE after a
+  short real wait, and an unestablished verdict after the handshake throws loudly as the
+  instrument failure it is (the not-capable classification comes ONLY from an established read
+  whose identity is not the exact form — the true no-bridge signal on every host); a
+  ten-iteration probe validation measured 10/10 handshakes and 10/10 capable classifications.
+  Two of the three full-probe SOLOs above are the instrument's own iterations, not the recorded
+  battery; the recorded battery below ran on the exact final bytes, and no test touching the two
+  findings' behavior failed and no labels changed.
+- **The host capability record (the gate's two arms on this machine):** this host (darwin arm64,
+  Node v24.14.0) IS bridge-capable — the probe's live real read answered the closed exact form in
+  ~31 ms — so the gated rows' CAPABLE branches are the live-measured arm here (the clone RED
+  battery's 25 passes include all four gated rows through the verbatim exact assertions), while
+  the degraded arms are verified through the module's own degrade surfaces (the seam-simulated
+  control row and the degraded real-chain row — both deterministic on every host, both measured
+  green here); a darwin host without a working bridge runs the degraded arms directly.
+### 33.10 Codex-review gate round 4 (2026-11-16, one P2 finding on §33.3's amended bytes, the
+research entry that never armed the wired capture; §33.9 style — add-only; the amended task-4
+commit carries them; message unchanged)
+
+- **The finding this section closes [Spec P2]:** the user review verbatim: "真实进程链的 capture
+  已补上，但还剩 1 项 P2：研究主入口没有启用它。## Spec
+  runShellWaitCase 创建 fixture 时 (tools/shell-wait-probe/driver.mjs:667) 没有传入 spawnWitness:
+  true。新增测试自行创建了已启用的 fixture，因此正常研究命令仍不会开启这套捕获。
+  接下来应补齐研究入口启用、preflight 检查及入口参数回归，继续原 Task 4，无需新 spec／plan，也无
+  需为此追加 live。
+  这次实际捕获机制的成果成立；生产中断验收仍未完成。暂不建议按"计划全部完成"合并。Standards：0 项；
+  Spec：1 项 P2。" Confirmed by rg: the {@link runShellWaitCase} fixture composition threaded
+  `stdoutCapture: true` through the closed capture-required set but NEVER `spawnWitness` — the
+  §33.2/§33.4 wiring was reachable only through hand-built fixtures, so no research command ever
+  armed the REAL-chain capture.
+- **The investigation (the caller inventory and the design):** `runShellWaitCase` is the research
+  entry for exactly three callers — the frozen §30.4 CLI (`node tools/shell-wait-probe/driver.mjs
+  --case …`, the only default-dependency invocation), the guarded suite selection
+  (tools/run-test-suite.mjs shell-research, which runs the TEST entries, never the live CLI), and
+  the instrument tests (every probe-suite call injects BOTH `createFixture` and `executeLiveCase`
+  stubs — verified by a whole-file sweep: zero tests reach the real fixture composer through the
+  entry). The fixture's own fail-closed validation refuses a witness-only arming (the witness
+  gates CONSUME the capture environment), so the entry's witness enablement is exactly the
+  capture-required set — the named real-chain criterion (the registered I/O1/O2 designs
+  rescue-interrupt/rescue-long/rescue-repeat, whose live runs drive the REAL launcher→broker→
+  transport hops). **The platform-gating adjudication (option a evaluated and rejected):** a
+  bridge-capability-gated entry (darwin + probe → arm) was rejected because the capability probe
+  is a real-child instrument living only in test bytes today (§33.9); moving it into the driver
+  would add a real subprocess to every research entry invocation and a nondeterministic arming
+  flap (a probe timeout flips the arming across runs). The reader's OWN degrade is already the
+  platform gate: the §32.2 opt-in composes in the fixture env and `readDarwinKinfoExact`
+  degrades fail-closed to the coarse ps form off-darwin or on any bridge failure — the arming is
+  deterministic on every host and the named coarse-ambiguity route refusals are the documented
+  degrade contract (§33.9's measured end-to-end shape). **The performance surface (measured and
+  bounded):** the witness-armed sequencing window arms ONLY for rescue-interrupt (the
+  `witnessArmed` member composes through `localObservationDeclarationFor`, whose producer map is
+  the interrupt case alone) and ONLY on the LIVE default-executor path (injected executors never
+  run the held turn). Witnesses normally arrive in seconds (§33.4's real-chain measurement ~1.3–
+  1.6 s), so the 15 s bound is waited only for the actual arrival; the bound-expired outcome
+  requires the witnesses never to materialize — a failed chain launch that is already failing its
+  business assertions. The fixture-creation add-on was measured directly (3×3 seam-injected real
+  fixture builds, plain capture vs capture+witness): 559 ms vs 561 ms total (~186–191 ms per
+  build) — the witness preload write plus its two digests are sub-millisecond against the build.
+  Non-interrupt cases gain an inert witness env (the preload installs nothing outside the gated
+  roles) and an additive `spawnWitnessDeclaration` record block.
+- **The preflight check (offline; the §30.4 future-launch package's verification layer):** the
+  new named ground composes LAST in `evaluateLiveLaunchPreflight` (the review-round-32
+  composes-last discipline — every earlier named ground keeps its refusal): a rescue-interrupt
+  fixture whose record DECLARES the §33.10 witness arming (`record.spawnWitnessCapture` — the
+  survivalControl/stdoutCapture declaration pattern) must carry the agreeing instrument — the
+  armed witness handle present, its generated preload file on disk, and the declaration digest
+  equal to the handle's — each refusal naming the wrong-instrument family. The entry is the only
+  producer of rescue-interrupt fixtures on the research-command path, so EVERY live launch
+  verifies the declared arming; a capture-only fixture (the pre-§33.10 instrument shape) stays
+  unblocked. **The requirement-arm variant evaluated and rejected (the honest tradeoff):** an
+  unconditional requirement arm (every rescue-interrupt launch must carry the witness handle)
+  would have forced THREE standing real-fixture rows (the §25.7/§33 junction harnesses) to gain
+  witness-armed fixtures — whose `witnessArmed` member flips the runtime's sequencing window on
+  FROZEN/FAKE hold clocks that cannot advance it (a hang-class instrument rework, never an
+  in-place update; the §33.8 raced-window analysis shows a frozen `now()` with fast failing
+  lookups cannot expire the bound). The agreement arm refuses exactly the failure mode the entry
+  could produce (declared arming, unbacked instrument) with zero prior-row movement. The launch
+  is never started by the check: the launch-spy regression proves the refusal precedes the
+  version probe and the held turn (zero hosted calls).
+- **RED→GREEN under the clean-clone discipline:** `git clone --shared` of this worktree into
+  /tmp/r5w-red (no `git worktree add`), checkout dd7d7ccd, the new test file copied in as the
+  ONLY overlay (+243 lines, one file — the implementation stayed at HEAD), node_modules
+  symlinked: the four-row targeted battery (one name pattern) = **4 tests, 0 pass / 4 fail,
+  exit 1 (~117 s)** with the design-consistent values — the entry threading row refused at
+  `rescue-long: the research entry arms the real-chain spawn-witness capture with the capture
+  seam` (the fixture input carried no witness key); the real-fixture row refused at its own
+  premise (`the entry-shaped input carries the witness arming`); the preflight row refused at
+  `a declared-but-unhandled instrument must refuse (actual {"ok":true,"reason":null})` (the
+  agreement arm did not exist); the launch-spy refused at `Missing expected rejection` (the
+  unprotected default executor ran its full body — the measured ~116 s of that row is the
+  pre-fix path's own unprotected launch attempt, and the identical row settles in ~4 ms once
+  the preflight refuses). On the amended bytes the same four rows ran **4 pass / 0 fail /
+  0 skipped, exit 0**.
+- **Movement enumeration (honest):** NO prior-row verdict changed and NO prior row was edited —
+  the whole-file sweep for additive-fact breakage (whole-record deepEqual, fixture-input
+  key-set pins, preflight verdict pins) found ZERO implicated assertions: every preflight-ok row
+  uses a capture-only fixture whose record carries no witness declaration (the agreement arm is
+  declaration-gated and neutral there), and every entry-level test injects fixture stubs whose
+  records lack the witness block. The four rows are NEW (all probe-entry rows): the entry
+  threading row (all nine registered cases through the entry), the entry-shaped real-fixture row
+  (the entry-composed input handed VERBATIM to the real composer through the seam-injected fast
+  installer, with the unarmed schema-stability control), the agreement-arm row (the three named
+  refusals + the positive + the capture-only control) and the launch-spy row. The probe entry's
+  own count moves 990 → **994** (+4; 0 deleted); the local entry stays 698 (re-measured 698/698);
+  the native entry stays 100 (re-measured 100/100); the spawned-suite total pin **799 = 698 +
+  100 + 1 is UNCHANGED** (the four new rows are probe-entry rows and never enter the spawned
+  total); the derived unguarded shell-suite aggregate moves 1788 → **1792** (= 698 + 100 + 994,
+  riding the three SOLO runs' own measured totals).
+- **The gate battery (executed 2026-11-16 in this worktree on the exact final bytes; strictly
+  serial):** the four-row targeted battery = **4 tests, 4 pass, 0 fail, exit 0**; the merged
+  witness-family targeted regression (the whole §33.4–§33.9 describe — 20 prior rows + the 4 new
+  rows, one name pattern) = **24 tests, 24 pass, 0 fail, 0 skipped, exit 0 (5 m 04 s)** — the
+  three contrast arms live inside it: the CAPABLE-darwin arm (this host's REAL-chain end-to-end
+  row and the default-path row — the live-measured exact capture), the NON-CAPABLE-darwin
+  simulated arm (the degraded real-chain row through the REAL bridge-failure surface plus the
+  seam-simulated unavailable-bridge control — the named coarse fail-closed contract) and the
+  NON-DARWIN dispatch (no platform branch was added this round — the dispatch rows byte-identical
+  and covered by the local entry's platform-dispatch rows inside the focused and SOLO runs); the
+  focused `same-second-completion|integration-completion` families = the local entry **156 tests,
+  156 pass, 0 fail, exit 0** and the three-entry union **159 tests, 159 pass, 0 fail, exit 0**;
+  `node --test tests/test-selection.test.mjs` = **6/6**; SOLO:
+  tests/shell-wait-local-process.test.mjs = **698 tests, 698 pass, 0 fail, 0 skipped, exit 0**;
+  tests/shell-wait-native-interruption.test.mjs = **100 tests, 100 pass, 0 fail, 0 skipped,
+  exit 0**; tests/shell-wait-probe.test.mjs = **994 tests, 994 pass, 0 fail, 0 skipped, exit 0
+  (~31 m 49 s, first run clean)**; the guarded spawn CLI measured directly under
+  `ZCODE_SHELL_WAIT_PROBE_SELF_TEST=1` = **799 tests, 799 pass, 0 fail, 0 skipped, exit 0
+  (~3 m 06 s) — the spawned-suite total pin 799 UNCHANGED**. `npm run lint` exit 0;
+  `npm run typecheck` exit 0; `git diff --check` exit 0; `node scripts/check-line-endings.mjs`
+  exit 0. Prohibited-path diffs: `git diff 02cd31e8 --stat -- specs/ scripts/ hooks/ skills/
+  agents/ .codex-plugin/ prompts/ schemas/ marketplace/ package.json npm-shrinkwrap.json` EMPTY
+  (0 bytes) and the same diff against `9c337403` EMPTY (0 bytes). The fixes amend the EXISTING
+  task-4 commit (message bytes unchanged; the parent stays f46d4ec0; the working tree clean) —
+  no push. The production interruption acceptance stays OPEN (the §30.4/§33.6 obligations are
+  untouched by this round: zero live launches, zero model turns).
+
+### 33.11 Codex-review gate round 5 (2026-11-16, two P2 findings on §33.10's amended bytes —
+review-mwis46fb-32ebtt, the declared witness instrument accepted over a capture-only effective
+launch environment and the witness preload accepted on cached hashes alone, both reproduced by
+the reviewer; §33.10 style — add-only; the amended task-4 commit carries them; message unchanged)
+
+- **The findings this section closes [2×P2]:** finding 1 verbatim: "[P2] Verify witness loading in
+  the effective launch environment — tools/shell-wait-probe/driver.mjs:10051-10054 "With a declared
+  witness handle but capture-only `NODE_OPTIONS`, preflight returns `ok: true` although the witness
+  preload never runs. The new positive preflight test constructs exactly this environment using
+  `syntheticCaptureEnv(boundCapture)`. Missing witness transport configuration is also accepted.
+  This allows a hosted trial with a known-inactive instrument, followed by missing witnesses and
+  potentially a 15-second sequencing wait. Verify the witness `--require` token and declared
+  environment configuration before accepting the launch."" Finding 2 verbatim: "[P2] Hash the
+  on-disk witness preload before accepting it — tools/shell-wait-probe/driver.mjs:10047-10051 "If
+  the generated witness preload is truncated or replaced after fixture creation, this check still
+  succeeds: `lstat` confirms only that a regular file exists, while the compared hashes are both
+  cached arming values. Unlike the adjacent capture-preload validation, it never hashes the bytes
+  Node will actually execute. Consequently, preflight accepts a missing or altered instrument while
+  the retained declaration attributes it to the original bytes. Compare the on-disk preload digest
+  with the declaration before launch."" Confirmed by rg: the §33.10 agreement arm (driver.mjs
+  pre-fix :10041-10054) verified ONLY the cached agreement — the armed handle present, the preload
+  file's existence (`lstat`) and the declaration digest equal to the HANDLE digest — never the
+  bytes on disk and never the effective launch environment, and the §33.10 agreement row's positive
+  construction was exactly the reviewer's named shape.
+- **The citation deviations (recorded honestly):** `syntheticCaptureEnv(boundCapture)` is a TEST
+  helper, not a driver symbol — the capture-only positive construction lived at
+  tests/shell-wait-probe.test.mjs:31938/:31942 pre-fix (the driver has no such identifier); and the
+  fixture arming block whose actual written set the effective-env gate must mirror is
+  tools/shell-wait-probe/fixture.mjs:728-756 (the reviewer's ":728-745" pointer — driver.mjs:728-745
+  is the executor's refusal path, unrelated). The written set, read off the arming block verbatim:
+  `NODE_OPTIONS` gains the witness `--require <quotedPath>` fragment AFTER the capture preload's
+  (strictly additive composition); `ZCODE_SHELL_WAIT_WITNESS_TRANSPORT_ENTRY` =
+  `transportEntryRealpath` (the resolved fake-ZCode realpath); `ZCODE_SHELL_WAIT_KINFO_EXACT` =
+  `'1'`; the armed handle mirrors them as `{ preloadPath, preloadSha256, transportEntryRealpath,
+  exactReaderEnabled: true }`.
+- **The fix (two named grounds composing INSIDE the §33.10 declaration gate, after its three
+  existing refusals, each ending in the wrong-instrument family):** (Finding 2) the ON-DISK digest —
+  `readFile(witnessHandle.preloadPath)` → sha256 → compared with the DECLARATION digest (the exact
+  method of the adjacent capture-preload validation, review round 5 finding 4): a truncated or
+  replaced artifact refuses `the declared spawn-witness capture preload on disk does not match the
+  arming declaration (the executing witness bytes drifted or were truncated) — the wrong
+  instrument`, and a read failure (the artifact vanishing after the `lstat` — the file race) is the
+  SAME named refusal through the null digest, never a crash. (Finding 1) the EFFECTIVE launch
+  environment — the composed `NODE_OPTIONS` must carry a real `--require` OPTION TOKEN whose
+  argument is the armed witness preload path (else `the effective launch environment does not LOAD
+  the declared witness preload (NODE_OPTIONS carries no --require option token whose argument is
+  the armed witness preload path — a capture-only NODE_OPTIONS) — the wrong instrument`), using the
+  SAME Node-exact tokenizer the capture env check uses (rounds 27-30), hoisted VERBATIM from the
+  local-observation block to preflight-function scope (a pure function of the string — the capture
+  gate's behavior is byte-identical); and the witness transport configuration must be present and
+  agree with the armed handle (`ZCODE_SHELL_WAIT_WITNESS_TRANSPORT_ENTRY` = the declared transport
+  entry realpath; `ZCODE_SHELL_WAIT_KINFO_EXACT` = `'1'` under the armed exact-reader enablement),
+  else `the effective launch environment is missing or disagrees on the declared witness transport
+  configuration (${variable}) — the wrong instrument` naming the variable. The gate stays
+  declaration-gated and composes LAST: every earlier named ground (the §24.8 choreography gates,
+  the survival-control declaration, the round-32 capture-directory usability gate, the round-33
+  0700 gate, the capture env/frozen-contract/tokenizer arms and the §33.10 cached-agreement
+  refusals) keeps its refusal first, and a fixture with no witness declaration is not blocked.
+- **The implicated row (in-place update, disclosed):** the §33.10 agreement row's POSITIVE
+  construction was the reviewer's exact shape — the declared instrument over
+  `syntheticCaptureEnv(boundCapture)` (capture-only NODE_OPTIONS, no witness transport variables) —
+  and it passed pre-fix only because the arm verified cached agreement alone. The row now composes
+  the REAL armed environment through a new file-scope helper `syntheticWitnessEnv(captureHandle,
+  witnessHandle)` (the witness `--require` fragment riding the composed NODE_OPTIONS after the
+  capture preload's fragment, plus the two transport variables bound to the handle) — the row's
+  verdict is UNCHANGED (still `ok:true`, now over an environment that would actually run the
+  witness preload) and its three refusal arms keep their earlier-ground refusals (they fire before
+  the new arm). No other prior row was edited: the whole-file sweep found every other preflight-ok
+  row either capture-only WITHOUT the witness declaration (the agreement arm is declaration-gated
+  and neutral there) or a REAL-composer fixture whose full armed env and intact on-disk preload
+  satisfy the new arm.
+- **The four new rows (all probe-entry, all synthetic-instrument, appended inside the §33.4-§33.10
+  witness describe):** (1) the effective-env capture-only arm — the reviewer's exact construction
+  refuses by name while the capture-only face WITHOUT a witness declaration stays unblocked (the
+  contrast control re-asserted); (2) the effective-env transport arm — a missing
+  `ZCODE_SHELL_WAIT_WITNESS_TRANSPORT_ENTRY`, a missing `ZCODE_SHELL_WAIT_KINFO_EXACT` and a
+  DISAGREEING transport entry each refuse naming the variable, while the fully armed environment
+  (both `--require` tokens, both variables agreeing with the handle) passes; (3) the on-disk digest
+  arm — the intact artifact passes (the control), then the TRUNCATED artifact refuses and the
+  REPLACED artifact refuses (the cached arming hashes still agree with each other — only the bytes
+  catch the drift); (4) the read-race arm — an injected read failing ONLY the witness path after
+  the `lstat` succeeds produces the named refusal through the preflight's injectable `readFile`
+  seam, never a crash.
+- **RED→GREEN under the clean-clone discipline:** `git clone --shared` of this worktree into
+  /tmp/r6w-red (no `git worktree add`), checkout 3e243d9f, the test diff copied in as the ONLY
+  overlay (+217/−1 lines, one file — the implementation stayed at HEAD), node_modules symlinked:
+  the targeted battery (name pattern "review round 5" — the four new rows plus the nine standing
+  rows whose full names carry the same marker, the "review round 5 refinements" describe) = **13
+  tests, 4 fail / 9 pass, 0 skipped, exit 1** with the design-consistent values — the capture-only
+  row refused at `a declared witness instrument over a capture-only NODE_OPTIONS must refuse
+  (actual {"ok":true,"reason":null})`; the transport row at `a missing witness transport
+  configuration must refuse (actual {"ok":true,"reason":null})`; the on-disk row at `a truncated
+  witness preload must refuse (actual {"ok":true,"reason":null})`; the read-race row at `a witness
+  artifact that vanishes after the presence check must refuse by name (actual
+  {"ok":true,"reason":null})` (per-row 1.2-3.2 ms; the nine standing rows stayed green on both
+  byte sets). **The RED-construction disclosure (honest):** the FIRST overlay draft failed its own
+  controls — the on-disk/read-race rows' fixtures composed the witness env additions WITHOUT the
+  capture-variable spread, so the CAPTURE env gate refused before the witness arm (the wrong named
+  ground, e.g. `missing the declared capture variable (ZCODE_SHELL_WAIT_CAPTURE_DIR)`); the
+  overlay was corrected to the full armed env and the RED re-measured on the corrected overlay —
+  the recorded RED above is the corrected run, never the discarded draft. On the amended bytes the
+  same battery = **13 tests, 13 pass, 0 fail, 0 skipped, exit 0**.
+- **Movement enumeration (honest):** NO prior-row verdict changed; the ONE prior row edited is the
+  §33.10 agreement row's positive construction (disclosed above). The four rows are NEW. The probe
+  entry's own count moves 994 → **998** (+4; 0 deleted); the local entry stays 698 (re-measured
+  698/698); the native entry stays 100 (re-measured 100/100); the spawned-suite total pin
+  **799 = 698 + 100 + 1 is UNCHANGED** (re-measured directly under the guard); the derived
+  unguarded shell-suite aggregate moves 1792 → **1796** (= 698 + 100 + 998, riding the three SOLO
+  runs' own measured totals).
+- **The gate battery (executed 2026-11-16 in this worktree on the exact final bytes; strictly
+  serial):** the targeted battery (pattern "review round 5") = **13 tests, 13 pass, 0 fail, exit
+  0**; the merged witness-family targeted regression (the whole §33.4-§33.10 describe — 24 prior
+  rows + the 4 new rows, one name pattern) = **28 tests, 28 pass, 0 fail, 0 skipped, exit 0
+  (~5 m 04 s)** — inside it the REAL-chain rows pass through the ENTIRE preflight chain in the
+  declared order (the round-32 usability gate, the round-33 0700 gate, then the new witness arms —
+  the REAL composer's full armed env and the intact on-disk preload prove the positive face), and
+  the contrast arms stay inside it (the capable-darwin REAL rows, the degraded real-chain row, the
+  seam-simulated unavailable-bridge control); the focused `same-second-completion|
+  integration-completion` families = the local entry **156 tests, 156 pass, 0 fail, exit 0** and
+  the three-entry union **159 tests, 159 pass, 0 fail, exit 0** (both pins unchanged);
+  `node --test tests/test-selection.test.mjs` = **6/6**; SOLO:
+  tests/shell-wait-local-process.test.mjs = **698 tests, 698 pass, 0 fail, 0 skipped, exit 0**;
+  tests/shell-wait-native-interruption.test.mjs = **100 tests, 100 pass, 0 fail, 0 skipped,
+  exit 0**; tests/shell-wait-probe.test.mjs = **998 tests, 998 pass, 0 fail, 0 skipped, exit 0
+  (~31 m 47 s, first run clean)**; the guarded spawn CLI measured directly under
+  `ZCODE_SHELL_WAIT_PROBE_SELF_TEST=1` = **799 tests, 799 pass, 0 fail, 0 skipped, exit 0
+  (~3 m 05 s) — the spawned-suite total pin 799 UNCHANGED**. `npm run lint` exit 0;
+  `npm run typecheck` exit 0; `git diff --check` exit 0; `node scripts/check-line-endings.mjs`
+  exit 0. Prohibited-path diffs: `git diff 02cd31e8 --stat -- specs/ scripts/ hooks/ skills/
+  agents/ .codex-plugin/ prompts/ schemas/ marketplace/ package.json npm-shrinkwrap.json` EMPTY
+  (0 bytes) and the same diff against `9c337403` EMPTY (0 bytes). The fixes amend the EXISTING
+  task-4 commit (message bytes unchanged; the parent stays f46d4ec0; the working tree clean) —
+  no push. The clean clone /tmp/r6w-red was deleted after the RED measurement. The production
+  interruption acceptance stays OPEN (the §30.4/§33.6 obligations are untouched by this round:
+  zero live launches, zero model turns).
+
+### 33.12 Codex-review gate round 6 (2026-11-16, one P2 finding on §33.11's amended bytes —
+review-mwiwpb8b-wt5i6w, the patched spawn export synchronized only the CommonJS side so an
+already-loaded node:child_process ESM namespace kept the named spawn import of ESM consumers on
+the ORIGINAL spawn — the real spawn boundaries would produce no witnesses despite passing
+preflight — reproduced by the reviewer; §33.11 style — add-only; the amended task-4 commit
+carries it; message unchanged)
+
+- **The finding this section closes [1×P2]:** verbatim: "[P2] Synchronize the patched spawn
+  export with ESM consumers — tools/shell-wait-probe/spawn-witness-preload.mjs:158-159 "If an
+  earlier inherited `NODE_OPTIONS` preload initializes the ESM `node:child_process` namespace,
+  replacing `CP.spawn` updates only the CommonJS export. The named `spawn` import in
+  `scripts/lib/process.mjs` still calls the original function, so the real spawn boundaries
+  produce no witnesses despite passing preflight. This is reproducible with the generated
+  preload. Call `syncBuiltinESMExports()` after installing the wrapper and cover the
+  already-loaded namespace case."" Confirmed by code read: the generated source installed the
+  wrapper on the CJS exports object alone (pre-fix `CP.spawn = function patchedSpawn(...)` with no
+  namespace re-sync), and the production consumer shape is exactly
+  `import { spawn, spawnSync } from 'node:child_process'` (scripts/lib/process.mjs:1).
+- **The as-built call form (recorded honestly):** the API is Node's
+  `module.syncBuiltinESMExports()` — the function lives on `node:module`, never on
+  `child_process` (the review shorthand "`syncBuiltinESMExports()`" is exact; a
+  `child_process.syncBuiltinESMExports` symbol does not exist). The generated CJS source calls
+  `require('node:module').syncBuiltinESMExports()`, the same import surface the repository's own
+  preloading fixture uses (tests/fixtures/record-socket-methods.mjs imports it from `node:module`).
+- **The code facts (read off the tree, the §33.4/§33.9 surfaces untouched):** the CAPTURE
+  preload's generated source (closure-preload.mjs) requires ONLY node:fs/node:path/node:crypto
+  and patches NO child_process export — the witness preload is the ONLY spawn wrapper in the
+  armed chain, so the R1 ordering disclosure (the witness `--require` fragment appended AFTER the
+  capture fragment, fixture.mjs:736) needs no re-ordering and nothing of the capture instrument
+  can be clobbered by the sync; the fixture composes an INHERITED `NODE_OPTIONS` BEFORE both
+  fragments (fixture.mjs:676-684) — the finding's "earlier inherited `NODE_OPTIONS` preload" is
+  exactly that slot; the live preflight NEVER executes preload bytes
+  (evaluateLiveLaunchPreflight touches lstat/readFile digests only) — the preflight surface is
+  configuration-only and is byte-unchanged by this fix; the REAL-chain end-to-end rows re-proved
+  green inside the merged battery below.
+- **The Node mechanics (measured on this runner before designing the regression, not assumed):**
+  `--require` preloads run in NODE_OPTIONS command-line order and always BEFORE `--import`
+  preloads regardless of order (measured on v24.14.0); a dynamic
+  `import('node:child_process')` inside an EARLIER `--require` preload creates the builtin's ESM
+  facade AT THE import() CALL — snapshotting the then-current exports — so a later CJS-only
+  wrapper install leaves the facade's named spawn binding on the ORIGINAL function (measured
+  interceptions 0 across repeated runs, deterministic); `syncBuiltinESMExports()` re-points the
+  ALREADY-LOADED namespace's live bindings at the current CJS exports (measured interceptions 1).
+  A static `--import` ESM preload does NOT reproduce the bug (the facade it creates is later
+  re-synced by Node's own first-CJS-require path of the witness preload) — the regression
+  therefore uses the dynamic-import-in-an-earlier-require-preload construction, the finding's
+  exact "earlier inherited preload" shape.
+  (Causal-parenthetical correction, disclosed add-only in the §32.74 draft-pin disclosure style:
+  the parenthetical above — "the facade it creates is later re-synced by Node's own
+  first-CJS-require path of the witness preload" — is WRONG. The addendum re-verification
+  (agent_f77b5a6d, finding F-1) counter-proved it decisively on v24.14.0 with its P6 probe, in
+  two measured steps: (a) `--require` preloads ALWAYS run before `--import` preloads — the
+  opening sentence of this very bullet measures that ordering — so the witness preload's require
+  fires BEFORE the static `--import` facade exists and a "later re-sync" ordering is
+  impossible; (b) once a facade is stale, NO require after the patch re-syncs the ESM face — a
+  consumer that requires the module first and only then ESM-imports it still receives the
+  ORIGINAL function through the named import (measured). The REAL mechanism: the builtin's ESM
+  facade materializes AT THE FIRST ESM TOUCH against the then-current CJS exports — the static
+  `--import` form, by preload ordering, materializes exactly AFTER the wrapper install and
+  therefore snapshots the WRAPPER. The bullet's behavioral conclusion stands unchanged — the
+  static `--import` form cannot reproduce the finding and the regression must keep the
+  dynamic-import shape — only the causal parenthetical was wrong; no sentence above is
+  rewritten.)
+- **The fix (one call, the smallest ground):** `require('node:module').syncBuiltinESMExports();`
+  placed INSIDE the gated branch, immediately after the wrapper install (the generated source's
+  comment surfaces updated in the same module: the seam docstring and the generated header; the
+  three deleted lines are generated-source COMMENT lines only — no behavioral line removed).
+  Non-gated processes install nothing and never reach the call. Repeated calls are harmless
+  (each call re-reads the current exports; the LAST installer of the export owns the ESM face);
+  the new chaining arm proves a foreign earlier preload that ALSO patches and syncs composes
+  correctly: the witness wrapper owns the ESM face after its own sync AND the foreign wrapper
+  keeps running INSIDE the chain (its bookkeeping still fires) — chain preserved, last installer
+  wins, no clobbering.
+- **The version face (no guard, disclosed):** `module.syncBuiltinESMExports` exists since Node
+  v12.12.0; the engines floor is `>=22.13.0` (package.json); verified `typeof === 'function'` on
+  v22.13.0 (the nvm matrix copy) and v24.14.0 (this runner) — a guard would be dead code on
+  every supported version. On a hypothetical runtime lacking the API, the gated role's preload
+  would throw at startup — a LOUD launch failure recorded by the held turn (fail-closed by
+  construction), never a silent witness absence, while ungated processes (hooks, prepare
+  launcher, transport, discovery probes) stay unaffected because they return before the gated
+  branch.
+- **The version-face probe record (informational; the addendum re-verification agent_f77b5a6d's
+  finding F-2, appended add-only):** the finding shape does NOT reproduce on the engines floor
+  v22.13.0 — v22's builtin-ESM face and its re-sync timing are LAZIER than v24's: the SAME probe
+  construction that leaves the facade stale on v24.14.0 (an early dynamic-import preload
+  initializing the namespace, then a CJS-only patch — the P6 shape) hands a v22.13.0 consumer
+  the WRAPPER through the named ESM import (measured on v22.13.0, the nvm matrix copy). The
+  honest labeling: the new regression's discriminating power is v24-SPECIFIC — on v22.13.0 the
+  RED arm stays GREEN even without the fix (there is no stale ESM face left to detect) — while
+  the fix itself remains an equivalent HARMLESS refresh there (each call re-reads the current
+  exports; refreshing an already-current face changes nothing). The API presence was re-checked
+  on the floor: `typeof module.syncBuiltinESMExports === 'function'` re-measured true on
+  v22.13.0 this round — consistent with the version-face bullet above (v12.12.0+; the engines
+  floor `>=22.13.0`). The gate runner and every RED/GREEN measurement in this section ran on
+  v24.14.0, and the Node mechanics bullet above is already qualified "measured on v24.14.0";
+  nothing in the engines floor, the no-guard posture, or any test row changes on the strength of
+  this record.
+- **The two new rows (appended inside the §33.4-§33.11 witness describe):** (1) the ESM namespace
+  arm — the finding construction (early inherited preload initializing the namespace via dynamic
+  import, the GENERATED witness preload second, an ESM consumer in the exact
+  scripts/lib/process.mjs import shape as the GATED invocation entry spawning the stand-in
+  broker through the child gate's argv) asserts ONE stub-observer interception, plus THREE
+  controls: the no-early design face (unchanged), the CJS contrast face (never broken), and the
+  capture-only named absence (no witness preload → the interception record never materializes,
+  the spawn untouched); (2) the chaining/ordering arm — the foreign early wrapper that patches
+  AND syncs, then the witness wrapper: the ESM face is the witness wrapper's (one interception)
+  and the foreign wrapper's bookkeeping still runs (the chain intact). The interception is
+  observed through the seam-injected stub observer (the §33.2 pattern — the observer URL is a
+  generation-time input of the generated preload; the REAL observer stays bound at the fixture
+  layer and is untouched here). All processes are REAL (`node --require early --require witness
+  consumer` riding NODE_OPTIONS exactly as the armed chain composes it).
+- **RED→GREEN under the clean-clone discipline:** `git clone --shared` of this worktree into
+  /tmp/r7w-red (no `git worktree add`), checkout 5c8d3bfa, the test diff copied in as the ONLY
+  overlay (+178/−0 lines, one file — the implementation stayed at HEAD), node_modules symlinked:
+  the targeted battery (name pattern "review round 6" — the two new rows plus the eight standing
+  rows of the "review round 6 refinements" describe whose full names carry the same marker) =
+  **10 tests, 2 fail / 8 pass, 0 skipped, exit 1** with the design-consistent values — the ESM
+  namespace arm failed at `the ESM named spawn import must be intercepted by the witness wrapper
+  (actual {"pid":48085,"interceptions":0,"chainWraps":0})` and the chaining arm at `the witness
+  wrapper owns the ESM face after its sync (actual {"pid":48088,"interceptions":0,"chainWraps":1})`
+  (per-row ~5.0 s — the bounded interception polls exhausting on the missing record; the eight
+  standing rows stayed green on both byte sets). **The RED-construction disclosure (honest):**
+  the FIRST overlay draft (+176 lines) named the CJS contrast consumer `*.mjs`, so Node loaded
+  the require-shaped file as ESM and the draft's own GREEN run failed that control at `the cjs
+  consumer exited 1: ... ReferenceError: require is not defined in ES module scope`; the overlay
+  was corrected (the contrast form rides `.cjs` — the extension carries the module format) and
+  the RED re-measured on the corrected overlay — the recorded RED above is the corrected run
+  (the draft failed the SAME two finding rows identically; only the control face changed). On
+  the amended bytes the same battery = **10 tests, 10 pass, 0 fail, exit 0**; the clean-clone RED
+  re-test on the FINAL bytes (/tmp/r7w-red2, the corrected overlay only, implementation at
+  5c8d3bfa) reproduced **10 tests, 8 pass / 2 fail, exit 1** with the same named values
+  (`{"pid":36737,"interceptions":0,"chainWraps":0}` and
+  `{"pid":36742,"interceptions":0,"chainWraps":1}`).
+- **Movement enumeration (honest):** NO prior-row verdict changed; the TWO rows are NEW. The
+  probe entry's own count moves 998 → **1000** (+2; 0 deleted); the local entry stays 698
+  (re-measured 698/698); the native entry stays 100 (re-measured 100/100); the spawned-suite
+  total pin **799 = 698 + 100 + 1 is UNCHANGED** (re-measured directly under the guard); the
+  derived unguarded shell-suite aggregate moves 1796 → **1798** (= 698 + 100 + 1000, riding the
+  three SOLO runs' own measured totals).
+- **The gate battery (executed 2026-11-16 in this worktree on the exact final bytes; strictly
+  serial):** the targeted battery (pattern "review round 6") = **10 tests, 10 pass, 0 fail, exit
+  0**; the merged witness-family targeted regression (the whole §33.4-§33.11 witness describe —
+  28 prior rows + the 2 new rows, one name pattern) = **30 tests, 30 pass, 0 fail, 0 skipped,
+  exit 0 (~5 m 07 s)** — inside it the REAL-chain rows pass through the ENTIRE preflight chain in
+  the declared order and the contrast arms stay inside it (the capable-darwin REAL rows, the
+  degraded real-chain row, the seam-simulated unavailable-bridge control); the focused
+  `same-second-completion|integration-completion` families = the local entry **156 tests, 156
+  pass, 0 fail, exit 0** and the three-entry union **159 tests, 159 pass, 0 fail, exit 0** (both
+  pins unchanged); `node --test tests/test-selection.test.mjs` = **6/6**; SOLO:
+  tests/shell-wait-local-process.test.mjs = **698 tests, 698 pass, 0 fail, 0 skipped, exit 0**;
+  tests/shell-wait-native-interruption.test.mjs = **100 tests, 100 pass, 0 fail, 0 skipped,
+  exit 0**; tests/shell-wait-probe.test.mjs = **1000 tests, 1000 pass, 0 fail, 0 skipped, exit 0
+  (~31 m 53 s, first run clean)**; the guarded spawn CLI measured directly under
+  `ZCODE_SHELL_WAIT_PROBE_SELF_TEST=1 node tools/run-test-suite.mjs shell-research` = **799
+  tests, 799 pass, 0 fail, 0 skipped, exit 0 (~3 m 05 s) — the spawned-suite total pin 799
+  UNCHANGED**. `npm run lint` exit 0; `npm run typecheck` exit 0; `git diff --check` exit 0;
+  `node scripts/check-line-endings.mjs` exit 0. Prohibited-path diffs: `git diff 02cd31e8 --stat
+  -- specs/ scripts/ hooks/ skills/ agents/ .codex-plugin/ prompts/ schemas/ marketplace/
+  package.json npm-shrinkwrap.json` EMPTY (0 bytes) and the same diff against `9c337403` EMPTY
+  (0 bytes). The fixes amend the EXISTING task-4 commit (message bytes unchanged; the parent
+  stays f46d4ec0; the working tree clean) — no push. The clean clones /tmp/r7w-red and
+  /tmp/r7w-red2 were deleted after the RED measurements. The production interruption acceptance
+  stays OPEN (the §30.4/§33.6 obligations are untouched by this round: zero live launches, zero
+  model turns).
+
+### 33.13 Codex-review gate round 7 (2026-11-16, one P2 finding on §33.12's amended bytes —
+review-mwj26tbg-m3ve3w, the sequencing success branch PRECEDED the monotonic deadline check so a
+witness lookup that settled after the deadline but before its raced timeout callback ran was
+accepted as `witnesses-present` — the reviewer's synthetic held turn on the default real clock
+measured `waitedMs: 15100` despite the 15000-ms bound — reproduced by the reviewer; §33.12 style —
+add-only; the amended task-4 commit carries it; message unchanged)
+
+- **The finding this section closes [1×P2]:** verbatim: "[P2] Check the deadline before accepting
+  witness presence — tools/shell-wait-probe/driver.mjs:2817-2818 "If a lookup completes after the
+  monotonic deadline but before its timeout callback runs, both files can be accepted because the
+  success branch precedes the deadline check. A synthetic held turn using the default real clock
+  reproduced `waitedMs: 15100` with `outcome: 'witnesses-present'` despite the 15000-ms bound.
+  Recheck the monotonic deadline after lookup settlement and before returning success so callback
+  ordering cannot admit an expired sequencing window."" Confirmed by code read: the pre-fix loop
+  body ordered `if (presentWitnesses === awaitedWitnessPaths.length) return 'witnesses-present';`
+  BEFORE `if (now() > sequencingDeadlineMs) return 'bound-expired';`, so a post-deadline
+  settlement pair returned success without the loop's own deadline comparison ever running.
+- **The mechanism (why the raced window cannot catch it alone):** once an iteration of the
+  sequencing loop begins past the deadline, `awaitWitnessLookupWithinWindow` arms its deadline
+  arm as `setTimeout(settle, max(0, deadline - now()))` = a 0 ms timer whose callback cannot run
+  until the NEXT timer phase; a lookup that settles in microtasks (a fast existence read, the
+  common case once the records exist) wins the race in the CURRENT turn's microtask drain, the
+  losing timer is then cleared (the §33.9 cancellation), and the loop receives
+  `{ windowClosed: null, stats }` — the settlement is legitimate per the raced window's own
+  contract, the deadline arm never fired, and only the loop's post-settlement comparison could
+  have named the expiry. The success branch preceded it: the hole.
+- **The fix (one statement, the smallest ground):** inside the sequencing loop, immediately
+  before the success return, the deadline is RECHECKED with the SAME monotonic clock (`now()`),
+  the SAME operands and the SAME strict-`>` comparison as the loop's own check below:
+  `if (presentWitnesses === awaitedWitnessPaths.length && now() > sequencingDeadlineMs) return
+  'bound-expired';`. An expired pair names the SAME 'bound-expired' outcome the other deadline
+  paths name (the `expiredAtEpochMs` wall-clock evidence field rides the existing outcome
+  composition unchanged), while an in-window pair and the exact-deadline tie keep their existing
+  semantics — the window is never tightened. The §33.8 raced-window structure
+  (`awaitWitnessLookupWithinWindow`) is byte-unchanged, the §33.12 sync face is byte-unchanged,
+  and the diff is 1 behavioral line + the comment block: no production seam, timeout, bound or
+  private semantics moved.
+- **The boundary enumeration (the directed arms, and the tie disclosure):** (1) a pair settling
+  strictly BEFORE the deadline is untouched — covered by the new control row (below) and by the
+  standing §33.8 witnesses-present rows inside the merged battery; (2) the exact-deadline tie:
+  the existing loop check is strict `>` (read off the tree), the recheck uses the IDENTICAL
+  expression, so tie semantics are identical by expression identity (a success point at
+  `now() === sequencingDeadlineMs` stays `witnesses-present`; there is no behavioral delta
+  possible at the tie); the raced deadline ARM at the tie keeps its existing §33.8 semantics —
+  a timer scheduled to fire at the deadline instant names `bound-expired` when it wins the race
+  (that path is unchanged and covered by the standing stalled-lookup row); (3) the STAGGERED
+  crossing (the first witness settles inside the window, the second after the deadline): the
+  loop's success point is BOTH records settled, the recheck lives exactly there, and an
+  already-present witness is NOT re-queried at it — the directed trade-off, now asserted by its
+  own row and disclosed here: an in-window settlement that later proves part of an expired
+  window is not retroactively invalidated, the WINDOW verdict is named at the success point;
+  (4) the existing named paths (the raced deadline arm, the shared abort, the loop's own
+  deadline check, the turn-ended and bound-expired outcomes) are byte-unchanged — the merged
+  battery's 30 prior rows stayed green.
+- **The three new rows (appended inside the §33.4-§33.12 witness describe, after the §33.9
+  timer-leak rows):** (1) the settlement-straddle row — the reviewer's scenario on the DEFAULT
+  REAL clocks: the injected lookup seam arms a sync loop block relative to its own first call
+  (the sequencing deadline is `first call + 15000 ms` within a sub-millisecond skew); the block
+  freezes the event loop ACROSS the deadline instant (no timer callback, pacing tick or lookup
+  settlement can run inside it), flips the seam's presence flag SYNCHRONOUSLY inside the frozen
+  span and releases strictly after the deadline, so the first post-release iteration starts
+  strictly past the deadline with both witnesses present and each lookup settling in
+  microtasks — the armed 0 ms timeout callbacks cannot run before them (microtasks always drain
+  before the next timer phase), which is exactly the callback-ordering hole; (2) the staggered
+  crossing arm — the same construction with the invocation record present from the first
+  iteration and the broker-daemon record appearing only inside the block; (3) the in-window
+  control — the same construction with the block released strictly INSIDE the window
+  (first-call + [14.4 s, 14.75 s]): the pair settles ~250 ms before the deadline and must stay
+  `witnesses-present` with no epoch field on BOTH byte sets. The seam returns a synthetic stats
+  shape (the loop consumes `stats.isFile()` only) with NO real I/O — that pins the settlement to
+  pure microtask work and makes the ordering deterministic; the wall seam is frozen
+  (`WALL_BASE`) so the epoch evidence field is exact. All rows carry the marker "review round 7,
+  finding" (unique in the file — the targeted pattern selects exactly these three).
+- **RED→GREEN under the clean-clone discipline:** `git clone --shared` of this worktree into
+  /tmp/r8w-red (no `git worktree add`), checkout e911b7ac, the test diff copied in as the ONLY
+  overlay (+135/−0 lines, one file — the implementation stayed at HEAD), node_modules symlinked:
+  the targeted battery (pattern "review round 7, finding") = **3 tests, 2 fail / 1 pass, 0
+  skipped, exit 1** with the design-consistent values — the straddle row failed at
+  `{"boundMs":15000,"waitedMs":15054,"outcome":"witnesses-present"}` and the staggered row at
+  `{"boundMs":15000,"waitedMs":15051,"outcome":"witnesses-present"}` (the codex signature class;
+  repeated runs on the same clone landed 15052/15053 and 15051/15049 — the straddle always lands
+  just past the bound, never inside it), and the in-window control passed on the pre-fix bytes.
+  **The RED-construction disclosure (honest):** the FIRST overlay draft had a test-side bug —
+  the sync block measured its span from its own timer-fire instant instead of first-call, so the
+  block spanned ~29.5 s, the turn's hold released first, and all three rows landed
+  `turn-ended` at `waitedMs` ~29152 (a wrong construction, never a RED); the overlay was
+  corrected to an explicit block span and the RED re-measured — the recorded RED above is the
+  corrected run. On the amended bytes the same battery = **3 tests, 3 pass, 0 fail, exit 0**.
+  The clean-clone RED re-test on the FINAL bytes (/tmp/r8w-red2, the corrected overlay only,
+  implementation at e911b7ac) reproduced **3 tests, 2 fail / 1 pass, exit 1** with both straddle
+  rows at `waitedMs: 15052`, `outcome: "witnesses-present"`. On the amended bytes the straddle
+  rows pass with the outcome `bound-expired`, the frozen-wall `expiredAtEpochMs` and the waited
+  duration asserted at/after the bound — the overrun past 15000 is the HONEST record of when
+  the window actually closed (the loop resumes at the block release), and the rows assert that
+  relationship without prettifying it.
+- **Movement enumeration (honest):** NO prior-row verdict changed; the THREE rows are NEW. The
+  probe entry's own count moves 1000 → **1003** (+3; 0 deleted); the local entry stays 698
+  (re-measured 698/698); the native entry stays 100 (re-measured 100/100); the spawned-suite
+  total pin **799 = 698 + 100 + 1 is UNCHANGED** (re-measured directly under the guard); the
+  derived unguarded shell-suite aggregate moves 1798 → **1801** (= 698 + 100 + 1003, riding the
+  three SOLO runs' own measured totals).
+- **The gate battery (executed 2026-11-16 in this worktree on the exact final bytes; strictly
+  serial):** the targeted battery (pattern "review round 7, finding") = **3 tests, 3 pass, 0
+  fail, exit 0**; the merged witness-family targeted regression (the whole §33.4-§33.12 witness
+  describe — 30 prior rows + the 3 new rows, one name pattern) = **33 tests, 33 pass, 0 fail,
+  0 skipped, exit 0 (~358.0 s)** — inside it the REAL-chain rows, the raced-window named paths
+  (the stalled-lookup bound-expired row, the +60 s/−60 s wall-step rows, the shared-abort rows,
+  the plain-loop abort row), the §33.9 paired-timer-spy rows and the in-bound slow-waiter
+  control all stayed green on the amended bytes; the focused
+  `same-second-completion|integration-completion` families = the local entry **156 tests, 156
+  pass, 0 fail, exit 0** and the three-entry union **159 tests, 159 pass, 0 fail, exit 0** (both
+  pins unchanged); `node --test tests/test-selection.test.mjs` = **6/6**; SOLO:
+  tests/shell-wait-local-process.test.mjs = **698 tests, 698 pass, 0 fail, 0 skipped, exit 0**
+  (~120.5 s); tests/shell-wait-native-interruption.test.mjs = **100 tests, 100 pass, 0 fail,
+  0 skipped, exit 0** (~64.5 s); tests/shell-wait-probe.test.mjs = **1003 tests, 1002 pass,
+  1 fail, 0 skipped** (~1986.0 s) — the single in-run failure is the §7 fixture-builder row
+  "the real builder failure-path prune stays inside clone metadata and preserves shared
+  registrations", whose REAL marketplace `npm install` subprocess died on
+  `npm error code ECONNRESET / npm error network aborted` (a network-connectivity failure
+  inside the fixture's package install, not a sequencing row — the row never touches the
+  witness window); the targeted re-run of that one row on the same bytes = **1 test, 1 pass,
+  exit 0 (~44.5 s)** — attributed environmental (the standing transient convention), no label
+  changed, and every sequencing/witness row passed in-run; the guarded spawn CLI measured
+  directly under `ZCODE_SHELL_WAIT_PROBE_SELF_TEST=1 node tools/run-test-suite.mjs
+  shell-research` = **799 tests, 799 pass, 0 fail, 0 skipped, exit 0 (~185.2 s) — the
+  spawned-suite total pin 799 UNCHANGED**. `npm run lint` exit 0; `npm run typecheck` exit 0;
+  `git diff --check` exit 0; `node scripts/check-line-endings.mjs` exit 0 (LF verified in 551
+  tracked files). Prohibited-path diffs: `git diff 02cd31e8 --stat -- specs/ scripts/ hooks/
+  skills/ agents/ .codex-plugin/ prompts/ schemas/ marketplace/ package.json
+  npm-shrinkwrap.json` EMPTY (0 bytes) and the same diff against `9c337403` EMPTY (0 bytes).
+  The fix amends the EXISTING task-4 commit (message bytes unchanged; the parent stays
+  f46d4ec0; the working tree clean) — no push. The clean clones /tmp/r8w-red and /tmp/r8w-red2
+  were deleted after the RED measurements. The production interruption acceptance stays OPEN
+  (the §30.4/§33.6 obligations are untouched by this round: zero live launches, zero model
+  turns).
+
+### 33.14 User-review round 4 disposition (2026-11-16, Standards zero blocking findings — CI 6/6
+green; the entry/real-fixture/preflight/zero-launch-rejection/ESM re-runs 10/10; lint and typecheck
+pass; Spec: the prior-round P2 CLOSED, one non-blocking P3 — the §33.6 honest-limits carry-forward
+sentence predates the entry-enablement round; §32.74 draft-pin / §33.12 causal-parenthetical
+disclosure style — add-only; the amended task-4 commit carries it; message unchanged)
+
+- **The user round-4 verdict (verbatim; each line below is one review line — only the two long
+  lines are wrapped, and each wrap joins byte-exact):** "## Standards
+  无阻塞问题。当前 c9cdbc73 的 CI 6/6 全绿；我重跑的入口、真实 fixture、preflight、零启动拒绝及
+  ESM 回归 10/10 通过，lint、类型检查也通过。
+  ## Spec
+  上轮 P2 已关闭：标准研究入口现在会启用 witness，缺失或不一致的配置会在启动前拒绝。
+  仅剩一项非阻塞 P3：报告旧段落 (docs/qualification/rescue-shell-long-wait.md:33018)
+  仍把已完成的研究接线列为阻塞，建议更新。
+  本次完成了验证链路接线，尚未完成真实中断验收，因此仍不能启用生产。"
+- **The P3's landing facts (read off this tree):** the review's ":33018" pointer names the §33.6
+  honest-limits carry-forward bullet — the bullet spans :33013-33021 on this HEAD — and the scope
+  clause under correction sits at :33020-33021: "NOT discharged by this section; what this section
+  discharges is the ORIGINAL Task 4's fixture-side capture wiring and its regression". That clause
+  was accurate at §33.6's write time and is superseded in scope only; the next bullet names how.
+- **The disclosure-style correction (add-only; the supersession named here, not rewritten into the
+  past):** §33.6 was written BEFORE the entry-enablement round — at its write time the research
+  entry did not arm the wired capture (that hole WAS the round-4 P2), so the clause's discharge
+  scope covered only the fixture-side capture wiring and its regression, and its three-item
+  carried-blocker list was accurate then. §33.10-§33.13 have since completed exactly what that
+  scope left out: the research entry's witness enablement, the launch preflight checks (missing or
+  inconsistent configuration rejected BEFORE launch) and the entry-argument regression. The
+  RESEARCH-side wiring — the real fixture capture PLUS the entry enablement, the preflight and the
+  entry regression, i.e. the whole §33.1-§33.13 span — is therefore COMPLETE as of this HEAD, and
+  §33.6's clause must NOT be read as listing the research wiring among the present blockers. The
+  clause's bytes stand unchanged (history preserved); the supersession lives in THIS block.
+- **The standing blockers re-listed (the §32.7 carry-forward, unchanged in substance, nothing
+  softened):** (1) the **0.163.0 binary re-provisioning/re-pin** (§30.4); (2) **the production
+  capture/activation wiring** (§32.6 — NO production call site emits witnesses and
+  `ZCODE_SHELL_WAIT_KINFO_EXACT` still has no production call site); (3) **new user launch
+  authority** for the finite E launch. The standing fact rides with them unchanged: the
+  real-interruption acceptance has NOT passed, production still cannot be enabled,
+  `do-not-adopt-yet` stands, and the E slot remains UNSPENT (no launch is claimed by this block).
+- **The add-only declaration:** this block appends at the file tail (heading at :34126, the last
+  line at :34167 on this HEAD); §33.6 and every earlier sentence are byte-unchanged; the P3 closes
+  with this disclosure alone — no code, test, pin or count moves with it (zero live launches, zero
+  model turns).
