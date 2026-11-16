@@ -139,7 +139,7 @@ npm test
 ```
 
   The prohibited-path diff must be empty. Full-suite verification uses a clean exact source with `.git` and dependencies or matching exact-source CI demonstrably running that command; preserve unowned scratch. Record test totals, exit codes, skipped opt-ins and every failure. A targeted recheck or reviewer agreement does not convert a failed full run into a passed one; record environmental attribution and any applicable independent evidence explicitly. No hidden shared-lock/dependency/snapshot fix.
-- [ ] Obtain independent final Spec/authority and implementation/evidence/privacy reviews on the final branch, resolving findings with narrow rechecks and applicable fresh tests. Record completion only after actual returned reviews. Confirm the measured source, final source and current PR CI applicability separately; no push/PR/merge is implied by writing this plan.
+- [x] Obtain independent final Spec/authority and implementation/evidence/privacy reviews on the final branch, resolving findings with narrow rechecks and applicable fresh tests. Record completion only after actual returned reviews. Confirm the measured source, final source and current PR CI applicability separately; no push/PR/merge is implied by writing this plan.
 - [x] Deliver one concise effective decision and ledger, with S1–S7 mapped to inherited contracts versus new observations and Q1–Q6 answered within their existing scopes:
   - **acceptance-proven:** T or T-fix proves causal native responsiveness AND every applicable owned/local/remote/durable/no-collateral duty, composed with the applicable inherited long/cadence/stdout cohort. Identify measured versions/configuration and the smallest proposed production integration. This recommends only that measured managed-Rescue scope; enabling production/shared defaults or Root command policy requires a subsequent explicit implementation decision.
   - **observer-blocked:** name the exact unproven fact, evaluated mechanism/negative and concrete next action. Keep “not demonstrated” separate from “impossible.” Binary availability and unknown runtime syntax have their own reasons. Work may complete precisely blocked; feature goals remain unchanged.
@@ -169,7 +169,8 @@ the local date 2026-11-17). §3 above remains the historical drafting record, un
   3. `ed7ada84` — Task 2: actual-entry readiness verification and the observation-schedule freeze (report §35); also the T launch pin.
   4. `6748a5d5` — Task 3: the single managed-child native interruption trial (T) and its persisted-fact adjudication (report §36).
   5. `740ec084` — Task 4: the cause-directed follow-up adjudication; T-fix NOT USED (report §37).
-  6. This commit — Task 5: the scoped effective decision and the execution ledger (report §38 plus this section); its own SHA is fixed by the commit carrying these bytes.
+  6. `d181aa25` — Task 5: the scoped effective decision and the execution ledger (report §38 plus this section); later amended at the review rounds recorded in report §38.6.
+  7. The close-out commit — recording the returned final reviews (report §38.6) and ticking the last checkbox; its own SHA is fixed by the commit carrying these bytes.
 - **Finite ledger (final):** T SPENT (1/1) — the single hosted launch 2026-11-16T16:01:04Z UTC
   (exit 0, wall 72 s; outcome INCONCLUSIVE — no managed Rescue call, every settlement duty
   UNKNOWN; the earlier 16:00:20Z invocation was an offline argv-validation refusal with zero host
@@ -180,9 +181,14 @@ the local date 2026-11-17). §3 above remains the historical drafting record, un
   history with its recorded research-builder `ECONNRESET` failure and successful one-row rerun,
   plus this plan's Task-2 readiness batteries) plus targeted verification at the final HEAD
   (report §38.1). The 30-minute research suites and the full `npm test` were not repeated.
-- **Execution checkboxes:** Tasks 1–4 are fully marked above; Task 5's provenance, applicable-
-  battery and decision/ledger boxes are marked at this commit, and Task 5's independent-final-
-  reviews box remains open — the two final reviews (Spec/authority;
-  implementation/evidence/privacy) and the whole-branch codex review are dispatched post-commit
-  by the root and are PENDING at this commit's creation; the close-out records their completion
-  honestly only after they actually return.
+- **Execution checkboxes:** all 23 are now marked. Task 5's independent-final-reviews box was
+  ticked by the close-out commit, after the reviews ACTUALLY returned (report §38.6): the
+  Spec/authority review first pass CLEAR with two standing non-blocking P3 notes
+  accepted-no-action and re-review RESOLVED-CLEAR; the implementation/evidence/privacy review
+  first pass one P2 (fixed into its owning task-4 commit `740ec084`) with privacy CLEAN and no
+  P1, re-review RESOLVED-CLEAN; the whole-branch codex review first pass one P2 (fixed into the
+  owning task-5 commit `d181aa25`), re-review zero findings.
+- **User Standards review (post-close-out): 1×P2 — the no-call causal attribution overstated
+  (descriptor-publish ≠ session receipt; effective model unconfirmed) — corrected to "no
+  supported flow observed; cause undetermined; no qualifying fix yet"; Spec review: no blockers;
+  production still not enabled; publication (research-only PR) explicitly user-authorized.**
