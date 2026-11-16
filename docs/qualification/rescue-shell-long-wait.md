@@ -34122,3 +34122,244 @@ add-only; the amended task-4 commit carries it; message unchanged)
   were deleted after the RED measurements. The production interruption acceptance stays OPEN
   (the §30.4/§33.6 obligations are untouched by this round: zero live launches, zero model
   turns).
+
+## 34. 2026-11-16 native-settlement task 1: the frozen cohort registration and the per-layer
+readiness contract (offline; zero model turns, zero hosted/provider attempts, zero live launches)
+
+This section executes Task 1 of
+[the native-settlement trial plan](../superpowers/plans/2026-11-16-rescue-shell-wait-native-settlement-trial.md)
+against the worktree at base `192c0f04` (branch `docs/rescue-shell-wait-native-settlement-trial`).
+It is a registration-only section: offline parsing, local `--version` execution and artifact
+hashing consume no hosted/provider slot (the plan §1 counting rule), **T remains UNSPENT**, and no
+executable or test byte changes anywhere in the repository. Every value below was READ from the
+actual executing exports and the actual recovered artifact on 2026-11-16 — none is copied forward
+from an older section without re-verification.
+
+### 34.1 The registration environment and the executing contract pins (read from the actual exports)
+
+- **Git/tree/Node/OS:** base `192c0f04ef54ce705fccfa0938bb56fba6d2b422` (origin/main after merged
+  PR #76); worktree `.worktrees/rescue-shell-wait-native-settlement-trial` at HEAD `f870037f`
+  (the plan commit) with `git status --porcelain` EMPTY while every byte below was read; this
+  registration's own commit follows it (the Task-3 pre-launch freeze pins the THEN-HEAD, never
+  this paragraph). Node v24.14.0; macOS 26.5.2 (Darwin kernel 25.5.0), arm64.
+- **The seven starting contracts — actual values read from the current exports, ALL MATCHING the
+  plan's stated starting versions (no drift, no version event):** observer digest tag
+  `zcode-shell-wait-observer-v9` (`OBSERVER_DIGEST_TAG`, driver.mjs:91); local observation tag
+  `zcode-shell-wait-local-observer-v4` (`LOCAL_OBSERVER_DIGEST_TAG`,
+  local-process-observation.mjs:111); spawn-witness record `SPAWN_ANCESTRY_WITNESS_VERSION` **3**
+  (local-process-observation.mjs:1970); Gate-D join `NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION`
+  **38** (driver.mjs:5874); native oracle `NATIVE_INTERRUPTION_ORACLE_VERSION` **5**
+  (release-qualification.mjs:847); local-duty input `LOCAL_PROCESS_DUTY_CONTRACT_VERSION` **1**
+  (release-qualification.mjs:854); shape diagnostic `SHAPE_DIAGNOSTIC_SCHEMA_VERSION` **1**
+  (shape-diagnostic.mjs:84). Supporting versions also read unchanged: `RELEASE_QUALIFICATION_VERSION`
+  **1** and `RESCUE_EXPECTATION_DERIVATION_VERSION` **2** (release-qualification.mjs:53/:81),
+  `CLOSURE_OBSERVATION_VERSION` **1** and `DURABLE_SNAPSHOT_VERSION` **1**
+  (closure-observation.mjs:72/:559), `IDENTITY_RECORD_VERSION` **2** (closure-preload.mjs:32).
+- **Executing observer/helper provenance, computed at module init on the committed bytes** by
+  importing the executing research modules (read-only; the disposable helper-materialization cache
+  under `node_modules/` is removed at process exit): `EXECUTING_OBSERVER_PROVENANCE.digest` =
+  `aaac42e756506a814b290d18d00890bf1e979f69213da0f7dcd97c48105cb6b1` (tag
+  `zcode-shell-wait-observer-v9`; `model: null`, `reachableToolFamily: null` — the §24.1 contract,
+  never inferred); `localProcessObserverProvenance().digest` =
+  `fe33e17a373f23f3ff57b06fcfdc1319bcddaa090a64ef616b74080122eb9d98` with
+  `generatedPreloadSha256` = `49cc2539fbcb23bcfc0003dd8afb8015d4f3976312f67c366de5c0295998ee75`
+  (tag `zcode-shell-wait-local-observer-v4`); the spawn-witness preload generator module
+  (spawn-witness-preload.mjs) SHA-256 =
+  `ac9068fe93c2f6d91a08f50beec3d5db032ca127ed5294b735e76b1031167955`. The live trial record must
+  carry the then-executing digests at case start and record time with
+  `sourcesChangedDuringRun: false`; any other value at adjudication is a named provenance break.
+- **Per-module SHA-256 on the frozen bytes** (tools/shell-wait-probe/, `git status --porcelain`
+  EMPTY so committed == on-disk): `driver.mjs` = `32a9e418f88ea226360fc6bbdcc65924f1e998c7989fc4f4a421c863f1b1aad1`,
+  `fixture.mjs` = `995693236158cb368bd95e6466a7d2ccf779029274f3a6bb28cae862001ba36f`,
+  `spawn-witness-preload.mjs` = `ac9068fe93c2f6d91a08f50beec3d5db032ca127ed5294b735e76b1031167955`,
+  `local-process-observation.mjs` = `8f7633a8de278048ed08315e231d253e40c43b0e31bb2aa2a147d197799cd0b7`,
+  `closure-observation.mjs` = `3a45f9db7bef21c60bc0a9f6093433eb9da90843def3019a424165c578c68451`,
+  `closure-preload.mjs` = `44fdd25d907236666f5ab19fe4eafe49bb93a971ec5f2b4aa820b2fb8df330ba`,
+  `evidence.mjs` = `ecb1b3835f1d939264d6d97b24d2e5cc3a7719a95f32555a9d7cf4ba98d3e777`,
+  `shape-diagnostic.mjs` = `dcee13324b34b95f21a16336800dd6afd5292c5301e89b30b74ba9e16ba6ffae`,
+  `release-qualification.mjs` = `c8863ef6947e1e082d5727434894b50f53f0d3210ee35185956a0d3e603c8d84`,
+  `wait-comparison.mjs` = `eba75edbac4d69be42b312b7ff09582314e034d93aaa56cf73ba93024c622146`
+  (unchanged from §24.1/§24.12).
+- **The committed installed-fixture source SHA is a CALLER-SUPPLIED argument, not a constant:** the
+  driver requires `--source-sha` (driver.mjs:532), validates it as 40-hex (`assertSourceSha`,
+  driver.mjs:444), and the fixture (`assertGitSource`, fixture.mjs:332–345) requires it to resolve
+  as a commit in the source repository before building the marketplace snapshot from a clean
+  DETACHED source worktree at exactly that SHA (fixture.mjs:557/:616). §30.4's freeze duty carries:
+  the Task-3 pre-launch freeze pins the then-branch-HEAD with `git status --porcelain` EMPTY, so
+  the installed fixture is built from exactly the reviewed bytes.
+- **Config/instruction/generated-artifact digests are RUNTIME-COMPUTED by the fixture from the
+  actual artifact bytes** (the `sha256` helper, fixture.mjs:502–504), never constants: applied
+  role/config artifacts record `beforeSha256`/`afterSha256`/`mode` per role (fixture.mjs:1188,
+  :1236, :1250–1251); the instruction layer records
+  `renderedNamedRoleSha256`/`baselineNamedRoleSha256`/`genericMessageSha256`/
+  `baselineGenericMessageSha256` (fixture.mjs:1283–1286) plus the normalized/canonical forms
+  (fixture.mjs:1302–1308); the generated preloads record `preloadSha256` for BOTH the capture
+  preload (fixture.mjs:688/:697) and the witness preload (fixture.mjs:740/:746), plus
+  `observerModuleSha256` (fixture.mjs:748), `transportEntrySha256` (fixture.mjs:749), the declared
+  entry/broker realpath digests (fixture.mjs:701/:705) and the launcher script digest
+  `scriptSha256` (fixture.mjs:772). This subsection registers the EXPOSURE CONTRACT; the actual
+  per-run values are recomputed and recorded whole at the Task-3 freeze (the §26.1 carried duty).
+
+### 34.2 The measured 0.163.0 binary re-provisioned from the official npm distribution (verified bytes, new owned realpath)
+
+- **The removal re-verified today (read-only):** the active auto-update tree
+  `/Users/zhangzikai/.codex/packages/standalone/releases/` contains only `0.167.0-`,
+  `0.168.0-` and `0.169.0-aarch64-apple-darwin`; the ambient executable is `codex-cli 0.169.0`
+  (`/Users/zhangzikai/.local/bin/codex`) — recorded as AMBIENT CONTEXT ONLY and never a trial
+  candidate. Nothing was written into `~/.codex` at any point.
+- **Checked local sources (all read-only, no surviving 0.163.0 bytes found):** Spotlight (`mdfind`)
+  filtered for 0.163 — no hits; scoped `find` over `~/.codex`, `~/.npm` and `~/Library/Caches` —
+  no hits; the npm cache index holds `@openai/codex` tarballs only through 0.147.0; workspace
+  sweeps over the user's install roots — no hits. The exact artifact was NOT recoverable locally.
+- **The official npm distribution (plain HTTPS registry fetch, no hosted/provider execution):**
+  registry metadata for `@openai/codex@0.163.0` (`dist.shasum`
+  `31d62f44cde7c24ac700178c99d3a84530a141f6`) declares the platform binaries through
+  `optionalDependencies`; `@openai/codex@0.163.0-darwin-arm64` (`dist.shasum`
+  `dd8f8c797220d0370be0f9d4b6a9817afe2f7578`) carries
+  `vendor/aarch64-apple-darwin/bin/codex` (249,952,688 bytes) with its own layout metadata
+  (`codex-package.json`: `layoutVersion` 1, `version` 0.163.0, `target` aarch64-apple-darwin,
+  `entrypoint` bin/codex). Both tarballs were downloaded with `npm pack` into the OWNED PRIVATE
+  research directory and their SHA-1 digests verified against the registry's recorded
+  `dist.shasum` values — both MATCH.
+- **Verification:** the vendor binary's SHA-256 =
+  `8813367285524ac798dd96d1b071aea30d58708c7226fd236cd275cf1cfdee31` — the EXPECTED value,
+  byte-identical to the recorded pins throughout this report — including §14/§14.1/§15.1/§16.1/
+  §17.1/§17.10/§17.14/§18.1/§19.1/§20.3/§20.4/§20.7/§21.1/§22/§23.1/§23.10/§23.11.1/§23.12.1/
+  §24.1/§24.12/§26.1/§29.8/§30.4 (non-exhaustive); local `--version` = `codex-cli 0.163.0`,
+  exit 0. No mismatched candidate was encountered; nothing was discarded.
+- **The owned private install (nothing written back into any active auto-update directory):**
+  absolute realpath `/Users/zhangzikai/Workspace/Codes/tmp/rescue-settlement-trial/codex-0.163.0/bin/codex`,
+  under directory chain mode 0700 with the binary itself mode 0500, re-hashed after installation —
+  the same value. This registration prospectively replaces §30.4's identical-PATH obligation FOR
+  THIS TRIAL with identical executable bytes/version (the same SHA-256 and the same
+  `codex-cli 0.163.0` banner) plus the recorded new realpath, exactly as the plan's Task 1
+  states: artifact location changes, cohort identity and acceptance do not. The driver's fail-closed
+  guard is unchanged: `assertCodexBinaryExists` (driver.mjs:946, the ENOENT and not-a-regular-file
+  throws) runs unconditionally at driver.mjs:653 BEFORE any fixture work, so the Task-3 freeze
+  records whichever absolute realpath it pins and the executor refuses if it is absent.
+
+### 34.3 The read-only Codex source pin and the requested-model local-metadata registration
+
+- **The source checkout** `/Users/zhangzikai/Workspace/Codes/github/codex`: HEAD
+  `dffa0deb69268ed4ac31578794c9ea897b336ae3`, `git status --porcelain` EMPTY (clean) — identical
+  to the §16.2/§19.4/§23.3/§24.2/§24.12 pins. READ-ONLY; `git show <pin>:<path>` remains the
+  discovery tool for native cancellation/configuration questions, and **no source/binary
+  correspondence is assumed** (the report's standing label discipline).
+- **The requested model `gpt-6.1-sol` — local metadata evidence only:** the LOCAL models cache
+  `/Users/zhangzikai/.codex/models_cache.json` (its own provenance fields: `fetched_at`
+  2026-11-16T14:07:39Z, `client_version` 0.169.0, 11 catalog entries) exposes the `gpt-6.1-sol`
+  entry with `visibility: "list"`, `priority: 1`, `supported_in_api: true`,
+  `default_reasoning_level: "medium"`, `shell_type: "unified_exec"`, display name `GPT-6.1-Sol`.
+  Recorded host-catalog drift against §24.12's capture (the §20.7 2026-10-22 re-pin — cited as
+  §20.3 in §24.12's row — recorded 10 entries; §24.12's freeze measured 11 at `priority` 0):
+  today's cache again holds 11 entries, at `priority` 1 — drift is recorded, never blended. The
+  active user `config.toml` also declares
+  the requested spelling as its configured model (PRESENCE only; no other config/auth value was
+  read or recorded).
+- **Effective model metadata for the trial: `null`, with the precise limitation.** The cache is a
+  point-in-time local snapshot fetched by the ambient 0.169.0 client; this registration performed
+  NO hosted eligibility check, invented no discovery API and fabricated no model identity. What
+  the 0.163.0 binary actually executes/requests at T is established only by that run's persisted
+  record, which keeps the `model: null` observer-provenance contract next to the requested
+  spelling. Missing effective metadata alone is not proof the capture mechanism is unavailable;
+  that applicability limit is retained separately.
+
+### 34.4 The §33.6/§33.10 effective-state correction (add-only) and the raw-body disposal record
+
+- **The correction (add-only; every historical paragraph keeps its original result):** §33.6 and
+  §33.10 carry forward the older “production capture/activation wiring” E blocker (§32.6). For
+  THIS RESEARCH TRIAL that blocker is DISCHARGED by the merged standard-entry wiring (PR #76, at
+  base `192c0f04`): the standard `runShellWaitCase` entry arms `stdoutCapture` and `spawnWitness`
+  TOGETHER for the closed capture-required cases (driver.mjs:702 — `rescue-interrupt`,
+  `rescue-long`, `rescue-repeat` per `STDOUT_CAPTURE_REQUIRED_CASES`, driver.mjs:9582), the
+  fixture refuses a witness-only arming fail-closed, and the preflight verifies the declared/
+  effective/on-disk witness instrument (driver.mjs:9771, the §33.10 gates). **No shipped capture
+  call site is required** — the research instrument reaches the real production processes through
+  the fixture-composed environment, which is precisely the reach §33.6 registered. Product
+  enablement remains excluded: production still has no capture call site and
+  `ZCODE_SHELL_WAIT_KINFO_EXACT` still has no production call site, exactly as §33.6 states;
+  that production fact is unchanged by this correction, which governs only the research trial's
+  prerequisites.
+- **The other two §33.6 carried items, restated in their CURRENT effective state (history
+  unchanged):** (1) the 0.163.0 binary re-provisioning/re-pin (§30.4) is DISCHARGED by §34.2's
+  verified recovery — identical bytes/version, new owned realpath; (2) “new user launch authority
+  for the finite E launch” is superseded by THIS plan's own finite T/T-fix ledger — the old E slot
+  was never launched and remains historically unspent, and no live attempt is authorized by this
+  registration (T unspent, zero hosted/provider attempts).
+- **Raw bodies:** all historical raw bodies disposed with their fixture homes remain
+  UNRECOVERABLE — the digest-only retention discipline destroyed the bytes with the fixtures, and
+  no historical verdict is revised from a digest. The synthetic/in-memory/content-free
+  investigation route remains authorized; raw private text release is NOT a prerequisite for any
+  step of this trial.
+
+### 34.5 The per-layer readiness checklist (the preregistration contract T must satisfy)
+
+Generic preflight success alone is **NOT** this checklist: preflight proves the instrument is
+armed and self-consistent BEFORE a launch; each layer below must still be adjudicated from the
+persisted trial record AFTER it. Registered per layer, with the mechanism each layer rides:
+
+1. **Actual standard entry arming:** the trial goes through normal `runShellWaitCase`
+   (driver.mjs:642), which arms `stdoutCapture: true, spawnWitness: true` together for the
+   capture-required case (driver.mjs:702) — a pre-armed dependency-injected fixture is not
+   evidence of default-entry arming. The fail-closed surface is ASYMMETRIC, registered honestly:
+   a witness-WITHOUT-capture arming fails closed at fixture validation (fixture.mjs:444–449),
+   but a CAPTURE-ONLY fixture with no witness declaration is deliberately ACCEPTED by both
+   `validateFixtureInput` (fixture.mjs:379 — `spawnWitness` defaults to false when absent) and
+   `evaluateLiveLaunchPreflight` (the §33.10 witness gates fire only on a present
+   `spawnWitnessCapture` declaration — the pre-§33 instrument shape; the regression tests pin
+   the contrast: tests/shell-wait-probe.test.mjs:32120 and :32226 hold `ok: true` for the
+   declaration-less capture-only face). Task 2 therefore owns an EXPLICIT verification item:
+   confirm the trial's standard entry actually declared and armed `spawnWitness: true` (the
+   fixture record's `spawnWitnessCapture` declaration present with its armed witness handle),
+   so the capture-only acceptance cannot silently pass into the trial.
+2. **Generated preload digests and effective `NODE_OPTIONS`:** both fixture-generated preloads
+   (the §19.3 capture seam and the §33.2 witness seam) hashed at arming; the preflight's
+   Node-faithful `NODE_OPTIONS` tokenization (review rounds 27–29 — the round-27 shell-ish
+   option tokens, the round-28 Node-exact quoting/escape rules, the round-29 unfinished-quoting
+   refusal) must find REAL `--require`
+   option tokens carrying the declared preload paths, and the §33.10 witness-arming agreement
+   gate must hold (declared digest == armed handle digest == on-disk bytes digest, plus the
+   transport-entry composition).
+3. **Exact-reader capability on darwin-arm64:** `ZCODE_SHELL_WAIT_KINFO_EXACT=1` composed into
+   the fixture env; the exact `kinfo:<sec>:<usec>` forms on darwin with the reader's own
+   fail-closed coarse degrade off-darwin or on any bridge failure (§32.2/§32.4); a degraded
+   coarse record is the named fact, never re-read as exact.
+4. **Both actual capture paths:** the capture preload's identity records AND the witness
+   preload's per-role spawn witnesses (invocation role + broker-daemon role, one wx-exclusive
+   record each), admitted through `validateSpawnWitnessRecord`, composed with
+   `witnessClass: 'spawn-boundary-capture'`, persisted digest-only, and re-verified by the
+   serialize→reload replay (§33.4).
+5. **Complete-scan mechanism:** the evidence.mjs complete scan with unknowns retained (the
+   §26.5 grammar-union discipline); an incomplete scan or wrong-target refusal is the named
+   negative, never a skipped conjunct.
+6. **Causal request/ack/resolution:** `nativeInterruptionGateDInput(record)` + the Gate-D join
+   v38 → `evaluateNativeInterruptionSettlement` (oracle v5), preserving the SEPARATE request
+   window, acknowledgement emission and Child resolution (an ack or remote terminal result alone
+   is never the all-duty verdict).
+7. **Actual invocation/transport exit and applicable broker/runner/guard duties:** the
+   local-duty contract v1 over the REAL Companion/broker-daemon/transport identities; the
+   natural-completion `transport-exit-unestablished` named fact stays named; duty
+   classification stays separate (broker/runner/guard), never collapsed into one pass.
+8. **Passive durable facts:** durable job/guard/integrity reads at the passive cadence (≥1000 ms,
+   ≤600 attempts, ≤32 retained summaries), owning identity included, no active polling added.
+9. **Unrelated control:** the survival-control selector `progress-terminal` with
+   active-at-request presence and fresh post-delivery survival — the designed end stays its
+   readiness cutoff (≈120 s), and the control's completion never counts toward the interrupt
+   verdict.
+10. **Measurement/cleanup fences:** the §25.7 capture-window fence; worker hold anchored at
+    ACTUAL observation detection; measurement cutoff at hold deadline +10000 ms; observation
+    teardown at cutoff +5000 ms; collections complete before the applicable boundary; a real
+    later SessionEnd, explicit stop, gate release, signal, budget expiry or harness cleanup
+    keeps its TRUE cause and time and is never relabeled native-interrupt success.
+
+- **The retired gate is not re-armed:** `DAEMON_WITNESS_RELIANT_CASES` is frozen EMPTY
+  (driver.mjs:9688) and this registration does NOT add `rescue-interrupt` to it. The registry's
+  refusal text (“no exact-generation mechanism exists”) describes the §28.22-era state BEFORE the
+  exact-generation reader existed; §32 implemented the exact surface and §33 proved the real
+  chain end to end — so the EMPTY registry is a retired historical gate shape, not current proof
+  that the same-second daemon-hop mechanism is blocked. The §30.4 pre-launch safety obligation is
+  satisfied for this trial by the now-existing exact route registered above (layers 3–4), not by
+  adding the case to an obsolete unconditional “route unavailable” gate.
+- **Consumption accounting:** this section consumed NO slot — offline parsing, local `--version`
+  execution and artifact hashing only. T remains UNSPENT with one maximum hosted attempt under
+  the plan's ledger, contingent on Task 2's readiness verification and independent review.
