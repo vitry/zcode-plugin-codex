@@ -35159,3 +35159,187 @@ shows ONLY this report modified. No executable or test byte changed in this task
 protocol did not trigger — no RED state was demonstrated), so no new test battery is owed; the
 §35.1–§35.3 batteries remain the gate of record for the unchanged executing bytes, exactly as in
 §35.8's zero-change discipline. Historical sections remain byte-untouched (add-only).
+
+## 38. 2026-11-16 native-settlement task 5: the scoped effective decision and the trial ledger
+
+This section executes Task 5 of
+[the native-settlement trial plan](../superpowers/plans/2026-11-16-rescue-shell-wait-native-settlement-trial.md)
+against the worktree on branch `docs/rescue-shell-wait-native-settlement-trial`, this section's
+commit sitting on the Task-4 commit `740ec084` (`git status --porcelain` EMPTY while every check
+below ran on committed bytes). The branch's Task-4/Task-5 commits were rewritten in place by fixup
+rebases at the review rounds recorded in §38.6 — documentation text only — and the targeted
+checks below re-ran with identical results on the amended bytes. It is an OFFLINE task throughout —
+ZERO hosted/provider contacts of any kind, per the plan's stop rule (§37.5: no further hosted runs
+are authorized by this plan). It delivers ONE scoped effective decision with its ledger: the trial
+is **NOT acceptance-proven**, carried in the plan's three-outcome taxonomy under the
+**observer-blocked** label WITH the honest blocked-by-OUTCOME qualification recorded and
+reconciled (§38.2); the production disposition stays `do-not-adopt-yet` (§38.5); and the finite
+ledger closes as T SPENT (1/1) and T-fix closed UNSPENT (§38.6). Every historical section above is
+byte-untouched (add-only); private trial text stayed outside the repository and this section
+retains only redacted content-free facts and digests.
+
+### 38.1 Source-byte provenance and the report-only battery-applicability decision
+
+- **The executable/test bytes are byte-identical to base `192c0f04`.** `git diff
+  192c0f04ef54ce705fccfa0938bb56fba6d2b422 --stat -- tools/ tests/ scripts/ package.json
+  npm-shrinkwrap.json` is EMPTY (exit 0, zero output), and the plan's prohibited-path diff
+  (`-- scripts/ hooks/ skills/ agents/ .codex-plugin/ prompts/ schemas/ marketplace/
+  docs/superpowers/specs/ package.json npm-shrinkwrap.json`) is EMPTY. The ONLY branch delta
+  versus the base is this report plus the plan file — documentation only. The ten executing
+  research modules re-hash SHA-256 byte-identical to §36.1's LAUNCHED values (`driver.mjs`
+  `32a9e418…`, `fixture.mjs` `99569323…`, `spawn-witness-preload.mjs` `ac9068fe…`,
+  `local-process-observation.mjs` `8f7633a8…`, `closure-observation.mjs` `3a45f9db…`,
+  `closure-preload.mjs` `44fdd25d…`, `evidence.mjs` `ecb1b383…`, `shape-diagnostic.mjs`
+  `dcee1332…`, `release-qualification.mjs` `c8863ef6…`, `wait-comparison.mjs` `eba75edb…`) —
+  re-verified at final HEAD by this task.
+- **Applicability decision: the plan's report-only path applies — for the whole branch.** No
+  executable, test, script, schema or dependency byte changed anywhere between the base and the
+  final HEAD, so per the plan's Task-5 rule ("for report-only execution with identical
+  executable/test bytes, identify inherited exact-source checks and run targeted verification
+  needed for the new facts; do not repeat 30-minute research suites merely for a new prose
+  paragraph") the 30-minute research suites and the full `npm test` were NOT rerun, and no
+  production-suite battery is owed. Matching routine CI proves its own command set, not the
+  excluded research tests (the plan's standing rule) — which is why the inherited research-side
+  record below is the load-bearing one.
+- **The inherited exact-source checks relied on (preserved VERBATIM AS HISTORY — nothing is
+  rewritten green):** (a) PR #76's full research battery on exactly these executing bytes — the
+  §33.13 gate battery executed 2026-11-16 on the PR-final bytes (merged as `192c0f04`): the
+  guarded spawn runner measured **799/799 pass**; the probe SOLO entry measured **1003 tests,
+  1002 pass, 1 fail** — the ONE failure being the real-marketplace fixture-builder row whose
+  `npm install` subprocess died on `npm error code ECONNRESET` (an environmental network failure
+  inside the fixture's package install, not a sequencing row) — with the successful targeted
+  one-row rerun (**1 test, 1 pass, exit 0**) and the local/native SOLO entries at 698/698 and
+  100/100. §33.13's record stands EXACTLY AS WRITTEN, including the ECONNRESET failure, its
+  environmental attribution and the one-row rerun — it is NOT converted into a fully green run by
+  this or any later section; (b) this trial's own Task-2 readiness verification on these same
+  executing bytes at pin `ed7ada84` (§35.1–§35.3: 441 executed, 0 failures, 0 skipped, 0
+  cancelled, all serialized).
+- **The targeted verification for the new facts (this section's actual runs, 2026-11-16 UTC,
+  serialized; zero host contact in every run):**
+  - the fast entry/preflight battery (the plan's Task-2 battery-1 name pattern, verbatim) → **10
+    tests, 10 pass, 0 fail, 0 skipped, 0 cancelled, exit 0** (`duration_ms` 3274; wall ≈3.3 s) —
+    the executing bytes still compose the entry arming, the declared/effective/on-disk witness
+    preflight and the zero-launch fail-closed surface at final HEAD;
+  - `node --test tests/test-selection.test.mjs` → **6 tests, 6 pass, 0 fail, exit 0**
+    (`duration_ms` 35);
+  - the canonical trial argument vector parsed OFFLINE through `parseShellWaitArguments` (zero
+    host contact) → the SAME closed parse §36.3 recorded — `rescue-interrupt`, 420000, 3600000,
+    1200000, 3600000, `config-default`, 3600000, `gpt-6.1-sol`, `progress-terminal`, both
+    diagnostics true — exit 0;
+  - the four retained private trial artifacts re-hashed EXACTLY to §36.6's recorded digests —
+    `rescue-interrupt.record.json` `b4582cec…8865e` (16008 bytes, byte-identical to
+    `launch-stdout.log`), `launch-stderr.log` `e3b0c442…b855` (0 bytes), `accounting.txt`
+    `e05a027b…` — the trial record is intact exactly as adjudicated in §36–§37, still in the
+    owned private 0700 directory outside the repository.
+- **Per-measurement source-byte provenance:** T was executed at pin `ed7ada84` (the §36.1
+  freeze; the launched digests are the committed digests — the ten values above). Every commit
+  after that pin — `6748a5d5`, `740ec084`, and this section's commit — changes ONLY report/plan
+  text (the Task-4/Task-5 rewrites are the fixup-rebase documentation-only folds recorded in
+  §38.6; the ten digests, the executable/test diff, the batteries, the parse and the artifact
+  re-hash re-verified identically at the amended trees), so the final docs bytes change NO
+  executed measurement. The fix caveat is recorded
+  precisely: a fix written after T did not execute during T, and final offline success never
+  relabels an older live trial — and in THIS trial none was needed and none exists: no post-T
+  fix bytes exist at all (the defect protocol never triggered in Tasks 1–2, and T-fix was closed
+  unspent on §37's verdict), so there is no fix whose execution status could be mislabeled by
+  any later byte.
+
+### 38.2 The effective decision: NOT acceptance-proven — carried under the observer-blocked label, blocked by OUTCOME, not by the observer
+
+- **The taxonomy forces one of three labels; two are definitively unavailable.**
+  `acceptance-proven` is FALSIFIED by the persisted record: T proved neither causal native
+  responsiveness nor any applicable settlement duty (§36.7: `qualified: false` with fourteen
+  named reasons, all layers false; §36.8: every duty UNKNOWN — the managed Rescue launcher was
+  never invoked, so no interruption could be attempted and no duty could be observed).
+  `production-defect-observed` is NOT AVAILABLE on this evidence (§37.4 candidate 9 and §36.9's
+  discipline: a single run's missing Rescue call is instrument/host-behavior uncertainty, never
+  actual-path product-defect evidence). The remaining bucket is therefore the
+  not-acceptance-proven one: **observer-blocked** — the label the plan's taxonomy assigns to a
+  precisely-named unproven fact, used here WITH its honest qualification.
+- **The reconciliation, stated so no reader is misled:** §36.9 records T as "not
+  observer-blocked" in the INSTRUMENT sense, and that sense is unchanged — every observer was
+  armed, preflight-verified and correct; the instrument observed everything it was armed to
+  observe; §35.9's freeze ("no known missing mechanism, artifact or configuration") and §37.2's
+  byte-verified instrument faithfulness stand. The label in THIS section is
+  **blocked-by-OUTCOME, not blocked-by-observer**: the single hosted run never reached the armed
+  observers because the host's turn completed without the managed Rescue call — the host's one
+  observed fact was one no-call turn, an outcome of the run, not an observer incapacity.
+- **"Not demonstrated" is kept strictly separate from "impossible."** Nothing in this ledger
+  claims the measured fact is unknowable: the composition family demonstrably CAN produce the
+  full flow (§37.3's five prior hosted demonstrations on the same requested model spelling
+  `gpt-6.1-sol` and the identical binary bytes — all named-route flows),
+  the instrument is proven able to observe that flow end to end (§35), and this one trial simply
+  did not. Binary availability and runtime behavior each carry their own recorded reasons
+  (§34.2's verified recovery; §34.3's null effective metadata with its precise limitation).
+- **The exactly-one unproven fact (scope unchanged since the plan's §1 table):** causal native
+  responsiveness AND every applicable owned/local/remote/durable/no-collateral duty under a
+  managed Rescue, on the measured cohort — CLI 0.163.0 binary bytes `8813367…dee31`, requested
+  model `gpt-6.1-sol`, the exact frozen composition (the §34.5 ten-layer readiness contract, the
+  §35.5 observation schedule).
+- **The evaluated mechanisms and negatives (why no in-plan correction exists):** the instrument
+  side is complete and negative-complete offline — the entry/preflight/zero-launch surface
+  (§35.1–§35.2), the 423 focused grammar/negative/duty leaf tests (§35.3), the exercised
+  darwin-arm64 exact two-hop ancestry mechanism (§35.4), the frozen observation schedule
+  (§35.5), and the ten-layer per-layer adjudication consumed by Gate-D join v38 / oracle v5
+  (§36.7). On the outcome side, §37.4 evaluated TEN candidates for the one cause-directed
+  follow-up — prompt truncation, descriptor unavailability, instruction suppression,
+  obedience-directed content, the host-source mechanism, the November instrument additions,
+  observation-choreography changes, an unchanged retry, a production-defect claim, and
+  speculative gate widening — and NONE reached the eligibility bar. No supported flow was
+  observed; the committed module/instruction bytes are verified (§37.2), but actual receipt by
+  this session is not directly proven and the effective model was not confirmed, so the specific
+  cause is UNDETERMINED and no qualifying fix exists yet (§37.5).
+- **The concrete next action:** any future re-attempt requires a NEW explicit user authorization
+  and a FRESH bounded ledger registered before any launch — this plan's slots are CLOSED (T
+  spent 1/1; T-fix closed unspent; the §37.5 stop rule in force: no further hosted runs are
+  authorized by this plan). No retry is requested, implied or lobbied for within this plan; the
+  trial completes precisely blocked and the feature goals remain unchanged.
+
+### 38.3 The S1–S7 mapping: inherited contracts versus this trial's new observations
+
+Labels per the 2026-10-05 spec §5. INHERITED = the guarantee rides the unchanged production
+contracts plus the merged long/repeat/cadence/stdout cohort — a NAMED-route cohort exclusively:
+every hosted observation in it ran the named route, the generic route is recorded structurally
+unreachable (§17.14.4, G UNSPENT with the structural reason preserved), §22.4 retains
+`generic not-proven/unavailable`, and none of that changed in this plan. NEW = this
+trial's own observations: the entry arming on the launched record, the readiness contract, the
+single trial's outcome, and the T-fix adjudication. No S item was weakened anywhere.
+
+- **S1 (launcher/Companion entry points, fresh/resume selection, Role preflight, task-free assignment, one-shot private preparation, exact atomic binding, rejection semantics) — INHERITED, unchanged.** The branch changes zero production bytes (§38.1) and the inherited contract suites and cohort stand. This trial's NEW observations touch none of it: no Child ever started, so preparation/binding had nothing live to exercise, and nothing observed contradicts the inherited contracts.
+- **S2 (at most one mapped Companion, the original handle, empty-input terminal observation, preserved private preparation, outer-cell continuation without a duplicate inner poll) — INHERITED, plus ONE new observation that the preserved semantics held on the no-call path.** The original-handle observation stayed empty BY NAMING (every observation field a named null/absent fact, §36.5), the outer cell continued, no parallel inner poll or Status was added, and the gate released through the driver's own early-exit cleanup with the TRUE cause and time kept (§36.4) — the plan's relabeling prohibition held in the one case that exercised it.
+- **S3 (byte-for-byte terminal public stdout, stderr/progress ownership, exit/error/needs-choice semantics) — INHERITED, proven by the inherited cohort's complete public stdout (the 386–388 s observations — NAMED-route observations; §22.4's Q2 row retains `generic not-proven/unavailable` and §17.14.4's G stays unspent).** No new observation extends it: T's stdout-capture layer is the NAMED absence (`capture-file-missing` — the gated launcher spawn never ran, §36.5), a named fact rather than a violation, and no renderer or result path changed.
+- **S4 (placement matrix, background execution, enqueue-only Review/Adversarial-Review, observation-only Status) — INHERITED, unchanged.** This trial ran no placement variant and touched no placement byte.
+- **S5 (explicit interruption, Child-loss reconciliation, host/process loss, configured operation timeouts, the 100-hour ceiling, unrelated survival) — THE CORE: the inherited offline machinery is complete, and the LIVE conjuncts remain NOT DEMONSTRATED by this trial.** The verdict machinery (the native-interruption entry, the §35.3 families, Gate-D join v38 / oracle v5) is inherited-complete and negative-complete offline; the live facts — causal native responsiveness during a pending observation, all applicable owned/local/remote/durable/no-collateral duties, and the unrelated-control survival observation — remain unproven: T's survival control was UNADJUDICATED (null) because the managed flow never started (§36.5), and no later cleanup was credited (the §24.8/§35.6 fences held). Unchanged and intact: no new operation timeout, no inactivity detector, no ceiling change (zero production bytes; the §35.5 bounds are research observation bounds only).
+- **S6 (named/generic alignment, no fallback manufacturing) — INHERITED, plus a new provenance fact in the cohort's favor:** the trial's normalized instruction digests are byte-identical to the inherited cohort's (§37.2/§37.3), the composed directive is deterministic from the committed bytes, and nothing was reworded to induce compliance (the T-fix bar forbade it — §37.4 candidate 4). The generic-route limitation is carried forward UNCHANGED and explicitly: §17.14.4 re-verified the generic route structurally unreachable at the pin (every route-decision-capable host state — preflight `ready` — has the managed Rescue Role configured, so the V2 schema exposes `agent_type` and named is mandated; the exposing-free state fails preflight before any preparation exists; G stays UNSPENT with the structural reason preserved; nothing was forced, no fallback was exercised), §22.4 retains `generic not-proven/unavailable`, and T — which produced no Child observation — extends nothing to the generic route.
+- **S7 (production configuration, canonical Skills, Role templates, installed caches, marketplace snapshots and the source checkout unchanged in qualification) — VERIFIED for this trial as well:** the prohibited-path diff is EMPTY at the final tree, the whole branch is documentation-only, fixtures stayed disposable and private, and no adoption or promotion follows (§38.5).
+
+### 38.4 The Q1–Q6 answers within their existing scopes (no scope widened)
+
+- **Q1 — answered by the INHERITED evidence; this trial adds one content-free negative observation.** The launch-path and configuration-layer answers ride the installed traces and the real-chain proof through the production entries (the merged NAMED-route cohort and §33; the generic route's structural unreachability — §17.14.4, G unspent — is carried unchanged at Q2 and S6). T's new fact — in ONE exec-session turn no launcher call was observed, the first such run in the cohort (§37.3) — is a runtime outcome, not a route or configuration discovery (the plan's §1 rule: model use of an admitted shape is a runtime outcome; here the specific cause remains UNDETERMINED — actual receipt of the descriptor by this session is not directly proven and the effective model was not confirmed): the launcher descriptor's publication and readiness were verified on the run's own record (§37.2), so Q1's answer is neither extended nor contradicted.
+- **Q2 — answered for the NAMED route by the INHERITED cohort; the generic route stays NOT-PROVEN/UNAVAILABLE, carried forward unchanged.** The actual Child's long observation under the NAMED Role, with delivered instructions verified, rides the 386–388 s observations and their recorded instruction digests — NAMED-route evidence exclusively. The generic route carries the recorded limitation forward explicitly: §17.14.4's G recheck found it structurally unreachable at the pin (G UNSPENT with the structural reason preserved — a generic observation would require a genuinely changed host/form, none observed), §22.4's Q2 row retains `generic not-proven/unavailable`, and this trial neither extends nor re-opens it — T produced no Child observation of any route. T's instruction artifacts match the named-route cohort byte-for-byte (§37.2), which changes no generic-route fact.
+- **Q3 — answered by the INHERITED cohort on the NAMED route; unchanged.** The re-entry reduction (7→1), the discriminating long trial and its fresh repeat, requested-versus-actual recording and the exact ownership/exit linkage are inherited NAMED-route results (§7.7/§17.6/§21.4; the generic route has no long-observation cohort to extend — §17.14.4/§22.4). This plan deliberately did NOT repeat long/repeat campaigns, so the trial adds nothing to Q3.
+- **Q4 — the ONE question whose central live conjunct remains UNPROVEN; answered within its existing scope.** The noise/stderr and observational-sidecar cells stand exactly as historically recorded on the named route (not rerun; not authorized). The interruption/settlement cell now carries THIS trial's outcome: one inclusive attempt, INCONCLUSIVE — no Rescue call, so the pending window never opened, `interrupt.attempted: false`, and every applicable duty is an honest UNKNOWN (§36.8). Scheduled-but-unsent interruption is still not evidence — here no interruption was even reachable. The offline instrument/oracle side of Q4 is complete and negative-complete (§35.3, §36.7); only the live demonstration cell stays empty, with the attribution limitation recorded in §38.2 (no supported flow observed; specific cause UNDETERMINED).
+- **Q5 — retained separate and untouched.** Root-owned Review, Adversarial Review and Status `--wait` stand exactly as the inherited record holds them (not enabled, not newly qualified; the plan's §1 table). This trial ran no Root command case and authorizes none; a managed-Rescue result does not promote these surfaces or reopen MCP.
+- **Q6 — answered as far as the evidence allows, with NO production delta proposed.** Because acceptance is not proven (§38.2), no smallest-deployment change is recommended: no configuration seam, no setup guidance, no instruction edit. The measured scope is recorded exactly (CLI 0.163.0 binary bytes `8813367…dee31`; requested model `gpt-6.1-sol`; the exact frozen composition), and version/surface coverage claims remain the inherited, scoped ones.
+
+### 38.5 Production disposition: `do-not-adopt-yet`
+
+- **The disposition stands until acceptance is proven AND production integration is explicitly authorized.** Plainly: long waiting/re-entry reduction and complete public stdout were ALREADY proven by the inherited cohort — on the NAMED route (the plan's §1 table, first row: the 386–388 s observations, 7→1 re-entries, complete public stdout); the generic route remains not-proven/unavailable exactly as recorded (§17.14.4: structurally unreachable, G UNSPENT with the structural reason preserved; §22.4's `generic not-proven/unavailable`), and this trial does not change that. The remaining outcome this plan sought — native interruption with complete safe settlement under managed Rescue — is NOT demonstrated by this trial: the one inclusive no-call attempt (launched 2026-11-16T16:01:04Z UTC) remains inconclusive, and every settlement duty is UNKNOWN. The measured scope is recorded (CLI 0.163.0 binary bytes `8813367…dee31`, requested model `gpt-6.1-sol`, the exact frozen composition). **No production enablement, no shared-default change, and no Root command policy change is recommended or performed.** Research completion — even a precise, blocked completion — never means production was enabled; the spec's acceptance bar is unchanged.
+
+### 38.6 The execution ledger
+
+- **Plan checkbox states at this commit (the 23 execution checkboxes across Tasks 1–5):** Task 1 — 6/6 marked (commit `1755defa`, §34); Task 2 — 6/6 marked (commit `ed7ada84`, §35); Task 3 — 4/4 marked (commit `6748a5d5`, §36); Task 4 — 3/3 marked (commit `740ec084`, §37); Task 5 — the source-byte-provenance box, the applicable-battery box and the decision/ledger box are marked at this commit (this section), and the independent-final-reviews box REMAINS OPEN — see the final-review entry below. Nothing is marked that did not happen; §3's drafting-checks record stays as written (historical).
+- **T/T-fix accounting (final):** T SPENT (1/1) — the single hosted launch 2026-11-16T16:01:04Z UTC (driver PID 87979, exit 0, wall 72 s; the earlier 2026-11-16T16:00:20Z invocation was an OFFLINE argv-validation refusal with zero host contact and consumed nothing, §36.4); outcome INCONCLUSIVE — not qualified, not production-defect-observed, every settlement duty UNKNOWN (§36.8–§36.9). T-fix UNSPENT (0/1) — NOT USED; the slot is closed unspent, not transferred (§37.5). Zero other hosted/provider contacts across the plan's entire lifetime: Tasks 1, 2 and 4 were entirely offline, Task 5 is entirely offline, and the ONLY hosted contact ever made under this plan is the single T launch — no warm-up, no hidden debug attempt, no version-based reset, no automatic retry, no model shopping.
+- **Review-gate history per task (the independent codex review of each task's delta; self-review rounds preceded every dispatch):** Task 1 — codex verdict CLEAN after one P2 fix; Task 2 — codex verdict CLEAN after four P3 findings and one note resolved; Task 3 — codex verdict CLEAN after one P3 fix; Task 4 — codex verdict CLEAN after one P3 fix.
+- **Independent final reviews — DISPATCHED POST-COMMIT (pending at this commit's creation):** the two final reviews (Spec/authority; implementation/evidence/privacy) and the whole-branch codex review are dispatched by the root AFTER this commit lands. They are recorded here as dispatched-post-commit, NOT as completed; completion is recorded only after the actual returned reviews, with any findings resolved by narrow rechecks and applicable fresh tests. No review is claimed before it actually returns.
+
+### 38.7 Gates for this section's commit
+
+`node scripts/check-line-endings.mjs` PASSES (LF verified in 552 tracked files); `git diff
+--check` PASSES; the prohibited-path diff vs `192c0f04ef54ce705fccfa0938bb56fba6d2b422` (the
+plan's exact pathspec) is EMPTY, and the executable/test-byte diff (`tools/ tests/ scripts/
+package.json npm-shrinkwrap.json`) is EMPTY — this section's commit changes ONLY this report's
+§38 and the plan's checkbox/ledger updates; all relative links in §34–§38 resolve (the plan-link
+target exists); no unresolved placeholder markers, no trailing whitespace, final newlines
+present; `git status --porcelain` is clean after the commit. Historical sections remain
+byte-untouched (add-only).
