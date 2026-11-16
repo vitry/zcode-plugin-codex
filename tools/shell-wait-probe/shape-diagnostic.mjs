@@ -107,14 +107,21 @@ const INLINE_WRAPPER_PATTERN = /^text\(await tools\.(exec_command|write_stdin|wa
 const PREPARATION_PATTERN = /^text\(await tools\.write_stdin\(\{session_id:(\d{1,12}),chars:JSON\.stringify\((\{[\s\S]{1,4096}?\})\)\+"\\n"(?:,yield_time_ms:(\d{1,9}))?(?:,max_output_tokens:\d{1,9})?\}\)\);\n?$/u;
 const ROOT_CONTROL_WRAPPER_PATTERN = /^text\(await tools\.(interrupt_agent|send_input)\((\{[\s\S]{1,4096}?\})\)\);\n?$/u;
 // The pinned wrapper stage's head prefix (binding and tool family exactly as
-// WRAPPER_PATTERN pins them): a slot starting like this whose failure sits
-// DOWNSTREAM of the wrapper skeleton diagnoses the arguments/output stage
-// instead of the wrapper stage. Native-acceptance review round: the binding
-// class is the FROZEN BOUNDED-NAME grammar (the anchored non-`r` family's
-// BOUND_RESULT_WRAPPER_PATTERN in evidence.mjs, mirrored verbatim below), so
-// a generalized binding with a failure downstream of the skeleton diagnoses
-// arguments/output exactly like the pinned `r` head does.
-const WRAPPER_HEAD_PREFIX_PATTERN = /^const [A-Za-z_][A-Za-z0-9_]{0,63} = await tools\.(?:exec_command|write_stdin)\(/u;
+// the registered statement families pin them): a slot starting like this whose
+// failure sits DOWNSTREAM of the wrapper skeleton diagnoses the
+// arguments/output stage instead of the wrapper stage. Native-acceptance
+// review round: the binding class is the FROZEN BOUNDED-NAME grammar (the
+// anchored non-`r` family's BOUND_RESULT_WRAPPER_PATTERN in evidence.mjs,
+// mirrored verbatim below), so a generalized binding with a failure
+// downstream of the skeleton diagnoses arguments/output exactly like the
+// pinned `r` head does. Evidence-completion Task 2 (report §27): the head
+// prefix mirrors the §27-registered statement family's registered head
+// grammar (declaration class {const,let,var}, the mechanical identifier
+// class, and the bounded horizontal junction runs), so the §26.4 refusal
+// families spread into their real stages instead of masking as the wrapper
+// stage: a downstream failure (argument form, emission form, changed sink)
+// of any registered head spelling diagnoses at its own stage.
+const WRAPPER_HEAD_PREFIX_PATTERN = /^(?:const|let|var)[ \t]{1,8}[\p{ID_Start}$_][\p{ID_Continue}$_]{0,63}[ \t]{0,8}=[ \t]{0,8}await[ \t]{1,8}tools\.(?:exec_command|write_stdin)\(/u;
 // VERBATIM mirror of evidence.mjs's BOUND_RESULT_WRAPPER_PATTERN (the
 // anchored bounded-name wrapper family, report §24.11 amendment): the
 // non-`r` bounded-binding whole-body statement with the §23.2 emission-
@@ -122,6 +129,15 @@ const WRAPPER_HEAD_PREFIX_PATTERN = /^const [A-Za-z_][A-Za-z0-9_]{0,63} = await 
 // ONLY to diagnose which existing stage would respond to the input; the
 // classifier never admits anything.
 const BOUND_RESULT_WRAPPER_PATTERN = /^const (?!(?:r) = await )([A-Za-z_][A-Za-z0-9_]{0,63}) = await tools\.(exec_command|write_stdin)\((\{[^\n]{1,4096}?\})\);[ \t]*text[ \t]{0,8}\([ \t]{0,8}\1[ \t]{0,8}\);?[ \t]*\r?\n?$/u;
+// VERBATIM mirror of evidence.mjs's WRAPPER_STATEMENT_PATTERN (the
+// evidence-completion Task 2 registered wrapper-statement family, report
+// §27): the §26.4 admit union — declaration class {const,let,var}, the
+// mechanical identifier class bounded 1–64, bounded horizontal head-junction
+// runs, the optional ONE line break at the declaration→emission junction, the
+// optional framing-validated directive line, the unchanged argument bound
+// and the structural equal sink. It exists ONLY to diagnose which existing
+// stage would respond to the input; the classifier never admits anything.
+const WRAPPER_STATEMENT_PATTERN = /^(?:\/\/ @exec: ([\s\S]{1,512}?)\n)?(?:const|let|var)[ \t]{1,8}([\p{ID_Start}$_][\p{ID_Continue}$_]{0,63})[ \t]{0,8}=[ \t]{0,8}await[ \t]{1,8}tools\.(exec_command|write_stdin)\((\{[^\n]{1,4096}?\})\);[ \t]*(?:\r?\n[ \t]*)?text[ \t]{0,8}\([ \t]{0,8}\2[ \t]{0,8}\);?[ \t]*\r?\n?$/u;
 
 // The public tool allowlist at v1: any other established name (including its
 // spelling) is the fixed `other` class.
@@ -959,10 +975,14 @@ function directiveVerdict(text) {
 }
 
 /**
- * Whether one content line parses under the EXISTING grammar (verbatim mirror
- * of parseCallEvent's dispatch order: preparation, root control, then the
- * pinned wrapper/inline patterns with the directive re-parse, the argument
- * bound and the literal decode). Diagnosis only — never admission.
+ * Whether one content line parses under the EXISTING per-line branch
+ * (verbatim mirror of parseCallEvent's dispatch order: preparation, root
+ * control, then the pinned wrapper/inline patterns with the directive
+ * re-parse, the argument bound and the literal decode). The whole-body
+ * families (including the §27 registered wrapper-statement family) are NOT
+ * part of this per-line branch — parseCallEvent never applies them; the
+ * whole-body stage is mirrored separately above. Diagnosis only — never
+ * admission.
  * @param {string} line
  */
 function existingLineParses(line) {
@@ -973,11 +993,10 @@ function existingLineParses(line) {
   }
   const rootControl = ROOT_CONTROL_WRAPPER_PATTERN.exec(line);
   if (rootControl !== null) return decodeBoundedLiteralObject(rootControl[2]) !== null;
-  // The anchored bounded-name family (the real whole-body branch's response
-  // for these single-line bodies; the §23.2 emission-junction divergence for
-  // the pinned `r` spelling is unchanged below).
-  const boundResult = BOUND_RESULT_WRAPPER_PATTERN.exec(line);
-  if (boundResult !== null) return decodeBoundedLiteralObject(boundResult[3]) !== null;
+  // The anchored bounded-name family is NOT in the per-line branch (see the
+  // §27 mirror correction: the earlier mirror applied the whole-body branch's
+  // response to per-line inputs and misdiagnosed directive-led bounded
+  // bodies as parse-accepted before the parser admitted them).
   let source = line;
   const directiveMatch = DIRECTIVE_PATTERN.exec(source);
   if (directiveMatch !== null) {
@@ -991,14 +1010,53 @@ function existingLineParses(line) {
 }
 
 /**
- * Whether the WHOLE raw input parses under the existing per-line grammar
- * (verbatim mirror of parseCallStatements for a `custom_tool_call` input
- * string: directive strip, per-line split with the statement bound, blank
+ * The whole-body recognition stage's verdict on the RAW input (verbatim
+ * mirror of parseCallStatements' first stage: the pinned §23.2
+ * emission-junction exhibit and the §27 registered wrapper-statement family,
+ * each requiring its original argument decode, the §27 family's directive
+ * validated through the framing verdict — an invalid directive never strips
+ * into acceptance and falls to the per-line machinery below).
+ * @param {string} raw
+ */
+function wholeBodyStageAccepts(raw) {
+  const statement = WRAPPER_STATEMENT_PATTERN.exec(raw);
+  if (statement === null) return false;
+  // Codex-review fix round 2026-11-03 (report §27.8): the directive-led
+  // branch validates the SAME FRAMED PREFIX as the parser — never a bare
+  // JSON decode of the capture. This is an invocation-verbatim mirror of
+  // parseCallStatements' registered branch (evidence.mjs:899–902), which
+  // builds the probe string `// @exec: <capture>\n` + the pinned wait
+  // statement and hands it to parseWrappedToolInput (evidence.mjs:1154):
+  // the probe's line-bound strip JSON-validates ONLY the first line and the
+  // remainder must still start the statement — a capture that absorbed an
+  // extra newline leaves the blank line before `text(await…` and a
+  // multiline capture leaves a JSON-invalid first line, so BOTH refuse
+  // exactly as the parser refuses. The evaluation routes through THIS
+  // module's already-verbatim framing path (`existingLineParses`: the
+  // same line-bound strip + bare-capture JSON verdict + wrapper/inline
+  // match + bound + decode), keeping the module import-cycle-free and
+  // mirroring the per-line branch's own semantics. Round-1 note carried:
+  // the bare-capture JSON verdict (the `directive` enum classing) is a
+  // SEPARATE, downstream fact — the framing probe above now gates the
+  // stage verdict exactly like the parser.
+  if (statement[1] !== undefined &&
+    !existingLineParses(`// @exec: ${statement[1]}\ntext(await tools.wait({cell_id:"directive"}));`)) return false;
+  return decodeBoundedLiteralObject(statement[4]) !== null;
+}
+
+/**
+ * Whether the WHOLE raw input parses under the existing grammar (verbatim
+ * mirror of parseCallStatements for a `custom_tool_call` input string: the
+ * WHOLE-BODY stage on the raw input BEFORE any strip (the slab-pinned
+ * emission-junction exhibit is inside the §27 family's accepted set; the
+ * per-line branch carries the pinned wrapper/inline families), then the
+ * directive strip and the per-line split with the statement bound, blank
  * separators allowed only between statements, every content line through the
  * pinned statement parsers, directive validity through the framed probe).
  * @param {string} raw
  */
 function existingGrammarAccepts(raw) {
+  if (wholeBodyStageAccepts(raw)) return true;
   let source = raw;
   let prefix = '';
   const directive = DIRECTIVE_PATTERN.exec(source);
@@ -1037,6 +1095,20 @@ function slotMatchesPinnedSkeleton(rawLine) {
   if (rootControl !== null) return decodeBoundedLiteralObject(rootControl[2]) !== null;
   const boundResult = BOUND_RESULT_WRAPPER_PATTERN.exec(rawLine);
   if (boundResult !== null) return decodeBoundedLiteralObject(boundResult[3]) !== null;
+  // Codex adversarial-review fix round 2026-11-03 (report §27.8): the §27
+  // registered wrapper-statement family joins the skeleton recognizer — the
+  // same parity principle as the round-4 argument-stage extension (§27.8
+  // item 7): a registered spelling classifies as a RECOGNIZED skeleton (its
+  // structural statement shape — the equal sink and the original decoder's
+  // sayable argument — is the skeleton's contract), so the downstream
+  // ordering gives the directive / residual stages their own verdicts
+  // instead of the output-stage check intercepting every widened failing
+  // body as a false-sink claim. A DECODABLE registered argument still
+  // counts as a skeleton (parity with boundResult at :1088). Diagnosis-only
+  // skeleton recognition: WHICH spellings reach the existing stage checks —
+  // no admission or credit change, no parser change, no enum meaning change.
+  const registered = WRAPPER_STATEMENT_PATTERN.exec(rawLine);
+  if (registered !== null) return decodeBoundedLiteralObject(registered[4]) !== null;
   const wrapper = WRAPPER_PATTERN.exec(rawLine) ?? INLINE_WRAPPER_PATTERN.exec(rawLine);
   return wrapper !== null;
 }
@@ -1058,6 +1130,20 @@ function slotArgumentRejected(rawLine) {
   if (rootControl !== null) return decodeBoundedLiteralObject(rootControl[2]) === null;
   const boundResult = BOUND_RESULT_WRAPPER_PATTERN.exec(rawLine);
   if (boundResult !== null) return decodeBoundedLiteralObject(boundResult[3]) === null;
+  // Codex-review fix round 2026-11-03 (report §27.8): the §27 registered
+  // wrapper-statement family joins the arguments-stage diagnosis — the
+  // registered spellings (declaration class {const,let,var} beside the
+  // mechanical identifier class) reach the SAME literal decoder, so a
+  // pattern-matched registered statement whose argument the decoder refuses
+  // (an escape homoglyph, a raw control character, any unsupported
+  // encoding) is the ARGUMENT stage exactly like the pinned bounded-family
+  // spelling beside it, never a collapsed output/sink stage. A DECODABLE
+  // registered argument still returns false (the equal-decision parity:
+  // the pattern is not a refusal). Diagnosis-only extension: WHICH
+  // spellings reach the existing argument-rejected classification — no
+  // admission or credit change, no parser change, no enum meaning change.
+  const registered = WRAPPER_STATEMENT_PATTERN.exec(rawLine);
+  if (registered !== null) return decodeBoundedLiteralObject(registered[4]) === null;
   const wrapper = WRAPPER_PATTERN.exec(rawLine) ?? INLINE_WRAPPER_PATTERN.exec(rawLine);
   if (wrapper === null) return false;
   return wrapper[2].length > MAX_SHAPE_ARGUMENT_CHARS || decodeBoundedLiteralObject(wrapper[2]) === null;
