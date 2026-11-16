@@ -34649,3 +34649,240 @@ section was written (on the committed bytes that every suite above exercised).
   a local `--version` execution and local artifact hashing. **T remains UNSPENT** (maximum one
   hosted attempt under the plan's ledger), T-fix remains unspent, and no historical verdict was
   revised.
+
+## 36. 2026-11-16 native-settlement task 3: the single managed-child native interruption trial (T)
+and the persisted-fact adjudication
+
+This section executes Task 3 of
+[the native-settlement trial plan](../superpowers/plans/2026-11-16-rescue-shell-wait-native-settlement-trial.md)
+against the worktree at HEAD `ed7ada84af955115bac9de8910edb95ab7cbc518` (branch
+`docs/rescue-shell-wait-native-settlement-trial`, `git status --porcelain` EMPTY at the freeze and
+at the launch; the only repository change of this section's commit is this report text). It
+executed **exactly one hosted attempt** — the registered trial T — after every offline freeze step
+below completed, and adjudicated the persisted record offline. **T is SPENT (1/1).** The outcome is
+**INCONCLUSIVE**: the hosted turn completed without the managed Rescue launcher ever being invoked
+(no Rescue call), so no native interruption could be attempted and every settlement duty remains
+unknown. Per the plan's §1 counting rule this consumed the slot and is never retried; T-fix remains
+UNSPENT pending Task 4's separate decision. All private trial outputs live in the owned private
+0700 directory outside the repository; this section retains only redacted content-free facts and
+digests.
+
+### 36.1 The frozen launch package (completed offline, BEFORE any host contact)
+
+- **Executing HEAD and tree:** `git rev-parse HEAD` = `ed7ada84af955115bac9de8910edb95ab7cbc518`;
+  `git status --porcelain` EMPTY at the freeze and at the launch; the prohibited-path diff against
+  base `192c0f04ef54ce705fccfa0938bb56fba6d2b422` (`scripts/ hooks/ skills/ agents/ .codex-plugin/
+  prompts/ schemas/ marketplace/ package.json npm-shrinkwrap.json`) EMPTY. The committed
+  installed-fixture source SHA passed as `--source-sha` is exactly this HEAD (the fixture builds
+  the marketplace snapshot from a clean detached worktree at it — fixture.mjs:557/:616).
+- **Executing source digests (SHA-256 over the committed bytes via `git cat-file blob`, each
+  cross-checked identical to the on-disk bytes — all TEN identical to §34.1's registered values,
+  zero drift):** `driver.mjs` = `32a9e418f88ea226360fc6bbdcc65924f1e998c7989fc4f4a421c863f1b1aad1`,
+  `fixture.mjs` = `995693236158cb368bd95e6466a7d2ccf779029274f3a6bb28cae862001ba36f`,
+  `spawn-witness-preload.mjs` =
+  `ac9068fe93c2f6d91a08f50beec3d5db032ca127ed5294b735e76b1031167955`,
+  `local-process-observation.mjs` =
+  `8f7633a8de278048ed08315e231d253e40c43b0e31bb2aa2a147d197799cd0b7`,
+  `closure-observation.mjs` =
+  `3a45f9db7bef21c60bc0a9f6093433eb9da90843def3019a424165c578c68451`, `closure-preload.mjs` =
+  `44fdd25d907236666f5ab19fe4eafe49bb93a971ec5f2b4aa820b2fb8df330ba`, `evidence.mjs` =
+  `ecb1b3835f1d939264d6d97b24d2e5cc3a7719a95f32555a9d7cf4ba98d3e777`, `shape-diagnostic.mjs` =
+  `dcee13324b34b95f21a16336800dd6afd5292c5301e89b30b74ba9e16ba6ffae`,
+  `release-qualification.mjs` =
+  `c8863ef6947e1e082d5727434894b50f53f0d3210ee35185956a0d3e603c8d84`, `wait-comparison.mjs` =
+  `eba75edbac4d69be42b312b7ff09582314e034d93aaa56cf73ba93024c622146`.
+- **The four Task-3 local variables, resolved and frozen:** (1) `SETTLEMENT_TRIAL_CODEX_BINARY` =
+  `/Users/zhangzikai/Workspace/Codes/tmp/rescue-settlement-trial/codex-0.163.0/bin/codex` (the
+  realpath; re-verified immediately pre-launch: SHA-256
+  `8813367285524ac798dd96d1b071aea30d58708c7226fd236cd275cf1cfdee31`, local `--version` prints
+  `codex-cli 0.163.0`, exit 0 — byte-identical to §34.2); (2) `SETTLEMENT_TRIAL_PLUGIN_SHA` =
+  `ed7ada84af955115bac9de8910edb95ab7cbc518`; (3) `SETTLEMENT_TRIAL_PRIVATE_OUTPUT` =
+  `/Users/zhangzikai/Workspace/Codes/tmp/rescue-settlement-trial/t-output` (created `mkdir -p` +
+  `chmod 700`, verified `drwx------`, OUTSIDE the repository, verified EMPTY at fixture creation —
+  the fixture's own `assertPrivateEmptyOutput` gate, fixture.mjs:361–369, passed at launch);
+  (4) `SETTLEMENT_TRIAL_MODEL` = `gpt-6.1-sol` (the §34.3 local-metadata spelling). No repo path
+  carries any trial output.
+
+### 36.2 The credentials-verification record (completed offline; NO secret printed or copied)
+
+- **Mechanism anchor:** the fixture resolves `authSource` as
+  `process.env.CODEX_HOME ?? join(homedir(), '.codex')` (fixture.mjs:481–483); its default
+  `copyCredentials` implementation (fixture.mjs:633–641) `lstat`s `<authSource>/auth.json`,
+  requires a regular file, `cp`s it into the isolated `codexHome/auth.json`, `chmod`s it 0600 and
+  returns `{ copied: true }`; it executes during fixture setup at fixture.mjs:642–643 and the
+  boolean rides the fixture variant record (fixture.mjs:1268).
+- **Source-exists evidence (size/mtime ONLY — the file content was never read, printed, hashed
+  into a record, or copied anywhere by this registration):** `CODEX_HOME` unset in the launch
+  environment, so the source is `/Users/zhangzikai/.codex/auth.json`: present, regular file, size
+  **4115 bytes** (non-empty), mode `-rw-------` (0600), mtime 2026-11-09 19:01:01 local. The
+  fixture's setup step provably carries it (the anchored mechanism above).
+- **Credentials verified available, no secret recorded.** Post-run corroboration (content-free):
+  the hosted turn completed with a model round-trip (one rollout, `hostExit` 0), which requires
+  the isolated home to have authenticated successfully.
+
+### 36.3 The offline argument-vector parse (before any host contact)
+
+The exact canonical argv (with the frozen variable values substituted) parsed offline through
+`parseShellWaitArguments` (driver.mjs:515) with zero host contact: `case rescue-interrupt`,
+`codexBinary` the frozen realpath, `sourceSha` = the HEAD pin, `output` the frozen private dir,
+`workerDurationMs` **420000**, `pollMs` **3600000**, `budgetMs` **1200000**, `capMs` **3600000**,
+`waitPolicy` **config-default**, `execDefaultMs` **3600000**, `model` **gpt-6.1-sol**,
+`survivalControlSelector` **progress-terminal**, `interruptBaselineSelector` null, both
+diagnostics **true** — every duration and selector matches the §35.5 freeze exactly. This is the
+same closed parse §35.7 recorded; no selector needed documentation.
+
+### 36.4 The launch accounting (T consumed by the ONE executed attempt)
+
+- **Pre-launch offline refusal (NOT a launch; consumed NOTHING):** the first invocation attempt
+  (2026-11-16T16:00:20Z UTC, PID 87957) refused in 0 s at argument validation, exit 1, with the
+  driver's own refusal `the exact Codex executable must be an absolute native executable path`.
+  Cause: an invoking-shell expansion error — the four `SETTLEMENT_TRIAL_*` variables were passed
+  as `env(1)` assignments on the node process, so the invoking shell expanded
+  `"$SETTLEMENT_TRIAL_CODEX_BINARY"` to the empty string before the driver ever ran. The refusal
+  fired at `assertAbsoluteNativeExecutable` (driver.mjs:536) BEFORE `assertCodexBinaryExists`
+  (driver.mjs:653), before fixture creation, and before any hosted/provider contact — the plan's
+  offline-parse surface, recorded honestly here. No retry question arises: this attempt never
+  touched the host.
+- **THE launch (attempt 2, the single hosted attempt):** variables exported in the invoking
+  shell, then the exact canonical command run from the worktree root. Start **2026-11-16T16:01:04Z
+  UTC** (epoch 1794844864), driver PID **87979** (recorded immediately at launch). Exit code **0**
+  at **2026-11-16T16:02:16Z UTC**; wall duration **72 seconds**. Record `executedAt`
+  2026-11-16T16:02:15.257Z; cleanup boundary epoch-ms 1794844935242. The driver's own flow ran
+  untouched: no parallel inner poll/Status, no Child/Companion replacement, no intervention, the
+  original-handle empty observation and outer-cell continuation semantics preserved by the driver.
+- **In-run timeline (persisted, held-turn monotonic elapsed-ms):** launcher `launchedAtElapsedMs`
+  1; root acknowledgement at **23168 ms**; the held turn **ended at 23168 ms** (`endedBeforeGate:
+  true`, `endedAtElapsedMs: 23168`) — the host turn completed on its own BEFORE any observation
+  was detected (`observationDetectedAtElapsedMs` **null**), so the §35.5 worker hold (anchored at
+  ACTUAL observation detection, driver.mjs:4037–4043) never anchored, the pending window never
+  opened, and the gate was released by the driver's own early-exit cleanup path
+  (`gateReleased: true`, `cleanupLabel: 'early-exit'`). Fixture disposal and cleanup completed
+  (`fixtureDisposed: true`, `cleanupComplete: true`, `cleanupErrors.count` 0).
+
+### 36.5 The bounded redacted per-layer facts from the persisted record
+
+All facts below are read from the persisted record (`rescue-interrupt.record.json`, digest in
+§36.6). Private text stayed in memory; the record itself already suppresses task/preparation text
+(the final assistant message: `suppressed: true`, 349 chars, path redactions applied — the
+privacy discipline held). No raw variable spelling, no credential, no rollout text is retained.
+
+| Layer (§34.5) | Retained fact |
+| --- | --- |
+| Provenance/integrity | `provenance.sourceSha` = the pin; in-record `codexBinarySha256` = `8813367…dee31` (== frozen §34.2 digest); observer digest `aaac42e7…cb6b1` (== §34.1, tag v9, `model: null`, `reachableToolFamily: null`); `sourcesChangedDuringRun: false` — NO provenance break; capture preload `49cc2539…9ee75` (== §34.1's `generatedPreloadSha256`); generated witness preload `88d79cce…3ace1`; transport entry `d5c6e107…0b82`; codex version in-record `0.163.0`; every requested duration recorded exactly as frozen |
+| Layer 1 (entry arming) | The record carries BOTH `stdoutCaptureDeclaration` AND `spawnWitnessDeclaration` (with `exactReaderEnabled: true`, `transportEntryDeclared: true`) — the standard entry armed both seams together, the §34.5 layer-1 explicit Task-2 item CONFIRMED on the launched record itself |
+| Route/linkage | `route.requested rescue-foreground`, `route.actual` null; linkage ids ALL null (root/child/parent thread ids), `companionLaunchCount` null, `companionSendCount` 0, `originalHandleChecked` null — no Companion ever launched |
+| Observations | ALL null (`outerReturns`, `modelCalls`, `rootJoins`, `decisiveWallMs`, `pollWallTimesMs`, `pollStartedAtElapsedMs`, `holdDeadlineElapsedMs`, `pendingInnerAtEnd`; `remainingLifetimeBasis: 'unavailable'`) — the observation never opened |
+| Complete scan | NO interrupt-shaped tool call observed in the owning-session rollouts; the investigated surface named in the record: `interrupt_agent` (V2, enabled by the live features.multi_agent_v2 configuration) and legacy `send_input {interrupt:true}` (V1); the app-server turn/interrupt RPC is not reachable from the exec session process (the driver's own `missingPrerequisite` diagnostic, retained content-free) |
+| Interrupt | `requested: true`, `attempted: false`, `callCount` 0, `family`/`target`/`delivered`/`settled`/`settledBasis`/`deliveryToSettlementMs` all null — no causal admission, no ack, no resolution, no latency |
+| Stdout capture | `status: 'missing'`, `reason: 'capture-file-missing'` — the gated launcher spawn (`invoke-prepared rescue`) never ran, so the capture preload never fired |
+| Boundary witnesses | `spawnWitnesses.companion` null, `.daemon` null — neither gated boundary spawn occurred; witness sequencing had nothing to sequence |
+| Local process duties | Armed (local observation v4); admission `status: 'missing'`, reason `identity-record-missing`; reads 0; duties `invocation-process` / `broker-daemon` / `transport-descendant` ALL `unestablished` with reason `no-fact-supplied`; `ancestryRefusal: 'ancestry-hops-unattributed'`; `companionToTransportAttributed: false`; `stoppedAt: 'turn-ended'` |
+| Durable facts | Aggregate `unestablished`, reason `durable-identity-unobserved`; baseline omitted (same reason); `identityEstablishedAtAttempt` null; 0 summaries, 0 omissions — no durable job/guard/integrity or owning identity to read, no stop causes or epoch receipts |
+| Unrelated control | `survivalControl: null` — UNADJUDICATED; the declaration rode (selector `progress-terminal`, script digest `c510d81f…0172`, 60 lines × 2000 ms) but the control is delivered through the managed flow that never started; active-at-request presence NOT established; fresh post-delivery survival NOT established |
+| Host process/termination | `hostExit` 0; `processIdentity.established: false` (basis `marker-absent-at-capture-time`); `verifiedTerminated: false`, `codexTerminated: true` (named facts, kept separate) |
+| Child settlement | `observed: false`, `basis: null`; `settlementLayers.remoteTerminal`/`localProcessReaping`/`durableObligations` all null |
+| Named inconclusive reason | `the host ended before the held completion boundary; the pending-observation claim is inconclusive for this run` (driver-authored, retained verbatim) |
+
+### 36.6 Artifact digests and collection intervals
+
+- **Persisted artifacts (owned private 0700 directory, never in the repo):**
+  `rescue-interrupt.record.json` (16008 bytes) SHA-256 =
+  `b4582cec13960e3efcdcd5944f475f549b0fd916f6c012ca1d8002ce4ea8865e`; `launch-stdout.log`
+  (the driver's stdout — **byte-identical to the persisted record, same digest** — an integrity
+  cross-check); `launch-stderr.log` (0 bytes) SHA-256 =
+  `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`; `accounting.txt` SHA-256 =
+  `e05a027b2aa5d00a41c93c80605a41c4ffe02f4bf9dc00808d703ad9b0e3e5b2`.
+- **Collection intervals (the §35.5 caps as declared AND as actually run):** durable reads
+  declared intervalMs 1000 / attemptCap 600 / summaryCap 32; actually `attemptCount` 24 (ledger
+  `attempts` 25) spanning epoch-ms 1794844912073→1794844935102 (≈23.03 s) at the ≥1000 ms cadence
+  with the deviations the ledger NAMES: `unpacedAttempts` 1, `intervalShortfalls` 1;
+  `stoppedReason: 'durable-sampling-stopped-at-termination-boundary'`; the final read landed AT
+  the cleanup boundary (completedAtMs 1794844935242 == the boundary instant 1794844935242 — the
+  driver's own field semantics is at-or-after, `durableReadAtOrAfterBoundary` with
+  `>= creditFenceAtMs`, driver.mjs:9015–9018) and is the named fenced fact
+  (`durableReadPostCleanupBoundary: true`, boundary-recorded, never credited). Witness sequencing
+  bound 15000 ms declared, unused. Control
+  cadence 2000 ms × 60 lines declared, never started. All collections stopped at the applicable
+  boundary; nothing was credited past it.
+
+### 36.7 The Gate-D recompute (runtime vs persisted; join v38 / oracle v5)
+
+- **Versions:** `NATIVE_INTERRUPTION_GATE_D_JOIN_VERSION` **38** (driver.mjs:5874) composed
+  `nativeInterruptionGateDInput(record)` (driver.mjs:8828) from the persisted bytes;
+  `NATIVE_INTERRUPTION_ORACLE_VERSION` **5** (release-qualification.mjs:847) then
+  `evaluateNativeInterruptionSettlement(input)` (release-qualification.mjs:903) over it; the
+  verdict carries `releaseQualificationVersion` 1.
+- **Offline recompute verdict:** `qualified: false` with the fourteen named reasons
+  `delivery-not-established`, `delivery-unsent`, `alias-unresolved`,
+  `terminal-state-unestablished`, `pending-window-unconfirmed`, `delivery-target-unmatched`,
+  `host-activity-unadmitted`, `turn-settlement-unobserved`, `settlement-latency-unestablished`,
+  `companion-outcome-unobserved`, `durable-obligations-unobserved`,
+  `survival-control-unadjudicated`, `terminal-winner-unobserved`,
+  `local-process-duty-unsettled`; ALL layers false (delivery, turnSettlement, companion,
+  durableObligations, noCollateral, localProcess); `terminalWinner` null.
+- **Runtime vs persisted agreement: AGREE.** The live path persists its own settlement facts (all
+  null/unestablished: `interrupt.settled` null, `child.settlement.observed` false, all
+  `settlementLayers` null, `cleanup.nativeInterruptionClaimed: false`, plus the named
+  inconclusive reason) and the persisted-bytes recompute returns the same unestablished shape.
+  One honesty note: the driver's live path does not itself invoke the oracle (it is the offline
+  consumer), so there is no separate "runtime oracle verdict" object — the comparison above is
+  the record's own runtime settlement facts against the offline oracle on the same persisted
+  bytes, and they agree. No verdict was forced, rewritten or relabeled.
+
+### 36.8 The three-part adjudication
+
+- **(i) Native responsiveness — NOT DEMONSTRATED.** Causal admission: none (no interrupt-shaped
+  call, `deliverySent: false`, target unmatched/unobserved). Pending-window admission: none (the
+  observation never detected, so the window never opened; `pendingWindowConfirmed: false`).
+  Acknowledgement emission: none. Actual resolution: nothing attributable to an interruption —
+  the host completed its own turn at held-turn elapsed 23168 ms (`hostExit` 0), which RETAINS its
+  natural-terminal authority and time and is not relabeled. Latency: unestablished
+  (`deliveryToSettlementMs` null). The 60000-ms responsiveness comparison is NOT APPLICABLE — it
+  runs only on causally admitted input, which this run never produced.
+- **(ii) Every applicable local/remote/durable/control duty — ALL UNKNOWN, none PASS, none FAIL.**
+  Broker duty: unestablished (`no-fact-supplied`). Runner/transport-descendant duty:
+  unestablished (`no-fact-supplied`). Invocation-process exit: unestablished. Safe guard
+  retention / durable job+guard+integrity / owning identity: unestablished
+  (`durable-identity-unobserved` — no durable identity ever existed to read; this is a named
+  absence, never a pass). Stop causes/epoch receipts: none retained (0 summaries). Unrelated
+  control: unadjudicated (`survivalControl` null — neither active-at-request presence nor fresh
+  post-delivery survival established). Companion pre-request presence: absent (never launched).
+  Both boundary witnesses: absent. No-collateral layer: unestablished. Per the plan's own rule an
+  acknowledgement, remote terminal result, safe guard retention or local process disappearance
+  alone would not be the all-duty verdict — here there is not even any of those; the flow never
+  started, so EVERY duty is an honest UNKNOWN.
+- **(iii) Compatibility with the inherited long-wait cohort — UNCHANGED, NOT EXTENDED.** The
+  instrument side matched the frozen cohort exactly: the in-record binary digest equals the
+  §34.2/§36.1 frozen digest, the observer digest equals §34.1, the source pin equals the
+  committed HEAD, every requested duration was recorded exactly as requested, the isolated setup
+  ran ready (session established, launcher descriptor published, cap verified, 2 deterministic
+  setup attempts for the data-root restart-required re-run), and no provenance break occurred.
+  What did not compose is the HOST-side behavior: the 0.163.0 exec turn answered in ~23 s without
+  invoking the managed Rescue launcher, so this run produced NO observation that either extends
+  or contradicts the inherited long-wait cohort (the §1 table's 386–388 s observations stand
+  untouched). The one new content-free fact is host-behavioral: in this single run the model did
+  not make the launcher invocation.
+
+### 36.9 The honest T outcome and the ledger accounting
+
+- **T outcome: INCONCLUSIVE — not qualified, and not observer-blocked and not
+  production-defect-observed.** Exact reason: the single hosted attempt completed (`status:
+  'executed'`, `hostExit` 0) but the managed Rescue Child never started — no interrupt-shaped
+  tool call on the investigated owning-session surface — so the pending-observation window never
+  opened and no native interruption could be attempted, observed or adjudicated. All observers
+  were armed and correct (the declarations rode the record); the run simply never reached them.
+  Per the plan's §1 counting rule, "no Rescue call" CONSUMED the slot. It is recorded as
+  inconclusive and is NOT retried. A single run's missing Rescue call is instrument/host-behavior
+  uncertainty, not actual-path product-defect evidence — the plan forbids claiming a product
+  defect from instrument uncertainty alone.
+- **Ledger: T SPENT (1/1)** on the single 2026-11-16T16:01:04Z UTC launch (PID 87979, exit 0,
+  wall 72 s); the earlier 16:00:20Z invocation was an offline argv-validation refusal with zero
+  host contact and consumed nothing. **T-fix UNSPENT (0/1)**, pending Task 4's separate
+  cause-directed evaluation — this section does NOT attempt or pre-judge it. **Zero other hosted
+  contacts**: the only codex executions in this task were local `--version` checks and the trial
+  itself; no warm-up, no hidden debug attempt, no retry, no model shopping. No historical verdict
+  was overwritten; this section is add-only.
+- **Gates for this section's commit:** `node scripts/check-line-endings.mjs` PASSES; `git diff
+  --check` PASSES; the prohibited-path diff vs `192c0f04` is EMPTY; `git status --porcelain`
+  shows ONLY this report modified. Private outputs remain in the owned private 0700 directory
+  outside the repository and were never pushed.
