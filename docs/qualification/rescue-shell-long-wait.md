@@ -34886,3 +34886,276 @@ privacy discipline held). No raw variable spelling, no credential, no rollout te
   --check` PASSES; the prohibited-path diff vs `192c0f04` is EMPTY; `git status --porcelain`
   shows ONLY this report modified. Private outputs remain in the owned private 0700 directory
   outside the repository and were never pushed.
+
+## 37. 2026-11-16 native-settlement task 4: the cause-directed follow-up adjudication (T-fix)
+
+This section executes Task 4 of
+[the native-settlement trial plan](../superpowers/plans/2026-11-16-rescue-shell-wait-native-settlement-trial.md)
+against the worktree at HEAD `6748a5d52b11e90b8cfca2a44ad5e607f60118bc` (branch
+`docs/rescue-shell-wait-native-settlement-trial`, `git status --porcelain` EMPTY while every read
+below ran; the only repository change of this section's commit is this report text). The offline
+adjudication was performed 2026-11-16 UTC (the local-date continuation of the trial session;
+§36's launch accounting, 2026-11-16T16:01:04Z, is unchanged). It is an OFFLINE task throughout:
+ZERO hosted/provider contacts of any kind — no launch, no warm-up, no eligibility probe, no "just
+checking" contact; the only executed work was local `node` module imports over the committed
+research bytes, local hashing, `jq` reads of the retained private record, and read-only `git`
+operations (including `git show`/`git grep` against the read-only Codex source pin
+`dffa0deb69268ed4ac31578794c9ea897b336ae3`, still clean). **The decision:
+T-fix is NOT USED.** No supported flow was observed in T; the specific cause is UNDETERMINED; no
+qualifying fix exists yet. The committed executing-module and instruction digests reproduce
+byte-identically (§37.2), but actual receipt of the descriptor/instruction by THIS session is not
+directly proven (a setup hook emitting a descriptor is not proof the session received it) and the
+effective model metadata was not confirmed — so the no-call cannot be attributed to model
+behavior. The plan's bar explicitly makes "unchanged retries for obedience/model/version changes"
+insufficient, and no evaluated candidate demonstrated a concrete causal instrument defect, a
+supported discriminating choreography change, or a new missing mechanism/artifact. The ledger
+therefore closes Task 4 as: **T SPENT (1/1), unchanged; T-fix UNSPENT (0/1) — NOT USED**, and per
+the plan's stop rule no further hosted runs are authorized by this plan (the Task-5 final decision
+section remains its own task). Private trial outputs stayed in
+the owned private 0700 directory; scratch verification scripts lived in a separate private scratch
+directory outside the repository and were never staged; this section retains only redacted
+content-free facts and digests; every historical section above is byte-untouched (add-only).
+
+### 37.1 The exact failed/unknown conjunct (restated from §36)
+
+- Every one of §36.7's fourteen oracle reasons and every UNKNOWN duty of §36.8 cascades from ONE
+  primary absence: the hosted turn never invoked the managed Rescue launcher. The record's typed
+  facts, each independently named: `route.actual: null` (requested `rescue-foreground`); the gated
+  launcher spawn (`invoke-prepared rescue`) never ran — stdout capture `status: 'missing'`, reason
+  `capture-file-missing`, AND both boundary spawn witnesses null (two independent gated mechanisms
+  that share the same argv/entry gate and write separate records); `companionLaunchCount` null with
+  every linkage id null (no Child thread ever observed); local admission `identity-record-missing`
+  (reads 0); durable identity `durable-identity-unobserved` (0 summaries). No Child existed, so no
+  pending observation could open and `interrupt.attempted: false` with `callCount` 0 and
+  `family`/`target`/`delivered`/`settled`/`settledBasis`/`deliveryToSettlementMs` all null, carrying
+  the driver-authored `missingPrerequisite` (retained verbatim, content-free): "delivery was not
+  attempted: no interrupt-shaped tool call was observed in the owning session rollouts (investigated
+  owning-session surface: interrupt_agent (V2, enabled by the live features.multi_agent_v2
+  configuration) and legacy send_input {interrupt:true} (V1); the app-server turn/interrupt RPC is
+  not reachable from the exec session process)".
+- The host's turn, content-free: held-turn monotonic elapsed — launcher at 1 ms, root acknowledgement
+  AND turn end at 23168 ms (`endedBeforeGate: true`; the driver's own `early-exit` cleanup released
+  the gate; zero cleanup errors; fixture disposed); process exit 0; ONE owning-session rollout; the
+  final assistant message withheld by the pinned scrubber (349 chars; suppression held). What the
+  host did inside its turn beyond answering is private turn content and is NOT retained: the no-call
+  conjunct rests on the complete scan (no interrupt-shaped call) plus the two independent gated
+  absences above, never on message content — and its recovery is not demanded (the plan forbids
+  demanding destroyed or private raw text).
+
+### 37.2 The instrument-faithfulness evidence (offline recomputation performed by this task; zero host contact)
+
+Task 4's first duty is to determine whether the instrument deviated from the registered/frozen
+design in ANY way that could have suppressed the call. The recomputation, run by this task against
+the committed bytes (which are the launched bytes — see below), found NO byte-level deviation:
+
+- **The current bytes ARE the launched bytes:** all TEN executing-module SHA-256 values recompute
+  byte-identical to §36.1's frozen values (`driver.mjs` `32a9e418…`, `fixture.mjs` `9956932361…`,
+  `spawn-witness-preload.mjs` `ac9068fe…`, `local-process-observation.mjs` `8f7633a8…`,
+  `closure-observation.mjs` `3a45f9db…`, `closure-preload.mjs` `44fdd25d…`, `evidence.mjs`
+  `ecb1b383…`, `shape-diagnostic.mjs` `dcee1332…`, `release-qualification.mjs` `c8863ef6…`,
+  `wait-comparison.mjs` `eba75edb…`), and the only commit since the launch (`6748a5d5` over
+  `ed7ada84`) touches ONLY this report's §36 text (`git diff ed7ada84 6748a5d5 --stat` = one file,
+  237 inserted lines, `docs/qualification/rescue-shell-long-wait.md`).
+- **All SIX in-record instruction/artifact digests reproduce exactly from the committed source**
+  (the fixture's own rendering path — `ORIGINAL_WAITING_PARAGRAPH` → the config-default candidate
+  paragraph at the recorded 3600000 ms window — over the committed `agents/zcode-rescue.toml.template`
+  and `skills/rescue/SKILL.md` at the trial pin, rendered through the same
+  `renderManagedRescueRole`/extraction/normalization the fixture executes): named-role template
+  before `4a9bbbcb…` / after `5d2791b6…`, generic skill before `df2de8cc…` / after `0ede2e3e…`,
+  normalized rendered named role `2ea76cf0…`, and generic message `5800e3ab…` (which equals its
+  normalized form) — ALL SIX MATCH the §36.5-provenance values in the record. The raw
+  (path-dependent) rendered hash `e3a5cc39…` is expected to differ across fixture homes and was
+  recorded as such by the fixture's own contract.
+- **The composed Root prompt is deterministic from the committed bytes:** the recorded selector
+  (`progress-terminal`) selects the directive branch (driver.mjs:11210–11212), composing the case
+  prompt (531 chars) + one space + the five-step survival-control directive. The directive is 2026
+  fixed chars plus the fixture-private absolute control-script path (verified linear: 2026 +
+  pathLen, the path appearing exactly once), so it is ≥ 2079 chars under every environment and
+  measured 2127 on this host's mktemp instance (±1 with that instance's tmpdir depth); the composed
+  total is therefore host-tmpdir-path-dependent — 2659 chars measured on this host, ≥ 2611 under
+  any environment, ≈2.6 KB — and rides as ONE spawn argv element: coherent text with no truncation
+  vector (single-argument spawn; three orders of magnitude under any OS/exec bound — a fortiori
+  true at the real figures), and its Rescue-invocation clause is byte-identical to the clause every
+  historically successful case used. The record does not hash the host argv itself; the composed
+  prompt is pinned by the executing committed bytes plus the recorded selector, and the
+  fixture-side instruction artifacts ARE digest-verified above — but this pins the composition,
+  not this session's receipt of it.
+- **Provenance stayed intact:** the in-record binary digest equals the frozen §34.2 digest
+  (`8813367…dee31`), the observer digest equals §34.1 (tag v9, `aaac42e7…`), the source pin equals
+  the committed HEAD, `sourcesChangedDuringRun: false`, and the private artifacts re-hash exactly to
+  §36.6's digests (`rescue-interrupt.record.json` `b4582cec…`, `launch-stdout.log` byte-identical to
+  the record, `launch-stderr.log` 0 bytes, `accounting.txt` `e05a027b…` with attempt 2 / PID 87979 /
+  exit 0 / wall 72 s — all re-verified by this task).
+- **The isolated setup's readiness rode the record:** session established, launcher descriptor
+  PUBLISHED (verified through the REAL installed `UserPromptSubmit` hook's own output — the
+  `zcode-rescue-launcher` descriptor check, fixture.mjs:1126), role status `ready`, cap verified,
+  `setupAttempts: 2` — the known deterministic data-root `restart-required` re-run, the SAME shape
+  §17.10 recorded on I0/I1, not a T anomaly.
+
+**Honest limit of this evidence:** the executing-module bytes, the fixture-side instruction
+artifacts and the argv composition reproduce from the committed source, and the armed observers
+are verified faithful — the instrument is structurally consistent with the frozen design. What
+these byte facts do NOT establish is receipt by THIS session: the setup hook's own output shows
+the launcher descriptor was PUBLISHED, but a setup hook emitting a descriptor does not prove this
+actual session received it; the record also keeps `model: null`, so the effective model metadata
+was never confirmed (§34.3). The host's internal choice is likewise not observable offline. The
+specific cause of the no-call is therefore UNDETERMINED — neither an instrument deviation nor a
+host-behavior variance is demonstrated.
+
+### 37.3 The cohort-wide comparison that frames the cause question
+
+Every prior hosted run of this instrument's rescue-family cases recorded a hosted Rescue launcher
+invocation — the §7.7 long/repeat pair (0.161.0: `decisiveWallMs` 388300 on both arms, `rootJoins`
+1 vs 7, both named — the ≈388 s, 7-vs-1-re-entry cohort), the §17.3–§17.4 L/R pair (0.163.0:
+388400 ms attributable observations, `rootJoins` 1/1, normalized instruction hashes byte-identical
+to T's), §17.14's N
+(`route.actual: "named"`) and BG (Root launch acknowledgement at elapsed 39611 ms), §17.10's I0 and
+I1 (both `route.actual: "named"` with exactly one delivered `interrupt_agent` call), §21's O1/O2/I
+(child launch + send; the I case with child-poll start 74067 ms and `callCount: 1`), §23.10's I
+(1 Child launch + send, 1 Root join, `callCount: 1` family v2) and §23.12's F successor
+(`attempted: true`, `family: "v2"` DIRECT, `callCount: 1`). T is the FIRST hosted run of the entire
+cohort in which the launcher was never invoked. The comparison's content-free deltas between T and
+its closest ancestors (I1 2026-10-18, §21-I 2026-10-22, §23.10-I 2026-10-23, §23.12-F 2026-10-24 —
+all with the same case, selector, poll/cap/exec-default windows, diagnostics, requested model
+`gpt-6.1-sol`, and binary bytes `8813367…dee31`): the calendar date; the research-instrument module
+bytes (the §32/§33-era witness/exact-reader additions); and NO instruction-facing byte — I1's
+normalized instruction hashes are recorded as `2ea76cf0…`/`5800e3ab…`, byte-identical to L/R and to
+T's in-record values, the 60-line survival-control script digest `c510d81f…` is identical across
+§21-I/§23.10/§23.12/T's declarations, and the shared launch-argv surface
+(`exec --json --skip-git-repo-check`, the two bypass flags, `--enable hooks`, the
+`shell_environment_policy.inherit=all` config override, the model and the exec-default `-c` override)
+is the same composition (pinned by the composition-level argv regressions, §35.3 P2/P3). The plan's
+own §1 table states the governing rule that frames this comparison: "Model use of an admitted shape
+is a runtime outcome." The no-call is the first such runtime outcome in the cohort; the comparison
+narrows the delta to the calendar date and the research-instrument module bytes (no
+instruction-facing byte) and does not by itself determine the specific cause.
+
+### 37.4 The evaluated candidates and the eligibility-bar verdicts
+
+Each candidate was evaluated against the plan's Task-4 bar: eligible ONLY as ONE concrete causal
+correction with offline RED→GREEN, or a TESTED SUPPORTED observation choreography change, plus
+prospective registration, full implicated negatives, independent review, and a predicted
+discriminating PER-CONJUNCT result; insufficient as newly unknown content without grounded
+correction, an unchanged retry for obedience/model/version changes, speculative parser widening, or
+an injected helper-only pass. Classification uses the three classes fixed for this task: (a)
+demonstrated cause with a bounded grounded correction — potentially eligible; (b) host-behavior
+variance with an otherwise-verified instrument — ineligible; (c) missing mechanism/artifact —
+ineligible, recorded precisely. Because no candidate reaches (a) and the receipt/effective-model
+limits below prevent a certain assignment to (b), the outcome is recorded as an undetermined
+cause, not as a demonstrated variance.
+
+1. **Prompt delivery failure/truncation (instrument deviation) — NO DEMONSTRATED CAUSE; fails the
+   bar.** §37.2's recomputation proves the composed prompt deterministic, coherent, untruncatable
+   at its size, and fixture artifacts byte-identical to the committed design; the composition
+   mechanism (`runTurn` → the common exec argv) is byte-shared with every successful cohort run.
+   These are byte/composition facts: they do not establish that THIS session received the prompt,
+   so a delivery failure is neither demonstrated nor eliminated. No demonstrated deviation exists
+   to correct, so there is nothing to fix RED→GREEN.
+2. **Skill/launcher-descriptor unavailability in the isolated home — NO DEMONSTRATED CAUSE; fails
+   the bar.** The setup verified the production chain on the record
+   (`launcherDescriptorPublished: true` through the real installed hook's output; role status
+   `ready`), and the same machinery rode every cohort run that DID produce the invocation (§37.3).
+   Descriptor PUBLICATION by the hook is verified, but receipt by THIS session is not directly
+   proven (a setup hook emitting a descriptor is not proof of delivery); neither a defect nor an
+   unavailability is demonstrated.
+3. **The config-default candidate waiting paragraph suppressing the call — NO DEMONSTRATED CAUSE;
+   fails the bar.** The named/generic instruction artifacts ride AFTER the launcher decision
+   (child role text), and the identical normalized instruction bytes (`2ea76cf0…`/`5800e3ab…`)
+   rode I1, N, BG, L/R — all of which invoked the launcher. The identical bytes do not prove THIS
+   session received them; no causal defect is demonstrated. A paragraph rewording here would be
+   an obedience-directed content change with no demonstrated causal defect — exactly the named
+   insufficient class.
+4. **The interrupt clause / five-step directive suppressing the call (obedience) — NO DEMONSTRATED
+   CAUSE; INELIGIBLE.** The directive text is PROVEN able to coexist with the launcher call on the
+   same requested model spelling and binary bytes: I0 (no directive), I1 (the 30-line predecessor
+   directive), §21-I/§23.10-I/§23.12-F (the same 60-line control script `c510d81f…` and materially
+   T's directive bytes) all produced the call AND the interrupt delivery. T's no-call under the
+   same committed bytes is not explained by any demonstrated mechanism: actual receipt of the
+   directive by THIS session is not directly proven and the effective model was not confirmed, so
+   the specific cause remains UNDETERMINED; any instruction-content change to induce compliance is
+   an unchanged-purpose retry for obedience — explicitly insufficient.
+5. **Host-source mechanism (read-only pin `dffa0deb…`) — NOT IMPLICATED in the failed conjunct;
+   fails the bar.** The named diagnostic surface exists at the pin (`interrupt_agent` in the
+   agent-control module; legacy `send_input` alongside), but both are DELIVERY-surface facts that
+   presuppose a Child; the launcher-call decision is a tool-use decision on the exec session's
+   skill surface, not a native RPC path. No source/binary correspondence is assumed (standing
+   discipline); nothing in the pin bears on the observed absence.
+6. **The November instrument additions in the launch environment (witness preload
+   `NODE_OPTIONS --require` token, `ZCODE_SHELL_WAIT_WITNESS_TRANSPORT_ENTRY`,
+   `ZCODE_SHELL_WAIT_KINFO_EXACT='1'` — the §32/§33/PR #76-era additions absent from the October
+   runs) — REFUTED BY MECHANISM; fails the bar.** `NODE_OPTIONS --require` preloads load into NODE
+   child processes only; the 0.163.0 host is a native executable whose decision loop never loads
+   them, and the added environment variables are read by node-side observer code, never by the
+   host's tool-selection behavior. Inertness on non-matching argv/entry/env is regression-pinned
+   (§35.3 LP3/P3). No causal path from these additions to the no-call conjunct exists, so no
+   correction with a discriminating prediction is possible.
+7. **Observation choreography change (anchor the worker hold at launch instead of observation
+   detection; pre-arm the pending window) — NO DISCRIMINATING RESULT; fails the bar.** The pending
+   window under measurement is the CHILD's pending observation; with no Child ever started, no
+   choreography change can produce a pending-window fact or move ANY downstream conjunct — a
+   launch-anchored hold would hold an empty shell and manufacture a window with no child inside it,
+   violating the §35.5 freeze's own anchor rule (the hold anchors at ACTUAL observation detection;
+   a real cleanup/keep-cause is never relabeled). The predicted per-conjunct result on
+   `interrupt.attempted` would be identical (false) — not a discriminating change.
+8. **An unchanged retry of the same bytes — FORBIDDEN.** The plan's counting rule names it: no
+   automatic retry, no warm-up, no model shopping; an unchanged retry for obedience/model/version
+   changes is the named insufficient class. Explicitly rejected.
+9. **A production-defect claim — NOT AVAILABLE on this evidence.** §36.9's discipline stands: a
+   single run's missing Rescue call is instrument/host-behavior uncertainty, not actual-path
+   product-defect evidence. The gated observers' two independent absences plus null
+   linkage/durable identity show no Child started under ANY identity within a normal-length turn;
+   nothing observed indicates an actual-path production failure, and the plan forbids claiming a
+   product defect from instrument uncertainty alone.
+10. **Speculative widening of the spawn gates (to catch hypothetical deviating launcher
+    invocations) — INSUFFICIENT BY NAME.** No evidence of any deviating invocation exists (no Child
+    traces under any identity, a 23 s turn far shorter than any observed child+observation flow,
+    zero linkage), and widening the gated argv/entry selectors to catch imagined shapes is the
+    plan's named "speculative parser widening" with no reproduced defect.
+
+No candidate reached class (a): none demonstrated a concrete causal correction, and no NEW missing
+mechanism or artifact (class (c)) was found — §35.9's "no known missing mechanism, artifact or
+configuration" freeze stands unchanged, and §36's run reached none of the observers only because
+the flow never started. The outcome is also NOT a demonstrated class (b) variance: the module and
+instruction digests are verified from the committed bytes, but actual receipt by THIS session is
+not directly proven (a setup hook emitting a descriptor ≠ this session receiving it) and the
+effective model metadata was not confirmed (`model: null`, §34.3). The supported observation is
+the first no-call turn in the cohort; no supported flow was observed; the specific cause is
+UNDETERMINED; no qualifying fix exists yet.
+
+### 37.5 The decision and the ledger accounting
+
+- **Decision: T-fix NOT USED.** The one T-fix slot is not eligible for use: the exact conjunct
+  (`interrupt.attempted: false`, cascaded from the never-invoked managed Rescue launcher) was
+  observed under an instrument whose committed module and instruction digests reproduce
+  byte-identically (§37.2), and the same composition family produced the full flow in five prior
+  hosted demonstrations on the same requested model spelling and binary bytes (§37.3; four of the
+  five carry instruction hashes byte-identical to T's). But actual receipt by T's session is not
+  directly proven and the effective model was not confirmed, so the specific cause is UNDETERMINED
+  and no supported flow was observed; no qualifying fix exists yet. The bar's required elements —
+  a demonstrated concrete causal correction with offline RED→GREEN, or a tested supported
+  choreography change with a predicted discriminating per-conjunct result — are not met by any
+  evaluated candidate (§37.4). "A positive result is an outcome to demonstrate, not a
+  required result to manufacture": no candidate is manufactured, no instruction is reworded to
+  induce compliance, and no hosted contact is made.
+- **Ledger: T SPENT (1/1)** (the single 2026-11-16T16:01:04Z UTC launch, §36.4/§36.9 — unchanged);
+  **T-fix UNSPENT (0/1), NOT USED** — the slot is closed unspent, not transferred, and per the plan's
+  stop rule no further hosted runs are authorized by this plan. The Task-5 final decision section
+  (the scoped S1–S7/Q1–Q6 disposition and the `do-not-adopt-yet` delivery) remains its own task on
+  these final bytes.
+- **Zero hosted/provider contacts in this task:** the only executions were local `node` module
+  imports and hashing over the committed research bytes, `jq` over the retained private record,
+  read-only `git` operations (worktree and the read-only Codex pin), and directory listing/mode
+  checks. No `codex exec`, no model API call, no warm-up, no eligibility probe. Private text stayed
+  in memory and in the private 0700 directories; the scratch verification scripts live outside the
+  repository and were never staged; no raw variable spelling, credential, rollout or task text is
+  retained in this section.
+
+### 37.6 Gates for this section's commit
+
+`node scripts/check-line-endings.mjs` PASSES; `git diff --check` PASSES; the prohibited-path diff vs
+`192c0f04ef54ce705fccfa0938bb56fba6d2b422` (`scripts/ hooks/ skills/ agents/ .codex-plugin/
+prompts/ schemas/ marketplace/ package.json npm-shrinkwrap.json`) is EMPTY; `git status --porcelain`
+shows ONLY this report modified. No executable or test byte changed in this task (the defect
+protocol did not trigger — no RED state was demonstrated), so no new test battery is owed; the
+§35.1–§35.3 batteries remain the gate of record for the unchanged executing bytes, exactly as in
+§35.8's zero-change discipline. Historical sections remain byte-untouched (add-only).
