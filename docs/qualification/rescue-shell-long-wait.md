@@ -34363,3 +34363,289 @@ persisted trial record AFTER it. Registered per layer, with the mechanism each l
 - **Consumption accounting:** this section consumed NO slot — offline parsing, local `--version`
   execution and artifact hashing only. T remains UNSPENT with one maximum hosted attempt under
   the plan's ledger, contingent on Task 2's readiness verification and independent review.
+
+## 35. 2026-11-16 native-settlement task 2: actual-entry readiness verification and observation-schedule
+freeze (offline; zero model turns, zero hosted/provider attempts, zero live launches; no code change)
+
+This section executes Task 2 of
+[the native-settlement trial plan](../superpowers/plans/2026-11-16-rescue-shell-wait-native-settlement-trial.md)
+against the worktree at HEAD `1755defa` (branch `docs/rescue-shell-wait-native-settlement-trial`,
+`git status --porcelain` EMPTY while every suite below ran). It is a verification-and-registration
+section: the plan's pre-launch batteries and the focused grammar/negative families ran on the trial's
+executing bytes, the observation schedule is frozen with exact anchors, and **the defect protocol did
+NOT trigger — not one executable, test, script, schema or dependency byte changed**. The only
+repository change is this section. Every count below is the actual `node --test` output; every anchor
+was re-read from the current implementation on 2026-11-16.
+
+### 35.1 The pre-launch regression batteries (exact commands, actual counts and durations)
+
+All three batteries ran SERIALIZED (never in parallel — the probe suite's self-tests spawn nested
+research suites), on Node v24.14.0 / macOS 26.5.2 (Darwin 25.5.0) arm64. Zero failures, zero
+skipped, zero cancelled in every battery; no environmental attribution is needed.
+
+- **Battery 1 — entry/real-fixture/preflight/zero-launch regressions:** `node --test
+  --test-name-pattern='research entry composes|the entry-shaped input arms|launch-spy: the DEFAULT
+  live path refuses|the live preflight verifies the DECLARED witness arming|the live preflight
+  verifies the EFFECTIVE witness|the live preflight verifies the DECLARED witness transport|the live
+  preflight hashes the ON-DISK witness|the witness preload read failure|the generated witness
+  preload keeps|earlier foreign preload' tests/shell-wait-probe.test.mjs` → **10/10 pass**
+  (`duration_ms` 3408; wall ≈3.4 s; suite `real-fixture spawn-witness wiring (user-review task 4)`,
+  tests/shell-wait-probe.test.mjs:31947, :31991, :32062, :32123, :32182, :32229, :32285, :32333,
+  :32508, :32540).
+- **Battery 2 — DEFAULT capture-path sequencing and the DEGRADED bridge outcome:** `node --test
+  --test-name-pattern='the DEFAULT capture path sequences|the DEGRADED bridge outcome'
+  tests/shell-wait-probe.test.mjs` → **2/2 pass** (`duration_ms` 153761; wall ≈2 min 34 s;
+  tests/shell-wait-probe.test.mjs:30486 and :30731).
+- **Battery 3 — routine selection:** `node --test tests/test-selection.test.mjs` → **6/6 pass**
+  (`duration_ms` 42 ms).
+
+### 35.2 The verified actual-entry arming (the §34.5 layer-1 Task-2 duty, DISCHARGED) and the
+asymmetric fail-closed contract
+
+- **The normal `runShellWaitCase` entry passes `spawnWitness:true` — exact anchor:**
+  `runShellWaitCase` (driver.mjs:642) composes the fixture input with
+  `...(STDOUT_CAPTURE_REQUIRED_CASES.has(caseInput.case) ? { stdoutCapture: true, spawnWitness:
+  true } : {})` at **driver.mjs:701–703**, and `STDOUT_CAPTURE_REQUIRED_CASES =
+  Object.freeze(new Set(['rescue-interrupt', 'rescue-long', 'rescue-repeat']))` at **driver.mjs:9582**
+  — the registered trial case `rescue-interrupt` is a member, so the standard entry (the CLI driver
+  path, no injected fixture) arms BOTH seams together. This is DEFAULT-PATH evidence, not a
+  pre-armed dependency-injected fixture: battery-1's `the research entry composes the witness arming
+  exactly for the closed capture-required cases` (:31947) pins the composition, and `the
+  entry-shaped input arms the REAL fixture … (the unarmed control stays byte-identical)` (:31991)
+  proves the ENTRY-SHAPED input through the normal `createFixture` path produces the generated
+  witness preload, the record declaration (`record.spawnWitnessCapture`, fixture.mjs:744–755), the
+  armed handle (fixture.mjs:738–743, exposed at fixture.mjs:837) and the composed env — with the
+  unarmed control byte-identical. Battery-2 then runs the unmodified fixture/driver chain end to end.
+- **Fixture bytes/environment and driver exact opt-in agree:** the fixture composes
+  `ZCODE_SHELL_WAIT_WITNESS_TRANSPORT_ENTRY` (the fake-ZCode transport realpath), `ZCODE_SHELL_WAIT_KINFO_EXACT='1'`
+  and the `--require` witness-preload `NODE_OPTIONS` fragment (fixture.mjs:733–737) and records the
+  digests (`preloadSha256`, `observerModuleSha256`, `transportEntrySha256`, `exactReaderEnabled:
+  true`, fixture.mjs:744–755). The driver-side opt-in is THREADED from the fixture's own handle,
+  never a caller flag or an environment mutation: `localObservationDeclarationFor` derives
+  `witnessArmed`/`exactReaderEnabled` from the fixture handle (driver.mjs:9649–9657) — pinned by the
+  probe regression `the THREADED exact-reader enablement` (ran green in the §35.3 P3 family).
+- **The asymmetric capture/witness fail-closed contract re-verified on the executing bytes:** a
+  witness-WITHOUT-capture arming refuses at fixture validation (fixture.mjs:448–449), while a
+  CAPTURE-ONLY face without a witness declaration stays deliberately unblocked (fixture.mjs:447;
+  the preflight's witness gates fire only on a PRESENT `spawnWitnessCapture` declaration,
+  driver.mjs:10075–10076) — battery-1's effective-env test (:32182) pins both faces of the contrast
+  in one regression. Because the trial's standard entry is IN the closed set, the launched record
+  WILL carry the declaration; the pre-launch preflight then verifies the declared arming against the
+  armed handle, the ON-DISK bytes and the effective environment by name (declared/handle digest
+  equality driver.mjs:10085–10087; on-disk bytes digest driver.mjs:10096–10100; the `NODE_OPTIONS`
+  `--require` tokenization driver.mjs:10113–10122; the transport-variable/exact-reader agreement
+  driver.mjs:10123–10132) — exactly the named refusals battery-1 tests :32062, :32123, :32182,
+  :32229, :32285 and :32333 pin. The launch-spy test (:32123) additionally proves the DEFAULT live
+  path refuses a declared-but-unbacked instrument BEFORE any host/provider invocation.
+- **ESM `spawn` interception reaches both REAL parent boundaries:** the generated preload wraps
+  `child_process.spawn` in exactly the two gated roles (invocation: entry realpath + argv
+  `['invoke-prepared','rescue']`; broker-daemon: broker entry realpath + nonempty config argv —
+  spawn-witness-preload.mjs:159–165), the ORIGINAL spawn runs first and its handle is returned
+  untouched (:171–200), and `require('node:module').syncBuiltinESMExports()` (:212) re-points the
+  already-loaded ESM namespace so the production scripts/lib/process.mjs named-`spawn` import
+  reaches the wrapper (§33.12). Battery-1's ESM-namespace arm (:32508) and the foreign-preload
+  chaining arm (:32540) pin the mechanism on the executing bytes; battery-2's DEFAULT-path test
+  (:30486) then admits BOTH REAL boundary witnesses and establishes both hops through that chain.
+- **Bounded sequencing works without an injected waiter:** battery-2's DEFAULT-path test
+  (:30486) runs `runHeldHostTurn` with no injected capture/identity/waiter of any kind and no
+  environment mutation; the runtime sequencing is armed by the DECLARATION's `witnessArmed` member
+  (driver.mjs:9633–9634, composed at :9656) under `SPAWN_WITNESS_SEQUENCING_BOUND_MS` (§35.5).
+- **Serialize/reload reaches the SAME final Gate-D consumer:** the record persists at
+  driver.mjs:1392–1393 (`${case}.record.json`, mode 0600); the DEGRADED real-chain test reloads the
+  persisted record (`JSON.parse(await readFile(join(output, recordName)))`,
+  tests/shell-wait-probe.test.mjs:30946–30960) and consumes it through
+  `nativeInterruptionGateDInput(reloaded)` (driver.mjs:8828) — the SAME offline join Task 3
+  mandates — asserting the spawn-witness projections survive reload established and no
+  `spawn-witness-` refusal rides (:30961–30968).
+
+### 35.3 The native pending-observation path and the grammar/negative family coverage (11 focused
+runs, 423 leaf tests, 0 failures)
+
+Focused `--test-name-pattern` invocations, serialized, reusing the existing meaningful assertions
+(no new test was written; nothing was padded). Counts are leaf tests reported by `node --test`
+(suite rows whose titles also matched a pattern are excluded from the counts).
+
+| Run | File | Pattern core (families covered) | Tests | Duration |
+| --- | --- | --- | --- | --- |
+| N1 | shell-wait-native-interruption | actual native pending window: request-before-poll, prior natural completion, pre-call/nonterminal resolutions, unorderable concurrent completion, unreadable continuation, enqueued-unresolved, observed-nonterminal, at-resolution acknowledgement + its paired refusal, §24.4 window through the REAL executor via serialize→reload | 10/10 | 130 ms |
+| N2 | shell-wait-native-interruption | accepted grammar union + negatives: wrapper-cell control differential, reviewer repro, complete frozen negative family (fail-closed, body withheld), §27 admitted-forms differential, coverage withhold, scan-incomplete refusal chain, truncated/ambiguous scan, stale/foreign target, duplicate/collateral interruption, wrapped interrupt unjoinable, incompatible/absent clocks, explicit terminate, budget cleanup boundary, genuine later SessionEnd, already-dead tolerance, versioned choreography (join v6/oracle v5), unavailable identity field, conflicting identity sources | 18/18 | 128 ms |
+| N3 | shell-wait-native-interruption | late collections + §24.8 fences + identity establishment: settlement landing later in the credit window, read arm vs late Root return, late final hold tick, late eager-capture rejection, post-cutoff cancellation, runHeldHostTurn schedule arming, cutoff straddle/completion, deadline+10000 anchoring, shared paced stream, ≤600 shared ceiling, identity before disappearance, never-established named, endpoint-pending reads named, post-release race, pre-cutoff winner survives refresh, session-end stop causes through reload | 20/20 | 15.7 s |
+| LP1 | shell-wait-local-process | wrong nonce/scope + ancestry-join negatives: torn/shape-invalid/foreign-nonce/oversize records, foreign-scope nonce refusal, declared-transport-nonce REAL chain join, foreign-nonce daemon, stale-broker-variable inheritance, disabled broker gate, both-endpoint/ppid-equality join, marker-does-not-attest, reparented daemon, generation-incompatible lifetimes, endpoint without OS start identity, per-hop independent adjudication, identity-read-instant anchoring | 16/16 | 265 ms |
+| LP2 | shell-wait-local-process | PID reuse/reparenting + contradictory generation: reused start identity refused, changed-parent `ppidChangedFromCapture`, reused-PID exit never death, generation-change LATCH (+tied/NAMED/old-evidence arms), mid-read reuse latch, foreign absence, delayed capture after quick exit, ABSENT carrying a different identity, confirmation-time decision, reparented mid-read change, exit-meta scope/role corroboration, baseline-relative evidence ordering | 18/18 | 712 ms |
+| LP3 | shell-wait-local-process | permission versus confirmed absence + identity records: inert preload on wrong argv/entry/env, established startup identity, missing record = NAMED missing fact, permission failures named, unsearchable capture directory, private-permissions refusal, positive absence requires OS confirmation, error-free-no-match discipline, OS-verified live child, named absent after exit, no-write admission, honest instants, pinned UTC C-locale, platform-injected absence, failed/mid-read-change named | 20/20 | 2.6 s |
+| LP4 | shell-wait-local-process | same-second both-hop negatives + the exact two-hop mechanism: the FULL `same-second-completion` family (negative, route (c) exact tuple + ties/mixed/carries, codex-round regressions 13–24, emitter guards, tied-exact retention) and the FULL `route (c)` family including `same-second-completion REAL full chain (both hops)` (tests/shell-wait-local-process.test.mjs:23555) | 203/203 | 46.0 s |
+| LP5 | shell-wait-local-process | duty classification + absent block + integration preflight: bounded local-duty verdict, another-process/descendant adjudication arms, invocation-exit-unestablished refusal, applicability-unknown named path, F1 wrong parentage names BOTH hops, witnessClass-without-projection refusal, integration preflight + the DEFAULT live path's unarmed-observer launch refusal, darwin/Linux start-instant disciplines, natural-exit join | 52/52 | 6.9 s |
+| P1 | shell-wait-probe | wrong target/Root + no-collateral negatives: foreign-handle poll, foreign-cell terminal, unresolved pending cell, sibling/unrelated/Root thread-id failures, delivery to ANOTHER agent, collateral interruption fails exactly-one-delivery, unrelated exit-code outputs, late-only delivery, exact-delivery settlement, unreadable owner entries named, latency only from the bound Child, rootJoins disciplines | 15/15 | 471 ms |
+| P2 | shell-wait-probe | accepted cell grammar union: template-literal suppression, binding relations, lexical boundaries, escaped backticks, over-scope slots, emission-token binding, pending binding/declaration/dangling arms, pinned-grammar completion, slot-local bindings, contradictory continuation cell, structural/shape diagnostic gates (literal `1` only), multi-statement pending/missing/continuation disciplines, poll batching, single-launch, unrelated exec, pre-launch diagnostics | 37/37 | 326 ms |
+| P3 | shell-wait-probe | witness arming/absent observers/nonce-scope: known-absent observers preflight, strictly-additive arming, threaded exact-reader, capture-only declaration never enters sequencing, unarmed-sequencing spy, `inspectVerifiedProcessIdentity` nonce-mismatch refusal, `terminateVerifiedProcess` stale/reparented/nonce-mismatch refusal, absent activity/host items named, positive-absence scan, zero-launch fail-closed, hostile Git overrides, baseline fixture byte-identity | 14/14 | 7.3 s |
+
+The EXACT invocations as run, byte-reproducible (each `#` key binds the table's Run row to the
+literal `--test-name-pattern` string that produced its count; the single-quoted shell form is
+verbatim, so every `\(`, `\+` backslash below is part of the regex that ran):
+
+```bash
+# N1
+node --test --test-name-pattern='request before poll start|prior natural completion|a nonterminal pre-call resolution|completion concurrent with an unorderable request|submission-enqueued-unresolved|an OBSERVED nonterminal resolution|the submission-result item emitted AT the native resolution|the same at-resolution acknowledgement|an unreadable continuation keeps|§24.4 window inputs and the §24.8 measurement cutoff ride the REAL executor path' tests/shell-wait-native-interruption.test.mjs
+# N2
+node --test --test-name-pattern='the complete negative family still aborts the REAL scan|coverage-completion §27 differential|coverage-completion withhold|the reviewer repro|wrapper-cell control differential|the scan-incomplete refusal chain|truncated/ambiguous scan|stale/foreign target|wrapped \(code-mode\) interrupt|conflicting identity sources|already-dead-tolerance-not-a-resolution|duplicate interruption|incompatible/absent clocks|explicit cell terminate|genuine later SessionEnd|budget cleanup: a marker at/after the cleanup boundary|an unavailable identity field|the wired choreography is versioned' tests/shell-wait-native-interruption.test.mjs
+# N3
+node --test --test-name-pattern='a settlement landing later in the credit window|the read arm runs concurrently with the window|a late final hold tick|a late eager-capture rejection|a native cancellation at/after the measurement cutoff|runHeldHostTurn arms the §24.8 schedule|without the schedule flag the held turn keeps its schema|a read whose interval wait straddles the armed cutoff|a read completing exactly AT the measurement cutoff|the cutoff anchors exactly at deadline\+10000|the sampler and the read arm share one paced read stream|under NORMAL timers the competing arms keep the global cadence|the combined ≤600 ceiling is enforced|the exact process identity is established BEFORE disappearance|a never-established identity is named|a settlement-arm read still pending at the observation endpoint|post-release operations are raced against the planned observation end|a verified pre-cutoff succeeded snapshot survives the fenced window-end refresh|a native interruption pending|the persisted record keeps the separate stop causes on a session-end resolution' tests/shell-wait-native-interruption.test.mjs
+# (N3 accounting note: the literal above stays BYTE-IDENTICAL to what actually ran and is preserved
+# unaltered. It contains ONE dead core — 'a native interruption pending', which matches no test name
+# anywhere in tests/ or tools/ — and the core 'the cutoff anchors exactly at deadline\+10000'
+# double-matches two real tests (tests/shell-wait-native-interruption.test.mjs:3564 and :3681), so
+# 19 live cores + 1 double-match produce the recorded 20/20.)
+# LP1
+node --test --test-name-pattern='torn, shape-invalid, foreign-nonce and oversize records|a foreign-scope nonce on any endpoint|the REAL fixture chain joins: the transport marker carries its own declared transport nonce|a FOREIGN-NONCE daemon never hosts in-scope|the broker entry composition never inherits a stale broker variable|without a declared broker entry the broker gate is disabled|the two-hop ancestry join is established only with both endpoints|a marker never attests another process|a reparented daemon breaks the capture-time ppid equality|a hop without generation-compatible lifetimes|an ancestry endpoint WITHOUT an OS start identity|input validation of the ancestry join|endpoint lifetimes anchor on the IDENTITY-READ instant|valid negative verdicts are unavailable endpoints|Linux lower-bound start instants propagate|darwin whole-second lstart carries the same rounding uncertainty' tests/shell-wait-local-process.test.mjs
+# LP2
+node --test --test-name-pattern='a reused start identity is never accepted as the captured generation|a changed parent is recorded|reused-PID evidence keeps the exit unestablished|a detected generation change is a LATCH|tied generation-change evidence|NAMED generation-change reads|an inspector-detected mid-read PID reuse|a foreign absence read never establishes|delayed capture after an unobserved quick exit|an ABSENT verdict carrying a DIFFERENT observed identity|the final live/absent decision is CONFIRMATION-time|a REPARENTED process|abrupt termination of the test-owned control|an exit meta alone never proves death|later same-generation evidence after an absence read|absence evidence at or before the presence baseline|equal read instants never manufacture disappearance|the verdict reports the LAST verified same-generation survival' tests/shell-wait-local-process.test.mjs
+# LP3
+node --test --test-name-pattern='the preload stays inert on wrong argv|a real gated run admits an established startup identity|a missing record is the NAMED missing fact|non-regular records, permission failures and entry mismatches|an unsearchable capture directory|positive absence requires OS confirmation|macOS absence confirmation requires an error-free no-match|a capture directory without PRIVATE permissions|a live gated child is OS-verified|after the child exits the same read reports the named absent fact|the admission performs no writes|admission timestamps are honest|the admission completion instant covers|an unsearchable capture directory is the named unreadable verdict|option validation fails before any read|input validation fails before any read|every ps identity query spawns with a PINNED UTC|absence confirmation is platform-injected|a failed liveness read and a mid-read identity change|the same gated run keeps the stdout-capture contract|the generated source gates the identity record' tests/shell-wait-local-process.test.mjs
+# LP4
+node --test --test-name-pattern='same-second-completion|route \(c\)' tests/shell-wait-local-process.test.mjs
+# LP5
+node --test --test-name-pattern='the bounded local-duty verdict settles only when every applicable local identity|a descendant exit adjudication for ANOTHER process|one process never attests another role|a descendant exit whose absence is not strictly after|a descendant exit confirmed inside the completion window|an established-duty record whose invocation exit|applicability unknown refuses|F1 \(runtime\): wrong parentage|integration-completion: a persisted companion-to-daemon witnessClass claim|integration-completion preflight|F2 \(P2\) RED|the Linux start-instant resolution completes BEFORE|Linux btime whole-second uncertainty|darwin lstart is collected and parsed in EXPLICIT UTC|a fork just before a second boundary binds|natural exit: verified presence earlier|an exit meta alone never proves death' tests/shell-wait-local-process.test.mjs
+# P1
+node --test --test-name-pattern='review-wait: a foreign-handle poll|review-wait: a foreign-cell terminal|review-wait: an unresolved pending cell|an agent_thread_id matching a sibling|a delivered interrupt targeting ANOTHER agent|collateral interruption fails the exactly-one-delivery contract|unrelated exit-code outputs never settle|a late-only \(post-completion\) delivery|exact delivery to the pending Child settles|unreadable owner entries are named unestablished|settlement latency comes only from the bound Child|root joins are counted separately|unavailable parent linkage keeps rootJoins unknown|an ambiguous parent \(several spawn rollouts\)|a positively identified parent rollout with no wait_agent' tests/shell-wait-probe.test.mjs
+# P2
+node --test --test-name-pattern='template literal content|the binding relation distinguishes|lexical boundaries stay tracked|escaped backticks do not close|more than 16 statement slots|emission tokens separated|a pending binding without an awaited|a pending declaration is adopted|a pending declaration withholds|a dangling pending declaration|completion is proven only by the pinned grammar|later tool-calling statements|bindings declared after a slot-local|a pending continuation response naming a different cell|with the gate the excerpt adds bounded structural facts|--unclassified-shape-diagnostic accepts only the literal 1|--unclassified-structural-diagnostic only with the value 1|non-string input returns the fixed out-of-scope|a pending multi-statement cell with every result present|multi-statement missing result never borrows|multi-statement last pending observation requires an exact outer continuation|a linked outer continuation resolving the exact pending|an outer continuation must reference the pending cell|non-string alias values are malformed references|repeated pending waits without any response|a pending or unresolved tail after the terminal record|an overlapping inner poll while one is pending|a correctly linked continuation settles a pending preparation|a pending preparation response prevents terminal qualification|a missing preparation response remains unresolved|batched polls|two sequential 60000-ms empty-input polls|duplicate launcher in a multi-statement cell|post-launch unrelated exec in the same cell|multi-statement live cat and role-status diagnostics|separate direct pre-launch diagnostics' tests/shell-wait-probe.test.mjs
+# P3
+node --test --test-name-pattern='the live preflight rejects a launch whose required observers are known absent|the witness arming is strictly additive|the THREADED exact-reader enablement|a capture-only \(unarmed\) declaration never enters the sequencing block|an unarmed declaration never arms the sequencing window|inspectVerifiedProcessIdentity resolves a live exact process|terminateVerifiedProcess never signals a stale|an absent activity item leaves the delivery identity|an absent host item persists its unadmitted admission block|a completed scan of a collected rollout without any item|refuses fail-closed without the opt-in environment|hostile inherited Git overrides|a baseline fixture installs unmodified artifacts|the isolated production setup runs after variant application' tests/shell-wait-probe.test.mjs
+```
+
+### 35.4 The darwin-arm64 applicable positive ancestry mechanism is EXERCISED, not merely declared
+
+The plan's Task-2 requirement — on a bridge-less/coarse platform establish a safe applicable
+positive ancestry mechanism offline or block T; a fail-closed degraded result alone does not
+qualify same-second ancestry — is met on THIS host (darwin arm64) by actual exercised coverage:
+
+- **Through the DEFAULT live path:** battery-2 test 1 (:30486) asserts, on
+  `process.platform === 'darwin' && darwinBridge.capable === true`
+  (tests/shell-wait-probe.test.mjs:30659), that BOTH REAL hops establish with the exact forms and
+  `companionToTransportAttributed === true` (:30665–30670) — it ran GREEN here, so the exact
+  two-hop attribution was exercised on the executing bytes, not assumed.
+- **Through the real chain in the local-process entry:** `same-second-completion REAL full chain
+  (both hops)` (tests/shell-wait-local-process.test.mjs:23555) — each REAL parent writes its own
+  boundary witness independently and the composition attributes end to end (ran green inside LP4).
+- **The exact same-second mechanism itself:** the route (c) family — `same-second-completion
+  route (c): the EXACT daemon→transport witness establishes the same-second hop` and its complete
+  negative/counterexample set (~140 route-(c) rows plus the same-second-completion family, 203
+  leaf tests in LP4) — establishes that exact tuples credit same-second hops while every coarse or
+  mixed form refuses by name.
+
+### 35.5 The frozen observation schedule (research observation bounds — NOT production timeouts)
+
+Publish-anchors table; every value read from the current implementation at HEAD `1755defa`. These
+bounds freeze what the RESEARCH trial observes; none is a production timeout, detector, ceiling or
+change to the 100-hour safety ceiling, and none alters production behavior in any way.
+
+| Schedule item | Frozen value | Exact anchor |
+| --- | --- | --- |
+| Worker hold | 420000 ms, anchored at ACTUAL observation detection (never worker startup) | `workerDurationMs: 420_000` (driver.mjs:380, rescue-interrupt default; `--worker-duration-ms 420000` in the frozen command); wired as the held turn's `holdMs` (driver.mjs:11232); the hold deadline is computed ONLY after `await input.waitForObservation(...)` returns (driver.mjs:4037–4043; "worker READINESS precedes the hold" driver.mjs:3812) |
+| Requested cap / poll / exec-default | 3600000 ms each | parse sites driver.mjs:614–627 (`assertPositiveInteger` driver.mjs:540, `assertBoundedPositiveInteger` driver.mjs:579); the frozen command passes `--poll-ms 3600000 --cap-ms 3600000 --exec-default-ms 3600000`; the exec-default reaches the host ONLY as the composed `-c` argv override (driver.mjs:676–680) |
+| Total case budget | at most 1200000 ms | `--budget-ms` parse driver.mjs:622 (validated positive integer driver.mjs:539–541); the frozen command passes 1200000; the case default is 720000 (driver.mjs:380); budget expiry inside the post-release section propagates onto the record (driver.mjs:4187) |
+| Control readiness cutoff | at its designed end ≈120 s | control script: 60 lines × 2000 ms (`SURVIVAL_CONTROL_LINE_COUNT` 60 fixture.mjs:111, `SURVIVAL_CONTROL_CADENCE_MS` 2000 fixture.mjs:112); readiness floor line 40 ≈80 s (`SURVIVAL_CONTROL_READINESS_FLOOR_LINE_INDEX` evidence.mjs:3403); `readiness-cutoff-exceeded` fires only when the control REACHED its designed end with the loop unfilled (evidence.mjs:3394–3403, :3806–3852); readiness facts ride the observation block as named model-obedience facts (driver.mjs:12150–12156) |
+| Gate release | at the hold deadline | the hold loop breaks at `current >= holdDeadline` (driver.mjs:4093–4097); `safeReleaseGate()` runs at the crossing (driver.mjs:4174, defined :3470); "gate release (which happens AT the hold deadline)" (driver.mjs:9514) |
+| Measurement cutoff | hold deadline +10000 ms, computed at the crossing on the WALL clock | `MEASUREMENT_CUTOFF_AFTER_HOLD_MS = 10_000` (driver.mjs:9521); armed from the SCHEDULED deadline, never a post-oversleep wall reading (driver.mjs:4152–4161); persisted `cleanup.measurementCutoffAtMs` (driver.mjs:4170); armed only for the registered case (`MEASUREMENT_CUTOFF_ENABLED_CASES`, driver.mjs:9553) |
+| Observation teardown | cutoff +5000 ms (= hold deadline +15000 ms); NOT a kill | `OBSERVATION_TEARDOWN_AFTER_CUTOFF_MS = 5_000` (driver.mjs:9530); planned end composed at driver.mjs:4192–4193 (:2030); "Teardown is NOT a kill: no cleanup boundary is recorded here (the recorder stays inert)" (driver.mjs:4197–4204) |
+| Durable reads | ≥1000 ms between starts, ≤600 attempts, ≤32 retained summaries | `DURABLE_SAMPLING_MIN_INTERVAL_MS = 1000` (driver.mjs:5220, clamped never honored smaller); `DURABLE_SAMPLING_MAX_ATTEMPTS = 600` (driver.mjs:5228); `DURABLE_SAMPLING_MAX_SUMMARIES = 32` (driver.mjs:5235); the §23.5 schedule is registered for the interrupt case only (`DURABLE_SAMPLING_ENABLED_CASES`, driver.mjs:5245) |
+| Witness sequencing | at most the existing 15000-ms window, monotonic, cancellable | `SPAWN_WITNESS_SEQUENCING_BOUND_MS = 15_000` (driver.mjs:9616); expiry is the NAMED `witnessSequencing.outcome: 'bound-expired'` fact and never extends the turn (driver.mjs:9599–9614) |
+| Separate request window / ack emission / Child resolution | preserved as three distinct facts | §24.4 window inputs with `acknowledgementAtResolution` on the join record (driver.mjs:8826); the at-resolution acknowledgement admits ONLY with independent pending-request proof (N1 pair, both green); the Child resolution watch `waitForChildSettlementObservation` settles on `exact-launch-handle-linked-completed-exit-code-output` (driver.mjs:11041–11044) |
+| Responsiveness comparison | 60000 ms headroom, ONLY on causally admitted input | `MIN_INTERPRETABILITY_HEADROOM_MS = 60_000` (wait-comparison.mjs:112, doc :44–46 and :109–111); the causal-admission guards precede it and produce `no-causal-comparison`/`unknown` otherwise (wait-comparison.mjs:63–71, :319–332) |
+
+### 35.6 Natural winners, SessionEnd receipts, missing callbacks, and the collection fences
+
+- **A legitimate natural winner keeps its authority and time:** the natural completion is its own
+  basis (`naturalCompletionObserved: settledBasis === 'terminal-observation-after-delivery'`,
+  driver.mjs:9505); the Gate-D "real terminal winner" conjunct is NEVER overwritten by cleanup or
+  later reads (driver.mjs:9062); a verified pre-cutoff succeeded snapshot survives the fenced
+  window-end refresh and the natural completion keeps its winner (N3, green); a marker at/after the
+  cleanup boundary is the KILL resolution, never native settlement credit (N2, green).
+- **An actual SessionEnd receipt/epoch:** the durable summaries retain exactly the validated
+  stop-cause/stop-intent fields needed to distinguish a genuine SessionEnd from any other
+  cancellation when the final snapshot is unavailable or fenced out (driver.mjs:5450–5464); a
+  genuine later SessionEnd rides VERBATIM with its own stop cause through the join and never
+  settles the interrupt (N2, green; reload arm green in N3); the wall-epoch clock family is a join
+  precondition (`clock: 'wall-epoch-ms'` driver.mjs:2323; incompatible-clock refusal
+  driver.mjs:6277–6280).
+- **Missing callbacks are NAMED absences, never inferences:** a child-settlement watch without a
+  settled fact persists `{ observed: false, basis: null }` (driver.mjs:4138); the durable layer
+  stays `null` on a reader failure, torn snapshot or missing supplier — never zero, never inferred
+  from terminal stdout, process exit or cleanup (driver.mjs:5085–5092); an admitted submission with
+  no resolution never credits (N1, green); endpoint-pending reads/refreshes persist their
+  deadline-miss facts even when the final window tick lands late (N3, green).
+- **Collections complete before the applicable boundary:** reads stop (never credited past) at the
+  EARLIEST termination boundary and are abandoned by name at the shared signal
+  (driver.mjs:10149–10151; stop labels `durable-sampling-stopped-at-termination-boundary` vs
+  `-shared-signal` driver.mjs:5440–5442); the post-release window is a fixed deadline raced against
+  every operation, never a clock jump (driver.mjs:4197–4222); teardown cannot force cancellation
+  (it records no cleanup boundary, driver.mjs:9524–9528) and later cleanup cannot fill a missing
+  fact (the §24.8 fence adjudicates every post-cutoff completion as the named fenced observation,
+  N3 green).
+- **Pre-request presence + baseline, generation-bound exits, and separate duty classification:**
+  the disappearance join requires verified presence of the established generation EARLIER plus
+  verified absence of the SAME pid and start identity LATER; a missing baseline stays
+  NAMED-unestablished (local-process-observation.mjs:19–28; the durable baseline anchors at
+  identity establishment, driver.mjs:10147–10151); acceptance owes a generation-bound, PRE-FENCE
+  confirmed absence (driver.mjs:7252, :3106–3109); the local-duty slots are CLOSED to
+  `invocation-process`/`broker-daemon`/`transport-descendant` with unsupported-slot and
+  duplicate-slot refusals (driver.mjs:6373–6385) and per-duty identity digests (driver.mjs:2386–2394)
+  — the broker/runner/guard classification stays separate, never one collapsed pass (LP5, green).
+
+### 35.7 Offline re-verifications supporting the readiness record
+
+- **The canonical Task-3 argument vector parses TODAY through `parseShellWaitArguments`** with
+  `--source-sha` as a 40-hex placeholder and no host contact: `case rescue-interrupt`,
+  `workerDurationMs 420000`, `pollMs 3600000`, `budgetMs 1200000`, `capMs 3600000`,
+  `waitPolicy config-default`, `execDefaultMs 3600000`, `model gpt-6.1-sol`,
+  `survivalControlSelector progress-terminal`, both diagnostics `true` — the same closed parse §3
+  of the plan recorded at drafting.
+- **The recovered cohort binary re-verified locally (no hosted/provider contact):** SHA-256
+  `8813367285524ac798dd96d1b071aea30d58708c7226fd236cd275cf1cfdee31` at
+  `/Users/zhangzikai/Workspace/Codes/tmp/rescue-settlement-trial/codex-0.163.0/bin/codex`, and
+  local `--version` prints `codex-cli 0.163.0` (exit 0) — byte-identical to the §34.2 registration.
+- **The launch check exercises the actual standard entry:** battery-2 test 1 IS the default-path
+  launch exercise — the unmodified fixture/driver path with the real installed-plugin chain, no
+  injected waiter, no environment mutation — and the launch-spy regression (:32123) proves the
+  same DEFAULT live path refuses fail-closed BEFORE any host/provider invocation when the
+  instrument is unbacked. No permissive legacy input is involved anywhere in the trial surface.
+
+### 35.8 The defect protocol did NOT trigger; zero code changes
+
+Every battery and every focused family passed on the executing bytes; the canonical argument vector
+parses; the preflight refusals, sequencing, persistence/reload, schedule anchors and duty
+classification all matched the plan's frozen values exactly. **No RED state was demonstrated, so no
+correction was implemented and no executable or test byte changed** — the diff of this section's
+commit is this report section only. `git status --porcelain` was EMPTY immediately before this
+section was written (on the committed bytes that every suite above exercised).
+
+### 35.9 Final readiness record
+
+- **Battery/accounting totals:** 18 battery tests (10 + 2 + 6) + 423 focused-family leaf tests =
+  441 executed, **0 failures, 0 skipped, 0 cancelled**, all exit 0, all serialized.
+- **Gates:** `node scripts/check-line-endings.mjs` PASSES; `git diff --check` PASSES;
+  `git diff 192c0f04ef54ce705fccfa0938bb56fba6d2b422 --stat -- scripts/ hooks/ skills/ agents/
+  .codex-plugin/ prompts/ schemas/ marketplace/ docs/superpowers/specs/ package.json
+  npm-shrinkwrap.json` is EMPTY.
+- **Readiness record: `ready`** — every registered mechanism, artifact and configuration for the
+  registered T launch is verified present and armed on the executing bytes: the standard entry
+  arms `stdoutCapture`+`spawnWitness` together for `rescue-interrupt` (driver.mjs:701–703, verified
+  through the entry-shaped and DEFAULT-path regressions, §35.2); the preflight verifies the
+  declared/effective/on-disk witness instrument; the exact-reader opt-in threads from the fixture's
+  own arming; the darwin-arm64 exact two-hop ancestry mechanism is exercised positively (§35.4);
+  the observation schedule is frozen at its current anchors (§35.5); the grammar/negative families
+  are green (§35.3); the recovered 0.163.0 binary and the canonical argument vector re-verify
+  (§35.7). **No known missing mechanism, artifact or configuration remains.** Per the plan's own
+  division of labor, the items that remain OPEN before T are process gates of Task 3, not missing
+  mechanisms: the plan-mandated independent review of this section and of the zero-byte-change
+  status, the Task-3 pre-launch freeze variables (then-HEAD pin with clean status, the owned
+  private 0700 output directory, credential availability through the fixture's established
+  isolated setup, the committed plugin `--source-sha` pin, and the supported requested model —
+  the requested spelling `gpt-6.1-sol` per §34.3's local-metadata registration), and the
+  prospective registration of the exact executing digests at the freeze.
+- **Zero hosted calls accounting:** this section performed NO hosted/provider contact of any kind —
+  no `codex exec`, no model API call, no warm-up, no eligibility probe. All executed work was
+  offline: `node --test` suites over local fixtures and fake transports, offline argument parsing,
+  a local `--version` execution and local artifact hashing. **T remains UNSPENT** (maximum one
+  hosted attempt under the plan's ledger), T-fix remains unspent, and no historical verdict was
+  revised.
