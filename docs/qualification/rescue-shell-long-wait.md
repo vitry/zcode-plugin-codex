@@ -35734,3 +35734,952 @@ no persistent server, no interactive host and no model turn occurred in this tas
 generation ran OFFLINE against the exact binary into a disposable private temp directory,
 removed after reading); no unresolved placeholder markers, no trailing whitespace, final
 newlines present. Historical sections remain byte-untouched (add-only).
+
+## 40. 2026-11-17 confirmed-window task 2: the preregistered staged-controller interface, CLI selector/argument vector and state machine (offline; zero model turns, zero hosted/provider contacts, zero live servers)
+
+This section executes the preregistration duty of Task 2 of
+[the confirmed-window plan](../superpowers/plans/2026-11-17-rescue-shell-wait-confirmed-window.md)
+against the worktree at HEAD `e98b705c` (branch `docs/rescue-shell-wait-confirmed-window`).
+It is FROZEN BEFORE implementation: the paragraphs below (§40.1–§40.6) were written and
+committed-to before any research byte changed. Every interaction in this task is tested
+OFFLINE against deterministic fake protocol streams/fixtures — no hosted/provider run, no
+persistent server, no model turn. The Task-1 contract (§39.8–§39.9) is implemented verbatim;
+nothing in it is renegotiated here.
+
+### 40.1 The CLI selector and argument vector (a new closed selector, valid ONLY for `rescue-interrupt`)
+
+- **Option:** `--interrupt-route-selector <literal>` — ONE closed literal value
+  **`confirmed-window`** (`CONFIRMED_WINDOW_SELECTOR_VALUE`, driver-owned constant beside
+  `INTERRUPT_BASELINE_SELECTOR_VALUE`/`SURVIVAL_CONTROL_SELECTOR_VALUE`), validated by the same
+  `assertSelectorLiteral` gate as the existing interrupt selectors and threaded through BOTH
+  boundaries (`parseShellWaitArguments` and `validateCaseInput`) and the shared
+  `assertWaitPolicyCombination` combination gate. An absent selector keeps every old case
+  byte-for-byte unchanged (the literal-gate discipline of §16.4/§16.6).
+- **Validity gates (all fail-closed, enforced before any fixture work):** the literal is accepted
+  ONLY for the `rescue-interrupt` case; ONLY together with `--wait-policy config-default` and its
+  required `--exec-default-ms` (the composed host-override transport of §39.7); ONLY at the
+  candidate 3600000 observation window (`--poll-ms 3600000`, the rescue-interrupt default);
+  mutually exclusive with BOTH existing interrupt selectors (`--interrupt-baseline-selector`,
+  `--survival-control-selector` — the confirmed-window route SUBSUMES the §16.4 survival control:
+  the unrelated Root-owned control is a mandatory admission conjunct (§39.9 step 6), so the route
+  always arms it and a second declaration is refused as a double declaration).
+- **Standard-entry validation:** the selector is validated through the PUBLIC parser
+  (`parseShellWaitArguments`) and the standard entry (`runShellWaitCase`) — a helper fed a
+  pre-armed fixture is NOT a valid registration demonstration. `runShellWaitCase` dispatches the
+  route to the confirmed-window executor (the actual controller entry) when the selector rides the
+  validated case input; an injected live executor keeps overriding it for instrument tests.
+- **Route coverage:** the selector selects route (a) PRIMARY (`same-host-rpc`, §39.3/§39.6) ONLY.
+  The operator-assisted alternate (route (b), `operator-child-stop`, §39.4) is NOT selectable by
+  this controller — it requires a concrete human action at the execution step and has no
+  unattended controller; a selector value naming any other route fails closed at the parser.
+
+### 40.2 The minimal controller interface (`tools/shell-wait-probe/confirmed-window.mjs`)
+
+The controller owns research session/controller lifecycle ONLY (plan §3): bounded staging, an
+observed live target, the positive barrier, ONE native delivery and deterministic disposal. It
+never launches a production surface and never creates a substitute Child.
+
+Exported constants (all frozen):
+
+- `CONFIRMED_WINDOW_CONTROLLER_VERSION = 1` — the controller contract version, registered
+  prospectively and persisted in the record block.
+- `CONFIRMED_WINDOW_STATES` — the frozen five-state machine of §39.9:
+  `staging-not-ready`, `pending-window-confirmed`, `native-request-sent`,
+  `native-resolution-observed`, `all-duties-adjudicated` (escalation stops at the first gate
+  failure; the named state persists).
+- `CONFIRMED_WINDOW_STAGING_READY_BOUND_MS = 180000` — the §39.9 step 6 staging readiness bound,
+  measured from ACTUAL host launch.
+- `CONFIRMED_WINDOW_CASE_DEADLINE_MS = 1200000` — the Task-3 common case deadline ceiling; the
+  controller runs under `min(budgetMs, this ceiling)` with ONE shared abort/deadline.
+- `CONFIRMED_WINDOW_NATIVE_RESPONSE_BOUND_MS = 60000` — the §16.5/§24.8 native responsiveness
+  comparison bound, applied ONLY on causal admission.
+- `CONFIRMED_WINDOW_MAX_ROOT_INPUTS = 3` — the Task-3 per-case Root input ceiling (initial
+  staging, at most one directed continuation, one bounded post-interrupt control/result request).
+- `CONFIRMED_WINDOW_PASSIVE_READ_FLOOR_MS = 1000` — passive durable reads are never faster than
+  this (§39.9's inherited cadence rule).
+
+Exported functions:
+
+- `composeConfirmedWindowHostArguments(fixture, input)` — PURE: the ONE owned host's research
+  argv (`app-server` with the fixture `CODEX_HOME`-bound `-c`/`--enable` overrides of §39.7,
+  bounded and validated). No production launcher is created; the composition is offline-testable
+  and is what the default host launcher executes.
+- `runConfirmedWindowChoreography(session, dependencies)` — the staged controller. `session`
+  carries the validated case input, the fixture handle, the composed staging prompt (the §16.4
+  directive rides the SAME staging turn) and the optional changed continuation prompt.
+  `dependencies` are ALL injectable for deterministic offline tests: `now` (monotonic),
+  `wallClockNow`, `sleep`, `launchConfirmedWindowHost` (the ONE host instance factory), and the
+  `observers` record — `pendingObservation`, `ancestryBaseline`, `dutyFacts`, `controlFacts` —
+  which consume the EXISTING collectors' premises (the unchanged instrument; never a second
+  divergent runtime interpretation). The default host launcher spawns exactly one
+  `codex app-server` process; a second protocol process is never opened.
+- `projectConfirmedWindowSession(session)` — the bounded whitelisted projection (§39.9 privacy):
+  returns ONLY the versioned record block (ids, stamps, kinds, statuses, named reasons/digests);
+  unknown runtime fields are DROPPED and named, never passed through; no full turn bodies, no
+  task/preparation text, no raw hook snapshots, no credentials.
+- `executeConfirmedWindowCase({ input, fixture }, dependencies)` — the executor seam the driver's
+  standard entry dispatches to; returns the redacted live-facts block
+  (`liveFacts.confirmedWindow`) or throws with the survived redacted facts attached (the failed
+  observation must not erase its evidence).
+
+The host-side protocol seam (what the fake streams implement and the real launcher provides):
+ONE connection with `request(method, params)` resolving to
+`{ result, sentAtMs, repliedAtMs }` (the attributable request bounds of §39.9 step 7), ONE
+notification stream of `{ method, params, receivedAtMs }`, and bounded/cancellable
+`close()`/`closed()`; the host handle carries the retained host-instance identity
+(`pid`/argv/started-at) until post-cutoff collection.
+
+### 40.3 The pure evidence consumer (`tools/shell-wait-probe/native-control-evidence.mjs`)
+
+- `NATIVE_CONTROL_EVIDENCE_VERSION = 1` — the transport-specific request/receipt/causal contract
+  version (§39.9 step 8's new registration). It is NEVER fed to the historical model-tool
+  contracts (join v38/oracle v5 stay byte-unchanged) and never fabricates a tool event: the
+  module's whitelist contains NO model-tool field (`callCount`, `family`, `previousStatus`), and
+  a `model-tool`-sourced block is refused by the RPC adjudicator with the named
+  `source-route-mismatch` reason (historical adjudications remain the historical consumers').
+- `NATIVE_CONTROL_SOURCES` — the frozen §39.9 source-class set
+  `{model-tool, same-host-rpc, operator-child-stop}`; unknown sources fail closed.
+- `projectConfirmedWindowBlock(session)` — the pure runtime→persisted projection (bounded,
+  whitelisted; the reload consumer re-verifies from the block alone).
+- `admitConfirmedWindowNativeEvidence(block)` — the final reload-side consumer: re-validates the
+  identity join (parent `SubAgentActivity.agentThreadId` ⇄ Child `turn/started.threadId`;
+  `thread/started` NEVER required), exactly-one delivery, the attributable request bounds, the
+  transport-reply/semantic-receipt/Child-resolution separation, the causal interval
+  (initiation inside the PROVEN pending interval; a delayed acknowledgement/resolution never
+  moves it) and the source class; returns the typed verdict with named reasons. RPC success, a
+  turn snapshot or a `TurnAborted`-shaped event alone is NEVER all-duty settlement: the consumer's
+  settlement output also requires the persisted duty/pending-observation/control facts and fails
+  closed (`missing-scan-baseline`, `missing-presence-baseline`, `missing-control-baseline`,
+  `missing-child-resolution`, `response-at-unrelated-completion`, `parent-only-cancellation`,
+  `signal-or-cleanup-attribution`, `wrong-turn-target`, `stale-turn-target`, `unsent-request`,
+  `rejected-request`, `duplicate-request`, `empty-turn-id-forbidden`, `unknown-native-source`,
+  `source-route-mismatch`, `initiation-outside-pending-interval`).
+
+### 40.4 The staged state machine (frozen from §39.9; implemented verbatim)
+
+```
+ [launch ONE host]                          (ONE process; second protocol process NEVER opened;
+      |                                     host identity retained until post-cutoff collection)
+      v
+ initialize -> thread/start -> turn/start   (Root input 1: the composed staging prompt riding the
+      |                                      §16.4 control directive)
+      v
+ [staging observation: bounded by CONFIRMED_WINDOW_STAGING_READY_BOUND_MS from actual launch]
+      |   identity join (SubAgentActivity.agentThreadId x Child turn/started.threadId;
+      |   thread/started never required) + pending ORIGINAL observation + generation/ancestry
+      |   baseline + observable duties + control active/fresh + operative measurement window
+      |
+      +-- any conjunct missing when the initial turn ends --> [ONE directed continuation turn/start]
+      |                                                       (Root input 2; a CHANGED prompt;
+      |                                                        exhausted slot => staging-not-ready)
+      +-- staging bound exceeded / host failure / child already terminal / control absent ----+
+      |                                                                                       |
+      v                                                                                       v
+ pending-window-confirmed  ------------------------------------------->  staging-not-ready
+      |  (the positive barrier; triggers nothing else)              (persist named state, clean up
+      v                                                             safely, NEVER send)
+ native-request-sent          (exactly ONE turn/interrupt {threadId, turnId} on the SAME
+      |                        connection; attributable bounds recorded FIRST; unsent/rejected/
+      |                        stale typed and NEVER retried; empty turnId refused pre-send)
+      v
+ native-resolution-observed   (Child's own terminal event + original observation resolution
+      |                        through the unchanged instrument; the transport reply is NEVER
+      |                        the settlement; a reply riding a natural completion is the named
+      |                        response-at-unrelated-completion FAILURE)
+      v
+ all-duties-adjudicated       (final reload consumer over the persisted block + every applicable
+                               §24.7 duty; teardown/signal/reconcile/SessionEnd keep their true
+                               causes and never manufacture settlement)
+```
+
+Admission predicates (ALL required, ALL jointly): real Child/turn authority (the join), the
+pending ORIGINAL observation, the generation/ancestry baseline, observable applicable duties, the
+unrelated control active with fresh data and declared lifetime, and an operative measurement
+window inside the staging bound. Structural or setup success never manufactures readiness; a
+descriptor publication (L0) is not receipt (L1) and receipt is not obedience.
+
+### 40.5 Integration, budget and provenance registration
+
+- `driver.mjs`/`fixture.mjs` take MINIMAL integration only: the selector plumbing above; the
+  route executor dispatch; the route's fixture arming (the survival-control flag the route
+  subsumes); ONE schema-additive record block (`confirmedWindow`, persisted ONLY for route runs —
+  legacy records stay byte-identical); the observer-digest construction gains the TWO new
+  modules' module-init bytes and the record-time reread (the plan §3 duty: every executing
+  helper in provenance) as the next version tag; the common budget (`budgetMs`) and the Task-3
+  anchors carry unchanged. `fixture.mjs` itself needs NO code change for this task (the route
+  composes the SAME fixture composition through the driver's existing fixture input).
+- The other §3 owners (`evidence.mjs`, `release-qualification.mjs`, `local-process-observation.mjs`,
+  `closure-observation.mjs`, `closure-preload.mjs`, `spawn-witness-preload.mjs`) change ONLY if a
+  demonstrated integration/evidence need appears; the preregistration assumes NONE (their
+  contracts are consumed as-is through the injected observers).
+- The offline regression registration: every new test name carries the literal prefix
+  `confirmed-window` so the focused pattern executes the new integrated assertions; the
+  registrations live in the existing three isolated entries per the plan §3 ownership (this
+  task registers them in `tests/shell-wait-probe.test.mjs`, whose guarded re-entry child stays
+  one test — the spawned-suite total pin is unaffected).
+
+### 40.6 Gates
+
+The plan's Task-2 gate set is preregistered verbatim: the focused
+`node --test --test-name-pattern='confirmed-window'` run across the three isolated shell
+entries MUST execute the new registered tests (never select zero);
+`node --test tests/test-selection.test.mjs`; `npm run lint`; `npm run typecheck`;
+`node scripts/check-line-endings.mjs`; `git diff --check`. Probe invocations are serialized (its
+self-tests spawn nested research suites). The post-implementation outcome and the actual gate
+counts are recorded in §40.7 of this section's commit.
+
+### 40.7 Task-2 exit: the staged controller implemented and tested offline (all preregistered behaviors registered; zero hosted/provider contacts)
+
+**The delta against the surveyed tree** (HEAD before this section's commit: `e98b705c`; this
+commit changes ONLY the §3 research owners, the three test entries, this report — production
+`scripts/`, `hooks/`, `skills/`, `agents/`, `.codex-plugin/`, `prompts/`, `schemas/`,
+`marketplace/`, and dependency files are byte-untouched; the marketplace snapshot is built from
+those production paths, so this change cannot touch it and no rebuild/parity run was required):
+
+- **`tools/shell-wait-probe/confirmed-window.mjs` (NEW, 1484 lines at this commit; 994 lines at
+  the original implementation before the four gate rounds):** `CONFIRMED_WINDOW_CONTROLLER_VERSION`
+  (L35), the frozen five-state machine `CONFIRMED_WINDOW_STATES` (L41), the §39.9 anchors
+  (staging bound 180000 ms, case ceiling 1200000 ms, native response bound 60000 ms, Root-input
+  ceiling 3, passive read floor 1000 ms, cutoff/teardown anchors), the pure ONE-host research
+  argv composition `composeConfirmedWindowHostArguments` (L139), the canonical projection
+  re-exported under the preregistered §40.2 name `projectConfirmedWindowSession` (L172 — a
+  single shared implementation, never a divergent second one), the staged choreography
+  `runConfirmedWindowChoreography` (L181: the identity join, the positive barrier, the ONE
+  directed continuation, exactly ONE `turn/interrupt` with attributable bounds, resolution
+  collection with transport-reply/natural-completion/parent-cancellation typing, the
+  rate-limited injected observers, deterministic disposal with the facts projected BEFORE
+  disposal), the default REAL launcher `launchCodexAppServerHost` (L1146: one `codex app-server`
+  process, single-outstanding-request JSON-RPC over stdio, bounded line/output bytes, typed
+  disconnection, bounded SIGTERM/SIGKILL disposal), and the standard-entry executor seam
+  `executeConfirmedWindowCase` (L1387: route preflight before any launch, refusal-as-executed
+  record mapping, evidence never erased on failure).
+- **`tools/shell-wait-probe/native-control-evidence.mjs` (NEW, 583 lines at this commit; 403 at
+  the original implementation, PURE):**
+  `NATIVE_CONTROL_EVIDENCE_VERSION = 1` (L25), the frozen source-class set
+  `NATIVE_CONTROL_SOURCES` (L28), `validateNativeControlSource` (L115 — model-tool and
+  operator-child-stop are never RPC-attributable), the canonical bounded whitelisted projector
+  `projectConfirmedWindowBlock` (L130 — NO model-tool field anywhere; error text bounded), and
+  the final reload-side consumer `admitConfirmedWindowNativeEvidence` (L276). Its refusal names
+  are the FROZEN §40.3 list VERBATIM (the self-review round renamed four pre-amend divergences
+  IN CODE to the frozen names — `signal-or-cleanup-attribution`, `empty-turn-id-forbidden`,
+  `missing-presence-baseline`, and `missing-scan-baseline`, the last covering the
+  generation/ancestry baseline AND the observable applicable duties jointly; the
+  preregistration is the authority, never the implementation). Beyond the frozen list the
+  consumer also emits these DISCLOSED additional names, each pinned by its own negative row:
+  `missing-observation-resolution`, `duty-adjudication-unestablished`,
+  `duty-adjudication-incomplete`, `durable-settlement-unresolved` (the injected
+  `durableSettled` duty fact is ENFORCED — anything but `true` refuses; the self-review round
+  closed the accepted-but-ignored hole), `cleanup-fence-unproven`, `collection-intervals-invalid`,
+  `post-cutoff-resolution-no-credit` (applied to BOTH resolutions — §39.9 step 9 gives
+  post-cutoff facts zero settlement credit), `causal-interval-unprovable`,
+  `record-version-mismatch`, `identity-join-unproven` (also fired by an AMBIGUOUS recorded
+  identity), `request-outcome-unrecorded`, and the state-agreement `unsent-request`.
+  Settlement requires child resolution + resolved observation + window baselines + pre-cutoff
+  credit for both resolutions + a proven pre-cleanup-fence resolution + the terminal event
+  bound to the interrupted turn's OWN projected id + the persisted duty adjudication; absent
+  duties keep the verdict UNESTABLISHED, never guessed).
+- **`tools/shell-wait-probe/driver.mjs`:** the observer-digest construction and record-time
+  reread advance to **v10** binding the TWO new executing modules (L103, the update chains, and
+  both `digestInput` descriptions); `CONFIRMED_WINDOW_SELECTOR_VALUE` (L392); the closed route
+  gates in the shared combination gate (L529–L546: mutual exclusivity, config-default pair,
+  rescue-interrupt-only, the candidate 3600000 window); the parser option registration and
+  literal gate (L585 registration; the route's literal gate at L654, `assertSelectorLiteral`);
+  the programmatic mirror in `validateCaseInput`
+  (L1053); the route dispatch to the ACTUAL controller in `runShellWaitCase` (L729) with the
+  route's research-only dependency injections (the confirmedWindow* seams, typed in
+  `ShellWaitDependencies` L13311) and the route's fixture arming (the §16.4 control the route
+  subsumes); the schema-additive `confirmedWindow` record block (L1292 — route runs only, legacy
+  records byte-identical); the preflight route arms (L9921ff, `routeDeclared` L9952: the
+  composition check and the declared-control check — instrumentation/configuration ONLY, never
+  a model-action prediction, never a guaranteed spawn); the §40.1 prompt composers (L10568,
+  L10580 — the control directive rides the SAME staging turn; the continuation is a registered
+  CHANGED prompt); and the CLI usage line names the new selector.
+- **`tests/shell-wait-probe.test.mjs`:** the new describe (L32587) registers **88** new
+  `confirmed-window`-prefixed test rows through the public parser, the standard entry, the
+  staged choreography over deterministic fake protocol streams, the pure consumer, resource
+  behavior, and offline readiness (including the REAL `createShellWaitFixture` composition with
+  BOTH ancestry hops admitted through the REAL `admitSpawnAncestryWitness`, the coarse-platform
+  honest recording, and the missing-mandatory-witness named refusal). Fifteen of the rows were
+  added by the two review-amendment rounds — nine by the first: the ORDER-FREE identity join (a Child `turn/started` arriving
+  BEFORE the parent's `SubAgentActivity` is BUFFERED by thread id and completes the join with
+  its own stamps — §39.3's join is a JOIN, not an ordering discipline), the `kind:'started'`
+  gate (a non-started activity never joins identity nor stamps the L1 receipt, which is set
+  ONLY after the parent match and stays distinct from the pending-observation confirmation),
+  the ambiguous-identity refusal (two conflicting started activities leave the identity
+  named-unestablished in BOTH layers — the controller never admits it and the consumer refuses
+  the ambiguous record), the parent-completion final barrier evaluation (a held join with an
+  active Child turn ADMITS when the parent's staging turn ends — §40.4's window does not end
+  with the parent's turn), the resolution-state both-legs row (`native-resolution-observed`
+  owes the interrupted child terminal AND the resolved observation), the `durableSettled`
+  enforcement row, the observation-cutoff/completed-turn-id rows, the five pinned
+  previously-uncovered consumer reasons, and the byte-for-byte ONE-host argv composition pin
+  (independent §39.7 literals; the composer dropping `--enable hooks` now fails the suite).
+  The event-kind envelope is read from `params.type` FIRST with the notification METHOD name as
+  fallback (the code option of the review round); the pinned binary's exact real-envelope
+  spelling stays a staged-verification item inside the counted case.
+- **`tests/shell-wait-local-process.test.mjs`:** ONE demonstrated pin update — the F4
+  provenance-binding construction moves to the v10 input set (L16367ff) because the digest
+  construction legitimately changed (§40.5); its protective intent (a construction omitting the
+  executing helper copies cannot reproduce the digest) is unchanged.
+- **`tests/shell-wait-probe.test.mjs` provenance-binding rows:** the same demonstrated v10
+  movement for the digest-construction helper and its raw-construction positives (the
+  `withoutWitnessInput`/closure-preload negatives keep their intentionally divergent
+  constructions). The guarded spawned-suite total pin is UNTOUCHED (799 = local 698 + native
+  100 + guarded marker 1): every new registration lives in this file's un-guarded branch, so
+  the guarded re-entry child still registers exactly ONE test.
+- **`fixture.mjs`: NO code change** (exactly as preregistered in §40.5 — the route composes the
+  SAME fixture through the driver's existing fixture input).
+
+**RED→GREEN evidence per slice** (every slice started from failing assertions on the focused
+pattern; each GREEN re-run is recorded in the working log):
+
+1. *Selector (§40.1):* RED — `confirmed-window selector: the public parser accepts the single
+   closed literal...` threw `unknown option` and `absent keeps the legacy parse byte-for-byte
+   unchanged` saw `undefined` where the field must ride; GREEN after the parser/programmatic
+   gates (both boundaries) landed; the negative family (`every other case, value, window, and
+   selector combination is refused...`) pins each named refusal through the public parser AND
+   `runShellWaitCase` with a `createFixture` spy proving no fixture work precedes a refusal.
+2. *Staging state machine (§39.9/§40.4):* RED — three rows failed with `ERR_MODULE_NOT_FOUND`
+   for the not-yet-existing controller; GREEN after `runConfirmedWindowChoreography` landed;
+   the later batch (`wrong-parent/wrong-child never joins`, `a Child already terminal... named
+   stale-id outcome`, `exactly ONE directed continuation with a CHANGED prompt`, `missing
+   control/ancestry/duties/pending each refuse BY NAME`, `an observation without an operative
+   measurement window never admits`) — the measurement-window row was genuinely RED (the
+   window conjunct was not load-bearing) and drove the `holds` conjunct fix.
+3. *Native evidence consumer (§40.3):* RED — five rows failed `ERR_MODULE_NOT_FOUND`; GREEN
+   after the pure module; the negative family pins seventeen named fail-closed reasons, the
+   delayed-acknever-moves-initiation causal row, and the model-tool-untouched row (no
+   `callCount`/`family` ever fabricated; the closed three-class source set).
+4. *Standard-entry integration (§40.5):* RED — the entry rows failed (route undispatched, the
+   pre-host gate refused, provenance digests mismatched); GREEN after the dispatch, the
+   schema-additive record block, the recompute-offline verdict equality, the natural-completion
+   fail-closed pipeline row, and the v10 provenance binding row.
+5. *Resource behavior:* RED batch — five rows failed (the honest refusal naming, the
+   settlement-manufactured marker, the natural-winner duties, the launcher seams); GREEN after
+   the fixes; the launcher row exercises bounded reads/typed disconnection/deterministic
+   disposal over fake child-process streams.
+6. *Offline readiness:* the preflight row and the two REAL-fixture rows (exact both-hop
+   evidence; degraded-coarse honesty + missing-mandatory-witness named refusal) — RED against
+   the unimplemented preflight arms and materializing fixture; GREEN after the route arms and
+   fixture materialization.
+
+**Self-review round RED→GREEN** (the ten findings; every behavior fix started from a failing
+row on the focused pattern — the RED run showed **8 failing rows / 34 passing**, GREEN after
+the fixes shows **43/43**): the order-free join row (reversed notification order reached the
+full escalation only after the buffered join landed), the non-started-kind row (the receipt
+stamp and join side were gated on kind `started`), the ambiguous-identity row (controller and
+consumer both refuse), the parent-completion final-evaluation row (a held join now ADMITS),
+the resolution-both-legs row (child terminal alone keeps escalation at native-request-sent),
+the durableSettled row (RED: the verdict settled `true` with `durableSettled: false`; GREEN
+after the `durable-settlement-unresolved` enforcement), the observation-cutoff and
+completed-turn-id rows (RED: the consumer never compared the observation to the cutoff and the
+terminal turn id was unprojected), the four frozen-reason renames (the negative family's
+expectations were RED until the code carried §40.3's names verbatim), and the five
+previously-uncovered reason pins plus the argv-composition pin (coverage rows pinning existing
+fail-closed bytes — each asserts exact reason arrays, so any drift fails them). Snapshot
+reconciliation (the arithmetic counts rows registered AT EACH MOMENT, never a fixed
+population): the round's slices registered their rows mid-round, so the RED snapshot's 42
+(8 failing / 34 passing) counted the rows present at that moment, the GREEN re-run counted
+the round's complete 43-row registration, and the recorded final focused tally of 45 is
+node's test count over the same rows plus the two other files' file-level wrappers (the 4
+pre-existing round-25 subtests ride in through their suite's matching name, beside the
+renamed digest row); the populations grew as rows were added, and no snapshot redefined the
+gate.
+
+**Second amendment round (round-2 review) RED→GREEN** (six findings; every behavior fix
+started from a failing row on the focused pattern — each row confirmed RED for its named
+reason, then GREEN): the method-only-terminal row (the collection loop still keyed the event
+kind on `params.type` alone, so a method-only host ADMITTED and DELIVERED and then burned —
+the F4 envelope fallback now rides BOTH phases of one controller), the
+late-resolving-observation row (the observation leg is collectable in its natural late
+ordering: floor-cadence reads continue after the Child terminal until BOTH legs are observed
+or the measurement cutoff), the ambiguous-continuation row (with two conflicting started
+activities a Child EXISTS, so the ONE directed continuation is never spent — staging closes
+with the ambiguous refusal), the last-buffered-turn row (the join binds the MOST RECENT
+buffered `turn/started` for the thread — the server's active-turn candidate, never the stale
+first turn), the buffer-cap row (`MAX_UNMATCHED_CHILD_TURN_STARTS = 16`, mirroring
+`MAX_WRONG_JOINS`; the OLDEST unmatched start is evicted and the eviction is projected as the
+named `identity.unmatchedTurnStartOverflow` fact), and the `joinAmbiguous` projection row
+(`identity.joinAmbiguous` is a whitelisted boolean the consumer reads DIRECTLY — an ambiguity
+beyond the 16-entry `wrongJoins` slice can never become invisible to the reload consumer).
+
+**Gates (all commands run on the exact final bytes of this commit; probe invocations
+serialized; zero hosted/provider contacts, zero live servers, zero model turns):**
+
+- `node --test --test-name-pattern='confirmed-window' tests/shell-wait-probe.test.mjs
+  tests/shell-wait-native-interruption.test.mjs tests/shell-wait-local-process.test.mjs` →
+  **51 tests, 51 pass, 0 fail, 0 skipped** after the two review-amendment rounds (36 before
+  the first round; 45 between the rounds; the focused pattern EXECUTES the new registered
+  rows — never selects zero).
+- `node --test tests/test-selection.test.mjs` → **6 tests, 6 pass, 0 fail** (ordinary and MCP
+  selection unchanged).
+- `npm run lint` → **clean (0 errors)**.
+- `npm run typecheck` → **0 errors** (the true baseline at `e98b705c` was also 0, re-measured
+  by stashing; every intermediate error was fixed, not suppressed).
+- `node scripts/check-line-endings.mjs` → **LF verified in 555 tracked files**.
+- `git diff --check` → **clean**.
+- Full isolated shell suite (extra Task-2 evidence beyond the preregistered gate set, because
+  the driver/fixture shared paths and the three entries' construction pins changed):
+  `npm run test:shell-research` on the PRE-AMEND bytes → **1830 tests, 1830 pass, 0 fail,
+  0 cancelled, 0 skipped, exit 0** (duration ~33.7 min). Honest history: one earlier completed
+  full-suite attempt on the intermediate bytes had 1 failure (the spawned-suite CLI row
+  `an underscore alias of the reporter flag is replaced`, nested exit 1 vs 0 — a
+  contention-era outcome under three concurrently running entries; the same row passes solo,
+  exit 0, verified); one further attempt was killed mid-flight by an agent-session
+  interruption (its partial log is a kill artifact, not a test outcome — its nested guarded
+  summary read 799/798 pass/0 fail with 1 cancelled BEFORE the kill); that recorded run is the
+  clean idle-machine outcome on the pre-amend bytes. The AMENDED bytes (the self-review round:
+  the route modules' internals, the driver's route-gate message order, and this file's own
+  rows) were re-verified with the full suite too: `npm run test:shell-research` on the FINAL
+  amended bytes → **1839 tests, 1839 pass, 0 fail, 0 cancelled, 0 skipped, exit 0** (the nine
+  self-review rows join the count), alongside the six preregistered gates below. The SECOND
+  amendment round's bytes were re-verified with the full suite too: `npm run
+  test:shell-research` on the FINAL round-2 bytes → **1845 tests, 1845 pass, 0 fail, 0
+  cancelled, 0 skipped, exit 0** (duration ~33.8 min; the six round-2 rows join the count —
+  1839 + 6; the CLI rows' spawned-suite totals stay pinned, since every round-2 registration
+  lives in the un-guarded branch). Honest history for THIS round: one earlier full-suite
+  attempt was killed mid-flight by an agent-session interruption (its partial log is a kill
+  artifact, not a test outcome — it had completed 802 tests with 0 fail, 1 cancelled, and the
+  interrupted entry's pending-promise artifact BEFORE the kill); the recorded run above is the
+  clean outcome on the final bytes.
+
+**Unchanged contracts:** the historical model-tool join v38/oracle v5, the old call counts and
+adjudications, the §38 verdict/ledger, and every earlier report section are byte-untouched
+(add-only report). The controller records source class `same-host-rpc` for route (a) only; the
+operator-assisted alternate stays non-selectable (its human action belongs to Task 4/5's
+reviewed path). Production remains `do-not-adopt-yet`: a passing offline controller,
+preflight, and readiness exercise prove instrumentation and choreography only — the model's
+future action stays uncertain, readiness is NOT a guaranteed spawn, and every live verification
+belongs to the counted Task-3/Task-4 ledger.
+
+**Codex gate round (2026-11-18): SEVENTEEN review findings on the round-2 bytes fixed, each with
+its own RED→GREEN row on the focused pattern. The reviewer validated several findings EMPIRICALLY
+against the exact pinned binary; before fixing, EVERY protocol-shape claim was re-verified the
+same way (the binary's `--help`, its offline `generate-json-schema` output into a disposable
+private temp directory, and its argument-parse exit behavior — no persistent server, no
+interactive host, no model turn) plus the read-only source pin `dffa0deb` (the full SHA-256
+object name `dffa0deb69268ed4ac31578794c9ea897b336ae3`, as cited at §39.1). This block is
+POST-FREEZE: §39/§40.1–§40.6 stay byte-untouched; the frozen contracts
+they carry are corrected PROSPECTIVELY here, never silently rewritten.**
+
+- **[P1-1] the supported stdio transport URL** (`confirmed-window.mjs` composition): re-verified
+  against the exact binary — `codex app-server --listen stdio` exits 2 DURING ARGUMENT PARSING
+  ("error: invalid value 'stdio' for '--listen <URL>': unsupported --listen URL `stdio`; expected
+  `stdio://`, `unix://`, `unix://PATH`, `ws://IP:PORT`, or `off`"), i.e. before initialization,
+  so the composed arguments could never launch the research session; `--listen stdio://` exits 0
+  on EOF. **Adjudication (honest correction of the reviewer's framing):** the frozen §39.7/§40.2
+  prose does NOT actually spell the transport argument anywhere — §39.2 documents `stdio://`
+  correctly and §40.2 describes only "the `app-server` … `-c`/`--enable` overrides of §39.7" —
+  the invalid bare `stdio` spelling lived in the Task-2 IMPLEMENTATION and its test pin. The
+  implementation now composes `--listen stdio://` and the existing argv-pin row FLIPPED its
+  expectation with the dated verification comment in the test (a demonstrated pin movement).
+- **[P1-2] the required `input` field** (`confirmed-window.mjs`): the pinned schema's
+  `TurnStartParams` requires exactly `['input', 'threadId']` with `input` an array of `UserInput`
+  (`{type: 'text', text}`); `items` is not a field, and the real server rejects the request
+  during validation instead of starting the Root turn. BOTH Root `turn/start` requests (initial
+  staging and the ONE directed continuation) now carry `input`; the continuation row's field pin
+  moved with it (demonstrated).
+- **[P1-3] the real sub-agent activity discriminant** (`confirmed-window.mjs`): the pinned
+  protocol serializes the spawn activity as a thread item with the DISCRIMINANT
+  `subAgentActivity` (the `SubAgentActivityThreadItemType` enum value — NOT `SubAgentActivity`)
+  riding `item/started` params `{threadId, turnId, item, startedAtMs}`, `item.kind` enum
+  `started|interacted|interrupted|completed`, `item.agentThreadId`, `item.model`. Source pin:
+  `event_mapping.rs:184–200` maps `EventMsg::SubAgentActivity` → `ServerNotification::ItemCompleted`
+  with the SAME item shape, and the generic `EventMsg::ItemStarted` pass-through (:406) carries
+  `SubAgentActivity` items — the core suite (`subagent_notifications.rs`) shows the items ride
+  BOTH carriers. The join now reads the ITEM's type/kind (never the carrier method): the real
+  `subAgentActivity` spelling is matched FIRST and the pre-review fake-envelope spellings stay
+  accepted as DOCUMENTED ALIASES (the offline rows run on them; real-first with aliases, per the
+  review). **Adjudication:** the reviewer's "typically inside an `item/started`" holds, and the
+  `item/completed` carrier is equally real — both are accepted via the item-type match.
+- **[P1-4] timestamps produced by the default clocks** (`confirmed-window.mjs` +
+  `native-control-evidence.mjs`): both default clocks returned fractional `performance.now()`
+  values while the safe-stamp gate and the reload projector accepted only safe integers — every
+  real request/event stamp became null and a successfully sent interrupt was classified as
+  `unsent-request` (the outcome `'sent'` + null-stamp arm of the consumer's own check). Fixed on
+  BOTH layers consistently: the default clocks are normalized to integer milliseconds (ONE clock
+  granularity for the choreography and the launcher) AND the safe-stamp gates now admit any
+  finite non-negative number (a stamp stays exactly comparable beyond-safe-integer values are
+  still refused), so an injected fractional clock can never silently null real evidence. The
+  integer-only fake clocks concealed this; the new row runs the whole green shape over a
+  fractional monotonic clock.
+- **[P1-5] the exec-default override reaches the choreography** (`confirmed-window.mjs`
+  executor): the executor validated `context.input.execDefaultMs` in preflight but omitted it
+  from the choreography session, so the host composition received `undefined` and dropped the
+  required `features.code_mode.default_exec_yield_time_ms` override — the standard entry would
+  have launched a different configuration from the selected and recorded config-default
+  experiment. Threaded through (with `model`, below) and pinned through the ACTUAL entry.
+- **[P1-6] outstanding requests bounded by the shared deadline** (`confirmed-window.mjs`
+  launcher): a host that stayed alive without replying to `initialize`/`turn/start`/
+  `turn/interrupt` held a never-settling request promise — the choreography could not reach its
+  deadline checks or its disposal while awaiting it. The launcher now arms the shared
+  `caseDeadlineAtMs` against every outstanding request: the deadline fires a NAMED rejection
+  ("the owned host request exceeded the shared case deadline") through the SAME typed
+  disconnection path so every notification waiter wakes, and `caseDeadlineAtMs` is now REQUIRED
+  launch context (a missing deadline used to leave the launcher unable to bound a silent host at
+  all). The choreography's catch then runs the deterministic disposal. The row proves an offline
+  request already past its case deadline no longer stays pending.
+- **[P1-7] missing collectors refused BEFORE a hosted case** (`driver.mjs` route dispatch): a
+  normal CLI invocation supplies none of the `confirmedWindow*` seams — the executor used to
+  receive null observers and null duty adjudication yet STILL launched the real host and started
+  the model turn, discovering every barrier collector unarmed only at the staging bound. The
+  route's preflight now refuses when the staged barrier collectors or the persisted duty
+  adjudication are unarmed (a named pre-launch refusal BEFORE any host launch, consistent with
+  the known-absent-mechanism gate precedent); the real host launcher itself stays the legitimate
+  default. The launch-failure row was updated to arm the instrumentation it always intended
+  (demonstrated movement).
+- **[P2-1] the requested model applied at a supported boundary** (`confirmed-window.mjs`): the
+  pinned schema accepts a per-thread model at `ThreadStartParams.model` (string|null; also
+  `TurnStartParams.model` per-turn) — a SUPPORTED configuration boundary exists, so the fail-
+  closed branch is not needed. The executor threads `model` through the session and the
+  choreography applies it at `thread/start`; pinned through the ACTUAL entry (the argv `-c`
+  exec-default override composes alongside).
+- **[P2-2] readiness re-evaluated while the stream is silent** (`confirmed-window.mjs`): with
+  the identity join holding, the staging wait now wakes at the passive-read cadence (the same
+  1000-ms floor) instead of sleeping until the ENTIRE staging deadline — a notification timeout
+  is no longer treated as exhausted staging; a readiness that arrives after the join (the
+  pending-observation or ancestry artifacts becoming collectable) is admitted.
+- **[P2-3] buffered unmatched Child turns retain terminal state** (`confirmed-window.mjs`): a
+  Child turn whose start AND completion both arrived before its parent's activity item used to
+  be reactivated by the later activity (the completion was ignored while `childThreadId` was
+  null) — admitting an interrupt against an already-terminal target. Buffer entries now track
+  the completion; the join candidate is the LAST matching NON-TERMINAL buffered turn (composing
+  with the most-recent-turn rule), and a thread whose buffered turns are ALL terminal completes
+  the identity into the stale-id refusal — never a delivery.
+- **[P2-4] control freshness and lifetime enforced at admission**
+  (`confirmed-window.mjs` + `native-control-evidence.mjs`): an observer returning only
+  `{active: true}` used to satisfy the barrier and the reload consumer settled with nulls. The
+  barrier's control conjunct now requires fresh evidence (no older than the 1000-ms passive-read
+  cadence — the §3 Task-3 schedule constant) AND a declared lifetime still sufficient AT REQUEST,
+  each with its own named miss reason; the reload-side `missing-control-baseline` layer covers
+  the freshness stamp and the declared lifetime too (the frozen name, additive scope disclosed
+  here). The green-shape row proves the conjunct is additive, never a regression.
+- **[P2-5] ordinary parent completion is not cancellation** (`confirmed-window.mjs`): the pinned
+  protocol exposes the parent's terminal cause on the `turn/completed` payload (`turn.status` =
+  `completed|interrupted|failed|inProgress`; verified — there is NO `turn/aborted` notification
+  on this v2 protocol). ONLY an affirmative `interrupted` parent terminal sets
+  `parentCancellationAtMs`; an ordinary completed/failed parent terminal is recorded with its
+  observed status and the refusal names the Child's non-resolution cause UNESTABLISHED instead of
+  presuming cancellation. The pre-existing natural-winner row had encoded the bug (a `completed`
+  parent terminal typed as `parent-only-cancellation`) and was corrected; a new row pins the
+  affirmative `interrupted`-status cancellation.
+- **[P2-6] the host is retained through the registered collection horizon**
+  (`confirmed-window.mjs`): when the Child resolution and the original observation arrived
+  early, the collection closed and disposed the host immediately (offline dispose ~1120 ms
+  against a recorded 410000-ms cutoff). §39.9 step 9: collection stops at the carried FENCES —
+  the independent collection now continues through the registered observation-teardown fence
+  (the notification stream stays drained and the instrument's duty/control reads keep their
+  floor-cadence horizon; a post-completion instrument failure is recorded as inconclusive,
+  never erasing an observed resolution), and disposal runs only at/after the fence. The fence
+  is projected additively as `fences.collectionHorizonAtMs`.
+- **[P2-7] the pending interval is bounded on BOTH sides** (`native-control-evidence.mjs`): the
+  causal initiation is now bounded above by the EARLIER of the observation's expiry (the hold
+  deadline) and the Child's resolution — requests initiated after observation expiry or Child
+  resolution get no causal credit (`initiation-outside-pending-interval`); an interval with no
+  provable end stays `causal-interval-unprovable`. A companion chronology check refuses bounds
+  whose reply stamp precedes the send stamp (`request-bounds-chronology-unproven` — the
+  negative-native-latency shape).
+- **[P2-8] incomplete attributable bounds are refused, never target-bypassing**
+  (`native-control-evidence.mjs`): a request recorded as SENT owes BOTH bounds, and a reply
+  stamp without an initiation stamp is never attributable (`request-bounds-incomplete`); their
+  absence used to leave `requestBoundsPresent` false and silently bypass the exact-target
+  validation, admitting a foreign-thread request. The target comparison now applies whenever
+  the request NAMES a target. A rejected/failed request legitimately carries only the
+  initiation stamp (the controller's own typed delivery-failure shape) and is refused by its
+  own outcome reason, never by this one.
+- **[P2-9] positive exact-Child terminal evidence required**
+  (`native-control-evidence.mjs`): a claimed resolution timestamp now settles ONLY with its
+  native authority — an `interrupted` terminal status, the `child-terminal-event` basis, AND the
+  terminal event bound to the REQUESTED turn's own id (`child-terminal-authority-unproven`);
+  stripping the three fields from an otherwise green record no longer settles. A record with NO
+  resolution timestamp stays named by `missing-child-resolution`.
+- **[P2-10] a missing measurement cutoff is temporal-qualification-unestablished**
+  (`native-control-evidence.mjs`): null/malformed `measurementCutoffAtMs` used to DISABLE the
+  post-cutoff checks and still grant pre-cutoff credit; a claimed resolution without a valid
+  cutoff is refused (`measurement-cutoff-unproven`).
+- **[P2-11] collection-interval validation requires the AFFIRMATIVE true**
+  (`native-control-evidence.mjs`): only an explicit `false` was rejected before; omitting or
+  nulling `collectionIntervalsValid` now refuses (`collection-intervals-invalid`).
+- **[P2-12] exactly one recorded native attempt required** (`native-control-evidence.mjs`):
+  counts above one stay the named `duplicate-request`; a CREDITED sent request additionally
+  requires an affirmative count of exactly ONE — missing/malformed/zero counts (which used to
+  normalize to zero and accompany an admitted settled delivery) refuse
+  (`request-attempt-count-unproven`).
+
+**This round's RED→GREEN evidence** (every fix started from a failing row on the focused
+pattern): the first batch's RED run showed the three protocol rows failing for their named
+reasons (the argv pin saw `stdio` where the verified `stdio://` literal must ride; the
+turn/start deepEqual saw the `items` shape the real server rejects; the real-envelope row saw
+`staging-not-ready` — "the identity join never held … its parent SubAgentActivity side never
+arrived" — exactly the P1-3 failure). The second batch's RED run showed 17 failing rows, each
+with its named reason recorded in the assertion text (the P2-3 row saw the interrupt delivered
+against the already-terminal buffered turn; the P2-2 row saw the whole staging deadline exhausted
+with `staging-not-ready`; the P2-4 scenarios saw `{active: true}` admit; the P2-5 row saw
+`parentCancellationAtMs` set by an ordinary completion; the P2-6 row saw the host disposed at the
+early-resolution instant; the launcher row saw the silent-host request pending forever; the
+consumer rows saw the green adjudication of each malformed shape — `settled: true` with negative
+latency, with foreign targets behind skipped validation, with stripped terminal authority, with
+a null cutoff, with omitted intervals, and with a normalized zero attempt count). GREEN after
+the minimum fixes: the focused three-file run executes **71 tests, 71 pass, 0 fail** (the
+registration grew 44 → 64 `confirmed-window`-prefixed rows: twenty new rows, one renamed by the
+P2-5 correction, and the P1-6 deadline block added inside the existing launcher row). Two
+pre-existing rows moved with demonstrated cause: the argv pin (P1-1) and the continuation
+field pin (P1-2); one row was corrected because it had encoded the P2-5 bug. The new consumer
+names disclosed beyond the frozen §40.3 list by this round:
+`request-bounds-incomplete`, `request-bounds-chronology-unproven`,
+`request-attempt-count-unproven`, `child-terminal-authority-unproven`,
+`measurement-cutoff-unproven` (each pinned by its own negative row; the frozen names are
+untouched, and `missing-control-baseline`'s scope grew to the freshness/lifetime evidence —
+disclosed here, name unchanged).
+
+**Gates for this round (all commands run on the exact final bytes of this commit; probe
+invocations serialized; zero hosted/provider contacts, zero live servers, zero model turns):**
+
+- `node --test --test-name-pattern='confirmed-window' tests/shell-wait-probe.test.mjs
+  tests/shell-wait-native-interruption.test.mjs tests/shell-wait-local-process.test.mjs` →
+  **71 tests, 71 pass, 0 fail, 0 skipped** (the focused pattern EXECUTES the round's new and
+  moved rows — never selects zero).
+- `node --test tests/test-selection.test.mjs` → **6 tests, 6 pass, 0 fail**.
+- `npm run lint` → **clean (0 errors)**; `npm run typecheck` → **0 errors**.
+- `node scripts/check-line-endings.mjs` → **LF verified in 555 tracked files**; `git diff
+  --check` → **clean**.
+- Full isolated shell suite: `npm run test:shell-research` on the FINAL bytes → **1865 tests,
+  1865 pass, 0 fail, 0 cancelled, 0 skipped, exit 0** (duration ~33.7 min; the round's twenty
+  net-new registrations join the count — 1845 + 20; the CLI rows' spawned-suite totals stay
+  pinned, since every new registration lives in the un-guarded branch). Honest history: one
+  canary full-suite run on the same code bytes (before this report block was appended) also
+  completed **1865/1865, exit 0** — both runs are the clean idle-machine outcome.
+
+**Codex gate round 2 on the amended bytes (2026-11-18, HEAD `aa8d57c1`): TEN further review
+findings (1 P1 + 9 P2) fixed, each with its own RED→GREEN row on the focused pattern; the six
+round-1 P1s are cleared by this state. Every behavior fix started from a failing row confirmed
+RED for its named reason, then GREEN. §39/§40.1–§40.6 stay byte-untouched; corrections are
+prospective and dated here.**
+
+- **[P1] observer calls bounded by the staging and case deadlines, and admission RECHECKS the
+  deadline before any delivery** (`confirmed-window.mjs`): every observer await now races a PURE
+  deadline signal (the real unref'd timer default, computed from the injected clock; an injected
+  `waitUntil` must be a pure signal, never a clock-advancing notification-scheduling wait — the
+  offline fixture separates `waitUntil` from the advancing `waitUntilAdvance`) with the bound at
+  the EARLIER of the staging and case deadlines: a never-resolving collector yields the typed
+  not-established shape (never a guessed conjunct) and cannot hold the choreography past its
+  deadlines, and a late collector rejection can never become an unhandled crash. The same
+  bounding applies to the collection, observation-leg and post-resolution horizon reads (bound
+  by their own fences). ADMISSION now rechecks the deadline at all three admission sites and
+  behind a post-loop net: a collector that completes after the staging bound (offline: advancing
+  the shared clock to 180001 ms) can never cause an interrupt. The bounded collector race keeps
+  fast collectors winning (a collector resolves in microtasks; the signal is a real timer).
+- **[P2] the owned host's stderr pipe is drained** (`confirmed-window.mjs` launcher): stderr is
+  consumed with a bounded in-memory retention tail (8 KiB default, disclosed
+  `maxStderrTailBytes` dependency; exposed only through an in-memory `stderrDiagnostics()`
+  accessor, never projected into a record). A real child writing 1 MiB synchronously to stderr
+  before its protocol reply previously blocked on the full pipe and never delivered; the row now
+  proves the reply arrives, the volume was consumed, and the tail stays bounded.
+- **[P2] disconnection propagates from the notification wait** (`confirmed-window.mjs`
+  launcher): after a fatal protocol error or host exit, `nextNotification` REJECTS with the
+  typed fatal error instead of resolving an ambiguous null — the choreography treats null as a
+  timeout, so a resolved-null loop used to busy-spin in microtasks until its deadline; the typed
+  rejection starts the deterministic cleanup promptly. Queued events still precede the rejection
+  (a dying host's already-delivered frames are not dropped).
+- **[P2] a SENT request must positively identify BOTH target ids**
+  (`native-control-evidence.mjs`): `request-target-unidentified` refuses a credited delivery
+  whose thread OR turn id is missing/invalid — the targetless shape is reserved for the typed
+  pre-send refusal (`forbidden-empty-turn-id`); both ids stripped used to skip the exact-target
+  check entirely and still admit + settle.
+- **[P2] the positive window must precede the request initiation**
+  (`native-control-evidence.mjs`): `window-unproven-before-initiation` — replay compares BOTH
+  window stamps (the pending observation's confirmation AND the window confirmation) against the
+  initiation; a window established only after the request never settles (an active Child turn is
+  never proof of a pending observation). A missing pending-observation confirmation stamp stays
+  named by the frozen `missing-presence-baseline`.
+- **[P2] the control freshness/lifetime predicates are recomputed AT initiation**
+  (`native-control-evidence.mjs`): `control-stale-or-expired-at-initiation` — presence alone
+  used to credit an unrelated control that was already stale (older than the registered 1000 ms
+  passive-read cadence) or past its declared lifetime at the request timestamp.
+- **[P2] the cleanup fence applies to BOTH resolution legs**
+  (`native-control-evidence.mjs`): `cleanup-fence-unproven` now fires when the observation
+  resolution lands at/after the cleanup fence (or the fence is missing while either leg is
+  observed) — cleanup may have released the original observation rather than the native
+  interrupt.
+- **[P2] activity items require the EXACT observed parent identity**
+  (`confirmed-window.mjs`): a missing/malformed activity threadId is never accepted (null never
+  bypasses the parent match) — it is a named wrong join (`unidentified-parent-thread`), never
+  the join side and never spawn evidence.
+- **[P2] the horizon and disposal error paths ride the SAME redaction boundary**
+  (`confirmed-window.mjs`): the post-resolution collection catch and the finalizer's
+  close/dispose catches use the INJECTED redactor (never raw `boundedErrorText`), so collector
+  filesystem errors cannot put fixture-private absolute paths into the persisted `inconclusive`
+  facts. `finalizeSession` carries the redactor; the default stays the bounded text for the
+  direct research seam.
+- **[P2] spawn activity is kept separate from hook-receipt evidence**
+  (`confirmed-window.mjs` + `native-control-evidence.mjs`): a parent-bound started activity is
+  SPAWN evidence, recorded additively as `staging.spawnActivityObserved` (projected whitelisted
+  boolean). The controller NO LONGER stamps `staging.liveReceiptObserved` from activity events —
+  §39.8's L1 is a session/turn-bound HOOK invocation inside the real parent, the controller
+  collects no hook witness, so hook receipt stays named-unestablished (null) until an actual
+  hook witness is collected. **Dated prospective correction of the round-1 §40.7 claim** ("the
+  L1 receipt … set ONLY after the parent match"): that claim described the pre-round-2 code; the
+  evidence-level semantics are corrected by this round — the L1 level is not established by any
+  activity event, and the staging-refusal text names spawn evidence ("no parent-bound spawn
+  activity was observed") instead of receipt.
+
+**Round-2 RED→GREEN evidence:** the RED run showed TEN failing rows for their named reasons —
+the never-resolving collector held the choreography ('hung' under the row's own real-time guard),
+the post-deadline collector still admitted, the launcher row failed on the notification-wait
+propagation and then on the chatty-stderr block, the four consumer rows each settled a malformed
+shape green (targetless sent request; window confirmed after initiation; control stale/expired at
+initiation; post-fence observation resolution), the parentless-activity row admitted and reached
+`all-duties-adjudicated` (its corrected assertion shows the named wrong join and no delivery), and
+the redaction row leaked the fixture-private path into `inconclusive`. GREEN after the minimum
+fixes: the focused three-file run executes **78 tests, 78 pass, 0 fail** (the registration grew
+64 → 71 `confirmed-window`-prefixed rows: seven new rows, plus the corrected P2-10 assertions on
+three existing rows, the launcher row's propagated-rejection/block updates, and the runtime
+fixture's corrected evidence-level shape). One intermediate RED state is disclosed: the launcher
+row was RED twice — first for the P2-3 propagation, then (after that fix) for the stderr block,
+so the stderr RED reason (the chatty child never delivering under a real 4 s deadline) was
+observed before its GREEN.
+
+**Gates for this round (all commands on the exact final bytes of this commit; probe invocations
+serialized; zero hosted/provider contacts, zero live servers, zero model turns):** focused
+three-file run **78/78**; `tests/test-selection.test.mjs` **6/6**; `npm run lint` **clean**;
+`npm run typecheck` **0 errors**; line endings **555 files LF**; `git diff --check` **clean**;
+and the full isolated suite on THIS round's final bytes: `npm run test:shell-research` →
+**1872 tests, 1872 pass, 0 fail, 0 cancelled, 0 skipped, exit 0** (duration ~33.7 min; the seven
+round-2 registrations join the count — 1865 + 7; the CLI rows' spawned-suite totals stay pinned,
+since every new registration lives in the un-guarded branch).
+
+**Codex gate round 3 on the amended bytes (2026-11-18, HEAD `a790bd01`): NINE further review
+findings (all P2 — no P1s remain; the gate is converging) fixed, each with its own RED→GREEN row
+on the focused pattern. §39/§40.1–§40.6 stay byte-untouched; corrections are prospective and
+dated here.**
+
+- **[P2-1] an observation that has ALREADY resolved never admits** (`confirmed-window.mjs`): the
+  barrier's operative-window conjunct now requires `pending.resolved !== true` — a historical
+  confirmation is not proof the original observation is STILL pending, and the delivery is
+  refused before the single interrupt attempt is consumed (named refusal reason in the barrier's
+  miss order). **Fixture correction with demonstrated cause:** the shared green collector
+  fixture's static shape (`confirmed: true` AND `resolved: true` at every read) was itself the
+  impossible-at-admission shape — the collectors are now TIME-AWARE on the run's OWN clock (the
+  fake host factory binds the run clock; the pending observation is still pending until its
+  scripted 320 ms resolution instant, and the unrelated control reports fresh-at-read evidence),
+  which also makes every escalation row's staging phase model a genuinely pending observation.
+- **[P2-2] the control freshness/lifetime predicates are evaluated at the POST-COLLECTION time**
+  (`confirmed-window.mjs`): the pre-read stamp cannot vouch for evidence whose validity expired
+  while the collectors were still answering — a collector that advances the clock past the
+  cadence or the declared lifetime during its own read never admits (the row's 20 → 2020 ms
+  collector now refuses).
+- **[P2-3] the setup phase is bounded by the staging deadline** (`confirmed-window.mjs`): each
+  setup request (`initialize`, `thread/start`, the staging `turn/start`) is stopped before it is
+  sent once the staging allowance expired, races the remaining staging time, and a slow setup
+  reply cannot push further setup work past the bound (initialization completing at 200000 ms no
+  longer sends `thread/start` after 180000 ms; the refusal names the staging readiness bound).
+- **[P2-4] the ORIGINAL observation's resolution bounds the causal interval**
+  (`native-control-evidence.mjs`): the interval's upper bound is the EARLIEST of the hold
+  deadline, the Child's resolution AND the observation's actual resolution — an interrupt
+  delivered after the observation ended gets no causal settlement credit.
+- **[P2-5] attributable initiation bounds survive the error path**
+  (`confirmed-window.mjs` launcher + controller): the launcher attaches the real initiation
+  stamp (`initiatedAtMs`) to the typed rejection (both the disconnection and the frame
+  write-failure paths); the controller preserves it and NEVER substitutes the rejection time or
+  `now()` as the send stamp — a genuinely unattributable initiation stays explicitly unsent
+  (null; the round-1 "rejected requests legitimately carry only the initiation stamp" consumer
+  shape is unchanged: a carried stamp is real, an absent one is honest).
+- **[P2-6] the preflight requires CALLABLE collectors** (`driver.mjs`): presence is not arming —
+  all four required collectors must be functions before any hosted case (missing or non-callable
+  collectors are NAMED in the pre-launch refusal; an empty or partially armed observer object
+  never reaches the host launch).
+- **[P2-7] the parent-completion final evaluation SCHEDULES at the next permitted passive-read
+  time** (`confirmed-window.mjs`): the forced `barrier(true)` bypass used to reread every
+  collector immediately after a recent evaluation (two pending-observation reads 10 ms apart);
+  the final evaluation now waits for the next floor-cadence slot (and honestly declines when no
+  permitted slot remains before the deadline).
+- **[P2-8] duty-name elements project as BOUNDED strings** (`native-control-evidence.mjs`): the
+  array-length cap alone was not the privacy boundary — elements project as bounded duty-name
+  strings only (≤ 64 chars, disclosed `MAX_DUTY_NAME_CHARS`); a nested runtime object or an
+  unbounded string projects as null and can never ride the persisted block.
+- **[P2-9] the responsiveness comparison is RECOMPUTED from the persisted bounds**
+  (`native-control-evidence.mjs`): the verdict's `nativeResponseWithinBound` is recomputed from
+  the validated stamps against the fixed 60000 ms bound, and a carried flag that CONTRADICTS the
+  retained stamps refuses the settlement (`response-bound-contradicted`). **Fixture correction
+  with demonstrated cause:** the delayed-acknowledgement row's carried `responseWithinBound:
+  false` contradicted its own 590 ms latency (590 ms IS within the bound) — corrected to a
+  genuinely slow 60790 ms reply so the row pins the recomputed fact.
+
+**Round-3 RED→GREEN evidence:** the batch RED run showed all nine new rows failing for their
+named reasons (the resolved-observation row admitted and reached the escalation; the pre-read
+freshness row delivered after both expired; the slow-initialization row sent `thread/start` past
+the 180000 ms bound; the rejection row carried the fabricated 5020 ms send stamp; the floor row
+recorded reads 10 ms apart; the consumer rows settled the targetless-after-observation,
+unbounded-duties and contradicting-flag shapes green; the entry row watched the host launch with
+an empty observer object — the 180 s RED runtime was the finding itself manifesting, fixed by
+binding the fake clock seams to the row). GREEN after the minimum fixes: the focused three-file
+run executes **87 tests, 87 pass, 0 fail** (the registration grew 71 → 80
+`confirmed-window`-prefixed rows: nine new rows, plus the two fixture corrections above, the
+launcher row's attributable-initiation pin, and the time-aware shared collectors). Two rows were
+re-scoped during the round for honest reasons, each recorded in the row's own comment: the
+round-2 P2-4 freshness scenarios now anchor their freshness on the read time (the scheduled
+site-2 evaluation legitimately reads ~1120 ms), and the P2-1/P2-2 rows keep the Child turn active
+so the new refusal is not masked by the pre-existing stale-id refusal.
+
+**Gates for this round (all commands on the exact final bytes of this commit; probe invocations
+serialized; zero hosted/provider contacts, zero live servers, zero model turns):** focused
+three-file run **87/87**; `tests/test-selection.test.mjs` **6/6**; `npm run lint` **clean**;
+`npm run typecheck` **0 errors**; line endings **555 files LF**; `git diff --check` **clean**;
+and the full isolated suite on THIS round's final bytes: `npm run test:shell-research` →
+**1881 tests, 1881 pass, 0 fail, 0 cancelled, 0 skipped, exit 0** (duration ~33.8 min; the nine
+round-3 registrations join the count — 1872 + 9 = 1881; the CLI rows' spawned-suite totals stay
+pinned, since every new registration lives in the un-guarded branch). Honest notes: (a) an
+earlier draft of this paragraph predicted a 1879 total BEFORE the suite ran — the recorded
+number above is the ACTUAL run's outcome (1881), and the pre-run prediction was wrong and is
+not a record; (b) the suite ran TWICE on identical code bytes — once before this report block's
+final recording paragraph was appended, and once on the EXACT final committed bytes (same
+1881/1881/exit-0 outcome both times), so the recorded run is the clean idle-machine outcome on
+the final bytes.
+
+**Codex gate round 4 on the amended bytes (2026-11-18, HEAD `aa5d13c6`): EIGHT findings (1 P1 +
+7 P2 — converging 17→10→9→8) fixed, each with its own RED→GREEN row on the focused pattern.
+§39/§40.1–§40.6 stay byte-untouched; corrections are prospective and dated here.**
+
+- **[P1] the research thread carries the fixture-only hook-trust bypass**
+  (`confirmed-window.mjs:318`): the `thread/start` params now carry
+  `config: { bypass_hook_trust: true }`. **Verified at the source pin before wiring:**
+  `ThreadStartParams.config` (a map) rides the request overrides and the pinned config manager
+  removes `bypass_hook_trust` into `ConfigOverrides` (a boolean is required —
+  `config_manager.rs:472-477`), while hooks discovery admits an enabled handler ONLY when
+  `source.bypass_hook_trust || trust_status is Managed|Trusted` (`codex-rs/hooks/src/engine/
+  discovery.rs:715-720`). With a FRESH isolated fixture home the fixture hooks are untrusted —
+  enabling `hooks` alone does not authorize them (fixture setup invokes hooks manually), so
+  without the override the real parent's UserPromptSubmit/SubagentStart hooks are filtered out
+  and the managed Rescue preparation/binding flow can never run. The repo's own installed-suite
+  precedent carries the same override as the argv `-c bypass_hook_trust=true` (a disposable
+  fixture control, never persisted production-trust qualification — §1's fixture row). The
+  staged thread carries it at the thread-creation config boundary the reviewer named; the §39.7
+  host argv is untouched.
+- **[P2] the pending observation is read LAST, immediately before admission**
+  (`confirmed-window.mjs:383-416`): the barrier's read order is now ancestry → duties → control
+  → pending — a slow ancestry/duty/control read can no longer consume the single interrupt
+  attempt outside the observation's pending window (offline: an observation ending at 200 ms
+  with a slow ancestry read advancing the clock to 1110 ms used to admit on the stale
+  not-resolved snapshot). Reading pending last keeps ONE read per evaluation slot (the
+  passive-read floor discipline), with the freshest possible snapshot.
+- **[P2] settlement verifies the REQUIRED duty slots in BOTH layers**
+  (`native-control-evidence.mjs:50,527-529`): the frozen required slot set
+  (`invocation/broker/transport/runner/job/guard/integrity` — the route's registered §24.7
+  applicable-duty set) is checked in BOTH the persisted adjudication's names AND the window's
+  projected duty names; aggregate `allObserved: true` with empty/partial names refuses
+  (`required-duty-slot-unproven`).
+- **[P2] the persisted duty adjudication rides a bounded whitelisted projection**
+  (`native-control-evidence.mjs:91-102` `projectConfirmedWindowDutyAdjudication`;
+  `confirmed-window.mjs` verdict + executor): the duty object no longer bypasses the projector
+  — aggregate booleans coerce to their `=== true` facts, names project as bounded strings
+  (the round-3 rule), the fence projects as a bounded stamp, and unknown fields (diagnostics,
+  private paths, credentials) are dropped. The verdict consumes the SAME projected
+  representation the record persists, so the adjudication and the offline replay share one
+  representation.
+- **[P2] the directed continuation is bounded by the staging deadline**
+  (`confirmed-window.mjs:744-751`): the continuation rides the SAME `boundedSetupRequest`
+  pre-send check and bounded race as the initial setup — a parent turn completing at the
+  staging bound can no longer send the continuation past the allowance (offline row: the
+  continuation is never issued at 180000 ms; the refusal names the bound).
+- **[P2] the instrument's ACTUAL observation-resolution timestamp is retained**
+  (`confirmed-window.mjs:890-970`): the collection and observation-leg reads capture
+  `resolvedAtMs` when first reported (falling back to the read time only when the collector
+  carries none) — the record no longer places the resolution at the later polling time (which
+  would reject a genuine 500 ms cleanup fence; the row proves the 200 ms resolution is
+  retained and the fence stays proven).
+- **[P2] terminal evidence survives an independent collector failure**
+  (`confirmed-window.mjs:886-890,925-927`): the Child terminal facts persist EAGERLY at
+  consumption, and the collection/leg instrument reads catch their own failures as
+  `inconclusive` (redacted) instead of escaping to the outer catch — a later collector failure
+  can no longer erase already-observed native resolution evidence.
+- **[P2] protocol rejections carry attributable bounds**
+  (`confirmed-window.mjs:1218` launcher; `:842-844` controller): a PROTOCOL error reply
+  attaches BOTH the initiation and the rejection-arrival stamps — consistent with the
+  disconnection and write-failure paths — and the controller preserves both, so a real server
+  rejection keeps its send stamp and the executor reports `interrupt.requested: true`. The
+  fake host's scripted refusals model the real error path (the round-3 row's assertions
+  strengthened accordingly: the preserved initiation is the REAL send stamp, the rejection
+  time never substitutes).
+
+**Round-4 RED→GREEN evidence:** the batch RED run showed all eight new assertions failing for
+their named reasons (the thread/start params lacked the override; the continuation was sent past
+the staging bound; the stale pending snapshot admitted outside the pending window; the
+empty-names record settled; the duty projection leaked the oversized name; the collector failure
+erased the terminal facts; the resolution timestamp rode the poll time; the protocol rejection
+erased the send stamp). GREEN after the minimum fixes: the focused three-file run executes
+**94 tests, 94 pass, 0 fail** (the registration grew 80 → 87 `confirmed-window`-prefixed rows:
+seven new rows, plus the launcher row's protocol-error block and the strengthened round-3
+rejection row; three consumer window fixtures gained the required duty slots their overrides
+had dropped, and the partial-adjudication/cleanup-fence negatives gained the honest
+`required-duty-slot-unproven` reason).
+
+**Gates for this round (all commands on the exact final bytes of this commit; probe invocations
+serialized; zero hosted/provider contacts, zero live servers, zero model turns):** focused
+three-file run **94/94**; `tests/test-selection.test.mjs` **6/6**; `npm run lint` **clean**;
+`npm run typecheck` **0 errors**; line endings **555 files LF**; `git diff --check` **clean**;
+and the full isolated suite on THIS round's final bytes: `npm run test:shell-research` →
+**1888 tests, 1888 pass, 0 fail, 0 cancelled, 0 skipped, exit 0** (duration ~33.8 min; the seven
+round-4 registrations join the count — 1881 + 7 = 1888; the CLI rows' spawned-suite totals stay
+pinned, since every new registration lives in the un-guarded branch). The suite ran on the
+exact final committed bytes; the only delta between the run's tree and the amended commit is
+this recording paragraph itself (no test reads the report doc's content — verified).
+
+**Exhaustive self-review round 5 on the amended bytes (2026-11-18, HEAD `f53de10e`): TWO P3
+findings (no P1/P2 — the bytes are sound) fixed; each behavior fix started from its RED row.**
+
+**Codex gate: PENDING BACKFILL.** The codex review of this Task-2 commit was interrupted by an
+explicit workspace credit exhaustion (`Your workspace is out of credits`) while reviewing the
+round-5 amendment; per the quota protocol the range is recorded as base `e98b705c` through THIS
+Task-2 commit's final tip (the tip at backfill time; the verified pre-round-6 tip was
+`f9c4fc87`) for ONE cumulative backfill review once credits recover. No codex verdict is
+claimed for the amended bytes; the four completed codex rounds (17 + 10 + 9 + 8 findings, all
+fixed and re-reviewed) remain recorded above.
+
+- **[P3-1] a host exit during the post-resolution horizon drain no longer overwrites the
+  recorded escalation** (`confirmed-window.mjs:1013-1021`): the drain's `nextNotification` await
+  is now wrapped in the SAME redacted inconclusive boundary as the collector reads — a fatal
+  mid-drain ends the drain, records `inconclusive` ("the post-resolution horizon drain failed
+  (the recorded escalation stands): …"), and the already-set typed refusal (or a settled
+  record's clean refusal-free state) survives. Verified offline in BOTH shapes: (a) both legs
+  observed + the verdict settled → the record carries `all-duties-adjudicated` with NO refusal
+  and the drain failure as inconclusive (previously: the false "the choreography failed before
+  escalation completed" refusal beside the settled state); (b) the child-terminal-only path →
+  the typed BOTH-legs refusal survives (previously replaced). No fail-closed impact: the window
+  is the ≤5 s post-cutoff drain.
+- **[P3-2] one anchor-refresh pass over §40.7's module bullets and the dated blocks** (doc-only;
+  every anchor re-measured against the final bytes — the reviewer's own numbers were verified,
+  not copied): the module bullets now carry `composeConfirmedWindowHostArguments` L139,
+  `projectConfirmedWindowSession` L172, `runConfirmedWindowChoreography` L181,
+  `launchCodexAppServerHost` L1146, `executeConfirmedWindowCase` L1387,
+  `validateNativeControlSource` L115, `projectConfirmedWindowBlock` L130,
+  `admitConfirmedWindowNativeEvidence` L276; the driver bullet now carries the route-mirror
+  L1053, the combination-gate route arms L529–L546, `ShellWaitDependencies` L13311, the record
+  block L1292, the preflight arms L9921ff with `routeDeclared` L9952, and the composers
+  L10568/L10580; the registration bullet's row count is **88** (the round-1-era 44 plus the
+  four gate rounds' registrations plus this round's one new row); the round-4 block's inline cites refreshed to
+  `confirmed-window.mjs:383-416` (the barrier read order), `:744-751` (the continuation),
+  `:842-844` (the delivery-bounds catch), `:1218` (the launcher protocol-error rejection),
+  `:886-890,925-927` (the eager terminal persistence), `native-control-evidence.mjs:91-102`
+  (the duty-adjudication projector) and `:527-529` (the required-slot check); `:318` (the
+  hook-trust override) and `:890-970` (the resolution-timestamp captures) measured exact. The
+  unchanged anchors were verified too (`CONFIRMED_WINDOW_CONTROLLER_VERSION` L35, states L41,
+  `NATIVE_CONTROL_EVIDENCE_VERSION` L25, source set L28, selector L392, parser registration
+  L585, literal gate L654, the dispatch L729, the describe L32587, and the local-process v10
+  pin L16367ff).
+
+**Round-5 RED→GREEN evidence:** the new row failed RED exactly as the finding described (the
+settled record carried the false "before escalation completed" refusal beside its escalation
+state; the child-terminal-only variant's typed refusal was replaced), then GREEN after the
+drain-boundary fix. One RED-row fixture correction is disclosed: the row's first draft joined
+the identity at 10 ms, which made the collector's `observedAtMs: 50` postdate the send and trip
+the round-3 window-ordering conjunct — re-anchored to the green rows' 100 ms join.
+
+**Gates for this round (all commands on the exact final bytes of this commit; probe invocations
+serialized; zero hosted/provider contacts, zero live servers, zero model turns):** focused
+three-file run **95/95**; `tests/test-selection.test.mjs` **6/6**; `npm run lint` **clean**;
+`npm run typecheck` **0 errors**; line endings **555 files LF**; `git diff --check` **clean**;
+and the full isolated suite on THIS round's final bytes: `npm run test:shell-research` →
+**1889 tests / 1889 pass / 0 fail / 0 cancelled / 0 skipped, exit 0** (1888 + this round's one
+new row; the CLI rows' spawned-suite pin held). The suite ran on the exact code/test bytes of
+this commit; the only delta between the run's tree and the amended commit is this recording
+paragraph itself (no test reads the report doc's content — verified in earlier rounds).

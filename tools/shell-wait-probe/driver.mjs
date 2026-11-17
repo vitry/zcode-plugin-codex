@@ -35,6 +35,11 @@ import { EXECUTING_RELEASE_QUALIFICATION_SOURCE, evaluateSurvivalControl, exactR
 import { EXECUTING_SHAPE_DIAGNOSTIC_SOURCE } from './shape-diagnostic.mjs';
 import { EXECUTING_HELPER_MATERIALIZATION, EXECUTING_LOCAL_PROCESS_OBSERVATION_SOURCE, FAKE_ZCODE_NONCE_VARIABLE, LINUX_BTIME_UNCERTAINTY_MS, LINUX_PROC_RESOLUTION_MS, LOCAL_PROCESS_OBSERVATION_VERSION, SPAWN_ANCESTRY_WITNESS_SUFFIXES, SPAWN_ANCESTRY_WITNESS_VERSION, adjudicateLocalDuties, adjudicateLocalExit, admitSpawnAncestryWitness, admitStartupIdentityRecord, composeAncestryJoinForRuntime, observeLocalProcess, parseExactStartIdentity, parseLstartAsUtc, startIdentitiesDefinitivelyDiffer, startIdentityGenerationRelation } from './local-process-observation.mjs';
 import { EXACT_READER_VARIABLE, EXECUTING_SPAWN_WITNESS_PRELOAD_SOURCE, WITNESS_TRANSPORT_ENTRY_VARIABLE } from './spawn-witness-preload.mjs';
+// The confirmed-window staged controller (report §40, the confirmed-window
+// plan Task 2): the route executor dispatch and the TWO new executing
+// modules' module-init byte snapshots for the observer provenance (v10).
+import { EXECUTING_CONFIRMED_WINDOW_SOURCE, executeConfirmedWindowCase } from './confirmed-window.mjs';
+import { EXECUTING_NATIVE_CONTROL_EVIDENCE_SOURCE } from './native-control-evidence.mjs';
 
 
 const repositoryRoot = fileURLToPath(new URL('../..', import.meta.url));
@@ -88,7 +93,14 @@ const MAX_CASE_EXCERPTS = 64;
 // the witness capture's executing provenance after fixture disposal deletes
 // the generated file itself. Copying the v8 digest onto these bytes would
 // misattribute the new input.
-const OBSERVER_DIGEST_TAG = 'zcode-shell-wait-observer-v9';
+// v10 (2026-11-17 confirmed-window Task 2, report §40.5): the staged
+// controller's OWN modules join BOTH constructions — confirmed-window.mjs
+// EXECUTES during live observation (the route's runtime choreography) and
+// native-control-evidence.mjs EXECUTES during the final adjudication (the
+// reload-side verdict the record persists), so both module-init byte
+// snapshots and the record-time reread must bind them: copying the v9
+// digest onto these bytes would misattribute the new observers.
+const OBSERVER_DIGEST_TAG = 'zcode-shell-wait-observer-v10';
 
 // P2 round-29: module-INIT snapshot of the EXECUTING observer source — the
 // driver module body runs only after evidence.mjs has fully loaded, so this
@@ -131,6 +143,12 @@ const EXECUTING_OBSERVER_PROVENANCE = Object.freeze({
     // witness capture's executing provenance source.
     .update(EXECUTING_SPAWN_WITNESS_PRELOAD_SOURCE)
     .update('\0')
+    // (§40.5, v10) the confirmed-window staged controller's runtime module
+    // and its pure reload-side consumer join the construction.
+    .update(EXECUTING_CONFIRMED_WINDOW_SOURCE)
+    .update('\0')
+    .update(EXECUTING_NATIVE_CONTROL_EVIDENCE_SOURCE)
+    .update('\0')
     .update(EXECUTING_LOCAL_PROCESS_RUNTIME_SOURCE)
     .update('\0')
     .update(EXECUTING_DRIVER_SOURCE)
@@ -146,7 +164,7 @@ const EXECUTING_OBSERVER_PROVENANCE = Object.freeze({
     .update('\0')
     .update(executingHelperDigest('scripts/lib/errors.mjs'))
     .digest('hex'),
-  digestInput: `${OBSERVER_DIGEST_TAG} || evidence.mjs || shape-diagnostic.mjs || release-qualification.mjs || closure-observation.mjs || closure-preload.mjs (the extracted generated-preload seam) || spawn-witness-preload.mjs (the spawn-witness preload seam's generator module) || local-process-observation.mjs (the concurrent local-observation runtime the held turn executes) || driver.mjs (executing module-init snapshot, NUL-separated) || scripts/lib/fs.mjs + scripts/lib/process.mjs + scripts/lib/errors.mjs (the executing helper bytes: the MATERIALIZED copies when materialization succeeded, else the production files the observer's fallback loads, NUL-separated)`,
+  digestInput: `${OBSERVER_DIGEST_TAG} || evidence.mjs || shape-diagnostic.mjs || release-qualification.mjs || closure-observation.mjs || closure-preload.mjs (the extracted generated-preload seam) || spawn-witness-preload.mjs (the spawn-witness preload seam's generator module) || confirmed-window.mjs (the staged confirmed-window controller runtime) || native-control-evidence.mjs (the pure reload-side native-control consumer) || local-process-observation.mjs (the concurrent local-observation runtime the held turn executes) || driver.mjs (executing module-init snapshot, NUL-separated) || scripts/lib/fs.mjs + scripts/lib/process.mjs + scripts/lib/errors.mjs (the executing helper bytes: the MATERIALIZED copies when materialization succeeded, else the production files the observer's fallback loads, NUL-separated)`,
   model: null,
   reachableToolFamily: null,
 });
@@ -177,7 +195,7 @@ export async function observerProvenance() {
   // mid-run helper edit is detected as sourcesChangedDuringRun and a
   // pre-run helper change changes the whole digest) — never silently
   // attributed.
-  const [evidenceSource, shapeSource, releaseQualificationSource, closureObservationSource, closurePreloadSource, spawnWitnessPreloadSource, localProcessSource, driverSource, helperFsSource, helperProcessSource, helperErrorsSource] = await Promise.all([
+  const [evidenceSource, shapeSource, releaseQualificationSource, closureObservationSource, closurePreloadSource, spawnWitnessPreloadSource, confirmedWindowSource, nativeControlEvidenceSource, localProcessSource, driverSource, helperFsSource, helperProcessSource, helperErrorsSource] = await Promise.all([
     readFile(fileURLToPath(new URL('./evidence.mjs', import.meta.url))),
     readFile(fileURLToPath(new URL('./shape-diagnostic.mjs', import.meta.url))),
     readFile(fileURLToPath(new URL('./release-qualification.mjs', import.meta.url))),
@@ -186,6 +204,10 @@ export async function observerProvenance() {
     // (§33.7 finding 3, v9) the SAME generator-module input the module-init
     // snapshot binds, read from the working tree at record time.
     readFile(fileURLToPath(new URL('./spawn-witness-preload.mjs', import.meta.url))),
+    // (§40.5, v10) the SAME two generator/runtime modules the module-init
+    // snapshot binds, read from the working tree at record time.
+    readFile(fileURLToPath(new URL('./confirmed-window.mjs', import.meta.url))),
+    readFile(fileURLToPath(new URL('./native-control-evidence.mjs', import.meta.url))),
     readFile(fileURLToPath(new URL('./local-process-observation.mjs', import.meta.url))),
     readFile(fileURLToPath(new URL('./driver.mjs', import.meta.url))),
     readFile(fileURLToPath(new URL('../../scripts/lib/fs.mjs', import.meta.url))),
@@ -206,6 +228,10 @@ export async function observerProvenance() {
     .update('\0')
     .update(spawnWitnessPreloadSource)
     .update('\0')
+    .update(confirmedWindowSource)
+    .update('\0')
+    .update(nativeControlEvidenceSource)
+    .update('\0')
     .update(localProcessSource)
     .update('\0')
     .update(driverSource)
@@ -223,7 +249,7 @@ export async function observerProvenance() {
   return {
     revision: 'working-tree-uncommitted',
     digest,
-    digestInput: `${OBSERVER_DIGEST_TAG} || evidence.mjs || shape-diagnostic.mjs || release-qualification.mjs || closure-observation.mjs || closure-preload.mjs (the extracted generated-preload seam) || spawn-witness-preload.mjs (the spawn-witness preload seam's generator module) || local-process-observation.mjs (the concurrent local-observation runtime the held turn executes) || driver.mjs (working-tree bytes, NUL-separated) || scripts/lib/fs.mjs + scripts/lib/process.mjs + scripts/lib/errors.mjs (the production helper bytes behind the MATERIALIZED copies the local-observation runtime loads, NUL-separated)`,
+    digestInput: `${OBSERVER_DIGEST_TAG} || evidence.mjs || shape-diagnostic.mjs || release-qualification.mjs || closure-observation.mjs || closure-preload.mjs (the extracted generated-preload seam) || spawn-witness-preload.mjs (the spawn-witness preload seam's generator module) || confirmed-window.mjs (the staged confirmed-window controller runtime) || native-control-evidence.mjs (the pure reload-side native-control consumer) || local-process-observation.mjs (the concurrent local-observation runtime the held turn executes) || driver.mjs (working-tree bytes, NUL-separated) || scripts/lib/fs.mjs + scripts/lib/process.mjs + scripts/lib/errors.mjs (the production helper bytes behind the MATERIALIZED copies the local-observation runtime loads, NUL-separated)`,
     model: null,
     reachableToolFamily: null,
   };
@@ -352,6 +378,19 @@ export const INTERRUPT_BASELINE_SELECTOR_VALUE = 'short-window-60000';
  */
 export const SURVIVAL_CONTROL_SELECTOR_VALUE = 'progress-terminal';
 
+/**
+ * The confirmed-window staged-controller route selector (report §40.1, the
+ * confirmed-window plan Task 2 preregistration): ONE closed value, valid
+ * ONLY for `rescue-interrupt` at the candidate 3600000 window with the
+ * config-default pair. The route selects the §39.3 PRIMARY same-host
+ * app-server `turn/interrupt` choreography (§39.9); it SUBSUMES the §16.4
+ * survival control — the unrelated Root-owned control is a mandatory
+ * admission conjunct, so the route always arms it and the separate I1
+ * selector is refused alongside. Absent → every old case stays byte-for-byte
+ * unchanged.
+ */
+export const CONFIRMED_WINDOW_SELECTOR_VALUE = 'confirmed-window';
+
 /** The I0 selector's declared requested window. */
 const INTERRUPT_BASELINE_POLL_MS = 60_000;
 
@@ -478,11 +517,34 @@ function assertSelectorLiteral(value, option, literal) {
  * shared verbatim by the CLI and programmatic boundaries. Runs AFTER the
  * individual field validations with the case-defaulted poll window, so the
  * declared per-selector windows are enforced on the effective value.
- * @param {{ case: string, pollMs: number, waitPolicy: string | null, interruptBaselineSelector: string | null, survivalControlSelector: string | null }} input
+ * @param {{ case: string, pollMs: number, waitPolicy: string | null, interruptBaselineSelector: string | null, survivalControlSelector: string | null, interruptRouteSelector?: string | null }} input
  */
 function assertWaitPolicyCombination(input) {
   if (input.interruptBaselineSelector !== null && input.survivalControlSelector !== null) {
     throw invalidCaseInput('--interrupt-baseline-selector and --survival-control-selector are mutually exclusive: one run is either the I0 baseline or the I1 survival-control case, never both.');
+  }
+  // The confirmed-window staged-controller route (report §40.1, the
+  // confirmed-window plan Task 2 preregistration): ONE closed literal, valid
+  // ONLY for rescue-interrupt at the candidate window with the config-default
+  // pair, and mutually exclusive with BOTH closed interrupt selectors — the
+  // route SUBSUMES the §16.4 survival control (its mandatory admission
+  // conjunct), so a second control declaration is a double declaration.
+  // The declaration-conflict checks fire BEFORE the per-selector window rules
+  // so a double declaration is refused as such regardless of windows.
+  const routeSelector = input.interruptRouteSelector ?? null;
+  if (routeSelector !== null) {
+    if (input.interruptBaselineSelector !== null || input.survivalControlSelector !== null) {
+      throw invalidCaseInput('--interrupt-route-selector confirmed-window is mutually exclusive with --interrupt-baseline-selector and --survival-control-selector: the route subsumes the §16.4 survival control as its own mandatory admission conjunct.');
+    }
+    if (input.case !== 'rescue-interrupt') {
+      throw invalidCaseInput('--interrupt-route-selector is only valid for the rescue-interrupt case.');
+    }
+    if (input.waitPolicy !== 'config-default') {
+      throw invalidCaseInput('--interrupt-route-selector confirmed-window requires the --wait-policy config-default --exec-default-ms pair.');
+    }
+    if (input.pollMs !== SURVIVAL_CONTROL_POLL_MS) {
+      throw invalidCaseInput(`--interrupt-route-selector confirmed-window requires the candidate ${String(SURVIVAL_CONTROL_POLL_MS)} observation window (rescue-interrupt default; pass --poll-ms ${String(SURVIVAL_CONTROL_POLL_MS)}).`);
+    }
   }
   if (input.waitPolicy !== null && !(input.case in SHELL_WAIT_WAIT_POLICY_CASES)) {
     throw invalidCaseInput(`--wait-policy config-default is not registered for the ${input.case} case: the closed §16.6 matrix declares every supported combination.`);
@@ -509,6 +571,7 @@ function assertWaitPolicyCombination(input) {
       throw invalidCaseInput(`--survival-control-selector requires the candidate ${String(SURVIVAL_CONTROL_POLL_MS)} observation window (rescue-interrupt default; pass --poll-ms ${String(SURVIVAL_CONTROL_POLL_MS)}).`);
     }
   }
+  // The route's own gates above carry the full preregistered combination.
 }
 
 /** @param {readonly string[]} argv @returns {ShellWaitCaseInput | { help: true }} */
@@ -519,7 +582,7 @@ export function parseShellWaitArguments(argv) {
   if (argv.includes('--help')) return { help: true };
   /** @type {Record<string, string>} */
   const values = {};
-  const known = ['--case', '--codex', '--source-sha', '--output', '--worker-duration-ms', '--cap-ms', '--poll-ms', '--budget-ms', '--status-query-timeout-ms', '--unclassified-structural-diagnostic', '--unclassified-shape-diagnostic', '--model', '--wait-policy', '--exec-default-ms', '--interrupt-baseline-selector', '--survival-control-selector'];
+  const known = ['--case', '--codex', '--source-sha', '--output', '--worker-duration-ms', '--cap-ms', '--poll-ms', '--budget-ms', '--status-query-timeout-ms', '--unclassified-structural-diagnostic', '--unclassified-shape-diagnostic', '--model', '--wait-policy', '--exec-default-ms', '--interrupt-baseline-selector', '--survival-control-selector', '--interrupt-route-selector'];
   for (let index = 0; index < argv.length; index += 2) {
     const option = argv[index];
     const value = argv[index + 1];
@@ -588,6 +651,7 @@ export function parseShellWaitArguments(argv) {
   // values, validated before the per-case combination gate below.
   assertSelectorLiteral(values['--interrupt-baseline-selector'], '--interrupt-baseline-selector', INTERRUPT_BASELINE_SELECTOR_VALUE);
   assertSelectorLiteral(values['--survival-control-selector'], '--survival-control-selector', SURVIVAL_CONTROL_SELECTOR_VALUE);
+  assertSelectorLiteral(values['--interrupt-route-selector'], '--interrupt-route-selector', CONFIRMED_WINDOW_SELECTOR_VALUE);
   const defaults = shellWaitCaseDefaults(/** @type {string} */ (values['--case']));
   const capMs = values['--cap-ms'] !== undefined ? Number(values['--cap-ms']) : defaults.capMs;
   const pollMs = values['--poll-ms'] !== undefined ? Number(values['--poll-ms']) : defaults.pollMs;
@@ -605,6 +669,7 @@ export function parseShellWaitArguments(argv) {
     waitPolicy: values['--wait-policy'] ?? null,
     interruptBaselineSelector: values['--interrupt-baseline-selector'] ?? null,
     survivalControlSelector: values['--survival-control-selector'] ?? null,
+    interruptRouteSelector: values['--interrupt-route-selector'] ?? null,
   });
   return {
     case: /** @type {ShellWaitCaseLabel} */ (values['--case']),
@@ -627,6 +692,7 @@ export function parseShellWaitArguments(argv) {
     execDefaultMs: values['--exec-default-ms'] !== undefined ? Number(values['--exec-default-ms']) : null,
     interruptBaselineSelector: values['--interrupt-baseline-selector'] ?? null,
     survivalControlSelector: values['--survival-control-selector'] ?? null,
+    interruptRouteSelector: values['--interrupt-route-selector'] ?? null,
   };
 }
 
@@ -653,7 +719,69 @@ export async function runShellWaitCase(input, dependencies = {}) {
   await assertCodexBinaryExists(caseInput.codexBinary);
   await assertOutputDirectoryExists(caseInput.output);
   const createFixture = dependencies.createFixture ?? createShellWaitFixture;
-  const executeCase = executeLiveCase ?? defaultLiveExecutor;
+  // (§40.1) the confirmed-window route dispatches the ACTUAL staged
+  // controller through the standard entry; an injected live executor keeps
+  // overriding it for instrument tests. The route's research-only host
+  // launcher and collector injections ride the dedicated dependency names so
+  // the offline tests drive the real choreography over deterministic fake
+  // protocol streams.
+  const executeCase = executeLiveCase
+    ?? (caseInput.interruptRouteSelector === CONFIRMED_WINDOW_SELECTOR_VALUE
+      ? (/** @type {{ input: ValidatedShellWaitCase, fixture: ShellWaitFixtureHandle }} */ routeContext) => executeConfirmedWindowCase(routeContext, {
+        launchConfirmedWindowHost: dependencies.confirmedWindowHost ?? null,
+        observers: dependencies.confirmedWindowObservers ?? null,
+        dutyAdjudication: dependencies.confirmedWindowDutyAdjudication ?? null,
+        // The ONE clock the choreography and the owned host share: a real
+        // run uses the defaults; an offline research injection composes the
+        // deterministic fixture clock through these seams (never two clocks).
+        now: dependencies.confirmedWindowNow,
+        wallClockNow: dependencies.confirmedWindowWallClockNow,
+        sleep: dependencies.confirmedWindowSleep,
+        hostLaunchDependencies: {
+          now: dependencies.confirmedWindowNow,
+          waitUntil: dependencies.confirmedWindowWaitUntil,
+        },
+        redact: (error) => redactPrivatePaths(error, routeContext.fixture),
+        preflight: async () => {
+          // (P1-7, 2026-11-18 codex gate round) A normal CLI invocation
+          // supplies none of the confirmedWindow* dependency seams: the
+          // executor used to receive null observers and null duty
+          // adjudication yet STILL launched the real host and started the
+          // model turn — discovering every barrier collector unarmed only at
+          // the staging bound, after the hosted case was consumed. The
+          // staged barrier collectors and the persisted duty adjudication
+          // are the route's REQUIRED instrumentation: a known-absent
+          // mechanism is a named pre-launch refusal BEFORE any host launch,
+          // never a runtime discovery. (The real host launcher itself stays
+          // the legitimate default — it is the counted case's own path.)
+          // (round-3 P2-6) presence is not arming: EVERY required collector
+          // must be CALLABLE before any hosted case — a non-null observer
+          // object missing a callback used to pass the preflight and launch
+          // the real host and model turn, with the missing collector
+          // discovered only by the staging barrier.
+          const requiredCollectorNames = ['pendingObservation', 'ancestryBaseline', 'dutyFacts', 'controlFacts'];
+          const nonCallableCollectors = dependencies.confirmedWindowObservers == null
+            ? requiredCollectorNames
+            : requiredCollectorNames.filter((name) => typeof /** @type {Record<string, any>} */ (dependencies.confirmedWindowObservers)[name] !== 'function');
+          if (nonCallableCollectors.length > 0 || dependencies.confirmedWindowDutyAdjudication == null) {
+            return {
+              ok: false,
+              reason: `the confirmed-window route instrumentation is not armed: the staged barrier collectors (observers) and the persisted duty adjudication are REQUIRED and callable before any hosted case (missing or not callable: ${nonCallableCollectors.length > 0 ? nonCallableCollectors.join(', ') : 'none'}; duty adjudication ${dependencies.confirmedWindowDutyAdjudication == null ? 'absent' : 'present'}) — a known-absent positive mechanism is refused pre-launch, never measured`,
+            };
+          }
+          return evaluateLiveLaunchPreflight({
+            case: routeContext.input.case,
+            interruptRouteSelector: routeContext.input.interruptRouteSelector ?? null,
+            survivalControlSelector: routeContext.input.survivalControlSelector,
+            execDefaultMs: routeContext.input.execDefaultMs ?? null,
+            model: routeContext.input.model ?? null,
+            fixture: routeContext.fixture,
+          });
+        },
+        stagingPrompt: composeConfirmedWindowStagingPrompt({ case: /** @type {ShellWaitCaseLabel} */ (routeContext.input.case) }, routeContext.fixture),
+        continuationPrompt: composeConfirmedWindowContinuationPrompt({ case: /** @type {ShellWaitCaseLabel} */ (routeContext.input.case) }, routeContext.fixture),
+      })
+      : defaultLiveExecutor);
   // The launched native executable's SHA-256 (codex gate round 5): pinned
   // for WAIT-POLICY runs only — legacy records keep their pinned provenance
   // schema (disclosed: no digest added there). A hashing failure resolves to
@@ -682,7 +810,12 @@ export async function runShellWaitCase(input, dependencies = {}) {
     // as the closed boolean flag only — the selector literal itself and every
     // command byte stay driver/fixture-owned. The fixture writes its OWN
     // bounded control script and records its closed facts.
-    ...(caseInput.survivalControlSelector !== null ? { survivalControl: true } : {}),
+    // (§40.1) the confirmed-window route SUBSUMES the §16.4 survival control:
+    // the unrelated Root-owned control is a mandatory admission conjunct of
+    // the staged choreography, so the route always arms it.
+    ...(caseInput.survivalControlSelector !== null || caseInput.interruptRouteSelector !== null
+      ? { survivalControl: true }
+      : {}),
     // Codex round 2: the registered stdout-capture requirement
     // (STDOUT_CAPTURE_REQUIRED_CASES — the §19.3(e) O1/I duty) ARMS the seam
     // at fixture preparation, so a required case can actually reach the host
@@ -913,6 +1046,12 @@ function validateCaseInput(input) {
     && input.survivalControlSelector !== SURVIVAL_CONTROL_SELECTOR_VALUE) {
     throw invalidCaseInput(`survivalControlSelector must be exactly "${SURVIVAL_CONTROL_SELECTOR_VALUE}" when present.`);
   }
+  // The confirmed-window route selector (report §40.1): the programmatic
+  // mirror of the CLI literal gate.
+  if (input.interruptRouteSelector !== undefined && input.interruptRouteSelector !== null
+    && input.interruptRouteSelector !== CONFIRMED_WINDOW_SELECTOR_VALUE) {
+    throw invalidCaseInput(`interruptRouteSelector must be exactly "${CONFIRMED_WINDOW_SELECTOR_VALUE}" when present.`);
+  }
   // The §16.6 per-case policy matrix and selector windows: the same shared
   // combination gate as the CLI, enforced BEFORE any side effect.
   assertWaitPolicyCombination({
@@ -921,6 +1060,7 @@ function validateCaseInput(input) {
     waitPolicy: input.waitPolicy ?? null,
     interruptBaselineSelector: input.interruptBaselineSelector ?? null,
     survivalControlSelector: input.survivalControlSelector ?? null,
+    interruptRouteSelector: input.interruptRouteSelector ?? null,
   });
   return {
     case: /** @type {ShellWaitCaseLabel} */ (input.case),
@@ -939,6 +1079,7 @@ function validateCaseInput(input) {
     execDefaultMs: input.execDefaultMs ?? null,
     interruptBaselineSelector: input.interruptBaselineSelector ?? null,
     survivalControlSelector: input.survivalControlSelector ?? null,
+    interruptRouteSelector: input.interruptRouteSelector ?? null,
   };
 }
 
@@ -1141,6 +1282,15 @@ function buildCaseRecord(caseInput, fixture, liveFacts, /** @type {'executed' | 
         ? { stdoutCapture: /** @type {any} */ (liveFacts.hostResult).stdoutCapture }
         : {}),
     },
+    // (§40.5) the confirmed-window staged-controller block — the versioned
+    // projected session facts, the persisted duty adjudication and the
+    // reload-side evidence verdict — persisted ONLY for route runs, so
+    // legacy records stay byte-identical. The block is bounded/redacted by
+    // construction (the whitelisted projector), and the verdict is
+    // recomputable offline from the retained record alone.
+    ...(caseInput.interruptRouteSelector !== null && caseInput.interruptRouteSelector !== undefined
+      ? { confirmedWindow: liveFacts.confirmedWindow ?? null }
+      : {}),
     // R4: the interrupt block carries either measured interaction facts or an
     // explicit investigated reason. Unknown optional facts stay null — never
     // a fabricated delivery — and the cleanup contract keeps its explicit
@@ -9764,7 +9914,7 @@ export const SURVIVAL_CONTROL_DECLARATION_FACTS = Object.freeze({
  * anchor the §16.4 emission-tag machinery. Runtime facts (model obedience,
  * pending state, retained host-event fields) stay facts the trial must
  * establish — never preflight-guessed booleans.
- * @param {{ case: string, survivalControlSelector: string | null, fixture: any, gateArtifacts?: { completionGatePath?: string, completionGateReachedPath?: string } }} input
+ * @param {{ case: string, survivalControlSelector: string | null, interruptRouteSelector?: string | null, execDefaultMs?: number | null, model?: string | null, fixture: any, gateArtifacts?: { completionGatePath?: string, completionGateReachedPath?: string } }} input
  * @param {{ lstat?: typeof import('node:fs/promises').lstat, readFile?: typeof import('node:fs/promises').readFile, wrappedInterruptRequiredCases?: readonly string[], daemonWitnessReliantCases?: readonly string[] }} [dependencies]
  * @returns {Promise<{ ok: boolean, reason: string | null }>}
  */
@@ -9797,9 +9947,29 @@ export async function evaluateLiveLaunchPreflight(input, dependencies = {}) {
     throw invalidCaseInput('the live-launch preflight needs the validated case input and the fixture handle.');
   }
   if (input.case !== 'rescue-interrupt') return { ok: true, reason: null };
+  // (§40.1, confirmed-window Task 2) the route SUBSUMES the §16.4 control:
+  // a declared route run carries the same declared-control check below.
+  const routeDeclared = input.interruptRouteSelector === CONFIRMED_WINDOW_SELECTOR_VALUE;
+  // (route-1) the composed ONE-host research argv must validate against the
+  // fixture composition BEFORE any launch would happen (a known-invalid
+  // composition is a named pre-launch refusal, never a runtime discovery).
+  // The check is instrumentation/configuration ONLY: it never predicts the
+  // model's future action, and a passing preflight is NEVER a guaranteed
+  // spawn — readiness stays what the staged choreography proves.
+  if (routeDeclared) {
+    try {
+      const confirmedWindowModule = await import('./confirmed-window.mjs');
+      confirmedWindowModule.composeConfirmedWindowHostArguments(
+        { workspace: fixture.workspace, codexHome: fixture.codexHome, env: fixture.env },
+        { execDefaultMs: input.execDefaultMs ?? null, model: input.model ?? null },
+      );
+    } catch (error) {
+      return { ok: false, reason: `the confirmed-window host composition is invalid: ${error instanceof Error ? error.message : String(error)}` };
+    }
+  }
   // (1) The declared survival control must exist on disk (the fixture-owned
   // script bytes the directive references).
-  if (input.survivalControlSelector !== null && input.survivalControlSelector !== undefined) {
+  if (input.survivalControlSelector !== null && input.survivalControlSelector !== undefined || routeDeclared) {
     const controlPath = fixture.survivalControlPath;
     if (typeof controlPath !== 'string' || controlPath.length === 0) {
       return { ok: false, reason: 'the declared survival-control selector has no fixture-owned control script (the control observer is known absent)' };
@@ -10386,6 +10556,32 @@ export function statusWaitInvocation(owned) {
       + `Use the installed skill exactly once now and return only its final public output for the explicitly owned job `
       + `identified in this invocation: $zcode:status ${owned.jobId} --wait --timeout-ms ${owned.queryTimeoutMs}`,
   };
+}
+
+/**
+ * The confirmed-window route's composed STAGING prompt (§39.9 step 2/5): the
+ * registered case prompt with the §16.4 control directive riding the SAME
+ * turn — the unrelated Root-owned control launches through the parent's own
+ * exec handle inside its staging turn.
+ * @param {{ case: ShellWaitCaseLabel }} input @param {any} fixture
+ */
+function composeConfirmedWindowStagingPrompt(input, fixture) {
+  const base = shellWaitCasePrompt(input.case);
+  return typeof fixture?.survivalControlPath === 'string'
+    ? `${base} ${survivalControlPromptDirective(fixture.survivalControlPath)}`
+    : base;
+}
+
+/**
+ * The ONE permitted directed continuation's CHANGED prompt (§39.9 step 4): an
+ * explicitly authorized changed staging step — never an unchanged retry.
+ * @param {{ case: ShellWaitCaseLabel }} input @param {any} fixture
+ */
+function composeConfirmedWindowContinuationPrompt(input, fixture) {
+  const base = `${shellWaitCasePrompt(input.case)} DIRECTED CONTINUATION (the authorized changed staging step): the named Rescue spawn has not happened yet; this is the one directed correction — spawn the Rescue agent now exactly per the named Role instructions, and do nothing else.`;
+  return typeof fixture?.survivalControlPath === 'string'
+    ? `${base} ${survivalControlPromptDirective(fixture.survivalControlPath)}`
+    : base;
 }
 
 /**
@@ -13034,6 +13230,7 @@ const defaultLiveExecutor = /** @type {any} */ (executeDefaultLiveCase);
  *   execDefaultMs: number | null,
  *   interruptBaselineSelector: string | null,
  *   survivalControlSelector: string | null,
+ *   interruptRouteSelector: string | null,
  * }} ValidatedShellWaitCase
  * @typedef {'rescue-baseline'|'rescue-long'|'rescue-repeat'|'rescue-noise'|'rescue-interrupt'|'review-wait'|'adversarial-review-wait'|'status-wait'|'background'} ShellWaitCaseLabel
  * @typedef {{
@@ -13054,6 +13251,7 @@ const defaultLiveExecutor = /** @type {any} */ (executeDefaultLiveCase);
  *   execDefaultMs?: number | null,
  *   interruptBaselineSelector?: string | null,
  *   survivalControlSelector?: string | null,
+ *   interruptRouteSelector?: string | null,
  * }} ShellWaitCaseInput
  * @typedef {import('./fixture.mjs').ShellWaitFixtureHandle} ShellWaitFixtureHandle
  * @typedef {{
@@ -13096,12 +13294,20 @@ const defaultLiveExecutor = /** @type {any} */ (executeDefaultLiveCase);
  *   statusQuery?: Record<string, unknown> | null,
  *   collection?: { rolloutCount?: number | null, childToolCallCount?: number | null, truncated?: boolean },
  *   excerpts?: unknown[],
+ *   confirmedWindow?: { controllerVersion?: number, block?: Record<string, unknown>, duties?: Record<string, unknown> | null, evidence?: Record<string, unknown> | null } | null,
  *   inconclusive?: { reason: string } | null,
  * }} ShellWaitLiveFacts
  * @typedef {{
  *   createFixture?: typeof createShellWaitFixture,
  *   executeLiveCase?: (context: { input: ShellWaitCaseInput, fixture: ShellWaitFixtureHandle }) => Promise<ShellWaitLiveFacts>,
  *   observerProvenance?: typeof observerProvenance,
+ *   confirmedWindowHost?: (launch: Record<string, unknown>) => Promise<unknown>,
+ *   confirmedWindowObservers?: Record<string, unknown>,
+ *   confirmedWindowDutyAdjudication?: Record<string, unknown> | null,
+ *   confirmedWindowNow?: () => number,
+ *   confirmedWindowWallClockNow?: () => number,
+ *   confirmedWindowSleep?: (ms: number) => Promise<void>,
+ *   confirmedWindowWaitUntil?: (targetAbsMs: number) => Promise<void>,
  * }} ShellWaitDependencies
  */
 
@@ -13112,9 +13318,10 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === pathToFileURL(mod
     + `[--poll-ms ms] [--budget-ms ms] [--status-query-timeout-ms ms] `
     + `[--unclassified-structural-diagnostic 1] [--unclassified-shape-diagnostic 1] [--model <id>] `
     + `[--wait-policy config-default --exec-default-ms ms] `
-    + `[--interrupt-baseline-selector ${INTERRUPT_BASELINE_SELECTOR_VALUE} | --survival-control-selector ${SURVIVAL_CONTROL_SELECTOR_VALUE}] `
+    + `[--interrupt-baseline-selector ${INTERRUPT_BASELINE_SELECTOR_VALUE} | --survival-control-selector ${SURVIVAL_CONTROL_SELECTOR_VALUE} | --interrupt-route-selector ${CONFIRMED_WINDOW_SELECTOR_VALUE}] `
     + `(the wait policy is valid for every registered case with its declared §16.6 combination; `
-    + `the interrupt selectors are valid only for rescue-interrupt at their declared windows)\n`
+    + `the interrupt selectors are valid only for rescue-interrupt at their declared windows; `
+    + `the route selector selects the staged confirmed-window choreography)\n`
     + `cases: ${SHELL_WAIT_CASES.join(', ')}`;
   try {
     const parsed = parseShellWaitArguments(process.argv.slice(2));
