@@ -35348,3 +35348,389 @@ package.json npm-shrinkwrap.json`) is EMPTY — this section's commit changes ON
 target exists); no unresolved placeholder markers, no trailing whitespace, final newlines
 present; `git status --porcelain` is clean after the commit. Historical sections remain
 byte-untouched (add-only).
+
+## 39. 2026-11-17 confirmed-window task 1: the staged staging/control route qualified — same-host app-server `turn/interrupt` as PRIMARY, the TUI operator-assisted exact-Child stop as the single distinct ALTERNATE, the exec surface REJECTED; the transport-specific evidence contract and choreography frozen (offline; zero model turns, zero hosted/provider contacts, zero live servers)
+
+This section executes Task 1 of
+[the confirmed-window plan](../superpowers/plans/2026-11-17-rescue-shell-wait-confirmed-window.md)
+against the worktree at HEAD `c8bd3484` (branch `docs/rescue-shell-wait-confirmed-window`;
+`git status --porcelain` EMPTY while every read below ran). It is an OFFLINE task throughout:
+ZERO hosted/provider contacts, no persistent server, no interactive host start, no model turn —
+the only executed work was the exact binary's local `--help`/`--version`, its OFFLINE protocol
+schema generation (output written to a disposable private temp directory, read, then removed),
+read-only `git` operations against the read-only Codex source pin, and local hashing. It freezes
+the Task-1 deliverable BEFORE any implementation: the route comparison across all required axes,
+one primary route with its mechanism evidence, precise rejection reasons for the unavailable
+candidates, the cohort-compatibility registration, the actual-session instruction evidence
+levels, and the staged choreography/transport-specific evidence contract. Every historical
+section above is byte-untouched (add-only); the §38 verdict, ledger and labels are unchanged.
+
+### 39.1 The registration environment and pins (all re-verified now; nothing trusted forward)
+
+- **Worktree/base:** the plan's fresh base `547bad17fab6fe5c47f690fe76a3f76324c6c4e1` (merge of
+  PR #77) is a verified ancestor of HEAD `c8bd3484a1d7ecea2ace41385ee01039d8ef5d9c`; the tree is
+  clean; only this report changes in this section's commit. Node v24.14.0, Darwin arm64.
+- **Recovered binary RE-VERIFIED EXACT:** `/Users/zhangzikai/Workspace/Codes/tmp/rescue-settlement-trial/codex-0.163.0/bin/codex`
+  reports `codex-cli 0.163.0` and hashes SHA-256 `8813367285524ac798dd96d1b071aea30d58708c7226fd236cd275cf1cfdee31`
+  — byte-exact to §34.2's frozen cohort digest. No ambient substitution; the completed recovery
+  search was NOT repeated; nothing was written into active caches or the source checkout.
+- **Read-only source pin:** `/Users/zhangzikai/Workspace/Codes/github/codex`, HEAD ==
+  `dffa0deb69268ed4ac31578794c9ea897b336ae3`, `git status --porcelain` EMPTY. All ten §2
+  referenced paths exist at the pin unchanged (no moved-path discovery was needed); every citation
+  below reproduces as `git show dffa0deb69268ed4ac31578794c9ea897b336ae3:<path>`. The checkout was
+  never written to.
+- **Source/binary correspondence is NOT established** (standing discipline). The installed-surface
+  facts in §39.2 come from the binary's OWN offline schema generation and help text — not from any
+  source mapping, and not from any live server.
+
+### 39.2 Installed-protocol facts from OFFLINE schema generation (no live server; presence, not behavior)
+
+The exact binary exposes `codex app-server` with subcommands `daemon`/`proxy`/`generate-ts`/
+`generate-json-schema`; `--listen` accepts `stdio://` (default), `unix://`, `unix://PATH`,
+`ws://IP:PORT`, `off`; the shared `-c key=value` / `--enable <FEATURE>` config surface exists on
+the subcommand; `codex agents` ("Browse all agent sessions on the shared local app-server daemon")
+and `codex queue --thread <THREAD> --message <TEXT>` exist. Running `generate-json-schema` OFFLINE
+(the plan-permitted schema generation; no server) on the exact binary produced, among others:
+
+- `ClientRequest.json` defines method **`turn/interrupt`** with
+  `TurnInterruptParams {threadId, turnId}` — both required, `turnId` a plain string (the
+  empty-string startup form is representable; §39.9 step 7 forbids it for this case). The same
+  schema defines `thread/start`, `turn/start`, `turn/steer`, `thread/list`, `thread/loaded/list`,
+  `thread/read`, `thread/resume`.
+- `ServerNotification.json` defines **`SubAgentActivity`** thread items with REQUIRED
+  `agentThreadId`, `agentPath`, `id`, `kind` (enum `started|interacted|interrupted|completed`) and
+  OPTIONAL `model` ("Resolved model at sub-agent creation") and `reasoningEffort`; plus
+  `TurnStartedNotification {threadId, turn{id, completedAt, durationMs, error, items…}}`,
+  `thread/started`, `thread/status/changed`, `turn/completed`. **Schema-presence caveat, verified
+  at the pin:** `thread/started` is emitted ONLY by explicit RPC creation handlers —
+  `thread_processor.rs:1652–1669` (`thread/start`), `:5689–5711` (`thread/fork`), and
+  `turn_processor.rs:1546–1549` (the detached-review runner) — NEVER by the listener-attach path
+  a model-spawned Child goes through, so no spawned-Child contract may require it (§39.3).
+
+**What this proves and what it does not:** the `turn/interrupt` method and the Child-identity
+notification shapes EXIST on the installed 0.163.0 binary's protocol surface. It is NOT a
+live-server test, NOT evidence that any session/Child/notification ever flowed, and NOT effective
+model identity. Every live behavior below is a staged-verification item inside the counted case.
+
+### 39.3 Route (a) — same-host app-server `turn/interrupt` (source-confirmed at the pin)
+
+**Delivery chain (all citations at `dffa0deb…`; `codex-rs/` prefixes omitted for readability):**
+
+- Method registration: `app-server-protocol/src/protocol/common.rs:1075` maps
+  `TurnInterrupt => "turn/interrupt"`; `app-server/src/message_processor.rs:1673` routes
+  `ClientRequest::TurnInterrupt` to `turn_processor.turn_interrupt` (`request_processors/turn_processor.rs:269–279`).
+- Target validation and submission (`request_processors/turn_processor.rs:1622–1684`,
+  `turn_interrupt_inner`): `load_thread` (:377–392) resolves the thread ONLY from THIS process's
+  manager (`core/src/thread_manager.rs:952–954`; registration at :2483–2505) and fails
+  `invalid_request("thread not found: …")` otherwise; the request's `turn_id` must equal the
+  thread state's ACTIVE turn id (`invalid_request("expected active turn id … but found …")` at
+  :1639–1644); when NO active turn exists, a match of the last terminal turn id OR a non-running
+  thread is REJECTED (`invalid_request("no active turn to interrupt")` at :1645–1649) — the
+  accepted race window is a non-active, non-terminal id on a STILL-RUNNING thread, which then
+  joins `pending_interrupts` (:1650) and is answered at the thread's turn-end event; `Op::Interrupt`
+  is submitted on the loaded thread (:1660–1662; core handling `session/handlers.rs:493–496`);
+  the submission error path removes the pending entry (:1666–1673).
+- Semantic reply: `app-server/src/bespoke_event_handling.rs:1571–1585`
+  (`respond_to_pending_interrupts`) answers each pending interrupt with `TurnInterruptResponse {}`
+  from BOTH thread end-event arms — the `TurnComplete` arm (:186–189) and the `TurnAborted` arm
+  (:1208–1211) — so the reply can also arrive on a NATURAL turn completion; it is a TRANSPORT
+  reply, never itself the Child resolution (the §24.4 f2/f4 separation carries; §39.9 step 8
+  types the two paths).
+- **Same-manager Child reachability (the decisive composition):** the plugin's named route spawns
+  the Child as a NATIVE v2 agent (report §4: SKILL L126–135, `spawn_agent({agent_type:
+  'zcode-rescue'})`), through `core/src/thread_spawn.rs:58–166` (`thread_spawn::spawn` —
+  `prepare_agent_spawn_config` defined in `core/src/agent/child_config.rs:52`, called at
+  `thread_spawn.rs:85–97`, then `agent_control.spawn` at :137–161) → `core/src/agent/control/spawn.rs:681–849`
+  (`spawn_agent_internal` → **`state.spawn_child_thread`** at :841–849) — the SAME
+  `ThreadManager` state that `load_thread` consults. When the parent Root is hosted in an
+  app-server process, the model-spawned Child thread is therefore registered in and addressable by
+  THAT SAME server's manager: `turn/interrupt` with the Child's thread id resolves it in-process.
+  No second process, no attachment, no synthesis.
+- **Controller identity observation (no guessed ids):** on ANY thread creation — including a
+  v2 Child spawned mid-turn by the model — the app-server event loop receives the
+  `thread_created` broadcast and auto-attaches every INITIALIZED connection as a listener
+  (`app-server/src/lib.rs:1300–1318` → `thread_processor.rs:3770–3839`, per-connection
+  `ensure_conversation_listener` at :3830–3838; receiver at :3732–3734). The attached listener
+  forwards the thread's CORE events — it emits NO `thread/started` (§39.2's caveat): the
+  controller's own connection therefore receives the parent's `SubAgentActivity` item (kind
+  `started`, exact `agentThreadId`, resolved `model`) on the PARENT stream, and the Child's
+  `turn/started` on the CHILD stream (`TurnStartedNotification {threadId, turn{id, status
+  InProgress,…}}` from `EventMsg::TurnStarted`, `bespoke_event_handling.rs:155–185`) — the JOIN
+  of those two is the exact native identity the interrupt requires. Late attachment loses
+  nothing: the spawned Child's events queue in its session's UNBOUNDED event channel
+  (`core/src/session/mod.rs:428` `rx_event`, created `:648` via `async_channel::unbounded`,
+  consumed by `next_event` at :1172–1179) until the listener reads them, and the creation
+  broadcast fires at `agent/control/spawn.rs:978`, immediately after input admission (:944–947).
+- **The v2 direct-input prohibition does NOT gate interruption:** `ensure_direct_input_allowed`
+  (`request_processors/thread_input.rs:8–37`, error "direct app-server input is not allowed for
+  multi-agent v2 sub-agents") is called on INPUT paths (`turn_processor.rs` call sites :221,
+  :538, :947, :1001, :1056, :1193, :1584, through the wrapper defined at :394–400);
+  `turn_interrupt_inner` contains no such gate. The prohibition's authority is preserved intact:
+  the choreography never sends the Child any input (§39.9).
+- **Model-tool distinctness (plan §2 row 5, verified):** `turn/interrupt` is a client RPC. The
+  model's `interrupt_agent` tool (`core/src/tools/handlers/multi_agents_v2/interrupt_agent.rs:11–13,33–75`;
+  backend `core/src/agent/control/interrupt.rs:14–51` — root/self rejection :26–36, the tolerated
+  `ThreadNotFound`/`InternalAgentDied` already-dead path :43–48) is a DIFFERENT source. An RPC
+  trial never populates the model-tool `callCount`, and vice versa.
+- **Cross-process prohibition (why same-host only):** `load_thread` cannot see another process's
+  manager; `resume_running_thread` (`thread_processor.rs:4498–4548`) resolves COLD stored history
+  and returns `NotRunning`/new conversations — never an attachment to another process's live
+  Child. Sharing `CODEX_HOME`, an id, or history does not preserve the original live handle.
+
+**Route-(a) axis table (each axis recorded; source-confirmed unless labelled otherwise):**
+
+| Axis | Route (a) finding |
+| --- | --- |
+| Actual-parent creation | ONE owned `codex app-server` process launched with the fixture's isolated `CODEX_HOME` and the registered `-c`/`--enable` overrides (the same config-transport keys as the exec composition; installed application is a §39.6 verification item). `initialize` → `thread/start` (fixture cwd/config) → `turn/start` with the composed staging prompt creates a REAL hosted parent; the Root's Rescue spawn decision remains a model runtime outcome (the §37.4 T risk carried honestly). |
+| Named-Role/preparation/binding/launcher support | Byte-unchanged production plugin (roles/skills/hooks/scripts in the fixture home). The spawn/preparation/binding chain is core+plugin machinery inside the same process; hooks are SESSION-level (`core/src/session/session.rs:1623–1735`), so the UserPromptSubmit descriptor and SubagentStart forwarding publication fire on an app-server-hosted parent exactly as production prescribes (installed firing = verification item). |
+| Child lifetime across parent completion/input | The Child is a resident v2 thread of the same manager; the choreography interrupts INSIDE the held parent turn's pending window, so idle-eviction/residency rules (`thread_processor.rs:3788–3793`: only persisted V2 children reload after eviction) are never load-bearing mid-turn. No reliance on post-parent-completion attachment is registered. |
+| Native target/control access | Exact Child thread id from the SOURCE-SUPPORTED JOIN of the parent's `SubAgentActivity.agentThreadId` with the Child's own `turn/started.threadId` — a spawned v2 Child emits NO `thread/started` (§39.2/§39.3), and this join uses only events the listener forwarding actually delivers, so it is achievable whenever the real Child and its turn exist; active turn id from that same Child `turn/started`. All observed on the controller's own attached connections; control via ONE validated `turn/interrupt` whose target equality the server itself enforces. |
+| Ownership | The host process owns the Child; the controller sends an RPC INTO the owning host and never substitutes, re-parents, or terminates anything itself. Teardown remains fenced cleanup (§39.9 step 9), never settlement. |
+| Hooks/instruction path | Session-level hooks + fixture-home instruction artifacts ride unchanged (the L0/L1 levels of §39.8 observe them); no new instruction grammar is opened. |
+| Model metadata availability | STRONGER than the exec cohort's recorded `model: null`: `SubAgentActivity` carries the resolved `model`/`reasoningEffort` at spawn, and turn notifications carry turn ids/completion stamps — effective-model observation has a native witness on this surface (installed arrival = verification item). |
+| Original-handle waiting | UNCHANGED — the stdout-capture/spawn-witness instrument rides the launcher→Companion chain (node-side), not the host surface; §16.3/§24.4/§25.7 carry verbatim. |
+| Collector integration | Existing collectors untouched; ONE new bounded redacted RPC-side evidence consumer (the controller's own request/response/notification record, whitelisted projection, §39.9 step 8) — no raw transcript retention, no fixture raw-snapshot copying. |
+
+### 39.4 Route (b) — same live TUI/operator exact-Child stop (the single registered ALTERNATE)
+
+- Mechanism (source-confirmed): the TUI's `AppCommand::Interrupt` routes through the SAME
+  `turn/interrupt` RPC with the thread's active turn id and a turn-race retry
+  (`tui/src/app/thread_routing.rs:658–711`); side-thread close interrupts via
+  `turn_interrupt`/`startup_interrupt` with the "thread not found" replay-only tolerance
+  (`tui/src/app/side.rs:547–574`); the agents-overview stop resolves the SELECTED thread's
+  in-progress turn (locally or via `thread_read`/`thread_turns_page` finding
+  `TurnStatus::InProgress`) and sends `turn/interrupt` (`tui/src/app/agents_overview.rs:1116–1171`).
+- Transport identity: route (b) is the same protocol transport as (a) with a different HOST
+  surface (the TUI's own app-server or the shared daemon), a different CLIENT (the TUI), and a
+  different evidence path. Its distinctness is authority/evidence, not wire format.
+- The actual operator action (stated, not presumed): the operator, in the TUI attached to the
+  SAME live host instance, opens the agents overview, selects the EXACT Child thread, and
+  triggers stop at the controller's request, only after the controller's positive-window
+  admission. Agent-generated text cannot impersonate this action; the human is asked at the
+  concrete execution step (Task 4), not assumed unattended.
+- Evidence needed and its honest limit: the controller CANNOT observe the TUI's RPC request-side
+  bounds (no attributable request record in the controller's transport), so source class
+  `operator-child-stop` carries strictly weaker request-side attribution than `same-host-rpc`;
+  admission remains the controller's own window evidence; resolution is collected through the
+  unchanged fixture instrument and plugin duties; a GUI acknowledgement alone is never delivery
+  proof (per §2 row 5's discipline).
+- Installed-verification items for this alternate: actual visibility of a mid-turn v2 Child in
+  the TUI/`agents` view on 0.163.0, and the actual TUI version's stop behavior at the binary —
+  both unverified today.
+
+**Route-(b) axis record (the plan's Task-1 comparison axes; source-grounded where cited,
+explicitly NAMED-UNESTABLISHED where the surface is offline-unverifiable — recorded so Task-5
+activation invents nothing):**
+
+| Axis | Route (b) finding |
+| --- | --- |
+| Actual-parent creation | A REAL TUI-hosted session: the TUI acts as its own app-server client (`tui/src/app/thread_routing.rs:658+` takes an `AppServerSession`), and the binary's `codex agents` help names "the shared local app-server daemon" as its browsing surface. The exact 0.163.0 parent-creation path under the TUI (its own in-process host vs daemon attachment) is NAMED-UNESTABLISHED offline — a counted-case verification item; the fixture `CODEX_HOME` composition is the same family as route (a). |
+| Named-Role/preparation/binding/launcher support | UNCHANGED production chain — session-level and host-agnostic (`core/src/session/session.rs:1623–1735`; fixture-home roles/skills/hooks). Route (b) creates NO separate preparation surface; installed firing on a TUI-hosted parent is a verification item. |
+| Child lifetime | Same same-manager residency semantics as route (a): the Child lives in the host process that runs the parent (here the TUI's host/daemon); the interrupt lands inside the held parent turn's pending window; no post-completion attachment reliance. |
+| Native target/control access | OPERATOR-SELECTED: the TUI resolves the selected thread's in-progress turn (`agents_overview.rs:1121–1163` — local active-turn lookup, else `thread_read`/`thread_turns_page` finding `TurnStatus::InProgress`) and sends `turn/interrupt`; the controller has NO access to that request stream (the core weaker-evidence limit of this route). |
+| Ownership | The TUI's host process owns the Child; the operator action exercises the host's own control surface; the controller injects no authority and never substitutes. |
+| Hooks/instruction path | Identical session-level machinery and the §39.8 L0/L1 witness family; installed firing on a TUI-hosted parent NAMED-UNESTABLISHED offline. |
+| Model metadata availability | The `SubAgentActivity.model` witness exists at the protocol level on the TUI's OWN event stream, which the controller cannot read; controller-collected effective-model evidence on route (b) is NAMED-UNESTABLISHED (a supported thread-read query or a pre-declared TUI-side capture would be required, neither presumed). |
+| Original-handle waiting | UNCHANGED fixture instrument (launcher→Companion chain), identical to route (a). |
+| Collector integration | Existing collectors unchanged; the delivery REQUEST itself has no controller-attributable record — evidence is the declared operator action plus pre-declared bounded screen-level capture where used, plus the unchanged instrument; projection/privacy rules identical (§39.9's privacy paragraph). |
+
+### 39.5 Route (c) — any source-supported continuation of the existing exec surface (REJECTED)
+
+Precise mechanism reasons, not guessed APIs:
+
+1. **The exec process is not an app-server and holds its manager privately.** T's own record
+   carried the content-free diagnostic that "the app-server turn/interrupt RPC is not reachable
+   from the exec session process" (§36.5); no supported external control channel exists into a
+   running exec host, and `codex exec --help` (exact binary) exposes none.
+2. **`exec resume`/`exec fork` do not preserve a live Child.** They build NEW sessions from
+   stored history — the cold-resume path `thread_processor.rs:4498–4548` implements; a resumed
+   conversation never attaches to the original process's live Child (the cross-process
+   prohibition). That a command parses is not Child preservation; no such claim is registered.
+3. **`codex queue` is message INPUT, not interruption** — and direct input into a v2-spawned
+   Child is rejected (`thread_input.rs:8–37`). It is additionally out of scope for the Child
+   entirely (§39.9's no-input rule).
+4. **stdin text is not steering.** `exec --help` states piped stdin is initial instructions
+   appended as a `<stdin>` block, consumed at session start; no mid-turn steering exists on the
+   exec surface. `turn/steer` exists on the v2 protocol but is an INPUT mechanism subject to the
+   same child-input prohibitions and is not part of any registered route.
+5. **The model-tool `interrupt_agent` remains the exec surface's only supported exact-Child
+   stop** — a model decision inside one compound prompt, exactly the shape the confirmed-window
+   design exists to stop relying on. It stays the mechanism-comparison baseline (§1: the old
+   exec path is not an automatic retry, and no long/repeat campaign reopens).
+
+### 39.6 The route verdict and its installed-verification limits
+
+- **PRIMARY: route (a).** Decisive mechanisms: same-manager Child addressability
+  (`spawn_child_thread` into the `ThreadManager` state `load_thread` consults); the
+  server-validated single-RPC exact-target interrupt with active-turn equality; automatic
+  listener attachment delivering the Child's thread/turn identity to the controller's own
+  connection; the direct-input prohibition not applying to interrupt; fully observable
+  request-side attribution on the controller's transport; a native effective-model witness
+  (`SubAgentActivity.model`).
+- **ALTERNATE: route (b), at most one, only as preregistered** — with the mechanism/authority/
+  evidence differences of §39.4 stated (operator-selected target; unobservable request bounds;
+  `operator-child-stop` source class), eligible only through Task-5's reviewed successor rules.
+- **REJECTED: route (c)** — reasons in §39.5.
+- **Limits (explicit):** everything in §39.3 is source-confirmed at the pin; the installed facts
+  are the binary's protocol schema and help surfaces (§39.2). NOT established today: live server
+  behavior on 0.163.0 (request validation shapes in practice, notification arrival, listener
+  attachment in practice); actual hook firing on an app-server-hosted parent; the Root's spawn
+  call (a model runtime outcome); effective model identity; source/binary correspondence. These
+  are staged-verification items bounded by the counted case's staging budget — staging is never
+  a free eligibility probe (§1).
+
+### 39.7 Compatibility with the inherited long/cadence/stdout cohort (§37.3 limits applied)
+
+- **Composes (byte/config/contract level):** the exact binary bytes (re-verified §39.1); the
+  fixture config-transport keys (`background_terminal_max_timeout`, the exec-default `-c`
+  override, `features.multi_agent_v2`, `--enable hooks` — all expressed through the SAME
+  `-c`/`--enable` surface the binary's `app-server` accepts; installed application is a
+  verification item); the production plugin preparation/binding/launcher/job machinery
+  (byte-unchanged); the waiting/settlement instrument and duty table (§24.7/§25.5) — the Child's
+  pending observation, ancestry, durable/guard/control facts are host-surface-independent
+  because they ride the launcher/Companion chain and the plugin's stores; and the §24.4 causal
+  FACT SEPARATION (request/acknowledgement/resolution distinct; enqueue ≠ receipt; equality
+  stamps prove neither leg alone).
+- **Stays surface-specific (registered, never folded):** (1) the HOST surface changes
+  exec → app-server — the inherited 386–388 s long observations, 7→1 re-entry reduction and
+  complete public stdout are EXEC-surface named-route measurements and do NOT transfer as
+  measured app-server facts; (2) the delivery SOURCE changes from the model-tool
+  `interrupt_agent` to the same-host RPC — the §19.4 admission conjuncts and f1's cross-rollout
+  attributable-bounds machinery were built on the Root rollout record and are NOT silently
+  reused; the RPC route carries its OWN request-side witness (§39.9 step 8) and must never fill
+  model-tool call counts (§37.4 candidate discipline stands); (3) instruction-delivery
+  observation changes (§39.8); (4) the §24.8 "Gate release" held-turn driver gate is
+  exec-surface instrument mechanics — the app-server choreography keeps the SAME numeric anchors
+  (observation-detection + constants, §39.9 step 6) without reusing that gate. Config text
+  similarity alone equates nothing.
+- **Scope rule:** any valid native result measured on the app-server surface is scoped to that
+  surface and its measured configuration; it cannot become an exec-wide production
+  recommendation, does not by itself flip §38's disposition, and never reopens the generic
+  route or Root-command surfaces (§38.3–§38.5 unchanged).
+
+### 39.8 Actual-session instruction evidence levels (each recorded separately; never folded)
+
+- **L0 — FIXTURE GENERATION:** the fixture renders/publishes the instruction artifacts (role
+  template, skill, launcher descriptor) into the isolated home; digests recorded. Proves
+  composition only — the §37.2 established limit (publish ≠ receipt) is exactly this level's
+  bound.
+- **L1 — REAL-PARENT HOOK INVOCATION:** a hook actually invoked inside the REAL hosted parent's
+  session/turn, bound to the observed parent session/turn identity (the controller's own
+  `thread/start`/`turn/start` ids), projected as bounded whitelisted metadata/digests only (no
+  raw hook snapshots — §3). Proves the real parent's machinery processed the instruction path;
+  does NOT prove the model received or obeyed anything.
+- **L2 — HOST ACCEPTANCE/INSERTION:** an OBSERVABLE native event/context on the host's own
+  surface shows the instruction content accepted/inserted into the parent's turn context. Each
+  named observation stands alone with its collection source; where no such witness exists the
+  level stays named-unestablished — never fabricated, never inferred from a context field the
+  controller wrote.
+- Rules: emitting a setup descriptor is not actual receipt; receipt is not proof the model
+  understood or obeyed; positive actual Child/window evidence — not a fabricated context field —
+  admits delivery. Structured Skill delivery inspection and fixture-only hook projection MAY be
+  examined during Task-2 implementation; no new recognition grammar is opened here, and the
+  historical §37.2 limits stand unchanged.
+
+### 39.9 The frozen staged choreography and transport-specific evidence contract (frozen BEFORE implementation/live)
+
+State machine (the §1 names, with named refusal states): `staging-not-ready` →
+`pending-window-confirmed` → `native-request-sent` → `native-resolution-observed` →
+`all-duties-adjudicated`; any gate failure persists its named state and stops escalation.
+
+1. **ONE owned host instance.** The controller launches exactly ONE `codex app-server` process
+   with the fixture `CODEX_HOME` and registered overrides, holds ONE owned deadline and ONE
+   protocol connection for the whole case, and retains host-instance identity until post-cutoff
+   collection. A second protocol process is never opened and never called "the same instance"
+   (the cross-process prohibition makes it a different, unattachable manager anyway).
+2. **The native parent creates the real Child.** `initialize` → `thread/start` → `turn/start`
+   with the composed staging prompt; the parent follows the production
+   preparation/spawn/binding/launcher flow inside that host. The controller NEVER synthesizes a
+   Child via `thread/start` on a Child-shaped request, NEVER injects the Child's task, NEVER
+   touches private preparation — the direct-input prohibition (`thread_input.rs:8–37`, mirrored
+   in request validation at `thread_processor.rs:3994` and `:4582` and enforced in
+   `thread_goal_processor.rs:373–378`) and the Child-origin requirement (a Child exists ONLY
+   through the supported v2 spawn invocation, `core/src/thread_spawn.rs:124–166`) are design
+   constraints, not obstacles to engineer around.
+3. **Identity observation.** The controller records the parent thread/turn ids from its own
+   request/response pairs; the Child's identity ONLY from the SOURCE-SUPPORTED JOIN of observed
+   native events — the parent's `SubAgentActivity` item (kind `started`, `agentThreadId`) joined
+   to the Child's own `turn/started.threadId` (a spawned v2 Child emits NO `thread/started`,
+   §39.2's caveat, so that notification is NEVER a required predicate; the join uses only events
+   the listener forwarding actually delivers, and late attachment loses nothing because the
+   Child's events queue in the unbounded session event channel until the listener reads them,
+   §39.3). If either side of the join has not arrived, the Child identity is
+   named-unestablished and staging stays not-ready. No shortened, paraphrased, substituted, or
+   guessed ids anywhere.
+4. **Initial no-call and the ONE continuation.** If the initial staging turn produces no
+   qualifying Child, at most ONE directed continuation `turn/start` on the SAME parent thread is
+   permitted — an explicitly AUTHORIZED CHANGED staging step registered before the case (a
+   correction before readiness occupies the continuation slot); never an unchanged-prompt retry.
+   Root inputs per case remain ≤ THREE total (Task-3 ledger): initial staging, the continuation
+   slot, one bounded post-interrupt control/result request if needed.
+5. **The unrelated Root-owned control.** The §16.4 design unchanged: the Root launches the
+   bounded progress-terminal control through its OWN exec handle inside its staging turn; the
+   controller reads only the fixture-owned output artifacts for the emission-tag survival facts.
+   Never Status-observed, never interrupted, never stopped by the controller; active-at-request
+   and post-delivery freshness adjudicated per §16.4/§24.7. If the old 120-second control would
+   end during staging, its constants may change PROSPECTIVELY as Task-3 choreography with
+   published exact constants and offline boundary tests — never extended live in response to a
+   disappointing outcome.
+6. **Pending-window admission (the positive barrier) triggers nothing else.** ALL of: a real
+   Child turn active (its `turn/started` observed, no `turn/completed` yet); the original-handle
+   pending observation confirmed by the unchanged instrument; the generation/ancestry baseline
+   per the existing contracts; applicable duties observable; the control active with fresh data;
+   and an operative measurement window inside the staging bounds — the §24.8/§25.7 anchors CARRY
+   (hold 420000 ms anchored at actual observation detection; measurement cutoff hold deadline
+   +10000 ms; observation teardown cutoff +5000 ms; staging readiness bound 180000 ms from
+   actual host launch; common case deadline 1200000 ms per Task-3). Any miss → persist
+   `staging-not-ready`, clean up safely, and do NOT send the interrupt.
+7. **Exactly ONE native delivery.** On admission: ONE `turn/interrupt` with
+   `{threadId: <exact child thread id>, turnId: <exact active child turn id>}`. The request's
+   attributable bounds (sent/replied stamps on the controller's own transport) are recorded
+   BEFORE anything else consumes them. A failed/unsent request is recorded typed and NEVER
+   invisibly retried; the server's `expected active turn id …` rejection is the named
+   wrong/stale-target outcome and fails closed; the empty-turn-id startup-interrupt form is
+   FORBIDDEN for this case (it is not an exact active-turn target). The 60000-ms responsiveness
+   comparison applies ONLY on causal admission, unchanged from §16.5/§24.8.
+8. **Resolution collection and the evidence contract.** `TurnInterruptResponse` arrival is the
+   TRANSPORT reply — it fires on EITHER of the host's thread end-event paths, the `TurnAborted`
+   arm (`bespoke_event_handling.rs:1208–1211`) or the `TurnComplete` arm (:186–189), so a reply
+   arriving on the natural-completion path types only as a response-at-unrelated-completion fact
+   and FAILS CLOSED; it is NEVER itself the settlement. Settlement requires
+   the Child's actual resolution (the interrupted child turn's own completion plus the original
+   observation's resolution through the unchanged instrument) AND every applicable §24.7 duty.
+   Source classes are typed `{model-tool, same-host-rpc, operator-child-stop}`: this case's
+   primary records `same-host-rpc`; the alternate records `operator-child-stop` ONLY with the
+   actual human action and its weaker request-side bounds recorded as such. The RPC request-side
+   witness (step 7's stamps) is the TRANSPORT-SPECIFIC replacement for f1's exec-rollout bounds
+   — a new registration with its own prospective version, never fed to the historical
+   model-tool contracts (join v38/oracle v5 stay byte-unchanged; RPC records are never
+   misrepresented as model-tool calls; §25.6's three-legged stop authority, natural-winner and
+   SessionEnd disciplines carry verbatim).
+9. **Teardown fence.** Collection stops at the carried fences; bounded whitelisted facts persist
+   before disposal; post-cutoff facts get zero settlement credit; teardown, signals, cleanup,
+   reconcile and SessionEnd keep their true causes and never manufacture settlement; native
+   request authority is preserved after any legitimate natural winner.
+
+**Privacy/projection:** the RPC consumer projects only bounded whitelisted
+metadata/digests in memory (ids, stamps, kinds, statuses); no full turn bodies, no task or
+private preparation text, no raw hook snapshots, no credentials — the §3 ownership row's rule.
+
+### 39.10 Task-1 exit statement
+
+A source-supported route is QUALIFIED with explicit installed-verification limits (§39.6) and an
+implementable state/evidence contract (§39.8–§39.9); Task 2 can implement the controller from
+this section without re-deriving any mechanism. Source capability is not installed-observed
+success: no duty was dropped, no external signal is rebranded as native control, the historical
+labels and the §38 verdict/ledger stand byte-unchanged (add-only), and every live verification
+belongs to the counted case under the Task-3 ledger. Production remains `do-not-adopt-yet`.
+
+### 39.11 Gates for this section's commit
+
+`node scripts/check-line-endings.mjs` PASSES; `git diff --check` PASSES; the prohibited-path set
+(`scripts/ hooks/ skills/ agents/ .codex-plugin/ prompts/ schemas/ marketplace/ package.json
+npm-shrinkwrap.json docs/superpowers/specs/`) is untouched — this section's commit changes ONLY
+this report; no executable, test, dependency or plan byte changes; no hosted/provider contact,
+no persistent server, no interactive host and no model turn occurred in this task (schema
+generation ran OFFLINE against the exact binary into a disposable private temp directory,
+removed after reading); no unresolved placeholder markers, no trailing whitespace, final
+newlines present. Historical sections remain byte-untouched (add-only).
