@@ -36683,3 +36683,669 @@ and the full isolated suite on THIS round's final bytes: `npm run test:shell-res
 new row; the CLI rows' spawned-suite pin held). The suite ran on the exact code/test bytes of
 this commit; the only delta between the run's tree and the amended commit is this recording
 paragraph itself (no test reads the report doc's content — verified in earlier rounds).
+
+## 41. 2026-11-17 confirmed-window task 3: the bounded staged acceptance session frozen — exact bytes, entry and parser facts, the predicted schedule, every readiness predicate and the finite C ledger (offline; zero hosted/provider contacts, zero live servers, zero model turns)
+
+This section executes Task 3 of
+[the confirmed-window plan](../superpowers/plans/2026-11-17-rescue-shell-wait-confirmed-window.md)
+against the worktree at HEAD `f4b06d9ea081fe1efb4d521e68524c7d5219bb82` (branch
+`docs/rescue-shell-wait-confirmed-window`; `git status --porcelain` EMPTY while every read and
+offline command below ran; the plan base `547bad17fab6fe5c47f690fe76a3f76324c6c4e1` is a
+verified ancestor). It is a registration/freeze task: **C remains UNSPENT** and no
+hosted/provider attempt, persistent server, TUI, app-server, model turn or live Child was
+started. The only executed work was local: the pinned binary's own `--version` and OFFLINE
+`features list` (no server), module hashing, offline argument parsing and the route preflight,
+and real isolated-fixture setups that copied credentials into disposable 0700 homes and
+disposed them (the credential check below). The standard entry was invoked with
+`ZCODE_SHELL_WAIT_E2E=1` exactly as the CLI form prescribes and refused at the route preflight
+after fixture setup — no host launch, no model turn; that refusal consumes NO hosted slot.
+§39/§40 remain the frozen route/interface; the Task-2 implementation bytes are the source of
+truth for the ACTUAL entry, and THREE pre-launch blockers (an instruction conflict, an absent
+worker-hold/completion-gate producer and an unarmed live-collector wiring) are recorded in
+§41.7, not discovered live. Every historical section is byte-untouched (add-only).
+
+### 41.1 Exact bytes, environment and credentials (all re-verified now; nothing trusted forward)
+
+- **Worktree/HEAD/Node/OS:** `git rev-parse HEAD` =
+  `f4b06d9ea081fe1efb4d521e68524c7d5219bb82` (the Task-2 commit); the plan base
+  `547bad17fab6fe5c47f690fe76a3f76324c6c4e1` is an ancestor; the tree is clean and the only file
+  this section's commit changes is this report. Node **v24.14.0**; macOS **26.5.2** (Darwin
+  kernel 25.5.0), **arm64**.
+- **Pinned binary RE-VERIFIED EXACT:**
+  `/Users/zhangzikai/Workspace/Codes/tmp/rescue-settlement-trial/codex-0.163.0/bin/codex`
+  hashes SHA-256
+  **`8813367285524ac798dd96d1b071aea30d58708c7226fd236cd275cf1cfdee31`** (observed by
+  `shasum -a 256`) and reports `codex-cli 0.163.0`. Byte-identical to §34.2/§36.1/§39.1; no
+  ambient substitution and no recovery search repeated.
+- **Read-only source pin:** `/Users/zhangzikai/Workspace/Codes/github/codex` HEAD ==
+  `dffa0deb69268ed4ac31578794c9ea897b336ae3`, `git status --porcelain` EMPTY. Read-only; never
+  written.
+- **Controller/consumer versions as implemented (read at this HEAD):**
+  `CONFIRMED_WINDOW_CONTROLLER_VERSION = 1` (confirmed-window.mjs:35; mirrored at
+  native-control-evidence.mjs:31); `NATIVE_CONTROL_EVIDENCE_VERSION = 1`
+  (native-control-evidence.mjs:25). The frozen five-state set, the 180000-ms staging bound, the
+  1200000-ms case ceiling, the 60000-ms native-response bound, the Root-input ceiling 3, the
+  1000-ms passive-read floor and the cutoff/teardown anchors are the §40.2 values read back
+  from the exports (confirmed-window.mjs:41/50/53/56/59/67/70–71), not redefined here.
+- **Frozen research-module bytes at this HEAD (SHA-256 over `git cat-file blob HEAD:<path>`,
+  cross-checked against the clean on-disk bytes):** `driver.mjs` =
+  `ee91c00295bda1136cb21cfd78258d1d27e266dbcf3b015e94782df154f3d8a3`;
+  `confirmed-window.mjs` =
+  `b78643f248fe377fa817c86e60929cd5ea29a751783c9e384d3f392462fbbcb9`;
+  `native-control-evidence.mjs` =
+  `ed95137d34da586b6f7bfa1d2b7939cd374308f9876f474c45acd5cdaa7dc116`;
+  `fixture.mjs` =
+  `995693236158cb368bd95e6466a7d2ccf779029274f3a6bb28cae862001ba36f` (unchanged from
+  §34.1/§36.1). The driver's **provenance v10** construction
+  (`OBSERVER_DIGEST_TAG = 'zcode-shell-wait-observer-v10'`, driver.mjs:103) binds BOTH the
+  module-init snapshots of `confirmed-window.mjs` and `native-control-evidence.mjs` AND the
+  record-time reread, together with `evidence.mjs`, `shape-diagnostic.mjs`,
+  `release-qualification.mjs`, `closure-observation.mjs`, `closure-preload.mjs`,
+  `spawn-witness-preload.mjs`, `local-process-observation.mjs`, `driver.mjs` and the three
+  executing helper digests (`scripts/lib/fs.mjs`, `process.mjs`, `errors.mjs`; the MATERIALIZED
+  copies when materialization succeeded, else the production files the fallback loads). The
+  composite digest is CAPTURED AT CASE START and RE-READ AT RECORD TIME (driver.mjs:881–933);
+  a mid-run edit is `sourcesChangedDuringRun`, never silent. No runtime-derived digest VALUE is
+  frozen forward here — the capture rule and the tag are the frozen identity, and the record
+  carries the observed values.
+- **Generated artifact digests observed from the REAL isolated fixture (not invented):** the
+  fixture-owned survival-control script
+  `c510d81f296881a9e4e3c174429758c3e2f26c08cf7a63b26ac75d2e5ca30172` (60 lines @2000 ms, line
+  prefix `zcode-survival-control`, designed exit 0, emission tags on the control process's own
+  monotonic clock); the config-default candidate paragraph's normalized delivery hashes
+  `2ea76cf02b0179f514835cbbed9780836d8687ff8d845546681863ea9bed927a` (named Role) and
+  `5800e3ab814ff06be932c312bb2065afb7d99034a148fd884d2b29675f284ff0` (generic message) —
+  identical to §37.3's recorded values; the cap key placed as
+  `background_terminal_max_timeout = 3600000` (fixture `capConfiguration.beforeSha256`
+  `182275805df996873da89605f985f731f88075cb9e557d19bcbfc588dce836a1` → `afterSha256`
+  `252eaf7ed7afe62dd66eb95c24749053d76ccf1bbf7c8d314f041fc5e8a39349`, both runtime-computed
+  and recorded by the fixture). The capture/witness preload digests are generated per fixture
+  and recorded in the fixture handle at run time; they are not constants.
+- **Credentials — verified through the existing isolated setup, PASS, no value printed, read,
+  hashed or retained:** a real `createShellWaitFixture` run with the exact composition
+  (candidate variant, config-default, survival control, capture + spawn witness, cap 3600000,
+  poll 3600000, the pinned binary and the HEAD source SHA) completed and reported
+  **`credentialsCopied: true`**; its `dispose()` completed (`disposed: true`) and the 0700
+  isolated home was removed. The source `auth.json` was only consumed by the fixture's existing
+  `copyCredentials` (fixture.mjs:633–643); its content never entered any record or this report.
+  Honest history: the first standard-entry attempt failed during the fixture build at `npm ci`
+  with `ECONNRESET` (the inherited research-builder network failure class the plan's Task 5
+  names);
+  the retry and the direct fixture check both completed — the failure is recorded, not hidden,
+  and no credential conclusion is drawn from it.
+- **Private owned directories (outside the repository, outside the user's active session/
+  project):** `/Users/zhangzikai/Workspace/Codes/tmp/rescue-confirmed-window/` (mode 0700) and
+  its empty child `c-output/` (mode 0700, verified empty). The §41.5.1 gate directory will be
+  a 0700 SIBLING of `c-output` in this same case root (never inside `c-output`, which must stay
+  empty at fixture creation); it is created by the pre-launch readiness task, not now. The
+  parent scratch `/Users/zhangzikai/Workspace/Codes/tmp/rescue-settlement-trial/` was only read
+  (the binary);
+  the main checkout and all other worktrees were never written. Nothing was written into an
+  active cache or the user's real `~/.codex` data; the only credential copy lived in the
+  fixture's own disposable system-temp home.
+
+### 41.2 Requested model metadata (requested only; effective identity is NOT claimed)
+
+- **Requested model = `gpt-6.1-sol`**, the spelling the previous campaign used and the local
+  models cache exposes (§34.3: eleven entries, `visibility: "list"`, `priority: 1`,
+  `default_reasoning_level: "medium"`; §37.3/§37.4: the same spelling across the cohort's
+  closest ancestors). No new model is invented, and no model/version change is authorized.
+- **Observed-effective model identity is NOT claimed now and is never established by setup
+  output.** The only admissible runtime witness is native: the optional
+  `SubAgentActivity.model` field of the parent-bound spawn activity and/or actual thread
+  metadata observed by the controller (the projector hashes a bounded `identity.modelObserved`,
+  native-control-evidence.mjs:163–165). A null/absent field stays named-unestablished. The
+  setup descriptor, the fixture instruction hashes, the requested `thread/start.model` and a
+  cached catalog entry establish only the REQUEST.
+
+### 41.3 Route, surface, placement, instructions and config (the fixture composition the route arms)
+
+- **Route/surface/placement:** route (a) PRIMARY, `same-host-rpc` — ONE owned `codex app-server`
+  process launched by the research entry with the fixture's isolated `CODEX_HOME` and cwd; the
+  parent is hosted in that process; the real Child is a managed v2 thread of the SAME
+  `ThreadManager` (no second process, no `exec`, no TUI, no synthesized Child, no direct Child
+  input). The controller holds ONE protocol connection, observes the identity join and the
+  positive barrier, sends ONE `turn/interrupt`, and retains host-instance identity until
+  post-cutoff collection; teardown is fenced cleanup, never settlement.
+- **Host argv (exact, pure composer `composeConfirmedWindowHostArguments`,
+  confirmed-window.mjs:139; observed output):**
+  `app-server --listen stdio:// --enable hooks -c shell_environment_policy.inherit=all -c features.code_mode.default_exec_yield_time_ms=3600000`.
+  `--listen stdio://` is the supported URL (the bare `stdio` spelling is rejected by the pinned
+  binary during argument parsing; §40.7 P1-1). The requested model is NOT in argv — it rides
+  `thread/start.model` (string|null in the pinned schema). `features.multi_agent_v2` is not in
+  argv; the pinned binary's OFFLINE `features list` reports it `stable true` (default enabled),
+  so the v2 spawn surface is expected; its actual live enablement remains a staged-verification
+  item, never assumed from the request.
+- **Thread boundary config (exact):** `thread/start` params carry
+  `config: { bypass_hook_trust: true }` (confirmed-window.mjs:303–320) — the fixture-only
+  hook-trust bypass verified at the source pin (a fresh isolated home is untrusted, so
+  `--enable hooks` alone would filter the fixture hooks and the managed Rescue
+  preparation/binding could never run), plus the requested model when selected. `cwd` is the
+  fixture workspace. This is a disposable fixture control, never a production trust
+  qualification.
+- **Fixture/home config:** the isolated `CODEX_HOME`, `HOME`, `ZCODE_DATA_ROOT`, `ZCODE_PATH`
+  and the capture/witness `NODE_OPTIONS` preloads ride `fixture.env` (fixture.mjs:580–745) into
+  the ONE host launch (confirmed-window.mjs:1181–1184); the fixture prepends
+  `background_terminal_max_timeout = 3600000` to the isolated `config.toml` (observed
+  `capConfiguration.capMs = 3600000`); the config-default candidate waiting paragraph is
+  applied to the installed Role and generic Skill (observed normalized hashes in §41.1); the
+  survival-control script is fixture-owned and referenced by path only.
+- **Instructions — the ACTUAL implemented composition, and its conflict (recorded, not
+  silently accepted):** `composeConfirmedWindowStagingPrompt` (driver.mjs:10568–10573)
+  composes `shellWaitCasePrompt('rescue-interrupt')` — the function starts at driver.mjs:10594
+  and consumes the `rescue-interrupt` prompt spec text at :10444–10458 — + the §16.4
+  `survivalControlPromptDirective` (fixture.mjs:144–163). **Both halves still instruct the
+  MODEL to deliver a model-tool interrupt:** the base sentence "…deliver exactly one
+  interrupt_agent call to the exact agent id the spawn acknowledgement returned, then report
+  the interrupt tool result…", and the directive's STEP 5 "…deliver the exactly-one
+  interrupt_agent call carrying the EXACT full agent id…" (observed: 2 occurrences). This
+  contradicts the frozen route contract — §39.9 step 7 / §40.2 / §40.4 assign exactly ONE
+  native delivery to the CONTROLLER (`turn/interrupt`, source class `same-host-rpc`), and §2
+  row 5/§39.9 step 8 keep model-tool and RPC sources distinct. The continuation composer
+  (driver.mjs:10580–10585) repeats both clauses and additionally says "and do nothing else"
+  beside the five control steps. If the model obeys before admission, the Child turn ends and
+  the controller refuses `staging-not-ready` (no controller interrupt); if the controller
+  admits first, the model's tool call is a second, unregistered delivery source. Neither is the
+  registered measurement. **This is a PRE-LAUNCH correction requirement (§41.7): C must not
+  launch on these instruction bytes.** The route needs a route-specific staging/continuation
+  composition that stops after spawn + control launch/reads (no model-tool interrupt clause),
+  plus a preflight/negative row pinning it; Task 3 is docs-only and changes no code or test
+  byte.
+- **Native request (the delivery itself):** exactly ONE
+  `turn/interrupt {"threadId": <exact Child thread id>, "turnId": <exact active Child turn id>}`
+  on the SAME connection; the ids come ONLY from the parent `SubAgentActivity`
+  (`kind: "started"`, `agentThreadId`) ⇄ Child `turn/started.threadId` join (a spawned v2 Child
+  emits no `thread/started`); the empty-turn-id startup form is forbidden; unsent/rejected/stale
+  attempts are typed and never retried; the transport `TurnInterruptResponse` is never the
+  settlement.
+
+### 41.4 Selector, argument vector, actual entry and the OFFLINE parser results (observed)
+
+- **Selector:** `--interrupt-route-selector confirmed-window`
+  (`CONFIRMED_WINDOW_SELECTOR_VALUE`, driver.mjs:392), validated through the public parser AND
+  the programmatic `validateCaseInput` (function start driver.mjs:991; the route mirror is at
+  :1052–1053) and the shared combination gate (driver.mjs:522–575): valid ONLY for
+  `rescue-interrupt`, ONLY with `--wait-policy
+  config-default --exec-default-ms`, ONLY at `--poll-ms 3600000`, and MUTUALLY EXCLUSIVE with
+  `--interrupt-baseline-selector` and `--survival-control-selector` (the route subsumes the
+  §16.4 control).
+- **Exact standard-entry CLI form (the real parser/preflight surface; `ZCODE_SHELL_WAIT_E2E=1`
+  is required for any live path):**
+```bash
+ZCODE_SHELL_WAIT_E2E=1 node tools/shell-wait-probe/driver.mjs \
+  --case rescue-interrupt \
+  --codex /Users/zhangzikai/Workspace/Codes/tmp/rescue-settlement-trial/codex-0.163.0/bin/codex \
+  --source-sha f4b06d9ea081fe1efb4d521e68524c7d5219bb82 \
+  --output /Users/zhangzikai/Workspace/Codes/tmp/rescue-confirmed-window/c-output \
+  --worker-duration-ms 420000 --poll-ms 3600000 --budget-ms 1200000 --cap-ms 3600000 \
+  --model gpt-6.1-sol --wait-policy config-default --exec-default-ms 3600000 \
+  --interrupt-route-selector confirmed-window \
+  --unclassified-structural-diagnostic 1 --unclassified-shape-diagnostic 1
+```
+  `--source-sha` at the live freeze must be the THEN-HEAD 40-hex commit; at this freeze the last
+  plugin-byte commit is `f4b06d9e…` and this section's commit is docs-only, so the installed
+  plugin bytes are identical. The observed parse below used `f4b06d9e…`.
+- **`--help` (offline, exit 0, exact):**
+```text
+usage: node tools/shell-wait-probe/driver.mjs --case <case> --codex <absolute executable> --source-sha <40-hex> --output <private empty directory> [--worker-duration-ms ms] [--cap-ms ms] [--poll-ms ms] [--budget-ms ms] [--status-query-timeout-ms ms] [--unclassified-structural-diagnostic 1] [--unclassified-shape-diagnostic 1] [--model <id>] [--wait-policy config-default --exec-default-ms ms] [--interrupt-baseline-selector short-window-60000 | --survival-control-selector progress-terminal | --interrupt-route-selector confirmed-window] (the wait policy is valid for every registered case with its declared §16.6 combination; the interrupt selectors are valid only for rescue-interrupt at their declared windows; the route selector selects the staged confirmed-window choreography)
+cases: rescue-baseline, rescue-long, rescue-repeat, rescue-noise, rescue-interrupt, review-wait, adversarial-review-wait, status-wait, background
+```
+- **Valid-combination parse (offline `parseShellWaitArguments`, ZERO launch, exit 0, exact):**
+```json
+{
+  "case": "rescue-interrupt",
+  "codexBinary": "/Users/zhangzikai/Workspace/Codes/tmp/rescue-settlement-trial/codex-0.163.0/bin/codex",
+  "sourceSha": "f4b06d9ea081fe1efb4d521e68524c7d5219bb82",
+  "output": "/Users/zhangzikai/Workspace/Codes/tmp/rescue-confirmed-window/c-output",
+  "workerDurationMs": 420000,
+  "capMs": 3600000,
+  "pollMs": 3600000,
+  "budgetMs": 1200000,
+  "unclassifiedStructuralDiagnostic": true,
+  "unclassifiedShapeDiagnostic": true,
+  "model": "gpt-6.1-sol",
+  "waitPolicy": "config-default",
+  "execDefaultMs": 3600000,
+  "interruptBaselineSelector": null,
+  "survivalControlSelector": null,
+  "interruptRouteSelector": "confirmed-window"
+}
+```
+  Every duration and selector is the frozen value; the route's config-default/exec-default pair
+  and the 3600000 window are accepted.
+- **Invalid combinations (offline parser, exit 1, exact first lines):**
+```text
+Invalid shell wait case input: --interrupt-route-selector confirmed-window is mutually exclusive with --interrupt-baseline-selector and --survival-control-selector: the route subsumes the §16.4 survival control as its own mandatory admission conjunct.
+Invalid shell wait case input: --interrupt-route-selector confirmed-window requires the candidate 3600000 observation window (rescue-interrupt default; pass --poll-ms 3600000).
+Invalid shell wait case input: --wait-policy config-default requires --exec-default-ms.
+Invalid shell wait case input: --interrupt-route-selector is only valid for the rescue-interrupt case.
+```
+- **Standard entry without live arming (offline, `ZCODE_SHELL_WAIT_E2E` unset, exit 0; NO
+  fixture, NO host):**
+```json
+{
+  "status": "refused",
+  "case": "rescue-interrupt",
+  "reason": "Live shell wait qualification requires ZCODE_SHELL_WAIT_E2E=1; no fixture was created and no host was launched.",
+  "executedAt": null
+}
+```
+- **Standard entry WITH `ZCODE_SHELL_WAIT_E2E=1` (the actual CLI form above):** the real
+  isolated fixture setup completed and was disposed, then the route preflight refused
+  PRE-LAUNCH (exit 1, stdout empty, exact first stderr line):
+```text
+Invalid confirmed-window controller input: the confirmed-window route preflight rejected the case before launch: the confirmed-window route instrumentation is not armed: the staged barrier collectors (observers) and the persisted duty adjudication are REQUIRED and callable before any hosted case (missing or not callable: pendingObservation, ancestryBaseline, dutyFacts, controlFacts; duty adjudication absent) — a known-absent positive mechanism is refused pre-launch, never measured
+```
+  This proves the fail-closed route gate (P1-7/round-3 P2-6) and that a normal CLI invocation
+  cannot arm the route's required collectors/duty adjudication. **The live case therefore
+  requires an in-process research entry** calling the standard
+  `runShellWaitCase(parsed, { confirmedWindowObservers, confirmedWindowDutyAdjudication, ... })`
+  with FOUR callable collectors (`pendingObservation`, `ancestryBaseline`, `dutyFacts`,
+  `controlFacts`) and the persisted duty adjudication; the repository currently contains only
+  the OFFLINE test implementations of those collectors, not a live wiring. This is a pre-launch
+  blocker (§41.7 #4), not a fabricated collector and not a reduced gate.
+
+### 41.5 The frozen schedule (predicted, NOT executed) and the control anchors
+
+| Quantity | Frozen value | Where enforced / origin |
+| --- | --- | --- |
+| Requested cap (`--cap-ms`; fixture `background_terminal_max_timeout`) | 3600000 ms | passed explicitly; fixture prepends the key (observed `capConfiguration.capMs`) |
+| Requested poll / Child observation (`--poll-ms`) | 3600000 ms | route-required by the parser gate; observed parse |
+| Exec default (`--exec-default-ms` → host argv `-c`) | 3600000 ms | parser pair; composer `features.code_mode.default_exec_yield_time_ms=3600000` |
+| Harmless worker hold (`--worker-duration-ms`) | **PLANNED, NOT PRODUCED/ENFORCED TODAY: 420000 ms**, anchored at ACTUAL observation detection | `workerDurationMs` reaches the choreography (confirmed-window.mjs:1421) but is never read and never reaches the fixture; the confirmed-window host launch passes only `fixture.env` (confirmed-window.mjs:1181–1184), so no `FAKE_ZCODE_COMPLETION_GATE(_REACHED)` is set and the fake CLI completes at its 5 ms default (tests/fixtures/fake-zcode-cli.mjs:279–280). The exact required mechanism and its blocker are frozen in §41.5.1/§41.7 #3. |
+| Measurement cutoff | hold deadline + 10000 ms | `CONFIRMED_WINDOW_MEASUREMENT_CUTOFF_AFTER_HOLD_MS`; clamped by the case deadline |
+| Planned observation teardown | cutoff + 5000 ms | `CONFIRMED_WINDOW_OBSERVATION_TEARDOWN_AFTER_CUTOFF_MS`; clamped by the case deadline |
+| Common case deadline | ≤ 1200000 ms | `--budget-ms`; controller `min(budgetMs, CONFIRMED_WINDOW_CASE_DEADLINE_MS)` |
+| Staging readiness bound | ≤ 180000 ms from ACTUAL host launch | `CONFIRMED_WINDOW_STAGING_READY_BOUND_MS`; setup requests and the barrier recheck it |
+| Native responsiveness comparison | 60000 ms, ONLY on causal admission | `CONFIRMED_WINDOW_NATIVE_RESPONSE_BOUND_MS`; §16.5/§24.8 unchanged |
+| Passive durable reads | ≥ 1000 ms between starts; ≤ 600 attempts; ≤ 32 retained summaries | the controller's barrier floor + the §24.8/§25.7 durable-sampling bounds |
+| Witness sequencing | ≤ 15000 ms | `SPAWN_WITNESS_SEQUENCING_BOUND_MS` (driver.mjs:9766) |
+| Survival control | 60 lines @ 2000 ms = 120000 ms designed lifetime (fixture.mjs:111–112); readiness floor line 40 (~80 s); readiness cutoff line 60 (~120 s); `active` = latest fresh line index 1..59 with no completion/exit; `freshAtMs` = the controller-clock read instant of the latest NEW line (≤ 1000 ms at admission); `declaredLifetimeMs` = a CONSERVATIVE LOWER BOUND on the remaining life at `freshAtMs`, computed as `max(0, (60 − lineIndex − 1) × 2000 ms)` from the latest fresh 1-based line index (the extra `−1` cadence absorbs the emission-to-read delay), so `controlEndAtMs = freshAtMs + declaredLifetimeMs` is an EARLY bound — never LATER than the control's actual designed end (the conservative direction: it may refuse a still-live control, never admit an ended one); the predicate is `controlEndAtMs > request/initiation`; post-delivery survival needs an emission tag strictly after the delivery bound under a declared same-clock anchor | fixture-owned script (digest §41.1); §16.4/§24.8; semantics fixed against confirmed-window.mjs:433–445 and native-control-evidence.mjs:477–489 |
+| Root inputs per case | ≤ 3 | initial staging, ≤ 1 directed continuation, ≤ 1 bounded post-interrupt request |
+| Native deliveries per case | ≤ 1 | one admitted `turn/interrupt`; failed/unsent typed and never retried |
+
+**Status of the hold-dependent rows:** the worker-hold, measurement-cutoff and planned-teardown
+values are the PLAN's predicted schedule, but the hold PRODUCER does not exist on this route
+today (§41.5.1); they are NOT frozen/enforced facts until that producer and its offline rows
+land, and the pending-observation predicate stays unestablished until then. The cap/poll/
+exec-default values, the case deadline, the staging bound, the 60000-ms comparison, the passive
+read/witness bounds, the control constants and the Root-input/native-delivery ceilings are
+implemented or parser-enforced as cited; the control row's remaining-life/active semantics are
+the frozen collector contract that the pre-launch wiring (#4) must implement.
+
+- **Control launch/read anchors against the actual ready window:** the control launches ONCE
+  immediately after the Child launch on its OWN `exec_command` handle (STEP 2), `yield_time_ms
+  1000`; reads are bounded empty-input reads on that handle, each requiring a fresh line;
+  readiness floor is line index ≥ 40 (~80 s after control start); the pre-delivery read is one
+  more fresh line below the line count, ordered before the delivery; after settlement one final
+  read is retained verbatim. The control is never Status-observed, never sent input, never
+  stopped or killed, and shares no stop authority with the Child. The controller's admission
+  instant is the "request" the freshness/lifetime rules bind to: `freshAtMs` within the 1000-ms
+  cadence (evaluated at the POST-COLLECTION time) and `declaredLifetimeMs` =
+  `max(0, (60 − lineIndex − 1) × 2000 ms)`, a CONSERVATIVE LOWER BOUND on the remaining life
+  from that fresh line (the extra `−1` cadence absorbs the emission-to-read delay, so
+  `controlEndAtMs` is an EARLY bound — never later than the actual designed end), so
+  `freshAtMs + declaredLifetimeMs > request instant` (the same inequality the consumer rechecks at initiation,
+  native-control-evidence.mjs:477–489). The 120000-ms design total is NEVER passed off as the
+  remaining life: `active` requires the latest fresh line index 1..59 with no completion/exit
+  (line 59 already carries zero credited remaining life under the lower-bound/conservative formula), a
+  completed line-60 control is inactive, and a control whose end precedes the request — or whose
+  end anchor cannot be established on the controller clock — refuses
+  (`controlLifetimeSufficient`; consumer `control-stale-or-expired-at-initiation`). A
+  buffer-only, completed, stale, expired or `{active: true}`-only control never qualifies. The
+  existing negative row with
+  `declaredLifetimeMs: 0` (tests/shell-wait-probe.test.mjs:33896) and the consumer's
+  expired-at-initiation row pin the boundary; the new remaining-life derivation and its explicit
+  end-precedes-request row are required before C (§41.5.2).
+- **The 120-second control versus the 180-second staging bound — frozen decision:** the control
+  starts AFTER the Child launch. The recorded Child poll starts PRECEDE the readiness floor:
+  57.6–72.1 s after Child launch in §16.4's R/L/F (R 57623, L 68044, F 72069 ms) and 74067 ms in
+  §37.3's I case; the 80 s readiness floor is then observed, leaving roughly 40 s to the 120 s
+  designed end at the expected admission. These are sequential events, not addends: the poll
+  start and the 80 s floor are both inside the 120 s lifetime, and the ~40 s is the residual
+  after the floor, not an additional requirement. The 180 s staging bound is a CEILING, not the
+  expected staging duration. If a staging outlives the control (worst case near the ceiling),
+  that outcome is the named `staging-not-ready` — no interrupt is sent — and it is NEVER a
+  trigger to extend the control or any deadline live. The plan's prospective-change allowance is
+  therefore NOT exercised; the implemented constants stay 60 lines @ 2000 ms, readiness floor
+  40, readiness cutoff 60. Freshness/active-at-request rules and the offline boundary rows are
+  unchanged: the existing `confirmed-window` rows pin the absent/missing-freshness/
+  expired-lifetime/missing-control refusals (`tests/shell-wait-probe.test.mjs`'s confirmed-window
+  describe at L32587 and the P2-4/freshness rows around L33886–33908) and the reload consumer's
+  `missing-control-baseline`/`control-stale-or-expired-at-initiation` negatives; no new test
+  bytes were added (docs-only), and the constants did not change so no new constant pin is due.
+  The REMAINING-life derivation below is a new semantic and DOES require its own boundary row
+  before C.
+
+#### 41.5.1 The required worker-hold/completion-gate producer (NOT implemented; pre-launch blocker)
+
+The confirmed-window route currently has NO producer for the 420000-ms harmless worker hold:
+`workerDurationMs` is threaded into the choreography session (confirmed-window.mjs:1421) and
+never read; the fixture never receives it; and the host launch passes only `fixture.env`
+(confirmed-window.mjs:1181–1184). The only ACTIVE hold in this composition is the fake ZCode
+CLI's completion-gate FILE `FAKE_ZCODE_COMPLETION_GATE` (its `_REACHED` sibling is the
+completion-blocked sentinel; tests/fixtures/fake-zcode-cli.mjs:273–281); the fake CLI also honors
+`FAKE_ZCODE_WAIT_FOR_PROGRESS_READ`, `FAKE_ZCODE_SESSION_PROGRESS_RECOVERY`,
+`progressDispatchReleased()` and `FAKE_ZCODE_COMPLETION_DELAY_MS`
+(tests/fixtures/fake-zcode-cli.mjs:259–281), all unset in this composition. The old exec
+route's default live executor composes the `runEnv` carrying the gate AND the verified-process
+marker variables (`FAKE_ZCODE_PROCESS_FILE`/`FAKE_ZCODE_PROCESS_NONCE`, driver.mjs:11363–11368)
+for its own `launch` closure (the closure's `runTurn` runs with `env: runEnv`,
+driver.mjs:11477–11478); it passes the gate/marker PATHS (`gatePath`/`gateReachedPath`/
+`processPath`/`processNonce`) plus that launch closure into `runHeldHostTurn`
+(driver.mjs:11424–11433), which owns the hold/release loop
+(`holdDeadline = now() + input.holdMs`, driver.mjs:3983 and :4191). The app-server route never
+runs either half. Without the gate the fake CLI completes at its 5 ms default
+(tests/fixtures/fake-zcode-cli.mjs:279–280), so the Child's "long" observation resolves almost
+immediately and the pending-observation predicate cannot hold.
+
+Frozen required mechanism (to be implemented and reviewed in the pre-launch readiness task —
+before Task 4's launch, NOT in this docs-only section): (1) before the ONE host launch, create
+an owned 0700 gate
+directory in the private owned case root (a SIBLING of `c-output`, never inside it — the
+fixture `--output` must be empty at creation) holding TWO files: the gate file (contents
+`hold`, later `release`) and the separate `_REACHED` sentinel file (the fake CLI writes
+`blocked` to it ONCE when the completion is first scheduled, before the `deliver` retries —
+tests/fixtures/fake-zcode-cli.mjs:260, :273–277); (2) compose
+`FAKE_ZCODE_COMPLETION_GATE=<gatePath>`, `FAKE_ZCODE_COMPLETION_GATE_REACHED=<gateReachedPath>`,
+`FAKE_ZCODE_PROCESS_FILE=<processPath>` and `FAKE_ZCODE_PROCESS_NONCE=<processNonce>` into the
+host launch env alongside `fixture.env` (the marker pair is the existing
+`driver.mjs:11367–11368` contract; the fake CLI writes `{pid, ppid, nonce}` to the marker at
+`tests/fixtures/fake-zcode-cli.mjs:23`); (3) on the FIRST confirmed pending observation, stamp
+the detection instant on the controller clock (`observedAtMs`), set
+`holdDeadlineAtMs = observedAtMs + 420000` on that SAME clock, and, **on the NORMAL path,
+release the gate (write `release`) ONLY at that deadline — never at launch, never earlier,
+never later**; (4) the measurement-cutoff/teardown arithmetic uses that same `holdDeadlineAtMs`;
+(5) **cleanup on EVERY refusal/failure path, before OR after detection, RELEASES THE GATE
+IMMEDIATELY, then terminates the verified fake-ZCode process, then removes the gate directory**
+— the old route's actual `runTerminationCleanup` rule is the full
+`recordTerminationInitiation(); await safeReleaseGate(); await safeTerminateExactProcess();
+await safeTerminateCodex();` (driver.mjs:3688–3693), i.e. it covers the gate release and the
+process terminations; the old route never removes a gate directory itself (its `gates/` dir sits
+inside the fixture temporary root — `join(fixture.codexHome, '..', 'gates')`, driver.mjs:11348–
+11350 — and disposal removes that root, fixture.mjs:851), so the directory removal is THIS
+route's added step. A CLEANUP release is NOT the normal-path
+release and MAY occur before the deadline; (3)'s "never earlier" governs the NORMAL path only,
+so a before-detection refusal writes `release` during cleanup rather than leaving `hold`.
+Releasing or deleting the gate file alone is NOT enough: a missing/unreleased gate reads as `''`
+and the fake CLI's `deliver` re-polls every 5 ms forever
+(tests/fixtures/fake-zcode-cli.mjs:273–277; the `readFile` catch returns `''`). The existing
+mechanisms to reuse are `safeReleaseGate`/`releaseCompletionGate` (driver.mjs:3620–3626;
+fixture.mjs:1335), `safeTerminateExactProcess` with
+`captureProcessIdentity`/`terminateProcessIdentity` and
+`cleanup.verifiedProcessTerminated` (driver.mjs:3634–3675), and the marker/nonce variables
+above; a surviving blocked worker is a CLEANUP FAILURE, never a silent disposal. Offline
+boundary rows (prefix `confirmed-window`, required before C): without the gate the fake CLI
+completes at 5 ms and the barrier cannot hold; with the gate no completion arrives before
+detection + 420000 ms; on the NORMAL path the release lands exactly at the deadline; a staging
+refusal AFTER detection releases the gate during cleanup (even if the deadline has not passed),
+terminates the verified process and removes the gate dir; a staging refusal BEFORE detection
+releases the gate during cleanup (the normal deadline was never reached), terminates the
+verified process and removes the gate dir; every boundary row asserts NO blocked fake-ZCode
+worker survives
+(`verifiedProcessTerminated === true`, or the confirmed-gone `ZCODE_SHELL_WAIT_PROCESS_EXITED`
+/ `ZCODE_SHELL_WAIT_MARKER_ABSENT` basis — a blocked worker necessarily wrote its marker, so an
+absent marker is a confirmed no-worker outcome) and every comparison uses ONE clock. The `_REACHED`/release instants and the control
+emission tag are COLLECTOR-INTERNAL diagnostics, not persisted fields (§41.5.2's projection
+rule); the persisted release deadline is the existing `window.holdDeadlineAtMs`. Until this
+producer and its rows exist, the 420000-ms hold is a PLAN VALUE, NOT an enforced fact, and C
+MUST NOT launch (§41.7 #3).
+
+#### 41.5.2 The frozen clock rule for every collector-visible stamp
+
+- **One controller clock.** The choreography's `now()` defaults to
+  `Math.floor(performance.now())` (confirmed-window.mjs:192; the launcher's same default is
+  :1160); every controller fact/fence
+  (`sentAtMs`, `repliedAtMs`, `atMs`, `rootInputs.sentAtMs`, `stagingDeadlineAtMs`,
+  `caseDeadlineAtMs`, `measurementCutoffAtMs`, `observationTeardownAtMs`) is stamped on it. An
+  injected offline clock replaces the same seam; two clock sources in one case are forbidden.
+- **Pending observation.** `observedAtMs` = the controller-clock read instant of the first
+  confirmation; `holdDeadlineAtMs = observedAtMs + 420000` on the same clock (the §41.5.1 gate
+  deadline); `resolvedAtMs` = the controller-clock read instant of the first resolution, or a
+  converted instrument stamp ONLY under a declared anchor. A rollout epoch stamp is a DIFFERENT
+  clock and is never compared to a controller fence; without an anchor the resolution stamp
+  stays null/unestablished (the consumer's `missing-observation-resolution`).
+- **Control.** `freshAtMs` = the controller-clock read instant of the latest NEW line.
+  `declaredLifetimeMs` = a CONSERVATIVE LOWER BOUND on the remaining designed life at
+  `freshAtMs`, computed by the collector as
+  `max(0, (SURVIVAL_CONTROL_LINE_COUNT − lineIndex − 1) × SURVIVAL_CONTROL_CADENCE_MS)` where
+  `lineIndex` is the latest fresh 1-based line index; the extra `−1` cadence absorbs the
+  emission-to-read delay (the worst-case delay is one 1000-ms cadence; a full 2000-ms cadence is
+  subtracted, so the bound holds even if the read is one cadence late). The
+  collector must establish that the emission-to-read delay is at most one cadence (2000 ms) —
+  the bounded read plus the passive-read floor; a read that cannot meet that bound leaves
+  `declaredLifetimeMs` null and admission refuses.
+  `controlEndAtMs = freshAtMs + declaredLifetimeMs` is an EARLY bound on the end (never later
+  than the actual designed end, so it may refuse a still-live control, never admit an ended
+  one); the predicate is `controlEndAtMs > request/initiation`. At line 40 this is 38000 ms; at line 59 it is 0; at line 60 it is 0
+  (inactive/expired). `active` = `1 ≤ lineIndex < 60` with no completion/exit observed (line 59
+  is active but has zero credited remaining life, so it cannot admit). If the line index or
+  `freshAtMs` is unavailable, `declaredLifetimeMs` is null and admission refuses. The control's
+  own emission tag (process-monotonic elapsed ms, fixture.mjs:175–190) is carried SEPARATELY as
+  `lastEmissionTag` **collector-internally only** (no whitelisted projection field and no
+  version bump; §41.5.2's projection rule) and is never compared to a controller fence directly;
+  post-delivery survival is adjudicated only under a declared same-clock anchor, else it stays
+  named-unestablished.
+- **Ancestry/duties.** The ancestry digest has no clock; any duty stamp compared to a controller
+  fence (`cleanupFenceAtMs`, collection intervals) must be produced on the controller clock by
+  the collector. Epoch-based duty facts stay separate and unestablished for fence comparisons.
+- **Clock-domain enforcement (the CONTROLLER is the enforcement point for the tag and the
+  projected fence/control facts, not the consumer; the raw collection-interval stamps are
+  COLLECTOR-SIDE validated, with `collection-intervals-invalid` second-line).** Every
+  collector fact carries the closed tag `clockDomain: 'controller-monotonic'`; the controller
+  rejects any other tag with the named `clock-domain-mismatch` BEFORE any stamp arithmetic.
+  Because future/epoch stamps pass the current predicates arithmetically (`evaluatedAtMs −
+  freshAtMs` is negative and `freshAtMs + declaredLifetimeMs` is huge), the controller must
+  additionally enforce the ADMISSION bounds (a)–(e) at the barrier and at every read BEFORE any
+  `turn/interrupt`, plus the SETTLEMENT bound (f) before any credit: (a) `observedAtMs ≤
+  evaluatedAtMs`; (b) `0 ≤ evaluatedAtMs − freshAtMs ≤
+  CONFIRMED_WINDOW_PASSIVE_READ_FLOOR_MS` (the LOWER bound rejects a future stamp; the existing
+  `controlFresh` has only the upper); (c) `0 < declaredLifetimeMs ≤
+  CONFIRMED_WINDOW_CASE_DEADLINE_MS` (1200000); (d) `evaluatedAtMs < holdDeadlineAtMs ≤
+  caseDeadlineAtMs` (the upper bound rejects an epoch/future deadline); (e) when resolved,
+  `observedAtMs ≤ resolvedAtMs ≤ evaluatedAtMs`; (f) when the duty adjudication carries a
+  cleanup fence, `0 ≤ cleanupFenceAtMs ≤ caseDeadlineAtMs` on the controller clock. **Scope of
+  (f) (frozen):** the fence is a SETTLEMENT gate, not an admission gate — it does not exist until
+  cleanup, so the PRE-LAUNCH IMPLEMENTATION must add (f) and the raw tag check at the top of
+  `finalizeSession` (`confirmed-window.mjs:1058`), before the existing projection/consumer block
+  at `:1068–1072`; today that function receives the raw `dutyAdjudication` and projects it at
+  `:1068` then runs the consumer at `:1069–1072` WITHOUT validating `cleanupFenceAtMs` or the raw
+  `clockDomain` (the projection drops the tag, `native-control-evidence.mjs:91–102`). The check is
+  therefore an addition, not a description of the current bytes, and it lands before any
+  settlement credit. Without (f) an epoch `cleanupFenceAtMs` passes the consumer's `safeStamp`
+  and every `resolution >= fence` comparison is false, so the consumer's
+  `cleanup-fence-unproven` never fires and settlement proceeds
+  (`native-control-evidence.mjs:535–545`); (f) refuses that fence as `clock-bounds-violation`,
+  and `cleanup-fence-unproven` stays a SECOND-LINE replay check that cannot restore credit the
+  controller already refused. An ABSENT fence is not a bounds violation — the consumer's
+  `cleanup-fence-unproven`/missing-resolution refusals still apply. The raw collection-interval
+  stamps are COLLECTOR-INTERNAL and never projected (for them the projection carries only the
+  affirmative boolean `collectionIntervalsValid`,
+  `native-control-evidence.mjs:91–102`); the collector must validate each interval start/end on
+  the controller clock inside `[0, caseDeadlineAtMs]`, and
+  `collection-intervals-invalid` (`:550`) is likewise a second-line replay check, not the guard
+  against a foreign-clock interval. **Refusal mapping (frozen): the tag mismatch
+  is `clock-domain-mismatch`; any arithmetic bound violation is `clock-bounds-violation`; both
+  refuse. Only admission-stage violations (the admission-fact tag check and bounds (a)–(e) at the
+  barrier/reads) block the send; a settlement-stage tag mismatch (the duty adjudication) or a (f)
+  violation refuses credit only, after any delivery was already sent.** **Enforcement order
+  (frozen, for the admission bounds): the domain tag → the existing
+  `controlFresh`/`controlLifetimeSufficient` predicates → the new numeric bounds (a)–(e)**; bound
+  (f) is checked at settlement after the same tag check, before the consumer verdict. That way a
+  null/zero lifetime still produces the existing `/fresh/`/`/lifetime/` miss rather than the new
+  bound reason. That order preserves the existing negative rows at
+  `tests/shell-wait-probe.test.mjs:33886/:33891/:33896`; the new reasons are pinned by their own
+  rows. The pre-launch implementation must also update the existing OFFLINE GREEN fixtures to
+  this contract: the shared `greenObservers()` pending fact (`:32816`) carries
+  `holdDeadlineAtMs: 400_000` beside `observedAtMs: 50`, which violates the frozen
+  `observedAtMs + 420000` derivation (it must be 420050), and every other pending fact that
+  hard-codes 400000 (including the inline rows at `:33736`/`:33862`/`:34994`) must be recomputed
+  from its own `observedAtMs`. The shared `greenObservers()` (`:32812–32822`) and the inline rows
+  at `:33739`, `:33866` and `:33926` use `declaredLifetimeMs: 3_600_000`, which bound (c) rejects
+  — they must move to a registered remaining life ≤ 1200000 (e.g., 120000), and every collector
+  fact must carry `clockDomain: 'controller-monotonic'` (the shared observer helper, the duty
+  helper `greenDuties()` at `:33978`, and the inline overrides). The
+  consumer's `window-unproven-before-initiation` (`native-control-evidence.mjs:463`) and
+  `control-stale-or-expired-at-initiation` (`:487`) remain SECOND-LINE replay checks only;
+  they cannot prevent an already-sent interrupt and are not the admission gate.
+- **Projection/version rule.** The new collector-internal diagnostics (`_REACHED`, the release
+  instant, `lastEmissionTag`) are NOT whitelisted record fields. The existing timing/evidence
+  fields the projector DOES carry include `window.confirmedAtMs`/
+  `pendingObservationConfirmedAtMs`/`childTurnStartedAtMs`/`pendingIntervalStartedAtMs`
+  (native-control-evidence.mjs:187–190), `window.holdDeadlineAtMs` (:191),
+  `window.ancestryBaselineDigest`/`ancestryHops` (:192–197), `window.dutiesObservable`/
+  `dutyNames` (:199–205), `window.controlActiveAtMs`/`controlFreshAtMs`/
+  `controlDeclaredLifetimeMs`/`measurementCutoffAtMs`/`observationTeardownAtMs` (:207–211),
+  `receipt.observationResolvedAtMs` (:230) and `fences.caseDeadlineAtMs` (:235), beside the
+  staging/identity/nativeRequest/receipt/fences/disposal/finalState/refusal blocks; the duty
+  adjudication carries `allObserved`/`names`/`durableSettled`/`cleanupFenceAtMs`/
+  `collectionIntervalsValid` (`projectConfirmedWindowDutyAdjudication`, :91–102). Unknown
+  fields are dropped, so a raw diagnostic can never leak, and **no version bump is required**
+  for the new diagnostics. The post-delivery survival RESULT is persisted through the existing
+  bounded duty adjudication (`allObserved`/`names`; the control duty name is an allowed
+  additional name), never through the raw emission tag. If the pre-launch implementation
+  chooses to persist the raw diagnostics, it must freeze the exact additive fields
+  `window.holdGateReachedAtMs`, `window.holdGateReleasedAtMs` and
+  `window.lastControlEmissionTag`, bump `NATIVE_CONTROL_EVIDENCE_VERSION` and
+  `CONFIRMED_WINDOW_CONTROLLER_VERSION` from 1 to 2 (native-control-evidence.mjs:25/:31), and
+  add the projector/consumer rows BEFORE C; otherwise only the adjudicated verdict is persisted.
+- **Offline boundary requirements.** A `confirmed-window` row must feed mismatched clock bases
+  (control emission tags / rollout epoch stamps presented as controller-clock values) to the
+  ACTUAL controller and assert the CONTROLLER refuses with its named clock reason and sends
+  NOTHING — not merely that a well-behaved collector is used or that the consumer later refuses.
+  A second row must pin the remaining-life boundary (the computed `controlEndAtMs` is ≤ the
+  scripted actual end; a control whose `controlEndAtMs` precedes the request refuses; a line-60
+  control is inactive). No test bytes were changed in this docs-only section; both rows are part
+  of the pre-launch readiness task.
+
+### 41.6 All readiness predicates and their observation source (frozen BEFORE any delivery)
+
+| Predicate | Observation source | What does NOT establish it |
+| --- | --- | --- |
+| Live Root → real managed Child authority | the controller's OWN protocol events: parent `SubAgentActivity` item `kind: "started"` with `agentThreadId`, joined to the Child's own `turn/started.threadId`; the Child's active turn id from that same event | a `thread/start`-synthesized Child; `threadSource: Subagent` classification; a setup descriptor; a GUI screenshot/ack; a config request; a fake transport alone |
+| Active Child turn | the Child's `turn/started` with no later terminal event for that turn; the buffered join selects the most recent NON-TERMINAL buffered turn | a last terminal turn id; a stale id; a thread snapshot alone; `turn/aborted` (not a v2 notification) |
+| Original Companion handle with a pending nonterminal long observation | the unchanged instrument/complete scan supplies `confirmed`, `resolved` and the Child/Companion facts; the ROUTE-side collector (not the instrument) stamps `observedAtMs` at the first confirmation on the controller clock, derives `holdDeadlineAtMs = observedAtMs + 420000` on that same clock (the §41.5.1 gate deadline) and stamps `resolvedAtMs` on the controller clock; the observation must be confirmed and NOT already resolved. **No `holdDeadlineAtMs` exists in `evidence.mjs`**; the old driver held-turn fact (`holdDeadline = now() + input.holdMs`, driver.mjs:3983/:4191) is not run by this route, so the predicate stays UNESTABLISHED until the §41.5.1 producer/collector exists | an active Child turn alone; the 3600000 request; a config default; the setup hashes; a fake transport; a claimed "unchanged complete-scan" deadline that no instrument produces |
+| Generation-bound invocation/ancestry baseline | the fixture spawn-witness records admitted through BOTH hops (launcher→broker, broker→transport) by the existing witness admission (digest carried in the block) | descriptor publication; the same `CODEX_HOME`; an id/cold resume; a coarse-platform claim presented as exact |
+| Actual applicable duties observable | the §24.7 duty consumers over the fixture-owned state store and local-process observation: names `invocation/broker/transport/runner/job/guard/integrity`, `durableSettled`, `cleanupFenceAtMs`, `collectionIntervalsValid` | setup success; a terminal job; aggregate flags with no names; a guessed `not-applicable` |
+| Unrelated control active with its own fresh data and a declared lifetime sufficient at request | the fixture-owned control's read artifacts: `active` = latest fresh line index 1..59 with no completion/exit; `freshAtMs` = controller-clock read instant of the latest NEW line (≤ 1000 ms at the post-collection evaluation); `declaredLifetimeMs` = CONSERVATIVE LOWER BOUND `max(0, (60 − lineIndex − 1) × 2000 ms)` (one full cadence absorbs the emission-to-read delay), so `controlEndAtMs = freshAtMs + declaredLifetimeMs` is an EARLY bound (never later than the actual end; it may refuse a still-live control, never admit an ended one) and `controlEndAtMs > request/initiation` | Status observation; a completed line-60 control; buffered-only lines; the total 120000-ms design passed off as remaining life; the optimistic `(60 − lineIndex) × 2000` form; `{active: true}` alone; a control never launched |
+| Operative measurement window | the pending observation's `holdDeadlineAtMs` (the controller-clock `observedAtMs + 420000` derivation above, not an instrument fact) present and still in the future; cutoff = hold + 10000 ms; teardown = cutoff + 5000 ms; all inside the case deadline | the requested window; an expired hold; a stale not-resolved snapshot; a natural completion; a `holdDeadlineAtMs` with no producer |
+| Staging within its bounds | the controller's `stagingDeadlineAtMs = actual host launch + 180000 ms` and `caseDeadlineAtMs = start + min(budgetMs, 1200000)`; every setup/continuation request and every admission rechecks them | the model's turn length; the control's designed end; an initialized-but-not-ready host |
+
+All collector-visible stamps in this table are CONTROLLER-CLOCK values (§41.5.2); the control's
+own emission tags and any rollout epoch timestamps are different clocks carried separately,
+never compared to these stamps without a declared anchor.
+
+- **Delivery/settlement predicates (also frozen):** exactly ONE admitted exact-target
+  `turn/interrupt` with the attributable sent/replied bounds recorded before anything consumes
+  them; the source class is `same-host-rpc`; a transport reply is NEVER the settlement; the
+  Child's own terminal event (bound to the requested turn's id) AND the original observation's
+  resolution AND every applicable duty (including `durableSettled === true` and
+  `collectionIntervalsValid === true`) AND pre-cutoff credit AND a proven pre-cleanup-fence
+  resolution are ALL required; a reply riding a natural completion is
+  `response-at-unrelated-completion`; parent-only cancellation, a signal/cleanup, a natural
+  winner, a later SessionEnd and a post-cutoff resolution each keep their true cause and never
+  substitute.
+- **The fail-closed rule, restated with the plan's substance:** if staging cannot satisfy ALL predicates within
+  the 180000-ms staging bound (or the case deadline), persist `staging-not-ready`, clean up
+  deterministically, and do NOT send the interrupt. Structural or setup success never
+  manufactures readiness; a GUI screenshot/ack, a fake transport alone and a config request
+  never establish the joint predicate.
+
+### 41.7 Divergences, pre-launch prerequisites and the finite C ledger
+
+**Divergences recorded (plan versus the actual Task-2 bytes; each resolved explicitly):**
+
+1. **Case defaults versus the plan's schedule:** `shellWaitCaseDefaults('rescue-interrupt')`
+   (driver.mjs:414–419) is `workerDurationMs 420000`, `capMs null`, `pollMs 3600000`,
+   `budgetMs 720000`. The plan requires cap/poll/exec-default **3600000** and a session ceiling
+   of **1200000 ms**. Resolution: the standard argv passes `--cap-ms 3600000` and
+   `--budget-ms 1200000` explicitly (observed parse above); the parser accepts them and the
+   controller enforces `min(budgetMs, 1200000)`. The defaults are NOT silently used.
+2. **Instruction conflict (blocker):** the implemented staging/continuation prompts still carry
+   the model-tool `interrupt_agent` delivery clauses (§41.3). The registered route delivers
+   through the controller's `turn/interrupt` only. **C must not launch until a route-specific
+   prompt composition (spawn + control launch/reads; no model-tool interrupt) is implemented
+   and reviewed**, with a preflight or negative row pinning it. This is a code/test change
+   outside this docs-only task; it is a PRE-LAUNCH prerequisite, never a live discovery and
+   never a reason to rewrite the frozen contract.
+3. **Worker-hold/completion-gate producer absent (blocker):** the 420000-ms harmless worker
+   hold has NO producer in the confirmed-window route. `workerDurationMs` reaches the
+   choreography (confirmed-window.mjs:1421) but is never read; the fixture never receives it;
+   the ONE host launch passes only `fixture.env` (confirmed-window.mjs:1181–1184), so
+   `FAKE_ZCODE_COMPLETION_GATE`/`FAKE_ZCODE_COMPLETION_GATE_REACHED` are never set and the fake
+   ZCode CLI completes at its 5 ms default (tests/fixtures/fake-zcode-cli.mjs:279–280). The old
+   exec route's gate env/release (`runHeldHostTurn`, `holdDeadline = now() + input.holdMs`,
+   driver.mjs:3983/:4191; env driver.mjs:11363–11368) is never run on this route. **The exact
+   required mechanism is frozen in §41.5.1**: the two gate files + the process marker/nonce in
+   the host env, the NORMAL-PATH release at the ACTUAL detection instant + 420000 ms on the
+   controller clock, the unconditional cleanup release AND verified-process termination on
+   every path, and the offline boundary rows. It must be implemented and reviewed in the pre-launch readiness task
+   (before Task 4's launch);
+   until then the 420000-ms hold is a PLAN VALUE, the pending-observation predicate cannot hold,
+   and C MUST NOT launch.
+4. **Live collector wiring absent (blocker):** the standard CLI supplies no
+   `confirmedWindowObservers`/`confirmedWindowDutyAdjudication`, so the route preflight refuses
+   before any host launch (observed above). The repository has only the offline test collectors;
+   the pre-launch readiness task (before Task 4's launch) must supply the real in-process wiring
+   built from the existing instrument premises (the complete scan/observation facts, the two-hop
+   witness admission, the §24.7 duty consumers over the fixture-owned store, and the fixture
+   control artifacts), including the §41.5.2 clock rule and the §41.5.1 hold producer, and
+   review it before C. The preflight's refusal is the correct fail-closed state, not a gate to
+   weaken.
+5. **Control lifetime versus the 180000-ms staging bound:** the control is 60 lines @ 2000 ms
+   (~120 s) while the staging bound is 180 s. The prospective-change allowance is NOT exercised
+   (rationale in §41.5): the recorded poll start precedes the 80 s readiness floor, the ~40 s
+   residual runs to the 120 s designed end at the expected admission, and a staging that
+   outlives it is `staging-not-ready`. No live extension is permitted.
+6. **Transport spelling:** the frozen §39.7/§40.2 prose did not spell the listen argument; the
+   implementation's verified `--listen stdio://` is the frozen value (§40.7 P1-1). The bare
+   `stdio` form is refused by the pinned binary during argument parsing.
+7. **`features.multi_agent_v2`:** not in the host argv; the pinned binary's OFFLINE
+   `features list` reports it `stable true` (default enabled). The effective live enablement is
+   a staged-verification item, never assumed from the request; `--enable hooks` is explicit in
+   argv as the plan requires.
+8. **Staging anchor:** `stagingDeadlineAtMs` is computed from `facts.host.startedAtMs`, the
+   launcher's POST-SPAWN host-handle instant (`startedAtMs: now()` after `spawn()`,
+   confirmed-window.mjs:1270 — still the actual host launch, not the kernel spawn timestamp and
+   not a protocol-ready event); this matches the plan's "starting at actual host launch" and is
+   recorded so the anchor is not misread.
+
+**The finite C ledger, restated with the plan's substance (the accounting this freeze
+activates, NOT yet spent):**
+
+- **C — at most ONE primary hosted session/case**, counted from persistent host/TUI startup,
+  including initialization/auth failure and staging that never reaches readiness. **C is
+  UNSPENT at this commit:** the offline parser, preflight refusal and isolated-fixture check
+  started no host, TUI, app-server or model turn and consume nothing.
+- **C-follow-up — at most ONE conditional hosted session/case**, only after Task 5's reviewed
+  eligibility decision.
+- **Root input within EACH case — at most THREE** Root turn starts/input submissions: initial
+  staging, at most one directed staging continuation, and one bounded post-interrupt
+  control/result request if needed. A correction before readiness occupies the continuation
+  slot. Internal model/tool round-trips and actual Child starts are recorded separately, never
+  misrepresented as three API calls.
+- **Native delivery within EACH case — at most ONE** admitted exact-target interrupt request;
+  failed/unsent attempts are recorded and never retried invisibly.
+- **Session time — at most 1200000 ms** including startup, staging, measurement and collection;
+  **staging — at most 180000 ms**, starting at actual host launch. These are research bounds,
+  never production timeouts.
+- **Total hosted cases — at most TWO.** All model-bearing warm-ups, alternate-route probes,
+  manual trial sessions and initialization failures count. No free "preparation session",
+  version reset, model shopping, uncounted operator retry or repeated compound prompt; continued
+  interaction stays within the SAME real parent/host and never resets clocks.
+- **The old I/F, N/C, V/V-fix, E/E-fix and T/T-fix ledgers stay CLOSED;** the new C labels are
+  scoped to THIS plan, not reuse of historical C. Production remains `do-not-adopt-yet`; no
+  product enablement, shared-default change or Root-command policy change follows from this
+  freeze.
+
+### 41.8 Gates for this section's commit
+
+`node scripts/check-line-endings.mjs` PASSES; `git diff --check` PASSES; the prohibited-path set
+(`scripts/ hooks/ skills/ agents/ .codex-plugin/ prompts/ schemas/ marketplace/ package.json
+npm-shrinkwrap.json docs/superpowers/specs/`) is untouched — this section's commit changes ONLY
+this report; no executable, test, dependency, plan or spec byte changes; no hosted/provider
+contact, no persistent server, no interactive host, no app-server and no model turn occurred in
+this task (the standard-entry preflight refusal is an offline fail-closed path; the isolated
+fixture setup copied no value into any record and was disposed); no unresolved placeholder
+markers, no trailing whitespace, final newlines present; `git status --porcelain` is clean after
+the commit. Historical sections remain byte-untouched (add-only).
