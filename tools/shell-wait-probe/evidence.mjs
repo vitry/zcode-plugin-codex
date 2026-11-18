@@ -1525,11 +1525,15 @@ const NATIVE_ABORT_TOOL_PATTERN = /^aborted by user after \d+\.\d+s$/u;
 /**
  * Whether a raw tool output carries the pinned host's native cancellation
  * framing at its validated header position. Never consulted for stdout or
- * result bodies.
+ * result bodies. Exported (round-20 P1-1): the live pending-observation
+ * collector REUSES this exact recognition — Codex's native
+ * `Script terminated`/`aborted by user` response on the exact Child's
+ * outstanding poll CLOSES that observation (the existing instrument's
+ * recognition), never an arbitrary undecodable output.
  * @param {unknown} output
  * @returns {boolean}
  */
-function isNativeCancellationResponse(output) {
+export function isNativeCancellationResponse(output) {
   let text = null;
   if (typeof output === 'string') text = output;
   else if (Array.isArray(output) && output[0]?.type === 'input_text' && typeof output[0].text === 'string' && output[0].text.length <= 4096) {
@@ -1956,6 +1960,8 @@ function deriveChildObservationBinding(rollouts, options) {
  *   cancelledAfterCall: { at: string | null, atMs: number | null },
  *   explicitTerminateAfterCall: { at: string | null, atMs: number | null },
  *   sameRolloutCompletedBeforeCall: boolean | null,
+ *   calls: { family: 'v2' | 'v1', callId: string | null, target: { kind: 'agent-id' | 'task-name' | 'unknown' | null, value: string | null, suppressed: boolean, chars: number | null }, delivered: boolean | null, rejection: string | null }[],
+ *   callsTruncated: boolean,
  * }}
  */
 export function extractInterruptInteraction(rollouts, redactions = [], bindingOptions = null) {
@@ -2080,6 +2086,34 @@ export function extractInterruptInteraction(rollouts, redactions = [], bindingOp
   let lastCallPreviousStatus = null;
   /** @type {ReturnType<typeof sanitizeInterruptTarget>} */
   let lastCallTarget = { kind: null, value: null, suppressed: false, chars: null };
+  // (P1-2, round-22 codex review) EVERY interrupt-shaped call with its OWN
+  // sanitized target and delivery outcome — the bounded per-call list the
+  // competing-delivery check consumes. The HISTORICAL last-call summary
+  // (target/delivered/rejection/previousStatus/callAt) stays byte-identical;
+  // this list adds the per-call resolution facts that summary cannot carry:
+  // a later different-target or later-rejected call can never clear an
+  // earlier same-target competing attempt. A call whose response was never
+  // decoded (a later call displaced it) keeps delivered:null — UNKNOWN,
+  // never guessed, and still potentially competing (fail closed). Capped at
+  // 64 entries alongside the other bounded ledgers.
+  /** @type {{ family: 'v2' | 'v1', callId: string | null, target: ReturnType<typeof sanitizeInterruptTarget>, delivered: boolean | null, rejection: string | null }[]} */
+  const interruptCalls = [];
+  const MAX_INTERRUPT_CALL_ENTRIES = 64;
+  // (P2-1, round-23 codex review) the OVERFLOW fact: the diagnostic list is
+  // bounded, but the scan itself is not — a call registered past the cap is
+  // DROPPED from the list, and the consumers that treat the list as the
+  // whole scan (the confirmed-window per-call ambiguity disjunction) must
+  // know the scan was truncated. Without this fact a dropped call could
+  // never compete: a truncated scan can never prove the ambiguity false.
+  let interruptCallsTruncated = false;
+  /** Registers one interrupt-shaped call entry (its resolution decodes into the LAST registered entry only — the historical decode discipline). */
+  const registerInterruptCall = (/** @type {'v2' | 'v1'} */ family, /** @type {string | null} */ callId, /** @type {unknown} */ target) => {
+    if (interruptCalls.length < MAX_INTERRUPT_CALL_ENTRIES) {
+      interruptCalls.push({ family, callId, target: sanitizeInterruptTarget(target), delivered: null, rejection: null });
+    } else {
+      interruptCallsTruncated = true;
+    }
+  };
   const rolloutList = Array.isArray(rollouts) ? rollouts : [];
   // Codex round 7: each rollout's OWN session id (the first session_meta
   // payload id) — the interrupt call pair's rollout identity, which the
@@ -2265,6 +2299,15 @@ export function extractInterruptInteraction(rollouts, redactions = [], bindingOp
           lastCallDelivered = resolution.delivered;
           lastCallRejection = resolution.rejection;
           if (resolution.previousStatus !== undefined) lastCallPreviousStatus = resolution.previousStatus;
+          // (P1-2, round-22 codex review) the decoded outcome ALSO lands in
+          // the per-call list's LAST entry when it belongs to that exact
+          // call — the per-call resolution fact the historical summary
+          // cannot carry (a displaced earlier call keeps its UNKNOWN null).
+          const lastEntry = interruptCalls.length > 0 ? interruptCalls[interruptCalls.length - 1] : null;
+          if (lastEntry !== null && lastEntry.callId === lastCall.callId && lastEntry.delivered === null) {
+            lastEntry.delivered = lastCallDelivered === 1 ? true : lastCallDelivered === 0 ? false : null;
+            lastEntry.rejection = lastCallRejection;
+          }
         }
         continue;
       }
@@ -2374,6 +2417,10 @@ export function extractInterruptInteraction(rollouts, redactions = [], bindingOp
             }
             if (statementFamily === null) continue;
             callCount += 1;
+            // (P1-2, round-22 codex review) the per-call entry registers BEFORE
+            // the historical last-call summary is (re)written, so the list and
+            // the summary describe the same calls in the same order.
+            registerInterruptCall(statementFamily, callId, statementTarget);
             lastCall = {
               rolloutIndex, index,
               // P2-1 round-15 fix: a later statement of a shared cell has no
@@ -2415,6 +2462,10 @@ export function extractInterruptInteraction(rollouts, redactions = [], bindingOp
       }
       if (family === null) continue;
       callCount += 1;
+      // (P1-2, round-22 codex review) the per-call entry registers BEFORE
+      // the historical last-call summary is (re)written (see the statement
+      // path above).
+      registerInterruptCall(family, callId, target);
       lastCall = { rolloutIndex, index, atMs, notBeforeMs: null, notAfterMs: null, family, callId, target, statementIndex: null, statementCount: null };
       lastCallDelivered = null;
       lastCallRejection = null;
@@ -2847,6 +2898,18 @@ export function extractInterruptInteraction(rollouts, redactions = [], bindingOp
     cancelledAfterCall: { at: cancelledAfterCallMs !== null ? new Date(cancelledAfterCallMs).toISOString() : null, atMs: cancelledAfterCallMs },
     explicitTerminateAfterCall: { at: explicitTerminateAfterCallMs !== null ? new Date(explicitTerminateAfterCallMs).toISOString() : null, atMs: explicitTerminateAfterCallMs },
     sameRolloutCompletedBeforeCall,
+    // (P1-2, round-22 codex review) the bounded PER-CALL list — every
+    // interrupt-shaped call with its own sanitized target and its own
+    // decoded delivery outcome (null while the call's response was never
+    // decoded: displaced by a later call, unparseable, or still
+    // outstanding). The last-call summary fields above are unchanged.
+    // (P2-1, round-23 codex review) `callsTruncated`: TRUE when at least one
+    // registered call was dropped past the list cap — the retained list is a
+    // TRUNCATED diagnostic, never an exhaustive scan, so consumers that
+    // disjoin over it must fail closed (the ambiguity fact can never be
+    // false under overflow).
+    calls: interruptCalls,
+    callsTruncated: interruptCallsTruncated,
   };
 }
 
@@ -3435,6 +3498,7 @@ export const SURVIVAL_CONTROL_READINESS_FLOOR_LINE_INDEX = 40;
  *   beforeDeliveryRead: { observed: boolean, lastLineIndex: number | null, orderedBeforeInterrupt: boolean | null },
  *   readinessFloor: { observed: boolean, highestPreRequestLineIndex: number | null },
  *   readinessCutoffExceeded: boolean | null,
+ *   preDeliveryReadSequence: { floorReachedInEarlierRead: boolean, separatePostFloorFreshRead: boolean },
  * }}
  */
 export function extractSurvivalControlFacts(rollouts, controlPath, options = /** @type {{ lineCount: number, interruptInteraction: ReturnType<typeof extractInterruptInteraction>, exactTargetMatch?: boolean | null, settledDeliveryCleanupGenerated?: boolean | null, childThreadId?: string | null, scanCompletenessUnestablished?: boolean | null }} */ ({})) {
@@ -3494,7 +3558,7 @@ export function extractSurvivalControlFacts(rollouts, controlPath, options = /**
   if (!Array.isArray(rollouts) || !rollouts.every(isEventArray)) {
     throw invalidEvidenceInput('rollouts must be an array of parsed rollout event arrays.');
   }
-  /** @type {{ launched: boolean, launchCount: number, handleGrounded: boolean, ownership: 'root' | 'child' | 'unidentifiable', deliveryBoundTag: number | null, emittedLines: { index: number, tag: number }[] | null, completionMarker: { index: number, tag: number } | null, postDeliveryRead: { occurred: boolean, readable: boolean, returnedLines: boolean }, controlExitObserved: boolean, controlExitPremature: boolean, controlExitCode: number | null, owningRootSessionId: string | null, launchAtMs: number | null, settledDeliveryAtMs: number | null, completionBeforeDeliveryObserved: boolean, beforeDeliveryRead: { observed: boolean, lastLineIndex: number | null, orderedBeforeInterrupt: boolean | null }, readinessFloor: { observed: boolean, highestPreRequestLineIndex: number | null }, readinessCutoffExceeded: boolean | null }} */
+  /** @type {{ launched: boolean, launchCount: number, handleGrounded: boolean, ownership: 'root' | 'child' | 'unidentifiable', deliveryBoundTag: number | null, emittedLines: { index: number, tag: number }[] | null, completionMarker: { index: number, tag: number } | null, postDeliveryRead: { occurred: boolean, readable: boolean, returnedLines: boolean }, controlExitObserved: boolean, controlExitPremature: boolean, controlExitCode: number | null, owningRootSessionId: string | null, launchAtMs: number | null, settledDeliveryAtMs: number | null, completionBeforeDeliveryObserved: boolean, beforeDeliveryRead: { observed: boolean, lastLineIndex: number | null, orderedBeforeInterrupt: boolean | null }, readinessFloor: { observed: boolean, highestPreRequestLineIndex: number | null }, readinessCutoffExceeded: boolean | null, preDeliveryReadSequence: { floorReachedInEarlierRead: boolean, separatePostFloorFreshRead: boolean } }} */
   const facts = {
     launched: false,
     launchCount: 0,
@@ -3516,6 +3580,10 @@ export function extractSurvivalControlFacts(rollouts, controlPath, options = /**
     // readiness facts, computed from the SAME parsed read events below.
     readinessFloor: { observed: false, highestPreRequestLineIndex: null },
     readinessCutoffExceeded: null,
+    // (P1-2, round-21 codex review) the registered TWO-READ pre-delivery
+    // sequence, computed from the SAME parsed read events below (anchored
+    // on the control's OWN reads — never the model-tool request).
+    preDeliveryReadSequence: { floorReachedInEarlierRead: false, separatePostFloorFreshRead: false },
   };
   // PASS 1 — the ONE control launch and its grounded handle (the settled
   // observation machinery's own grounding discipline: the launch's OWN
@@ -3823,6 +3891,49 @@ export function extractSurvivalControlFacts(rollouts, controlPath, options = /**
     observed: readinessFloorObserved,
     highestPreRequestLineIndex: preRequestLineIndexes.length > 0 ? Math.max(...preRequestLineIndexes) : null,
   };
+  // (P1-2, round-21 codex review) the REGISTERED TWO-READ PRE-DELIVERY
+  // SEQUENCE (the frozen §41 schedule's steps C+D), anchored on the
+  // control's OWN read events — never the model-tool request this route
+  // forbids: an EARLIER read (before the latest one) returned a line
+  // at/above the readiness floor (step C's floor-reaching read), and the
+  // LATEST read is a SEPARATE later read that returned a FRESH ADVANCING
+  // post-floor line still below the designed end (step D's bounded
+  // pre-delivery read). A control whose only floor read is the latest one
+  // performed step C but never step D; a control still below the floor
+  // performed neither — none of these spends the single interrupt attempt.
+  const lastReadEvent = readEvents.length > 0 ? readEvents[readEvents.length - 1] : null;
+  // (P2-2, round-22 codex review) the two-read schedule is TWO ACTUAL
+  // READS: the floor-reaching read and the latest fresh read must be
+  // SEPARATELY ATTRIBUTABLE — the floor row must come from a call id
+  // DISTINCT from the latest read's own call id. The rollout stream can
+  // carry more than one completed output row for a single call id, and
+  // ARRAY POSITION alone let one call's two rows masquerade as the
+  // registered sequence; the distinct-call comparison refuses that shape
+  // (one call's later output row is never a second read).
+  // (P2-3, round-23 codex review) the two reads are also SEQUENTIAL, not
+  // merely distinct: two distinct reads can OVERLAP (the second invoked
+  // before the first's response landed, its output arriving later), and
+  // output order alone let that shape masquerade as the registered
+  // schedule. The floor row additionally requires INVOCATION ordering —
+  // the floor-reaching read's own response must have completed BEFORE the
+  // latest read was invoked (the same invocation/response bounds the rest
+  // of this collector orders with; a missing stamp on either side leaves
+  // the schedule unproven, fail closed).
+  const floorReachedInEarlierRead = lastReadEvent !== null
+    && readEvents.some((readEvent, index) => index < readEvents.length - 1
+      && readEvent.callId !== lastReadEvent.callId
+      && readEvent.lastLineIndex !== null
+      && readEvent.lastLineIndex >= SURVIVAL_CONTROL_READINESS_FLOOR_LINE_INDEX
+      && readEvent.respondedAtMs !== null
+      && lastReadEvent.invokedAtMs !== null
+      && readEvent.respondedAtMs < lastReadEvent.invokedAtMs);
+  const separatePostFloorFreshRead = lastReadEvent !== null
+    && lastReadEvent.readable === true
+    && lastReadEvent.advancing === true
+    && lastReadEvent.lastLineIndex !== null
+    && lastReadEvent.lastLineIndex >= SURVIVAL_CONTROL_READINESS_FLOOR_LINE_INDEX
+    && lastReadEvent.lastLineIndex < lineCount;
+  facts.preDeliveryReadSequence = { floorReachedInEarlierRead, separatePostFloorFreshRead };
   // Codex gate round-5 finding 2: expiry is determined from evidence of the
   // READINESS PHASE ITSELF reaching the designed-end cutoff — a read INVOKED
   // before the interrupt request (a readiness-phase read, whatever became of

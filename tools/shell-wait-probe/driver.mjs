@@ -23,12 +23,12 @@ import { mkdir, readdir, readFile, lstat, stat, writeFile } from 'node:fs/promis
 import { isAbsolute, join, relative, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { PUBLIC_RESULT_SENTINEL, SURVIVAL_CONTROL_CADENCE_MS, SURVIVAL_CONTROL_LINE_COUNT, captureVerifiedProcessIdentity, createShellWaitFixture, inspectVerifiedProcessIdentity, releaseCompletionGate, survivalControlPromptDirective, terminateVerifiedProcess } from './fixture.mjs';
+import { PUBLIC_RESULT_SENTINEL, SURVIVAL_CONTROL_CADENCE_MS, SURVIVAL_CONTROL_LINE_COUNT, SURVIVAL_CONTROL_LINE_PREFIX, captureVerifiedProcessIdentity, createShellWaitFixture, inspectVerifiedProcessIdentity, releaseCompletionGate, survivalControlPromptDirective, terminateVerifiedProcess } from './fixture.mjs';
 import { renderRescueLauncherCommand } from '../../scripts/lib/rescue-launcher-command.mjs';
 import { runProcess } from '../../scripts/lib/process.mjs';
 import { codexLaunch } from '../../scripts/lib/tool-launch.mjs';
 import { parseCodexRolloutJsonl } from '../../tests/helpers/codex-rescue-qualification.mjs';
-import { EXECUTING_EVIDENCE_SOURCE, interruptDeliveryAttributionGuard, admitInterruptHostDelivery, extractInterruptInteraction, INTERRUPT_TARGET_HEX_SHAPE, extractSurvivalControlFacts, inspectShellWaitEvidence, observeSpawnAcknowledgementIdentity, parseCallStatements, parseToolOutput, precedingStatementsCompleted, statementOutputAt, TERMINAL_INTERRUPT_PREVIOUS_STATUSES } from './evidence.mjs';
+import { EXECUTING_EVIDENCE_SOURCE, interruptDeliveryAttributionGuard, admitInterruptHostDelivery, extractInterruptInteraction, INTERRUPT_TARGET_HEX_SHAPE, extractSurvivalControlFacts, inspectShellWaitEvidence, isNativeCancellationResponse, observeSpawnAcknowledgementIdentity, parseCallStatements, parseToolOutput, precedingStatementsCompleted, statementOutputAt, SURVIVAL_CONTROL_READINESS_FLOOR_LINE_INDEX, survivalControlShellCommand, TERMINAL_INTERRUPT_PREVIOUS_STATUSES } from './evidence.mjs';
 import { EXECUTING_CLOSURE_OBSERVATION_SOURCE, admitStdoutCapture, readDurableObligationSnapshot } from './closure-observation.mjs';
 import { CAPTURE_BROKER_ENTRY_VARIABLE, CAPTURE_DIRECTORY_VARIABLE, CAPTURE_ENTRY_VARIABLE, CAPTURE_MAX_BYTES_VARIABLE, CAPTURE_NONCE_VARIABLE, EXECUTING_CLOSURE_PRELOAD_SOURCE, STDOUT_CAPTURE_MAX_BYTES, TERMINAL_ARGV_SELECTOR } from './closure-preload.mjs';
 import { EXECUTING_RELEASE_QUALIFICATION_SOURCE, evaluateSurvivalControl, exactRescueForegroundRenderedExpectation } from './release-qualification.mjs';
@@ -38,8 +38,8 @@ import { EXACT_READER_VARIABLE, EXECUTING_SPAWN_WITNESS_PRELOAD_SOURCE, WITNESS_
 // The confirmed-window staged controller (report §40, the confirmed-window
 // plan Task 2): the route executor dispatch and the TWO new executing
 // modules' module-init byte snapshots for the observer provenance (v10).
-import { EXECUTING_CONFIRMED_WINDOW_SOURCE, executeConfirmedWindowCase } from './confirmed-window.mjs';
-import { EXECUTING_NATIVE_CONTROL_EVIDENCE_SOURCE } from './native-control-evidence.mjs';
+import { CONFIRMED_WINDOW_CLOCK_DOMAIN, CONFIRMED_WINDOW_HOLD_DURATION_MS, EXECUTING_CONFIRMED_WINDOW_SOURCE, createConfirmedWindowLiveLaunchContext, executeConfirmedWindowCase } from './confirmed-window.mjs';
+import { EXECUTING_NATIVE_CONTROL_EVIDENCE_SOURCE, REQUIRED_CONFIRMED_WINDOW_DUTY_SLOTS } from './native-control-evidence.mjs';
 
 
 const repositoryRoot = fileURLToPath(new URL('../..', import.meta.url));
@@ -100,7 +100,15 @@ const MAX_CASE_EXCERPTS = 64;
 // reload-side verdict the record persists), so both module-init byte
 // snapshots and the record-time reread must bind them: copying the v9
 // digest onto these bytes would misattribute the new observers.
-const OBSERVER_DIGEST_TAG = 'zcode-shell-wait-observer-v10';
+// v11 (2026-11-20 codex backfill round 22, P2-5): the PRODUCTION
+// launcher-command renderer (scripts/lib/rescue-launcher-command.mjs)
+// joins BOTH constructions — the observation-premises scan EXECUTES
+// renderRescueLauncherCommand from the working tree when it decides which
+// launcher acknowledgement grounds the original handle, so changing that
+// helper alone could change admission without changing either digest; both
+// the module-init byte snapshot and the record-time reread must bind the
+// renderer's file (a mutation of the renderer changes BOTH digests).
+const OBSERVER_DIGEST_TAG = 'zcode-shell-wait-observer-v11';
 
 // P2 round-29: module-INIT snapshot of the EXECUTING observer source — the
 // driver module body runs only after evidence.mjs has fully loaded, so this
@@ -112,6 +120,12 @@ const OBSERVER_DIGEST_TAG = 'zcode-shell-wait-observer-v10';
 // edit (sourcesChangedDuringRun).
 const EXECUTING_DRIVER_SOURCE = readFileSync(fileURLToPath(import.meta.url));
 const EXECUTING_LOCAL_PROCESS_RUNTIME_SOURCE = EXECUTING_LOCAL_PROCESS_OBSERVATION_SOURCE;
+// (P2-5, round-22 codex review) the module-INIT snapshot of the EXECUTING
+// launcher-command renderer — the observation-premises scan executes
+// renderRescueLauncherCommand (imported from this production file) when it
+// matches the attributed Rescue launcher invocation, so the renderer's bytes
+// are observer code: a renderer-only mutation must change this digest.
+const EXECUTING_RESCUE_LAUNCHER_COMMAND_SOURCE = readFileSync(fileURLToPath(new URL('../../scripts/lib/rescue-launcher-command.mjs', import.meta.url)));
 // (Review round 12, Finding 2) the executing helper bytes: the MATERIALIZED
 // copy digests when the materialization succeeded, else the PRODUCTION
 // files' digest strings — the observer's own fallback loads the production
@@ -149,6 +163,11 @@ const EXECUTING_OBSERVER_PROVENANCE = Object.freeze({
     .update('\0')
     .update(EXECUTING_NATIVE_CONTROL_EVIDENCE_SOURCE)
     .update('\0')
+    // (P2-5, round-22 codex review) the launcher-command renderer joins the
+    // construction right after the pure consumer — the observation-premises
+    // scan executes it, so its bytes are observer code.
+    .update(EXECUTING_RESCUE_LAUNCHER_COMMAND_SOURCE)
+    .update('\0')
     .update(EXECUTING_LOCAL_PROCESS_RUNTIME_SOURCE)
     .update('\0')
     .update(EXECUTING_DRIVER_SOURCE)
@@ -164,7 +183,7 @@ const EXECUTING_OBSERVER_PROVENANCE = Object.freeze({
     .update('\0')
     .update(executingHelperDigest('scripts/lib/errors.mjs'))
     .digest('hex'),
-  digestInput: `${OBSERVER_DIGEST_TAG} || evidence.mjs || shape-diagnostic.mjs || release-qualification.mjs || closure-observation.mjs || closure-preload.mjs (the extracted generated-preload seam) || spawn-witness-preload.mjs (the spawn-witness preload seam's generator module) || confirmed-window.mjs (the staged confirmed-window controller runtime) || native-control-evidence.mjs (the pure reload-side native-control consumer) || local-process-observation.mjs (the concurrent local-observation runtime the held turn executes) || driver.mjs (executing module-init snapshot, NUL-separated) || scripts/lib/fs.mjs + scripts/lib/process.mjs + scripts/lib/errors.mjs (the executing helper bytes: the MATERIALIZED copies when materialization succeeded, else the production files the observer's fallback loads, NUL-separated)`,
+  digestInput: `${OBSERVER_DIGEST_TAG} || evidence.mjs || shape-diagnostic.mjs || release-qualification.mjs || closure-observation.mjs || closure-preload.mjs (the extracted generated-preload seam) || spawn-witness-preload.mjs (the spawn-witness preload seam's generator module) || confirmed-window.mjs (the staged confirmed-window controller runtime) || native-control-evidence.mjs (the pure reload-side native-control consumer) || scripts/lib/rescue-launcher-command.mjs (the production launcher-command renderer the observation-premises scan executes) || local-process-observation.mjs (the concurrent local-observation runtime the held turn executes) || driver.mjs (executing module-init snapshot, NUL-separated) || scripts/lib/fs.mjs + scripts/lib/process.mjs + scripts/lib/errors.mjs (the executing helper bytes: the MATERIALIZED copies when materialization succeeded, else the production files the observer's fallback loads, NUL-separated)`,
   model: null,
   reachableToolFamily: null,
 });
@@ -195,7 +214,7 @@ export async function observerProvenance() {
   // mid-run helper edit is detected as sourcesChangedDuringRun and a
   // pre-run helper change changes the whole digest) — never silently
   // attributed.
-  const [evidenceSource, shapeSource, releaseQualificationSource, closureObservationSource, closurePreloadSource, spawnWitnessPreloadSource, confirmedWindowSource, nativeControlEvidenceSource, localProcessSource, driverSource, helperFsSource, helperProcessSource, helperErrorsSource] = await Promise.all([
+  const [evidenceSource, shapeSource, releaseQualificationSource, closureObservationSource, closurePreloadSource, spawnWitnessPreloadSource, confirmedWindowSource, nativeControlEvidenceSource, launcherRendererSource, localProcessSource, driverSource, helperFsSource, helperProcessSource, helperErrorsSource] = await Promise.all([
     readFile(fileURLToPath(new URL('./evidence.mjs', import.meta.url))),
     readFile(fileURLToPath(new URL('./shape-diagnostic.mjs', import.meta.url))),
     readFile(fileURLToPath(new URL('./release-qualification.mjs', import.meta.url))),
@@ -208,6 +227,9 @@ export async function observerProvenance() {
     // snapshot binds, read from the working tree at record time.
     readFile(fileURLToPath(new URL('./confirmed-window.mjs', import.meta.url))),
     readFile(fileURLToPath(new URL('./native-control-evidence.mjs', import.meta.url))),
+    // (P2-5, round-22 codex review) the SAME launcher-command renderer the
+    // module-init snapshot binds, read from the working tree at record time.
+    readFile(fileURLToPath(new URL('../../scripts/lib/rescue-launcher-command.mjs', import.meta.url))),
     readFile(fileURLToPath(new URL('./local-process-observation.mjs', import.meta.url))),
     readFile(fileURLToPath(new URL('./driver.mjs', import.meta.url))),
     readFile(fileURLToPath(new URL('../../scripts/lib/fs.mjs', import.meta.url))),
@@ -232,6 +254,10 @@ export async function observerProvenance() {
     .update('\0')
     .update(nativeControlEvidenceSource)
     .update('\0')
+    // (P2-5, round-22 codex review) the SAME renderer input the module-init
+    // snapshot binds, read from the working tree at record time.
+    .update(launcherRendererSource)
+    .update('\0')
     .update(localProcessSource)
     .update('\0')
     .update(driverSource)
@@ -249,7 +275,7 @@ export async function observerProvenance() {
   return {
     revision: 'working-tree-uncommitted',
     digest,
-    digestInput: `${OBSERVER_DIGEST_TAG} || evidence.mjs || shape-diagnostic.mjs || release-qualification.mjs || closure-observation.mjs || closure-preload.mjs (the extracted generated-preload seam) || spawn-witness-preload.mjs (the spawn-witness preload seam's generator module) || confirmed-window.mjs (the staged confirmed-window controller runtime) || native-control-evidence.mjs (the pure reload-side native-control consumer) || local-process-observation.mjs (the concurrent local-observation runtime the held turn executes) || driver.mjs (working-tree bytes, NUL-separated) || scripts/lib/fs.mjs + scripts/lib/process.mjs + scripts/lib/errors.mjs (the production helper bytes behind the MATERIALIZED copies the local-observation runtime loads, NUL-separated)`,
+    digestInput: `${OBSERVER_DIGEST_TAG} || evidence.mjs || shape-diagnostic.mjs || release-qualification.mjs || closure-observation.mjs || closure-preload.mjs (the extracted generated-preload seam) || spawn-witness-preload.mjs (the spawn-witness preload seam's generator module) || confirmed-window.mjs (the staged confirmed-window controller runtime) || native-control-evidence.mjs (the pure reload-side native-control consumer) || scripts/lib/rescue-launcher-command.mjs (the production launcher-command renderer the observation-premises scan executes) || local-process-observation.mjs (the concurrent local-observation runtime the held turn executes) || driver.mjs (working-tree bytes, NUL-separated) || scripts/lib/fs.mjs + scripts/lib/process.mjs + scripts/lib/errors.mjs (the production helper bytes behind the MATERIALIZED copies the local-observation runtime loads, NUL-separated)`,
     model: null,
     reachableToolFamily: null,
   };
@@ -396,6 +422,21 @@ const INTERRUPT_BASELINE_POLL_MS = 60_000;
 
 /** The I1 selector's declared candidate observation window. */
 const SURVIVAL_CONTROL_POLL_MS = 3_600_000;
+
+/**
+ * The canonical UUID hex form used by EVERY thread/agent target comparison
+ * (P1, round-23 codex review — hoisted from the historical attribution
+ * collector so the per-call ambiguity list shares ONE normalization): the
+ * pinned host parses ThreadId targets with `Uuid::parse_str`
+ * (protocol/src/thread_id.rs) — CASE-INSENSITIVE across the hyphenated,
+ * simple/unhyphenated, URN and braced forms, with `Display` re-emitting the
+ * canonical lowercase-hyphenated form — so spellings that normalize equal
+ * resolve to the SAME thread. Strip the framing characters, drop the URN
+ * prefix, lowercase: what remains is comparable with
+ * {@link INTERRUPT_TARGET_HEX_SHAPE}'s 32-hex shape.
+ * @param {string} value
+ */
+const canonicalUuidHex = (value) => value.replace(/[-{}]/g, '').replace(/^urn:uuid:/iu, '').toLowerCase();
 
 /** @param {string} message @returns {TypeError} */
 function invalidCaseInput(message) {
@@ -727,22 +768,106 @@ export async function runShellWaitCase(input, dependencies = {}) {
   // protocol streams.
   const executeCase = executeLiveCase
     ?? (caseInput.interruptRouteSelector === CONFIRMED_WINDOW_SELECTOR_VALUE
-      ? (/** @type {{ input: ValidatedShellWaitCase, fixture: ShellWaitFixtureHandle }} */ routeContext) => executeConfirmedWindowCase(routeContext, {
-        launchConfirmedWindowHost: dependencies.confirmedWindowHost ?? null,
-        observers: dependencies.confirmedWindowObservers ?? null,
-        dutyAdjudication: dependencies.confirmedWindowDutyAdjudication ?? null,
-        // The ONE clock the choreography and the owned host share: a real
-        // run uses the defaults; an offline research injection composes the
-        // deterministic fixture clock through these seams (never two clocks).
-        now: dependencies.confirmedWindowNow,
-        wallClockNow: dependencies.confirmedWindowWallClockNow,
-        sleep: dependencies.confirmedWindowSleep,
-        hostLaunchDependencies: {
+      ? (/** @type {{ input: ValidatedShellWaitCase, fixture: ShellWaitFixtureHandle }} */ routeContext) => {
+        // (P1-1, round-18 re-review) LIVE WIRING: without injected collectors
+        // the route composes the in-process live composition from its OWN
+        // provider chain. (round-19 fixes) the composition now receives the
+        // ARMED fixture handle (stdoutCapture/survivalControlPath included —
+        // a stripped copy left the ancestry/control mechanisms unarmed), the
+        // live-launch CONTEXT (the marker pair the controller generated for
+        // THIS launch, the controller's OWN Root/Child identities, the
+        // controller-computed absolute case deadline, the first-cleanup fence
+        // instant, and the pre-teardown evidence-checkpoint writer), and the
+        // duty-read cap. The fail-closed preflight keeps its named refusals
+        // for any premise that cannot bind.
+        const liveLaunchContext = createConfirmedWindowLiveLaunchContext();
+        const routeLiveInstrumentation = (dependencies.confirmedWindowObservers != null
+          ? { observers: dependencies.confirmedWindowObservers, dutyAdjudication: dependencies.confirmedWindowDutyAdjudication ?? null }
+          : createConfirmedWindowLiveComposition({
+            // (P1-1, round-19) the ARMED fixture handle: the composition's
+            // ancestry collector reads the REAL stdoutCapture (the spawn
+            // witnesses) and the control collector reads the REAL
+            // survivalControlPath — the armed copy, never a stripped one.
+            fixture: routeContext.fixture,
+            workerDurationMs: routeContext.input.workerDurationMs ?? undefined,
+            // (P2-5, round-19) the CONTROLLER-COMPUTED absolute deadline:
+            // the choreography populates the context's own caseDeadlineAtMs
+            // (its start stamp + the capped budget) and the duty reads'
+            // interval validation anchors on the controller's clock origin —
+            // never the raw budget duration.
+            caseDeadlineAtMs: () => liveLaunchContext.caseDeadlineAtMs,
+            // (P2-1, round-21 codex review) the PRODUCER'S OWN gate paths:
+            // the choreography publishes the ACTUAL normalized sibling paths
+            // it created into the launch context (exactly as it does for the
+            // process marker) — a valid trailing-slash --output must never
+            // make the collector read a template path INSIDE the output
+            // directory while the producer wrote the SIBLING.
+            completionGatePath: () => liveLaunchContext.completionGatePath,
+            completionGateReachedPath: () => liveLaunchContext.completionGateReachedPath,
+            // (P1-2, round-19) the marker pair the controller GENERATED for
+            // this launch (the hold producer's own process marker) — both the
+            // host and the collectors read it from the same owned context.
+            processMarkerPath: () => liveLaunchContext.processMarkerPath,
+            processMarkerNonce: () => liveLaunchContext.processMarkerNonce,
+            // (P1-3, round-19) the controller's OWN identities: the exact
+            // joined Child the choreography observed (from the launch
+            // context — never the fake Companion peer's internal session id),
+            // the controller's Root as the durable owner premise, and the
+            // Child as the expected executor for the durable reader's
+            // linkage check.
+            childObservationThreadId: () => liveLaunchContext.childThreadId,
+            ownerSessionId: () => liveLaunchContext.rootThreadId,
+            expectedExecutorAgentId: () => liveLaunchContext.expectedExecutorAgentId,
+            liveLaunchContext,
+          })
+        );
+        // (P1-4, round-19) the cleanup-fence seam: the live duty collector's
+        // own fence observation (an actual cleanup cause) may land earlier
+        // than the controller's teardown — the CONTEXT's first-cleanup
+        // instant is the collector's fence source too, so the frozen duty
+        // snapshot records the EARLIEST genuine cleanup boundary.
+        // (P2-7, round-19) the bounded pre-teardown evidence checkpoint: the
+        // frozen measurement evidence reaches disk BEFORE the teardown steps.
+        // (P2-1, round-20 codex re-review) the checkpoint persists the bounded
+        // MEASUREMENT SNAPSHOT the choreography projects at the pre-teardown
+        // instant — the whitelisted evidence (identity, request bounds,
+        // resolution) and the projected duty adjudication, through the SAME
+        // bounded projectors the persisted record uses — so a teardown hang
+        // or a process exit during cleanup can no longer lose the counted
+        // run's only measured facts: the bounded evidence is recoverable
+        // from the checkpoint WITHOUT the final record. (The checkpoint file
+        // itself stays the internal research artifact it always was — its
+        // `controllerVersion: 'checkpoint'` label is not the versioned record
+        // the reload consumer replays, so no persisted record shape changed.)
+        liveLaunchContext.persistEvidenceCheckpoint = async (/** @type {{ evidence?: unknown, duties?: unknown } | null | undefined} */ snapshot) => {
+          const checkpointRecord = {
+            controllerVersion: 'checkpoint',
+            route: 'confirmed-window',
+            checkpoint: 'pre-teardown-evidence',
+            case: routeContext.input.case,
+            finalState: 'checkpoint-written-before-teardown',
+            evidence: snapshot !== null && typeof snapshot === 'object' && snapshot.evidence !== null && typeof snapshot.evidence === 'object' ? snapshot.evidence : null,
+            duties: snapshot !== null && typeof snapshot === 'object' && snapshot.duties !== null && typeof snapshot.duties === 'object' ? snapshot.duties : null,
+          };
+          await writeFile(join(routeContext.input.output, 'confirmed-window.checkpoint.json'), `${JSON.stringify(checkpointRecord)}\n`, { mode: 0o600 });
+        };
+        return executeConfirmedWindowCase(routeContext, {
+          launchConfirmedWindowHost: dependencies.confirmedWindowHost ?? null,
+          observers: routeLiveInstrumentation.observers,
+          dutyAdjudication: routeLiveInstrumentation.dutyAdjudication,
+          // The ONE clock the choreography and the owned host share: a real
+          // run uses the defaults; an offline research injection composes the
+          // deterministic fixture clock through these seams (never two clocks).
           now: dependencies.confirmedWindowNow,
-          waitUntil: dependencies.confirmedWindowWaitUntil,
-        },
-        redact: (error) => redactPrivatePaths(error, routeContext.fixture),
-        preflight: async () => {
+          wallClockNow: dependencies.confirmedWindowWallClockNow,
+          sleep: dependencies.confirmedWindowSleep,
+          hostLaunchDependencies: {
+            now: dependencies.confirmedWindowNow,
+            waitUntil: dependencies.confirmedWindowWaitUntil,
+          },
+          redact: (error) => redactPrivatePaths(error, routeContext.fixture),
+          liveLaunchContext,
+          preflight: async () => {
           // (P1-7, 2026-11-18 codex gate round) A normal CLI invocation
           // supplies none of the confirmedWindow* dependency seams: the
           // executor used to receive null observers and null duty
@@ -760,13 +885,11 @@ export async function runShellWaitCase(input, dependencies = {}) {
           // the real host and model turn, with the missing collector
           // discovered only by the staging barrier.
           const requiredCollectorNames = ['pendingObservation', 'ancestryBaseline', 'dutyFacts', 'controlFacts'];
-          const nonCallableCollectors = dependencies.confirmedWindowObservers == null
-            ? requiredCollectorNames
-            : requiredCollectorNames.filter((name) => typeof /** @type {Record<string, any>} */ (dependencies.confirmedWindowObservers)[name] !== 'function');
-          if (nonCallableCollectors.length > 0 || dependencies.confirmedWindowDutyAdjudication == null) {
+          const nonCallableCollectors = requiredCollectorNames.filter((name) => typeof /** @type {Record<string, any>} */ (routeLiveInstrumentation.observers)[name] !== 'function');
+          if (nonCallableCollectors.length > 0 || routeLiveInstrumentation.dutyAdjudication == null) {
             return {
               ok: false,
-              reason: `the confirmed-window route instrumentation is not armed: the staged barrier collectors (observers) and the persisted duty adjudication are REQUIRED and callable before any hosted case (missing or not callable: ${nonCallableCollectors.length > 0 ? nonCallableCollectors.join(', ') : 'none'}; duty adjudication ${dependencies.confirmedWindowDutyAdjudication == null ? 'absent' : 'present'}) — a known-absent positive mechanism is refused pre-launch, never measured`,
+              reason: `the confirmed-window route instrumentation is not armed: the staged barrier collectors (observers) and the persisted duty adjudication are REQUIRED and callable before any hosted case (missing or not callable: ${nonCallableCollectors.length > 0 ? nonCallableCollectors.join(', ') : 'none'}; duty adjudication ${routeLiveInstrumentation.dutyAdjudication == null ? 'absent' : 'present'}) — a known-absent positive mechanism is refused pre-launch, never measured`,
             };
           }
           return evaluateLiveLaunchPreflight({
@@ -780,7 +903,8 @@ export async function runShellWaitCase(input, dependencies = {}) {
         },
         stagingPrompt: composeConfirmedWindowStagingPrompt({ case: /** @type {ShellWaitCaseLabel} */ (routeContext.input.case) }, routeContext.fixture),
         continuationPrompt: composeConfirmedWindowContinuationPrompt({ case: /** @type {ShellWaitCaseLabel} */ (routeContext.input.case) }, routeContext.fixture),
-      })
+        });
+      }
       : defaultLiveExecutor);
   // The launched native executable's SHA-256 (codex gate round 5): pinned
   // for WAIT-POLICY runs only — legacy records keep their pinned provenance
@@ -10559,28 +10683,77 @@ export function statusWaitInvocation(owned) {
 }
 
 /**
+ * The confirmed-window route's own staging instruction (blocker #2, report
+ * §41.3/§41.7): the standard managed Rescue spawn and the wait/hold wording —
+ * NEVER the legacy `rescue-interrupt` model-tool delivery clause. The
+ * controller's ONE `turn/interrupt` after the positive barrier is the only
+ * registered delivery source on this route; the model is explicitly told not
+ * to interrupt.
+ * @returns {string}
+ */
+function confirmedWindowRoutePrompt() {
+  return 'Use the installed $zcode:rescue --fresh --wait skill exactly once now for shell-wait-probe-fixture-task. '
+    + 'Spawn the Rescue agent exactly once through the standard managed spawn the installed skill\'s preparation and binding flow uses, and require ZCode to run exactly `npm test` as the safe deterministic fixture action. '
+    + 'Then wait and hold: keep the spawned agent running and its observation pending; do not interrupt, cancel, stop, replace, or complete the agent yourself, and do not end this turn early. '
+    + 'The experiment owns the single native interruption.';
+}
+
+/**
+ * The confirmed-window route's STEP 1–5 control directive (§16.4 choreography
+ * frozen through §41.5): the SAME control launch/read steps the legacy
+ * directive carries, with the model-tool interrupt clause REPLACED by the
+ * route's hold instruction (blocker #2). The control is never observed with
+ * Status, never sent input, never stopped or killed.
+ * @param {string} scriptPath the fixture-owned absolute script path (never recorded)
+ * @returns {string}
+ */
+function confirmedWindowHoldDirective(scriptPath) {
+  if (typeof scriptPath !== 'string' || scriptPath.length === 0 || scriptPath.length > 512
+    || !isAbsolute(scriptPath)
+    || [...scriptPath].some((character) => {
+      const code = character.codePointAt(0) ?? 0;
+      return code <= 31 || code === 127;
+    })) {
+    throw new TypeError('Invalid confirmed-window route prompt input: the survival-control directive needs a bounded absolute script path.');
+  }
+  return 'Also, inside this same turn: perform the following five steps strictly in this order, and never skip ahead. '
+    + 'STEP 1: spawn the Rescue child exactly as this turn\'s Rescue instructions otherwise require, and copy the EXACT full agent id from its spawn acknowledgement for your final report — the id identifies the observed child, but the interruption is never yours to deliver. '
+    + `STEP 2: immediately after the child launch, launch the fixture-owned progress program exactly once with exec_command on its own handle — run exactly \`${survivalControlShellCommand(scriptPath)}\` with yield_time_ms 1000 and no other arguments — and afterwards never observe it with Status, never send it characters, and never stop or kill it. `
+    + `STEP 3: coordinate readiness through the control clock: read the progress program's output on its own handle with bounded empty-input write_stdin calls (each yield_time_ms 1000), every read requiring a fresh progress line beyond everything previously read, and repeat until one read returns a line whose index is at least ${SURVIVAL_CONTROL_READINESS_FLOOR_LINE_INDEX} — the readiness floor, approximately 80 seconds after the control's start at the declared 2000-ms cadence. The floor is an observer-coordination approximation of the child's own poll-start window, recorded as such: it is NOT an observation of the child's poll, which stays child-owned and is never driven from this turn. `
+    + 'STEP 4: read the progress program\'s output once more on its own handle (an empty-input write_stdin with yield_time_ms 1000) and require a fresh progress line whose line index is still below the program\'s line count — the bounded §16.4 pre-delivery read, ordered before the interruption. '
+    + 'STEP 5: then HOLD — keep waiting on the spawned child with its observation pending, and never deliver an interruption yourself: do not call any interrupt tool, do not stop, cancel or replace the child, and do not end this turn early. The controller delivers the only native interruption after the positive window barrier. '
+    + 'After that interruption has settled, read the progress program\'s output one final time on its own handle and include every control read verbatim in your final report. '
+    + 'The progress program is unrelated to the Rescue child: do not confuse the two handles, and do not interrupt it.';
+}
+
+/**
  * The confirmed-window route's composed STAGING prompt (§39.9 step 2/5): the
- * registered case prompt with the §16.4 control directive riding the SAME
- * turn — the unrelated Root-owned control launches through the parent's own
- * exec handle inside its staging turn.
+ * route-specific spawn-and-hold instruction with the §16.4 control directive
+ * riding the SAME turn — the unrelated Root-owned control launches through
+ * the parent's own exec handle inside its staging turn. It never carries the
+ * legacy model-tool interrupt clause (blocker #2).
  * @param {{ case: ShellWaitCaseLabel }} input @param {any} fixture
  */
 function composeConfirmedWindowStagingPrompt(input, fixture) {
-  const base = shellWaitCasePrompt(input.case);
+  if (input?.case !== 'rescue-interrupt') throw new TypeError(`Invalid confirmed-window route prompt input: the route is registered for rescue-interrupt only (actual ${String(input?.case)}).`);
+  const base = confirmedWindowRoutePrompt();
   return typeof fixture?.survivalControlPath === 'string'
-    ? `${base} ${survivalControlPromptDirective(fixture.survivalControlPath)}`
+    ? `${base} ${confirmedWindowHoldDirective(fixture.survivalControlPath)}`
     : base;
 }
 
 /**
  * The ONE permitted directed continuation's CHANGED prompt (§39.9 step 4): an
- * explicitly authorized changed staging step — never an unchanged retry.
+ * explicitly authorized changed staging step — never an unchanged retry — and
+ * still the route-specific spawn-and-hold composition (no model-tool
+ * interrupt clause).
  * @param {{ case: ShellWaitCaseLabel }} input @param {any} fixture
  */
 function composeConfirmedWindowContinuationPrompt(input, fixture) {
-  const base = `${shellWaitCasePrompt(input.case)} DIRECTED CONTINUATION (the authorized changed staging step): the named Rescue spawn has not happened yet; this is the one directed correction — spawn the Rescue agent now exactly per the named Role instructions, and do nothing else.`;
+  if (input?.case !== 'rescue-interrupt') throw new TypeError(`Invalid confirmed-window route prompt input: the route is registered for rescue-interrupt only (actual ${String(input?.case)}).`);
+  const base = `${confirmedWindowRoutePrompt()} DIRECTED CONTINUATION (the authorized changed staging step): the named Rescue spawn has not happened yet; this is the one directed correction — spawn the Rescue agent now exactly per the named Role instructions, then wait and hold exactly as directed; do not end the turn early.`;
   return typeof fixture?.survivalControlPath === 'string'
-    ? `${base} ${survivalControlPromptDirective(fixture.survivalControlPath)}`
+    ? `${base} ${confirmedWindowHoldDirective(fixture.survivalControlPath)}`
     : base;
 }
 
@@ -10595,6 +10768,1756 @@ export function shellWaitCasePrompt(label) {
   const spec = SHELL_WAIT_CASE_SPECS[label];
   if (!spec) throw new Error(`unknown shell wait case: ${label}`);
   return spec.prompt;
+}
+
+/**
+ * The closed registered duty slots the confirmed-window route certifies
+ * (§41.6/§41.7) — the frozen REQUIRED_CONFIRMED_WINDOW_DUTY_SLOTS set from
+ * the pure consumer, single-sourced (P2-2, 2026-11-19 codex review: the same
+ * frozen set is the admission baseline and the settlement certification set).
+ */
+const CONFIRMED_WINDOW_DUTY_SLOTS = REQUIRED_CONFIRMED_WINDOW_DUTY_SLOTS;
+/** The fake Companion record read bound (a fixture artifact, never a transcript). */
+const MAX_FAKE_COMPANION_RECORD_BYTES = 4 * 1024 * 1024;
+
+/**
+ * The in-process LIVE collector composition a real confirmed-window case
+ * needs (report §41.7 blocker #4): the four staged barrier collectors plus the
+ * persisted duty adjudication, reading the fixture's ACTUAL on-disk artifacts
+ * through the EXISTING collectors —
+ *
+ * - `pendingObservation`: the frozen §41.6 sources — the unchanged
+ *   instrument/complete-scan premise (the fake Companion record's INBOUND
+ *   request frames: the record holds the fake engine's JSON-RPC REQUESTS
+ *   only; the sole writer is the fake CLI's inbound-line recorder, so no
+ *   notification shape is ever available or consulted) joined with the
+ *   §41.5.1 gate/`_REACHED` sentinel (the completion-blocked sentinel
+ *   reading `blocked` is completion scheduled-and-held = pending; the
+ *   released gate file is the resolution). The FIRST confirmation and the
+ *   FIRST resolution are stamped on the CONTROLLER clock (`premises.now`),
+ *   and `holdDeadlineAtMs = observedAtMs + workerDurationMs`
+ *   (§41.5.1/§41.5.2). No record/rollout timestamp is ever converted or
+ *   compared.
+ * - `ancestryBaseline`: both spawn-witness hops admitted through the existing
+ *   `admitSpawnAncestryWitness` premises over the fixture capture directory.
+ * - `dutyFacts`: BOTH §24.7 consumers, each naming exactly what it
+ *   adjudicates. The DURABLE consumer is the existing
+ *   `readDurableObligationSnapshot` owner-index reader's PER-LAYER verdicts
+ *   (job from the exact-record presence; runner/guard from RESOLVED
+ *   runnerCleanupDuty/writableGuard verdicts — a not-applicable claim only
+ *   with its demonstrated production-path reason; integrity from the proven
+ *   passive snapshot equality). The LOCAL consumer is the old exec route's
+ *   composition adapted to this surface: the invocation/broker startup
+ *   records (`admitStartupIdentityRecord` over the fixture capture seam)
+ *   joined with `observeLocalProcess` os-live-observation verdicts, and the
+ *   transport through the §41.5.1 verified process marker observed under its
+ *   OWN declared nonce, joined by `adjudicateLocalDuties` (whose ancestry
+ *   gate rides the same two-hop witness admission). A missing record, an
+ *   absent marker, or an unestablished observation keeps its slot unnamed;
+ *   every read interval is validated on the controller clock and the
+ *   terminal-winner fence is stamped there.
+ * - `controlFacts`: the existing `extractSurvivalControlFacts` collector's
+ *   call-scoped facts over the isolated fixture rollouts (the ONE control
+ *   exec launch, its grounded handle, its own read events' outputs); the
+ *   designed-end marker or an observed exec completion (exit) ENDS the
+ *   control. `freshAtMs` is the controller-clock read instant of the latest
+ *   NEW line and `declaredLifetimeMs` is the frozen conservative lower bound
+ *   `max(0, (LINE_COUNT - index - 1) * CADENCE_MS)`.
+ *
+ * The returned `dutyAdjudication` is the SAME mutable object the controller
+ * persists (the raw `clockDomain` tag is dropped by the whitelisted
+ * projection — no persisted shape/version change). The composition is
+ * OPTIONAL: offline tests keep injecting their own collectors, and the route
+ * preflight still refuses when this composition is not armed.
+ * @param {{
+ *   fixture: any | (() => any),
+ *   now?: () => number,
+ *   workerDurationMs?: number,
+ *   ownerSessionId?: string | (() => string | null) | null,
+ *   expectedExecutorAgentId?: string | (() => string | null) | null,
+ *   caseDeadlineAtMs?: number | (() => number | null) | null,
+ *   completionGatePath?: string | (() => string | null) | null,
+ *   completionGateReachedPath?: string | (() => string | null) | null,
+ *   processMarkerPath?: string | (() => string | null) | null,
+ *   processMarkerNonce?: string | (() => string | null) | null,
+ *   readDurableSnapshot?: (input: any) => Promise<any>,
+ *   loadRollouts?: (codexHome: string) => Promise<any[][]>,
+ *   readRecord?: (path: string) => Promise<string>,
+ *   admitSpawnAncestryWitness?: (input: any) => Promise<any>,
+ *   admitStartupIdentityRecord?: (input: any) => Promise<any>,
+ *   observeLocalProcess?: (input: any) => Promise<any>,
+ *   captureVerifiedProcessIdentity?: (markerPath: string, markerNonce: string) => Promise<any>,
+ *   childObservationThreadId?: string | (() => string | null) | null,
+ *   liveLaunchContext?: any,
+ * }} premises
+ */
+export function createConfirmedWindowLiveComposition(premises) {
+  if (!premises || typeof premises !== 'object') throw new TypeError('Invalid confirmed-window live composition input: the premises are required.');
+  // The fixture handle may be supplied LAZILY: a real in-process entry creates
+  // the composition before runShellWaitCase builds the fixture, so a provider
+  // lets the collectors resolve the actual handle on their first read.
+  const fixturePremise = premises.fixture;
+  if (fixturePremise === null || fixturePremise === undefined) throw new TypeError('Invalid confirmed-window live composition input: the fixture handle (or provider) is required.');
+  /** @returns {any} */
+  const requireFixture = () => {
+    const fixture = typeof fixturePremise === 'function' ? fixturePremise() : fixturePremise;
+    if (!fixture || typeof fixture !== 'object') throw new TypeError('Invalid confirmed-window live composition input: the fixture handle is not available yet.');
+    if (typeof fixture.codexHome !== 'string' || fixture.codexHome.length === 0) throw new TypeError('Invalid confirmed-window live composition input: the fixture codexHome is required.');
+    if (typeof fixture.workspace !== 'string' || fixture.workspace.length === 0) throw new TypeError('Invalid confirmed-window live composition input: the fixture workspace is required.');
+    return fixture;
+  };
+  const now = typeof premises.now === 'function' ? premises.now : (() => Math.floor(performance.now()));
+  const workerDurationMs = Number.isSafeInteger(premises.workerDurationMs) && /** @type {number} */ (premises.workerDurationMs) > 0
+    ? /** @type {number} */ (premises.workerDurationMs)
+    : CONFIRMED_WINDOW_HOLD_DURATION_MS;
+  const ownerSessionIdPremise = premises.ownerSessionId ?? null;
+  const expectedExecutorAgentIdPremise = premises.expectedExecutorAgentId ?? null;
+  /** A late-bound identity premise: the in-process entry observes the live Root/Child ids and updates its own reference. */
+  const resolvePremise = (/** @type {any} */ value) => {
+    const resolved = typeof value === 'function' ? value() : value;
+    return typeof resolved === 'string' && resolved.length > 0 ? resolved : null;
+  };
+  const caseDeadlineAtMs = premises.caseDeadlineAtMs ?? null;
+  // The §41.5.1 hold producer's on-disk artifacts, late-bound like the other
+  // identity premises: the choreography composes the gate/sentinel paths into
+  // the ONE host launch env, and the real wiring hands the same paths to this
+  // composition (the fixture env spelling is the direct offline seam).
+  const completionGatePathPremise = premises.completionGatePath ?? null;
+  const completionGateReachedPathPremise = premises.completionGateReachedPath ?? null;
+  // The §41.5.1 verified-process marker premises: the transport duty's
+  // observation source on this route (the marker process IS the route's
+  // fake-ZCode worker), late-bound like the gate paths; the fixture env
+  // spelling is the direct offline seam.
+  const processMarkerPathPremise = premises.processMarkerPath ?? null;
+  const processMarkerNoncePremise = premises.processMarkerNonce ?? null;
+  // (P1-1, 2026-11-19 codex re-review) the joined Child's session identity:
+  // the pending/resolved observation premises are BOUND to the rollout whose
+  // session_meta id names THIS session — never scanned across every rollout.
+  // Late-bound like the other identity premises; a real wiring binds the
+  // joined Child thread id. ABSENT → the observation stays unconfirmable
+  // (fail closed: the joined Child is never guessed).
+  const childObservationThreadIdPremise = premises.childObservationThreadId ?? null;
+  const readDurableSnapshot = typeof premises.readDurableSnapshot === 'function' ? premises.readDurableSnapshot : readDurableObligationSnapshot;
+  const loadRollouts = typeof premises.loadRollouts === 'function' ? premises.loadRollouts : loadShellWaitRollouts;
+  const readRecord = typeof premises.readRecord === 'function' ? premises.readRecord : (/** @type {string} */ path) => readFile(path, 'utf8');
+  // (P1-3, 2026-11-19 codex review) the §24.7 local consumers' seams are
+  // injectable like every other live premise (the deterministic offline
+  // boundary rows drive the REAL adjudicators through them; the defaults are
+  // the real admissions/observations).
+  const admitSpawnAncestryWitnessSeam = typeof premises.admitSpawnAncestryWitness === 'function' ? premises.admitSpawnAncestryWitness : admitSpawnAncestryWitness;
+  const admitStartupIdentityRecordSeam = typeof premises.admitStartupIdentityRecord === 'function' ? premises.admitStartupIdentityRecord : admitStartupIdentityRecord;
+  const observeLocalProcessSeam = typeof premises.observeLocalProcess === 'function' ? premises.observeLocalProcess : observeLocalProcess;
+  const captureVerifiedProcessIdentitySeam = typeof premises.captureVerifiedProcessIdentity === 'function'
+    ? premises.captureVerifiedProcessIdentity
+    : (/** @type {string} */ markerPath, /** @type {string} */ markerNonce, /** @type {Record<string, unknown>} */ osSeams) => captureVerifiedProcessIdentity(markerPath, markerNonce, osSeams ?? {});
+  /** The persisted duty adjudication the controller projects (the raw tag is dropped by the whitelist). */
+  const dutyAdjudication = /** @type {Record<string, any>} */ ({
+    allObserved: false,
+    names: [],
+    durableSettled: false,
+    cleanupFenceAtMs: null,
+    cleanupCause: /** @type {string | null} */ (null),
+    collectionIntervalsValid: false,
+    clockDomain: CONFIRMED_WINDOW_CLOCK_DOMAIN,
+  });
+  const state = {
+    pendingSessionId: /** @type {string | null} */ (null),
+    observedAtMs: /** @type {number | null} */ (null),
+    resolvedAtMs: /** @type {number | null} */ (null),
+    // (P1, round-13 re-review) the latched confirmed state: once the
+    // qualifying poll was observed OUTSTANDING, a later scan whose same call
+    // completed directly still resolves the observation (the guard below
+    // never re-refuses a latched confirmation).
+    observationConfirmed: false,
+    controlLineIndex: /** @type {number | null} */ (null),
+    controlFreshAtMs: /** @type {number | null} */ (null),
+    lastEmissionTag: /** @type {number | null} */ (null),
+    // (P2-1, 2026-11-19 codex reviews) the emission tag the demonstrated
+    // freshness stamp backs: a freshness stamp that no longer backs the
+    // NEWEST line credits no remaining life.
+    controlFreshForTag: /** @type {number | null} */ (null),
+    cleanupFenceAtMs: /** @type {number | null} */ (null),
+    // (P1-1, round-21 codex review) the latched CLEANUP CAUSE that settled
+    // the linked durable job (the observed SessionEnd discharge) — latched
+    // with the fence at the earliest observing read, never recomputed, so a
+    // later snapshot whose projection drops the stop fields never re-credits
+    // the durable slot.
+    cleanupCause: /** @type {string | null} */ (null),
+    readIntervals: /** @type {{ startedAtMs: number, endedAtMs: number }[]} */ ([]),
+    // (P1-3, 2026-11-19 codex review) per applicable local slot: the latched
+    // presence baseline (the os-live-observation verdict the settlement binds
+    // to), the accumulated post-baseline reads, and the re-adjudicated
+    // generation-bound exit verdict (`adjudicateLocalExit`, collector-internal
+    // epoch domain — never compared to a controller fence).
+    localExits: {
+      invocation: { presence: /** @type {any} */ (null), reads: /** @type {any[]} */ ([]), exit: /** @type {any} */ (null), lastReadEpochMs: /** @type {number | null} */ (null) },
+      broker: { presence: /** @type {any} */ (null), reads: /** @type {any[]} */ ([]), exit: /** @type {any} */ (null), lastReadEpochMs: /** @type {number | null} */ (null) },
+      transport: { presence: /** @type {any} */ (null), reads: /** @type {any[]} */ ([]), exit: /** @type {any} */ (null), lastReadEpochMs: /** @type {number | null} */ (null) },
+    },
+  };
+  const deadlineNow = () => {
+    const value = typeof caseDeadlineAtMs === 'function' ? caseDeadlineAtMs() : caseDeadlineAtMs;
+    return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
+  };
+  /**
+   * The fake Companion record's request-frame COMPLETE scan. The record's
+   * frozen contract is REQUESTS-only (evidence.mjs `inspectCompanion`: EVERY
+   * entry must match a supported JSON-RPC request shape — one valid send
+   * mixed with malformed lines leaves the peer record unknown), so the
+   * pending observation's record premise is the complete scan's send facts:
+   * the scan either names the exactly-one `session/send` request frame (the
+   * original observation's send) or refuses by name. (P1-2, 2026-11-19 codex
+   * review: the first-valid-frame-wins scan skipped torn lines and could
+   * never refuse a corrupted record.)
+   * @param {string} contents
+   * @returns {{ known: boolean, sendCount: number, sessionId: string | null, malformedCount: number, totalEntries: number }}
+   */
+  const scanCompanionRecordComplete = (contents) => {
+    let sendCount = 0;
+    let malformedCount = 0;
+    let totalEntries = 0;
+    let sessionId = null;
+    for (const line of contents.split('\n')) {
+      if (line.length === 0) continue;
+      totalEntries += 1;
+      let frame;
+      try { frame = JSON.parse(line); } catch { malformedCount += 1; continue; }
+      const method = frame !== null && typeof frame === 'object' && !Array.isArray(frame) ? frame.method : undefined;
+      const supported = typeof method === 'string' && method.length > 0 && method.length <= 128
+        && ![...method].some((character) => {
+          const code = character.codePointAt(0) ?? 0;
+          return code <= 31 || code === 127;
+        });
+      if (!supported) { malformedCount += 1; continue; }
+      if (method !== 'session/send') continue;
+      sendCount += 1;
+      if (sessionId === null) {
+        const named = typeof frame.params?.sessionId === 'string' ? frame.params.sessionId : null;
+        if (named !== null && named.length > 0 && named.length <= 256) sessionId = named;
+      }
+    }
+    return { known: malformedCount === 0, sendCount, sessionId, malformedCount, totalEntries };
+  };
+  /**
+   * The Child's ORIGINAL observation premises, BOUND to the joined Child and
+   * its original-handle poll (P1-1, 2026-11-19 codex re-review — the §41.6
+   * unchanged instrument row's Child/Companion facts):
+   *
+   * - **Session identity:** only the rollout whose `session_meta` id names
+   *   the joined Child session premise (exactly one such rollout) is
+   *   consulted — a Root or unrelated rollout's pending cell premises
+   *   nothing.
+   * - **Originating tool call + original handle (P1-2, 2026-11-19 codex
+   *   re-review):** the ORIGINAL handle is grounded in the ATTRIBUTED RESCUE
+   *   LAUNCHER ACKNOWLEDGEMENT — the Child rollout's one `exec_command`
+   *   carrying the ACTUAL RENDERED Rescue launcher invocation
+   *   (`node "<absolute .../skills/rescue/launcher.mjs>" invoke-prepared
+   *   rescue`, the machine-rendered `renderRescueLauncherCommand` prefix
+   *   plus the skill's fixed allowlisted child arguments) whose own
+   *   completed output grounds a session handle (unambiguous: zero or
+   *   several such acknowledgements leave NO attributable original handle,
+   *   fail closed). An UNRELATED exec_command (any other command) never
+   *   attributes the launcher, whatever handle it acknowledges. The
+   *   observation poll is a `write_stdin` call parsed by the instrument's
+   *   `parseCallStatements` targeting THAT handle, and only same-handle
+   *   polls' yielded-cell PENDING outputs are the long observation
+   *   OUTSTANDING (the started premise). A pending poll of an unrelated exec
+   *   session (the first `write_stdin` call) premises nothing — the old
+   *   first-poll trust allowed the interrupt before the actual Rescue
+   *   observation started.
+   * - **Resolution (P1-2):** the observation RETURNED is a COMPLETED output
+   *   that resolves a pending original-handle cell — either a completed
+   *   output following the pending one of the SAME poll call, or (the
+   *   normal yielded-cell grammar) a completed output on a LINKED
+   *   continuation call: a `wait({cell_id})` call whose cell_id names the
+   *   pending cell (the cell-to-continuation linkage the instrument's
+   *   binding derives). Grouping outputs solely by call id can never see the
+   *   continuation's resolution.
+   *
+   * Control polls (always completed), undecodable outputs, and every
+   * foreign-rollout fact premise nothing; the scan never leaves the
+   * tool-call/output grammar and never converts a timestamp.
+   * @param {any[][]} rollouts
+   * @param {string | null} childThreadId the joined Child's session identity
+   * @returns {{ bound: boolean, started: boolean, returned: boolean, failed: boolean }}
+   */
+  const scanChildObservationPremises = (rollouts, childThreadId) => {
+    // (P1-2, 2026-11-19 codex re-review) the RENDERED Rescue launcher
+    // invocation the production preparation/binding path composes:
+    // `node "<absolute shell-safe path>/skills/rescue/launcher.mjs>"
+    // invoke-prepared rescue` — the machine-rendered
+    // renderRescueLauncherCommand prefix (the path is posix-absolute, ends in
+    // the launcher leaf, and carries none of the shell-unsafe characters the
+    // renderer rejects) plus the skill's fixed allowlisted child arguments.
+    // Any OTHER exec_command is an unrelated command and never attributes
+    // the launcher acknowledgement.
+    const isRenderedRescueLauncherInvocation = (/** @type {unknown} */ cmd) => {
+      // (P2, 2026-11-19 codex re-review) the matcher validates through the
+      // PRODUCTION renderer itself (scripts/lib/rescue-launcher-command.mjs,
+      // REUSED READ-ONLY — never a second path alphabet): the command
+      // matches exactly when its extracted quoted path, re-rendered by
+      // renderRescueLauncherCommand, reproduces the command byte-for-byte.
+      // The renderer accepts every absolute posix path ending in
+      // /skills/rescue/launcher.mjs free of its rejected unsafe characters
+      // (no backslash, quote, backtick or dollar — but SPACES, plus signs
+      // and non-ASCII are accepted and safely quoted); the old inline
+      // [A-Za-z0-9._/-] alphabet rejected those very installations.
+      if (typeof cmd !== 'string') return false;
+      const match = /^node "(.+)" invoke-prepared rescue$/u.exec(cmd);
+      if (match === null) return false;
+      try {
+        // The renderer produces the immutable LAUNCHER COMMAND PREFIX
+        // (`node "<path>"`); the skill's fixed allowlisted child arguments
+        // (`invoke-prepared rescue`) append to it. The command matches when
+        // the renderer, applied to the extracted path, reproduces the
+        // command's own prefix byte-for-byte — i.e. the full command is
+        // exactly renderer(path) + ' invoke-prepared rescue'.
+        return `${renderRescueLauncherCommand(match[1])} invoke-prepared rescue` === cmd;
+      } catch {
+        return false;
+      }
+    };
+    if (typeof childThreadId !== 'string' || childThreadId.length === 0) return { bound: false, started: false, returned: false, failed: false };
+    const childIndices = [];
+    for (const [index, events] of (Array.isArray(rollouts) ? rollouts : []).entries()) {
+      if (!Array.isArray(events)) continue;
+      if (events.some((event) => event?.type === 'session_meta' && event?.payload?.id === childThreadId)) childIndices.push(index);
+    }
+    if (childIndices.length !== 1) return { bound: false, started: false, returned: false, failed: false };
+    const childEvents = /** @type {any[]} */ (rollouts[childIndices[0]]);
+    /** The ordered per-call facts INSIDE the Child rollout only.
+     * (P2, 2026-11-19 codex re-review) each write_stdin poll also retains
+     * its REQUEST arguments — `chars` and `yieldTimeMs` — so the qualifying
+     * long-observation premise can validate the REGISTERED shape (empty
+     * chars, the 3600000 exec-default yield), never just any pending cell
+     * on the launcher handle.
+     * (P1-1, round-20 codex re-review) each positioned write_stdin poll
+     * also retains whether its OWN response carried the pinned host's
+     * NATIVE CANCELLATION framing at the statement-bound attribution — the
+     * failed latch consumes it to CLOSE the exact poll (resolved) instead
+     * of stranding the interrupted observation as an unknown failure. */
+    /** @type {Map<string, { kind: string | null, sessionId: number | null, cellId: string | null, states: string[], lastEventIndex: number, chars: string | null, yieldTimeMs: number | null, precededCompleted: boolean, nativeCancellation: boolean, waits: { cellId: string, statementIndex: number, statementCount: number, completed: boolean, undecoded: boolean, nativeCancellation: boolean, terminate: boolean }[] }>} */
+    const callsById = new Map();
+    // The frozen §41/§16.4 qualifying shape: the production preparation's
+    // empty-input long-yield poll — chars EMPTY and yield_time_ms EXACTLY
+    // the registered 3600000 (the I1 case's --poll-ms/--exec-default-ms
+    // pair). A pending cell from any other poll shape premises nothing.
+    const REGISTERED_OBSERVATION_CHARS = '';
+    const REGISTERED_OBSERVATION_YIELD_MS = 3_600_000;
+    /** (P1-2) the launcher acknowledgements: exec_command calls (parsed by
+     * the instrument) whose own completed output grounds a session handle —
+     * the attributable original Companion handle. */
+    /** @type {Set<string>} */
+    const launcherExecCallIds = new Set();
+    const launcherHandles = new Set();
+    // (P1, round-11 re-review) the LAUNCHER statement's OWN position per
+    // call: the acknowledgement decode reads the launcher statement's own
+    // completed output (statementOutputAt), never the cell's aggregate last
+    // result — a cell that launches Rescue and then an unrelated command
+    // grounds the LAUNCHER's handle, never the unrelated one.
+    /** @type {Map<string, { statementIndex: number, statementCount: number }>} */
+    const launcherStatementByCallId = new Map();
+    // (P1-2, round-12 re-review) each write_stdin poll entry decodes its OWN
+    // statement output: the entry's owning poll is the cell's FIRST statement
+    // (the entry classification), so its position is recorded here and every
+    // output decode reads THE POLL's own state at that position.
+    /** @type {Map<string, { statementIndex: number, statementCount: number }>} */
+    const observationPollStatementByCallId = new Map();
+    /** @type {Map<string, { pollCallId: string, pendingEventIndex: number }>} */
+    const pendingCellByCell = new Map();
+    for (const [eventIndex, event] of childEvents.entries()) {
+      const payload = event?.payload;
+      if (payload?.type === 'custom_tool_call' || payload?.type === 'function_call') {
+        const callId = typeof payload.call_id === 'string' && payload.call_id.length > 0 ? payload.call_id : null;
+        if (callId === null) continue;
+        const statements = parseCallStatements(event);
+        const entry = callsById.get(callId) ?? { kind: null, sessionId: null, cellId: null, states: [], lastEventIndex: eventIndex, chars: null, yieldTimeMs: null, precededCompleted: false, nativeCancellation: false, waits: [] };
+        const first = statements === null ? null : statements[0] ?? null;
+        // (P2, round-15 re-review) the OWNING statement is the qualifying
+        // observation poll's OWN — an EMPTY-INPUT registered-yield write_stdin
+        // at ANY statement position (a completed exec_command preceding it in
+        // the same cell used to classify the whole call and never register
+        // the poll). The strict whole-list decode of the cell's output
+        // carries the evidence that the preceding statements completed.
+        // Without a registered-shape statement the first statement keeps the
+        // existing classification (wait continuations, preparation writes).
+        let owning = first;
+        let owningIndex = 0;
+        if (Array.isArray(statements)) {
+          let owningCandidate = statements.findIndex((statement) => statement !== null && statement.kind === 'write_stdin'
+            && statement.value?.chars === REGISTERED_OBSERVATION_CHARS
+            && statement.value?.yield_time_ms === REGISTERED_OBSERVATION_YIELD_MS);
+          // (P1, round-17 re-review) linked wait continuations at ANY
+          // statement position: a wait owning a pending original-handle cell
+          // classifies the entry wherever it sits in the cell (its own output
+          // decode) — an exec-before-wait resolution cell used to classify as
+          // the exec and never contribute resolution evidence, leaving the
+          // completed observation pending OUTSIDE the required pending window.
+          if (owningCandidate < 0) {
+            owningCandidate = statements.findIndex((statement) => statement !== null
+              && statement.kind === 'wait' && typeof statement.value?.cell_id === 'string');
+          }
+          if (owningCandidate >= 0) {
+            owningIndex = owningCandidate;
+            owning = statements[owningCandidate];
+          }
+        }
+        if (owning !== null) {
+          entry.kind = typeof owning.kind === 'string' ? owning.kind : entry.kind;
+          const polledSessionId = Number.isSafeInteger(owning.value?.session_id) && /** @type {number} */ (owning.value.session_id) > 0
+            ? /** @type {number} */ (owning.value.session_id)
+            : null;
+          if (entry.kind === 'write_stdin' && polledSessionId !== null) {
+            entry.sessionId = polledSessionId;
+            // (P2) the REQUEST arguments ride the poll's own entry.
+            entry.chars = typeof owning.value?.chars === 'string' ? owning.value.chars : null;
+            entry.yieldTimeMs = Number.isSafeInteger(owning.value?.yield_time_ms) ? /** @type {number} */ (owning.value.yield_time_ms) : null;
+            // (P1-2, round-12 re-review) the entry's OWNING poll's own
+            // position is recorded so the output decode below reads THE
+            // POLL's own state (statementOutputAt), never the cell's
+            // aggregate last result. (P2, round-15) the owning poll may sit
+            // at ANY statement position.
+            if (Array.isArray(statements)) {
+              observationPollStatementByCallId.set(callId, { statementIndex: owningIndex, statementCount: statements.length });
+            }
+          }
+          if (entry.kind === 'wait' && typeof owning.value?.cell_id === 'string') {
+            entry.cellId = owning.value.cell_id;
+            // (P1-3, round-16 re-review) the LINKED CONTINUATION's own
+            // position: the wait's outcome decodes from its own statement
+            // result (statementOutputAt) — a later unrelated statement's
+            // yield in the same cell never masks the first wait's completed
+            // resolution.
+            if (Array.isArray(statements)) {
+              observationPollStatementByCallId.set(callId, { statementIndex: owningIndex, statementCount: statements.length });
+            }
+          }
+          // (P1-3, round-18 re-review) EVERY linked wait in the cell is
+          // tracked by its OWN statement position and cell id: a resolution
+          // cell may complete `wait(original)` AFTER an unrelated
+          // `wait(other)` has completed — only the wait whose cell_id IS the
+          // original observation's cell resolves or terminates it; other
+          // cells' waits never mask the original's resolution.
+          // (P2-4, round-21 codex review) the wait's OWN `terminate: true`
+          // flag is recorded too — an EXPLICIT stop is a separate ender, and
+          // its Script-terminated marker is never native cancellation.
+          if (Array.isArray(statements)) {
+            for (const [statementIndex, statement] of statements.entries()) {
+              if (statement === null || statement.kind !== 'wait') continue;
+              const waitCellId = typeof statement.value?.cell_id === 'string' && statement.value.cell_id.length > 0
+                ? statement.value.cell_id
+                : null;
+              if (waitCellId === null) continue;
+              entry.waits.push({ cellId: waitCellId, statementIndex, statementCount: statements.length, completed: false, undecoded: false, nativeCancellation: false, terminate: statement.value?.terminate === true });
+            }
+          }
+          // (P1, round-11) the launcher statement is located by its OWN
+          // position in the cell (any statement, not only the first): its
+          // registration carries the position for the per-statement
+          // acknowledgement decode below.
+          if (Array.isArray(statements)) {
+            for (const [statementIndex, statement] of statements.entries()) {
+              if (statement !== null && statement.kind === 'exec_command' && isRenderedRescueLauncherInvocation(statement.value?.cmd)) {
+                launcherExecCallIds.add(callId);
+                launcherStatementByCallId.set(callId, { statementIndex, statementCount: statements.length });
+                break;
+              }
+            }
+          }
+        }
+        callsById.set(callId, entry);
+        continue;
+      }
+      if (payload?.type !== 'custom_tool_call_output' && payload?.type !== 'function_call_output') continue;
+      const callId = typeof payload.call_id === 'string' && payload.call_id.length > 0 ? payload.call_id : null;
+      if (callId === null) continue;
+      const decoded = parseToolOutput(payload.output);
+      // (P1-2, round-12 re-review) the observation state is attributed to its
+      // OWNING statement: a write_stdin poll entry decodes its OWN output at
+      // its recorded statement position (statementOutputAt) — the cell's
+      // aggregate (parseToolOutput's LAST result) assigned a LATER unrelated
+      // statement's state to the first qualifying poll: a poll that completed
+      // alongside a later statement's yield read as still-pending
+      // (started:true, returned:false), admitting an interruption without the
+      // original observation pending.
+      const pollPosition = observationPollStatementByCallId.get(callId);
+      const owningDecoded = pollPosition !== undefined
+        ? statementOutputAt(payload.output, pollPosition.statementIndex, pollPosition.statementCount)
+        : decoded;
+      const decodedState = owningDecoded?.state === 'pending' ? 'pending' : owningDecoded?.state === 'completed' ? 'completed' : 'undecoded';
+      const decodedCellId = owningDecoded !== null && owningDecoded.state === 'pending' ? owningDecoded.cellId : null;
+      const entry = callsById.get(callId) ?? { kind: null, sessionId: null, cellId: null, states: [], lastEventIndex: eventIndex, chars: null, yieldTimeMs: null, precededCompleted: false, nativeCancellation: false, waits: [] };
+      // (P1-1, round-20 codex re-review) the pinned host's NATIVE
+      // CANCELLATION framings (`Script terminated\nWall time …\nOutput:\n`,
+      // `Wall time: … seconds\naborted by user`, `aborted by user after …s`)
+      // are POLL-RESPONSE RESOLUTIONS — a poll interrupted mid-flight ends
+      // through the native termination marker, exactly like the instrument's
+      // settlement collection decodes it (the now-EXPORTED
+      // isNativeCancellationResponse recognition, NO behavior change to it).
+      // The recognition is STATEMENT-BOUND by the same attribution rule the
+      // instrument applies (evidence.mjs's whole-cell cancellation): the
+      // whole-cell marker closes THIS poll only when the poll's own
+      // statement did NOT complete and the poll is the cell's LAST
+      // unresolved statement — a single-statement cell (or a bare direct
+      // call) attributes directly; a later-position poll needs the
+      // preceding statements' completed results; a finished poll or an
+      // ambiguous multi-statement termination NEVER resolves the observation
+      // and never credits arbitrary undecodable output.
+      if (entry.kind === 'write_stdin' && pollPosition !== undefined
+        && isNativeCancellationResponse(payload.output)
+        && statementOutputAt(payload.output, pollPosition.statementIndex, pollPosition.statementCount)?.state !== 'completed'
+        && (pollPosition.statementCount === 1
+          || (pollPosition.statementIndex === pollPosition.statementCount - 1
+            && precedingStatementsCompleted(payload.output, pollPosition.statementIndex, pollPosition.statementCount)))) {
+        entry.nativeCancellation = true;
+      }
+      // (P1-2, round-16 re-review) the PRECEDING-COMPLETION evidence for a
+      // later-position owning statement: the outstanding premise of an
+      // unanswered non-first poll requires the cell's own output to show the
+      // preceding statements completed — without it the poll is unexecuted,
+      // never outstanding.
+      if (pollPosition !== undefined && pollPosition.statementIndex > 0) {
+        entry.precededCompleted = precedingStatementsCompleted(payload.output, pollPosition.statementIndex, pollPosition.statementCount);
+      }
+      // (P1-3, round-18 re-review) EVERY tracked wait's OWN outcome decodes
+      // at its own statement position: the completion and the
+      // failed/undecodable termination latch per wait, so the resolution
+      // reads the ORIGINAL cell's wait result wherever it sits in the cell.
+      // (P2-4, round-21 codex review) the pinned host's NATIVE CANCELLATION
+      // framings resolve a linked wait exactly like the round-20 P1-1 poll
+      // case — the wait continuation's `Script terminated`/`aborted by
+      // user` outcome IS the interrupted Child's own end, and the exact
+      // Child interruption observed through it resolves the observation,
+      // never an unknown failure. The recognition is STATEMENT-BOUND by the
+      // same attribution rule the poll applies (a single-statement call, or
+      // the last unresolved statement with its predecessors completed), and
+      // an EXPLICIT `terminate: true` wait stays SEPARATE — its marker is
+      // the call's own alternate ender, never native cancellation.
+      for (const trackedWait of entry.waits) {
+        const waitDecoded = statementOutputAt(payload.output, trackedWait.statementIndex, trackedWait.statementCount);
+        if (waitDecoded?.state === 'completed') trackedWait.completed = true;
+        if (waitDecoded === null || (waitDecoded.state !== 'completed' && waitDecoded.state !== 'pending')) {
+          const waitCancellationAttributed = trackedWait.terminate !== true
+            && isNativeCancellationResponse(payload.output)
+            && (trackedWait.statementCount === 1
+              || (trackedWait.statementIndex === trackedWait.statementCount - 1
+                && precedingStatementsCompleted(payload.output, trackedWait.statementIndex, trackedWait.statementCount)));
+          if (waitCancellationAttributed) trackedWait.nativeCancellation = true;
+          else trackedWait.undecoded = true;
+        }
+      }
+      // (P1, round-11) the acknowledgement decode reads the LAUNCHER
+      // statement's own completed output position — parseToolOutput (the
+      // cell's LAST result) attributed the whole cell to Rescue and grounded
+      // the UNRELATED command's handle when the launcher shared its cell.
+      const launcherPosition = launcherStatementByCallId.get(callId);
+      const acknowledgementDecoded = launcherPosition !== undefined
+        ? statementOutputAt(payload.output, launcherPosition.statementIndex, launcherPosition.statementCount)
+        : decoded;
+      if (acknowledgementDecoded?.state === 'completed' && launcherExecCallIds.has(callId)
+        && Number.isSafeInteger(acknowledgementDecoded.result?.session_id) && /** @type {number} */ (acknowledgementDecoded.result.session_id) > 0) {
+        launcherHandles.add(/** @type {number} */ (acknowledgementDecoded.result.session_id));
+      }
+      entry.states.push(decodedState);
+      entry.lastEventIndex = eventIndex;
+      callsById.set(callId, entry);
+      // (P1-3, 2026-11-19 codex re-review) the pending cell's OWNERSHIP is
+      // retained through the continuation chain: only an ORIGINAL-HANDLE
+      // write_stdin POLL's own output may claim the cell. A `wait`
+      // continuation that returns the SAME still-pending cell (the normal
+      // yielded-observation grammar with repeated polls) must NEVER
+      // overwrite the originating poll's ownership — the resolution's owner
+      // check requires the write_stdin poll, so the old overwrite left the
+      // very same valid stream unresolved with TWO waits when ONE resolved.
+      if (decodedState === 'pending' && decodedCellId !== null && entry.kind === 'write_stdin') {
+        pendingCellByCell.set(decodedCellId, { pollCallId: callId, pendingEventIndex: eventIndex });
+      }
+    }
+    // (P1-2) the original handle is the ATTRIBUTED launcher acknowledgement:
+    // exactly one grounded exec handle in the Child rollout. Zero (no
+    // launcher acknowledgement) or several (an ambiguous attribution) leave
+    // NO original handle — the first write_stdin call grounds nothing.
+    const originalHandleId = launcherHandles.size === 1 ? [...launcherHandles][0] : null;
+    let started = false;
+    let returned = false;
+    // (P1, round-15 re-review) a TERMINAL FAILURE of the observation's own
+    // cell (or of its linked wait continuation): the yielded cell returning
+    // a failed/undecodable body ENDS the observation — the historical
+    // pending state never keeps a dead observation pending.
+    let failed = false;
+    for (const [callId, entry] of callsById.entries()) {
+      // (P2) the started premise is the REGISTERED qualifying poll: an
+      // original-handle write_stdin whose REQUEST carried EMPTY chars and
+      // EXACTLY the 3600000 registered yield — a nonempty-input or
+      // short-yield pending cell on the launcher handle premises nothing.
+      const isOriginalHandlePoll = entry.kind === 'write_stdin' && entry.sessionId !== null && entry.sessionId === originalHandleId;
+      const isRegisteredObservationPoll = isOriginalHandlePoll
+        && entry.chars === REGISTERED_OBSERVATION_CHARS
+        && entry.yieldTimeMs === REGISTERED_OBSERVATION_YIELD_MS;
+      // (P1-1, round-12 re-review) the OUTSTANDING premise is the registered
+      // poll's own REQUEST-side evidence: the poll was issued on the original
+      // handle with the registered shape and has NO completed output yet —
+      // the observation is outstanding even before its outer cell yields.
+      // Under the frozen exec-default-ms=3600000 configuration the conforming
+      // grammar FORBIDS an explicit outer yield override, so a conforming
+      // long observation can remain an outstanding call with no `Script
+      // running with cell ID` output during the whole staging allowance;
+      // requiring the already-yielded response prevented readiness for
+      // exactly the conforming shape (and the hold gate stayed unreleased
+      // until admission).
+      // (P1, round-14 re-review) FAIL CLOSED on undecodable/failed responses:
+      // a PRESENT-but-undecodable output is evidence the call TERMINATED —
+      // never a pending observation (the old `!states.includes('completed')`
+      // treated a `Script failed` response as outstanding, exactly like a
+      // genuinely unanswered poll, and the collector could confirm the
+      // barrier and consume the interrupt without an established pending
+      // observation). The outstanding premise holds for a poll whose
+      // observed response is the yielded pending cell itself, or one with NO
+      // response evidence at all; a completed OR undecodable response
+      // without any observed pending yield refuses it.
+      // (P1-2, round-16 re-review) an UNANSWERED later-position poll is
+      // UNEXECUTED, never outstanding: the rollout records both statements'
+      // calls before the first await finishes, so an empty response history
+      // proves nothing until the cell's own output shows the preceding
+      // statements completed. The unanswered outstanding premise holds only
+      // for a FIRST-statement poll; a later-position poll premises the
+      // observation through its own observed pending state WITH that
+      // preceding-completion evidence.
+      const owningPollPosition = observationPollStatementByCallId.get(callId) ?? null;
+      const firstStatementPoll = owningPollPosition === null || owningPollPosition.statementIndex === 0;
+      if (isRegisteredObservationPoll
+        && ((entry.states.includes('pending') && (firstStatementPoll || entry.precededCompleted === true))
+          || (firstStatementPoll && !entry.states.includes('undecoded') && !entry.states.includes('completed')))) started = true;
+      // Resolution A: the SAME poll call's completed output — the observed
+      // direct grammar (a yielded output event followed by the completion) or
+      // the poll's OWN per-statement completed result. (P2, round-10
+      // re-review) the resolution binds to the QUALIFYING observation's own
+      // poll — the REGISTERED empty-input 3600000-yield poll — never any poll
+      // sharing its process handle: an earlier short-yield poll's
+      // pending→completed on the same handle resolves NOTHING while the
+      // qualifying cell is still pending (the §39.9 step 6 conjunct requires
+      // the original observation PENDING at admission). (P1-2, round-12) the
+      // states come from the poll's OWN statement decode, so a later
+      // unrelated statement's yield never masks the qualifying poll's
+      // completion — a poll that completed alongside a later yield is
+      // RETURNED, never still-pending.
+      if (isRegisteredObservationPoll && entry.states.includes('completed')) returned = true;
+      // (P1-1, round-16 re-review) ANY terminal undecodable response on the
+      // registered poll fails the observation — pending-then-failed AND
+      // unanswered-then-failed both revoke: the round-13 latch must not keep
+      // a dead observation pending, and a first-observation undecodable
+      // response refuses through the started guard either way.
+      // (P1-1, round-20 codex re-review) EXCEPT the pinned host's RECOGNIZED
+      // NATIVE CANCELLATION on the registered poll's own statement: Codex's
+      // `Script terminated`/`aborted by user` response CLOSES the exact poll
+      // — the observation RESOLVES via the native cancellation (`returned`),
+      // never an arbitrary undecodable output credited, and never a failed
+      // observation the controller would strand unresolved while the Child
+      // reports its interrupted terminal event (the replay consumer's
+      // missing-observation-resolution).
+      if (isRegisteredObservationPoll && entry.states.includes('undecoded')) {
+        if (entry.nativeCancellation === true) returned = true;
+        else failed = true;
+      }
+      // Resolution B (P1-2/P1-3, round-18 re-review): EVERY linked wait is
+      // tracked by its OWN statement position and cell id; a wait RESOLVES
+      // the observation only when its cell_id IS the original observation's
+      // cell (the registered poll's yielded cell — the qualifying
+      // observation's own) and its own result completed ordered after that
+      // pending output; a wait for ANOTHER cell never resolves or masks the
+      // original's resolution; a wait for the original cell whose own
+      // outcome is the failed/undecodable body TERMINATES the observation
+      // (the round-15 failure propagation through the cell-to-poll linkage).
+      for (const trackedWait of entry.waits) {
+        const cell = pendingCellByCell.get(trackedWait.cellId);
+        if (cell === undefined) continue;
+        const pollEntry = callsById.get(cell.pollCallId);
+        const pollIsQualifyingObservation = pollEntry !== undefined && pollEntry.kind === 'write_stdin'
+          && pollEntry.sessionId !== null && pollEntry.sessionId === originalHandleId
+          && pollEntry.chars === REGISTERED_OBSERVATION_CHARS
+          && pollEntry.yieldTimeMs === REGISTERED_OBSERVATION_YIELD_MS;
+        if (!pollIsQualifyingObservation || entry.lastEventIndex <= cell.pendingEventIndex) continue;
+        // (P2-4, round-21 codex review) the linked wait's OWN completed
+        // result OR its statement-bound native cancellation resolves the
+        // observation; the explicit terminate ender and any other
+        // undecodable body keep the round-15 failure propagation.
+        if (trackedWait.completed === true || trackedWait.nativeCancellation === true) returned = true;
+        if (trackedWait.undecoded === true) failed = true;
+      }
+      void callId;
+    }
+    return { bound: true, started, returned, failed };
+  };
+  /**
+   * (P1-3, 2026-11-19 codex re-review) the control's OWN launch envelope and
+   * the newest line's carrying read event, in the ROLLOUT EPOCH domain (the
+   * event timestamps the instrument's own extraction reads — one clock,
+   * never compared to a controller fence): the launch call (the ONE
+   * exec_command of the control script) with its event timestamp, its
+   * grounded handle (the launch output's session id), and the FIRST output
+   * event on that handle that introduced the highest progress line — the
+   * attributable launch-time bound the emission-age demonstration anchors
+   * on. A buffered old line's controller-clock read instant can never
+   * re-birth the control.
+   * (P2-3, 2026-11-19 codex re-review) the scan also attributes the control's
+   * OWN EXIT by the grounded handle: the FIRST completed output on the
+   * handle carrying a numeric exit_code ends the control, REGARDLESS of its
+   * output text — a terminal read whose progress output was already consumed
+   * (an EMPTY body with an exit code) is exactly that shape, and the old
+   * progress-prefix text scan missed it.
+   * @param {any[][]} rollouts
+   * @param {string} controlPath
+   * @param {string | null} childObservationThreadId the joined Child identity premise — the OWNING ROOT rollout (the Child's parent binding) is the only rollout whose events may supply the control's launch, reads and exit
+   * @returns {{ launchEpochMs: number | null, handleId: number | null, newestLine: { index: number, tag: number, readEpochMs: number | null }, exitCode: number | null }}
+   */
+  const scanControlLaunchAndReadEpochs = (rollouts, controlPath, childObservationThreadId = null) => {
+    const eventTimestampMs = (/** @type {any} */ event) => {
+      const raw = event?.timestamp;
+      if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0) return raw;
+      if (typeof raw === 'string' && raw.length > 0 && raw.length <= 40) {
+        const parsed = Date.parse(raw);
+        if (Number.isFinite(parsed)) return parsed;
+      }
+      return null;
+    };
+    // (P2-2, round-12 re-review) the OWNING ROOT rollout scoping: native exec
+    // handles are allocated PER SESSION, so the Child can carry the same
+    // numeric handle as the Root's control — an unrelated Child write_stdin
+    // completion with that handle and exit_code 137 must never be classified
+    // as the control's exit. When the joined Child's parent binding resolves
+    // the owning Root session, ONLY that rollout's events may supply the
+    // control's launch, reads and exit (the round-7 ownership premise — the
+    // same owning Root the existing control collector attributes).
+    let owningRootSessionId = /** @type {string | null} */ (null);
+    if (typeof childObservationThreadId === 'string' && childObservationThreadId.length > 0) {
+      for (const events of Array.isArray(rollouts) ? rollouts : []) {
+        if (!Array.isArray(events)) continue;
+        const meta = events.find((event) => event?.type === 'session_meta');
+        const id = typeof meta?.payload?.id === 'string' ? meta.payload.id : null;
+        if (id !== null && id === childObservationThreadId) {
+          owningRootSessionId = typeof meta?.payload?.parent_thread_id === 'string' ? meta.payload.parent_thread_id : null;
+          break;
+        }
+      }
+    }
+    let launchEpochMs = /** @type {number | null} */ (null);
+    let launchCallId = /** @type {string | null} */ (null);
+    let handleId = /** @type {number | null} */ (null);
+    let exitCode = /** @type {number | null} */ (null);
+    let newestLine = { index: 0, tag: 0, readEpochMs: /** @type {number | null} */ (null) };
+    const emittedPattern = new RegExp(`${SURVIVAL_CONTROL_LINE_PREFIX} (\\d{1,9}) (\\d{1,15})`, 'gu');
+    // (P1, 2026-11-19 codex re-review) the REQUEST-side handle binding of
+    // every write_stdin poll call, keyed by call id: a native terminal
+    // write_stdin response carries exit_code but NO session_id — the
+    // response is bound to the grounded handle through ITS CALL ID (the
+    // request that targeted the handle), never by requiring the response to
+    // repeat that handle.
+    /** @type {Map<string, number>} */
+    const pollSessionByCallId = new Map();
+    // (P1, round-9 re-review) the STATEMENT POSITIONS: a control
+    // write_stdin may follow another supported statement in one exec cell —
+    // the scan tracks every write_stdin statement's own position
+    // (statementIndex/statementCount, the per-statement binding
+    // parseCallStatements provides) and decodes each response with
+    // statementOutputAt at the OWNING statement's position, never the
+    // cell's aggregate final result.
+    /** @type {Map<string, { statementIndex: number, statementCount: number, sessionId: number }[]>} */
+    const pollStatementsByCallId = new Map();
+    /** @type {{ statementIndex: number, statementCount: number } | null} */
+    let launchStatementPosition = null;
+    for (const events of Array.isArray(rollouts) ? rollouts : []) {
+      if (!Array.isArray(events)) continue;
+      // (P2-2, round-12) only the OWNING ROOT rollout may supply the
+      // control's launch, reads and exit — every other rollout (the Child's
+      // included) is skipped entirely once the owning Root session resolves.
+      // An unresolvable owning Root leaves the pre-existing whole-set scan,
+      // and the collector's round-7 ownership gate refuses regardless.
+      if (owningRootSessionId !== null) {
+        const rolloutMeta = events.find((event) => event?.type === 'session_meta');
+        const rolloutId = typeof rolloutMeta?.payload?.id === 'string' ? rolloutMeta.payload.id : null;
+        if (rolloutId !== owningRootSessionId) continue;
+      }
+      for (const event of events) {
+        const payload = event?.payload;
+        if (payload?.type === 'custom_tool_call' || payload?.type === 'function_call') {
+          const callId = typeof payload.call_id === 'string' && payload.call_id.length > 0 ? payload.call_id : null;
+          const statements = parseCallStatements(event);
+          if (launchCallId === null && Array.isArray(statements)) {
+            // (P2-3, 2026-11-19 codex re-review) the launch matches the SAME
+            // canonical shell command the prompt emits and the existing
+            // control extractor recognizes (evidence.mjs accepts BOTH the raw
+            // path and survivalControlShellCommand(path) — the quoted form
+            // every shell-sensitive path requires); the unquoted-only
+            // comparison missed exactly those launches while the extractor
+            // admitted them, leaving freshness and lifetime null.
+            // (P2-1, round-12 re-review) the launch is located by its OWNING
+            // statement position — a control launched AFTER another supported
+            // statement in the same cell was invisible to the first-statement
+            // check while the existing extractor recognized it, leaving
+            // launchCallId/launchEpochMs unset and the collector unable to
+            // establish emission age or remaining lifetime.
+            for (const [statementIndex, statement] of statements.entries()) {
+              if (statement === null || statement.kind !== 'exec_command') continue;
+              if (statement.value?.cmd === controlPath || statement.value?.cmd === survivalControlShellCommand(controlPath)) {
+                launchCallId = callId;
+                launchEpochMs = eventTimestampMs(event);
+                launchStatementPosition = { statementIndex, statementCount: statements.length };
+                break;
+              }
+            }
+          }
+          // (P1) the REQUEST-side binding: EVERY write_stdin statement in the
+          // cell records the handle it targets, keyed by its call id — the
+          // first statement alone cannot own a cell whose control poll
+          // follows another supported statement. Each tracked statement keeps
+          // its own position for the per-statement output decode below.
+          if (callId !== null && Array.isArray(statements)) {
+            const tracked = [];
+            for (const [statementIndex, statement] of statements.entries()) {
+              if (statement === null || statement.kind !== 'write_stdin') continue;
+              if (!Number.isSafeInteger(statement.value?.session_id) || !(/** @type {number} */ (statement.value.session_id) > 0)) continue;
+              tracked.push({ statementIndex, statementCount: statements.length, sessionId: /** @type {number} */ (statement.value.session_id) });
+              if (!pollSessionByCallId.has(callId)) pollSessionByCallId.set(callId, /** @type {number} */ (statement.value.session_id));
+            }
+            if (tracked.length > 0) pollStatementsByCallId.set(callId, tracked);
+          }
+          continue;
+        }
+        if (payload?.type !== 'custom_tool_call_output' && payload?.type !== 'function_call_output') continue;
+        // (P1, round-9) the per-statement decode: the launch response reads
+        // the LAUNCH statement's own result (statementOutputAt at its
+        // position — parseToolOutput only for a single-statement cell); a
+        // poll response decodes EVERY tracked control statement's result at
+        // its own position, and the statement whose REQUEST targeted the
+        // grounded handle owns the exit and the progress lines — never the
+        // cell's aggregate final result.
+        const decodeAt = (/** @type {{ statementIndex: number, statementCount: number } | null} */ position) => (position === null
+          ? parseToolOutput(payload.output)
+          : statementOutputAt(payload.output, position.statementIndex, position.statementCount));
+        if (handleId === null && launchCallId !== null && payload.call_id === launchCallId) {
+          const launchDecoded = decodeAt(launchStatementPosition);
+          if (launchDecoded?.state === 'completed') {
+            const grounded = Number.isSafeInteger(launchDecoded.result?.session_id) && /** @type {number} */ (launchDecoded.result.session_id) > 0
+              ? /** @type {number} */ (launchDecoded.result.session_id)
+              : null;
+            if (grounded !== null) handleId = grounded;
+          }
+          continue;
+        }
+        if (handleId === null || payload.call_id === launchCallId) continue;
+        const trackedStatements = typeof payload.call_id === 'string' ? pollStatementsByCallId.get(payload.call_id) : undefined;
+        // (P1) the response binds to the grounded handle through EITHER its
+        // own session_id (when present) OR its originating call's
+        // request-side binding — a native terminal write_stdin response
+        // (exit_code, no session_id) on the poll call that targeted the
+        // handle IS the control's exit. In a multi-statement cell the
+        // binding is the STATEMENT's: the tracked statement whose request
+        // targeted the handle decodes its own result, and the exit and the
+        // progress lines bind to THAT statement's output position.
+        let decoded = parseToolOutput(payload.output);
+        let boundToHandle = false;
+        // (P2, round-11 re-review) EVERY control-owned statement result in
+        // the cell is inspected before liveness is decided — NO early break:
+        // the NEWEST control-owned result (the highest statement index —
+        // later statements execute later) decides the cell's decoded fact,
+        // and a terminal observed on ANY control-owned statement (its exit
+        // code) is remembered separately so it vetoes liveness regardless of
+        // ordering. The old first-match break let a first poll reporting the
+        // running handle DISCARD a second poll's exit_code 137 in the same
+        // cell — admission or survival credit for a dead control.
+        let newestOwnedDecoded = /** @type {any} */ (null);
+        let newestOwnedIndex = -1;
+        let ownedExitCode = /** @type {number | null} */ (null);
+        if (Array.isArray(trackedStatements)) {
+          for (const tracked of trackedStatements) {
+            const statementDecoded = statementOutputAt(payload.output, tracked.statementIndex, tracked.statementCount);
+            if (statementDecoded?.state !== 'completed') continue;
+            const statementSession = Number.isSafeInteger(statementDecoded.result?.session_id) ? statementDecoded.result.session_id : null;
+            const requestBound = tracked.sessionId === handleId;
+            if ((statementSession !== null && statementSession === handleId) || (requestBound && statementSession === null) || (requestBound && statementSession !== null)) {
+              boundToHandle = true;
+              if (ownedExitCode === null && Number.isSafeInteger(statementDecoded.result?.exit_code)) {
+                ownedExitCode = /** @type {number} */ (statementDecoded.result.exit_code);
+              }
+              if (tracked.statementIndex > newestOwnedIndex) {
+                newestOwnedIndex = tracked.statementIndex;
+                newestOwnedDecoded = statementDecoded;
+              }
+            }
+          }
+        }
+        if (newestOwnedDecoded !== null) decoded = newestOwnedDecoded;
+        if (boundToHandle !== true) {
+          const session = decoded !== null && decoded.state === 'completed' && Number.isSafeInteger(decoded.result?.session_id)
+            ? /** @type {number} */ (decoded.result.session_id)
+            : null;
+          const callBoundSession = typeof payload.call_id === 'string' ? pollSessionByCallId.get(payload.call_id) ?? null : null;
+          if (session !== handleId && callBoundSession !== handleId) continue;
+        }
+        if (decoded?.state !== 'completed') continue;
+        // The cell's exit fact: the decided result's own exit code, or the
+        // terminal ANY control-owned statement reported (the ordering-proof
+        // veto).
+        const cellExitCode = Number.isSafeInteger(decoded.result?.exit_code) ? /** @type {number} */ (decoded.result.exit_code) : ownedExitCode;
+        if (exitCode === null && cellExitCode !== null) {
+          exitCode = cellExitCode;
+        }
+        const output = typeof decoded.result?.output === 'string' ? decoded.result.output : '';
+        emittedPattern.lastIndex = 0;
+        for (const match of output.matchAll(emittedPattern)) {
+          const index = Number(match[1]);
+          const tag = Number(match[2]);
+          if (Number.isSafeInteger(index) && index >= 1 && index <= SURVIVAL_CONTROL_LINE_COUNT
+            && Number.isSafeInteger(tag) && tag >= 0 && index > newestLine.index) {
+            newestLine = { index, tag, readEpochMs: eventTimestampMs(event) };
+          }
+        }
+      }
+    }
+    return { launchEpochMs, handleId, newestLine, exitCode };
+  };
+  // (P2-1, 2026-11-19 codex re-review) the SHARED local-chain gather: the
+  // two spawn-witness admissions, the startup records, the OS observations,
+  // the verified transport marker under its own declared nonce — and the
+  // RUNTIME ANCESTRY JOIN (composeAncestryJoinForRuntime) that attributes
+  // the launcher→broker→transport chain from the OBSERVED GENERATIONS.
+  // Individually valid witness records describing stale or disjoint process
+  // generations never attribute the chain: the barrier's ancestry conjunct
+  // AND the duty collector's aggregate ancestry gate both require the JOIN's
+  // attribution verdict, never the per-record admission statuses alone.
+  const gatherLocalChainEvidence = async () => {
+    const fixture = requireFixture();
+    const capture = fixture.stdoutCapture;
+    const captureDirectory = typeof capture?.captureDirectory === 'string' && capture.captureDirectory.length > 0 ? capture.captureDirectory : null;
+    const scopeNonce = typeof capture?.nonce === 'string' && /^[a-f0-9]{64}$/u.test(capture.nonce) ? capture.nonce : null;
+    const env = /** @type {Record<string, string | undefined>} */ (fixture.env ?? {});
+    const markerPath = resolvePremise(processMarkerPathPremise)
+      ?? (typeof env.FAKE_ZCODE_PROCESS_FILE === 'string' && env.FAKE_ZCODE_PROCESS_FILE.length > 0 ? env.FAKE_ZCODE_PROCESS_FILE : null);
+    const rawMarkerNonce = resolvePremise(processMarkerNoncePremise)
+      ?? (typeof env.FAKE_ZCODE_PROCESS_NONCE === 'string' ? env.FAKE_ZCODE_PROCESS_NONCE : null);
+    const markerNonce = rawMarkerNonce !== null && /^[a-f0-9]{64}$/u.test(rawMarkerNonce) ? rawMarkerNonce : null;
+    if (captureDirectory === null || scopeNonce === null) {
+      return { armed: false, captureDirectory, scopeNonce, markerPath, markerNonce, invocationWitness: null, brokerWitness: null, invocationRecord: null, brokerRecord: null, invocationObservation: null, brokerObservation: null, transportObservation: null, markerIdentity: null, transportCaptureFault: { code: null }, joinVerdict: null };
+    }
+    const invocationWitness = await admitSpawnAncestryWitnessSeam({ captureDirectory, nonce: scopeNonce, role: 'invocation' });
+    const brokerWitness = await admitSpawnAncestryWitnessSeam({ captureDirectory, nonce: scopeNonce, role: 'broker-daemon' });
+    // (P2-1) the OS observations read at the WITNESSED chain's identity
+    // resolution: an exact-mode witness (startIdentityExact) declares the
+    // chain's registered exact reader, so the endpoint observations thread
+    // the same closed osSeam opt-in — a coarse observation beside an exact
+    // witness is a foreign generation to the join, never a joined endpoint.
+    const exactReaderOptIn = invocationWitness?.identity?.startIdentityExact === true
+      || brokerWitness?.identity?.startIdentityExact === true;
+    const endpointOsSeams = exactReaderOptIn ? { exactReaderOptIn: true } : {};
+    const invocationRecord = await admitStartupIdentityRecordSeam({ captureDirectory, nonce: scopeNonce, role: 'invocation' });
+    const brokerRecord = await admitStartupIdentityRecordSeam({ captureDirectory, nonce: scopeNonce, role: 'broker-daemon' });
+    const invocationIdentity = invocationRecord.status === 'established' ? invocationRecord.identity : null;
+    const brokerIdentity = brokerRecord.status === 'established' ? brokerRecord.identity : null;
+    // (P2-1) the MARKER is captured (and the transport observed) BEFORE the
+    // daemon endpoint's observation: the daemon→transport hop bounds the
+    // marker's own time evidence by the daemon's identity-read instant, so
+    // the daemon must be read AFTER the marker capture for the bound to be
+    // satisfiable — the old route's composition reads in the same order.
+    let transportObservation = /** @type {any} */ (null);
+    let markerIdentity = /** @type {any} */ (null);
+    /** @type {{ code: string | null }} */
+    const transportCaptureFault = { code: null };
+    if (markerPath !== null && markerNonce !== null) {
+      try {
+        // (P2-1) the marker capture reads at the WITNESSED chain's identity
+        // resolution (the exact opt-in the witnesses declare) — a coarse
+        // marker capture beside an exact witness leaves the daemon hop's
+        // marker generation ambiguous, exactly like a coarse endpoint.
+        markerIdentity = await captureVerifiedProcessIdentitySeam(markerPath, markerNonce, endpointOsSeams);
+        transportObservation = await observeLocalProcessSeam({
+          pid: markerIdentity.pid,
+          nonce: markerNonce,
+          ...(typeof markerIdentity.startIdentity === 'string' && markerIdentity.startIdentity.length > 0 ? { expectedStartIdentity: markerIdentity.startIdentity } : {}),
+          nonceVariable: FAKE_ZCODE_NONCE_VARIABLE,
+          osSeams: endpointOsSeams,
+        });
+      } catch (error) {
+        // The marker's NAMED conditions are this route's normal pre-launch
+        // states (the worker may not have launched yet): they keep the
+        // transport slot unnamed — never a collection failure. Any other
+        // fault propagates to the redact seam.
+        const code = /** @type {any} */ (error)?.code;
+        if (code !== 'ZCODE_SHELL_WAIT_MARKER_ABSENT' && code !== 'ZCODE_SHELL_WAIT_PROCESS_EXITED' && code !== 'ZCODE_SHELL_WAIT_MARKER_INVALID') {
+          throw error;
+        }
+        transportCaptureFault.code = code ?? 'unknown';
+      }
+    }
+    const invocationObservation = invocationIdentity !== null
+      ? await observeLocalProcessSeam({ pid: invocationIdentity.pid, nonce: scopeNonce, osSeams: endpointOsSeams })
+      : null;
+    const brokerObservation = brokerIdentity !== null
+      ? await observeLocalProcessSeam({ pid: brokerIdentity.pid, nonce: scopeNonce, osSeams: endpointOsSeams })
+      : null;
+    // The RUNTIME ANCESTRY JOIN over the observed generations: the OS
+    // observations' ppid chain + scope nonces + generation-compatible
+    // lifetimes, the marker bound under its own declared nonce and its own
+    // observed time evidence. Missing endpoints keep the join's attribution
+    // false (fail closed — never the per-record statuses).
+    const markerForJoin = markerIdentity !== null && markerIdentity !== undefined
+      ? {
+          pid: markerIdentity.pid,
+          ppid: markerIdentity.ppid,
+          nonce: markerIdentity.nonce,
+          ...(typeof markerIdentity.startIdentity === 'string' && markerIdentity.startIdentity.length > 0 ? { startIdentity: markerIdentity.startIdentity } : {}),
+        }
+      : null;
+    const markerEpochCandidate = Number.isSafeInteger(markerIdentity?.takenEpochMs)
+      ? /** @type {number} */ (markerIdentity.takenEpochMs)
+      : Number.isSafeInteger(transportObservation?.identityReadEpochMs)
+        ? /** @type {number} */ (transportObservation.identityReadEpochMs)
+        : Number.isSafeInteger(transportObservation?.readEpochMs)
+          ? /** @type {number} */ (transportObservation.readEpochMs)
+          : null;
+    const joinVerdict = composeAncestryJoinForRuntime({
+      nonce: scopeNonce,
+      companionObservation: invocationObservation,
+      daemonObservation: brokerObservation,
+      transportMarker: markerForJoin,
+      expectedTransportNonce: markerNonce ?? undefined,
+      ...(markerEpochCandidate !== null ? { markerEpochMs: markerEpochCandidate } : {}),
+      // The admitted spawn-boundary witnesses ride the join exactly as the
+      // old route's composition passes them (the §26.6 route-(b) freeze): a
+      // hop that holds only via the OS whole-second uncertainty window is
+      // credited ONLY through its positively captured witness.
+      ...(invocationWitness !== null && invocationWitness !== undefined ? { companionSpawnWitness: invocationWitness } : {}),
+      ...(brokerWitness !== null && brokerWitness !== undefined ? { daemonSpawnWitness: brokerWitness } : {}),
+    });
+    return {
+      armed: true,
+      captureDirectory,
+      scopeNonce,
+      markerPath,
+      markerNonce,
+      invocationWitness,
+      brokerWitness,
+      invocationRecord,
+      brokerRecord,
+      invocationObservation,
+      brokerObservation,
+      transportObservation,
+      markerIdentity,
+      transportCaptureFault,
+      joinVerdict,
+    };
+  };
+  /** @type {Record<string, any>} */
+  const observers = {
+    pendingObservation: async () => {
+      const fixture = requireFixture();
+      const env = /** @type {Record<string, string | undefined>} */ (fixture.env ?? {});
+      const recordPath = typeof env.FAKE_ZCODE_RECORD === 'string' && env.FAKE_ZCODE_RECORD.length > 0 ? env.FAKE_ZCODE_RECORD : null;
+      if (recordPath === null) {
+        return { confirmed: false, observedAtMs: null, resolved: false, resolvedAtMs: null, holdDeadlineAtMs: null, clockDomain: CONFIRMED_WINDOW_CLOCK_DOMAIN, reason: 'the fixture fake Companion record path is not armed' };
+      }
+      // The §41.5.1 gate/sentinel premise (the WORKER-HOLD legs): without the
+      // producer's two files the pending observation is NEVER derivable from
+      // the request record alone (a historical request is not a pending
+      // observation — the confirmed-AND-NOT-resolved semantics would be
+      // unestablishable).
+      const gatePath = resolvePremise(completionGatePathPremise)
+        ?? (typeof env.FAKE_ZCODE_COMPLETION_GATE === 'string' && env.FAKE_ZCODE_COMPLETION_GATE.length > 0 ? env.FAKE_ZCODE_COMPLETION_GATE : null);
+      const gateReachedPath = resolvePremise(completionGateReachedPathPremise)
+        ?? (typeof env.FAKE_ZCODE_COMPLETION_GATE_REACHED === 'string' && env.FAKE_ZCODE_COMPLETION_GATE_REACHED.length > 0 ? env.FAKE_ZCODE_COMPLETION_GATE_REACHED : null);
+      if (gatePath === null || gateReachedPath === null) {
+        return { confirmed: false, observedAtMs: null, resolved: false, resolvedAtMs: null, holdDeadlineAtMs: null, clockDomain: CONFIRMED_WINDOW_CLOCK_DOMAIN, reason: 'the §41.5.1 completion gate is not armed (the hold producer composes the gate and its completion-blocked sentinel into the host launch env); a pending observation is never derivable from the request record alone' };
+      }
+      // Read errors THROW (never a returned reason): a collector error can
+      // carry fixture-private absolute paths, and only the choreography's
+      // redact seam may persist one.
+      const contents = await readRecord(recordPath);
+      if (contents.length > MAX_FAKE_COMPANION_RECORD_BYTES) {
+        return { confirmed: false, observedAtMs: null, resolved: false, resolvedAtMs: null, holdDeadlineAtMs: null, clockDomain: CONFIRMED_WINDOW_CLOCK_DOMAIN, reason: 'the fake Companion record exceeds the bounded read' };
+      }
+      // (P1-2, 2026-11-19 codex review) the record COMPLETE-scan premise (the
+      // inspectCompanion rule): EVERY recorded entry must match a supported
+      // JSON-RPC request shape, and the original observation's send is
+      // exactly one `session/send` frame.
+      const sendScan = scanCompanionRecordComplete(contents);
+      if (sendScan.known !== true) {
+        return { confirmed: false, observedAtMs: null, resolved: false, resolvedAtMs: null, holdDeadlineAtMs: null, clockDomain: CONFIRMED_WINDOW_CLOCK_DOMAIN, reason: `the fake Companion record complete scan is unknown (${String(sendScan.malformedCount)} of ${String(sendScan.totalEntries)} recorded entries do not match a supported JSON-RPC request shape; a corrupted record is never a confirmed observation)` };
+      }
+      if (sendScan.sendCount !== 1) {
+        return { confirmed: false, observedAtMs: null, resolved: false, resolvedAtMs: null, holdDeadlineAtMs: null, clockDomain: CONFIRMED_WINDOW_CLOCK_DOMAIN, reason: sendScan.sendCount === 0
+          ? 'no Companion session/send request frame is present in the fake Companion record (the record holds the engine\'s inbound JSON-RPC requests only)'
+          : `the fake Companion record carries ${String(sendScan.sendCount)} session/send request frames; the original observation is exactly one` };
+      }
+      // `blocked` on the completion-blocked sentinel = the fake CLI has
+      // SCHEDULED the completion and is being HELD by the gate (§41.5.1) —
+      // the WORKER-HOLD premise (the hold is real). It is never itself the
+      // observation: the fake CLI writes it at scheduling time, independently
+      // of whether the Child has started its long observation.
+      const reached = (await readFile(gateReachedPath, 'utf8')).trim();
+      if (reached !== 'blocked') {
+        return { confirmed: false, observedAtMs: null, resolved: false, resolvedAtMs: null, holdDeadlineAtMs: null, clockDomain: CONFIRMED_WINDOW_CLOCK_DOMAIN, reason: 'the completion-blocked sentinel is unwritten (the fake Companion completion has not been scheduled-and-held yet)' };
+      }
+      // (P1-2) the OBSERVATION legs come from the unchanged instrument
+      // (§41.6's frozen row): the joined CHILD's OWN tool stream must show
+      // the original long observation OUTSTANDING (an original-handle
+      // yielded-cell pending poll) for confirmation, and that observation
+      // RETURNED (its completed resolution) for resolution. Read errors
+      // propagate to the redact seam.
+      const rollouts = await loadRollouts(fixture.codexHome);
+      const childObservationThreadId = resolvePremise(childObservationThreadIdPremise);
+      const observationPremises = scanChildObservationPremises(rollouts, childObservationThreadId);
+      if (observationPremises.bound !== true) {
+        return { confirmed: false, observedAtMs: null, resolved: false, resolvedAtMs: null, holdDeadlineAtMs: null, clockDomain: CONFIRMED_WINDOW_CLOCK_DOMAIN, reason: childObservationThreadId === null
+          ? 'the joined Child session identity is not bound (the childObservationThreadId premise is required before any observation premise may be derived; the joined Child is never guessed)'
+          : 'the joined Child rollout is not bound (exactly one rollout whose session_meta id names the joined Child session is required; a Root or unrelated rollout\'s pending cell premises nothing)' };
+      }
+      // (P1, round-13 re-review) the collector LATCHES its confirmed state
+      // across scans: once the qualifying poll was observed OUTSTANDING
+      // (confirmed), a later scan in which the same call completed DIRECTLY
+      // (no intermediate pending-cell output — the frozen exec-default
+      // grammar) still resolves the observation, with resolvedAtMs stamped
+      // at that read. A poll ALREADY completed at the FIRST observation (the
+      // round-12 P1-2 case) never latches and still refuses admission.
+      if (observationPremises.started !== true && state.observationConfirmed !== true) {
+        return { confirmed: false, observedAtMs: null, resolved: false, resolvedAtMs: null, holdDeadlineAtMs: null, clockDomain: CONFIRMED_WINDOW_CLOCK_DOMAIN, reason: 'the Child\'s original observation is not established in its own tool stream (the original handle is grounded in the attributed RENDERED Rescue launcher acknowledgement — the one exec_command carrying `node "<absolute .../skills/rescue/launcher.mjs>" invoke-prepared rescue` whose completed output grounds a session handle — and no outstanding long-observation poll targets THAT handle; an unrelated exec_command or a first write_stdin poll of another exec session grounds nothing)' };
+      }
+      if (observationPremises.started === true && state.observationConfirmed !== true) {
+        state.observationConfirmed = true;
+      }
+      // (P1, round-15 re-review) a TERMINAL FAILURE terminates the
+      // observation: a yielded qualifying cell whose later output (direct or
+      // through its linked wait) is a failed/undecodable body ENDED the
+      // observation — the collector REFUSES admission even when confirmation
+      // was previously latched (the round-13 latch must not keep a dead
+      // observation pending).
+      if (observationPremises.failed === true) {
+        state.observationConfirmed = false;
+        return { confirmed: false, observedAtMs: null, resolved: false, resolvedAtMs: null, holdDeadlineAtMs: null, clockDomain: CONFIRMED_WINDOW_CLOCK_DOMAIN, reason: 'the qualifying observation ENDED in a terminal failure (its yielded cell or its linked wait returned a failed/undecodable body): a dead observation never premises admission, whatever was previously confirmed' };
+      }
+      if (state.pendingSessionId === null) {
+        state.pendingSessionId = sendScan.sessionId;
+        state.observedAtMs = now();
+      }
+      // The instrument's RETURNED premise (the same call's completed output
+      // after its pending one) is the frozen resolution source — the released
+      // gate is ONLY the worker-hold mechanism and never resolves the
+      // observation.
+      if (observationPremises.returned === true && state.resolvedAtMs === null) {
+        state.resolvedAtMs = now();
+      }
+      const observedAtMs = /** @type {number} */ (state.observedAtMs);
+      return {
+        confirmed: true,
+        observedAtMs,
+        resolved: state.resolvedAtMs !== null,
+        resolvedAtMs: state.resolvedAtMs,
+        holdDeadlineAtMs: observedAtMs + workerDurationMs,
+        clockDomain: CONFIRMED_WINDOW_CLOCK_DOMAIN,
+        reason: null,
+      };
+    },
+    ancestryBaseline: async () => {
+      const fixture = requireFixture();
+      const capture = fixture.stdoutCapture;
+      if (!capture || typeof capture.captureDirectory !== 'string' || typeof capture.nonce !== 'string') {
+        return { established: false, digest: null, hops: { launcherToBroker: false, brokerToTransport: false }, clockDomain: CONFIRMED_WINDOW_CLOCK_DOMAIN, reason: 'the fixture capture seam is not armed' };
+      }
+      // An admission fault THROWS (never a returned reason): the error text
+      // can carry fixture-private absolute paths, and only the choreography's
+      // redact seam may persist one. The witness verdicts' own NAMED
+      // admission refusals (spawn-witness-missing and friends) carry no
+      // private text and stay returned reasons.
+      // (P2-1, 2026-11-19 codex re-review) the conjunct is the RUNTIME
+      // ANCESTRY JOIN over the observed generations (the ppid chain + scope
+      // nonces + generation-compatible lifetimes + the marker bound under
+      // its own nonce): both witness admissions AND the join's
+      // companionToTransportAttributed — individually valid witness records
+      // describing stale or disjoint generations never establish the chain.
+      const chain = await gatherLocalChainEvidence();
+      if (chain.armed !== true) {
+        return { established: false, digest: null, hops: { launcherToBroker: false, brokerToTransport: false }, clockDomain: CONFIRMED_WINDOW_CLOCK_DOMAIN, reason: 'the fixture capture seam is not armed' };
+      }
+      const invocation = chain.invocationWitness;
+      const broker = chain.brokerWitness;
+      const witnessesAdmitted = invocation.status === 'established' && broker.status === 'established';
+      const joinAttributed = chain.joinVerdict?.companionToTransportAttributed === true;
+      const established = witnessesAdmitted === true && joinAttributed === true;
+      const joinHopReasons = Array.isArray(chain.joinVerdict?.hops)
+        ? chain.joinVerdict.hops.map((/** @type {any} */ hop) => `${String(hop.hop)}:${String(hop.status)}${hop.reason !== null && hop.reason !== undefined ? `(${String(hop.reason)})` : ''}`).join(',')
+        : 'ancestry-join-unavailable';
+      return {
+        established,
+        digest: established
+          ? createHash('sha256').update(`${JSON.stringify(invocation.identity)}\u0000${JSON.stringify(broker.identity)}`).digest('hex')
+          : null,
+        hops: {
+          launcherToBroker: witnessesAdmitted === true && chain.joinVerdict?.hops?.[0]?.status === 'established',
+          brokerToTransport: witnessesAdmitted === true && chain.joinVerdict?.hops?.[1]?.status === 'established',
+        },
+        clockDomain: CONFIRMED_WINDOW_CLOCK_DOMAIN,
+        reason: established ? null : (witnessesAdmitted === true
+          ? `the runtime ancestry join did not attribute the launcher-to-broker-to-transport chain from the observed generations (${joinHopReasons})`
+          : `the ancestry witness admission refused: ${invocation.reason ?? 'unknown'}/${broker.reason ?? 'unknown'}`),
+      };
+    },
+    dutyFacts: async () => {
+      const fixture = requireFixture();
+      const env = /** @type {Record<string, string | undefined>} */ (fixture.env ?? {});
+      const dataRoot = typeof env.ZCODE_DATA_ROOT === 'string' && env.ZCODE_DATA_ROOT.length > 0 ? env.ZCODE_DATA_ROOT : null;
+      const startedAtMs = now();
+      const ownerSessionId = resolvePremise(ownerSessionIdPremise);
+      const expectedExecutorAgentId = resolvePremise(expectedExecutorAgentIdPremise);
+      let snapshot = /** @type {any} */ (null);
+      if (ownerSessionId !== null && dataRoot !== null) {
+        // A durable read error THROWS (never a returned reason): the error
+        // text can carry fixture-private absolute paths, and only the
+        // choreography's redact seam may persist one.
+        snapshot = await readDurableSnapshot({
+          dataRoot,
+          workspace: fixture.workspace,
+          ownerSessionId,
+          resolveJobFromOwnerIndex: true,
+          ...(expectedExecutorAgentId === null ? {} : { expectedExecutorAgentId }),
+        });
+      }
+      // ---- the §24.7 LOCAL duty consumer (§41.6/§41.7 blocker #4) ----
+      // The trio is named ONLY from the consumers' verdicts, exactly like the
+      // durable quartet: the invocation/broker startup records through
+      // {@link admitStartupIdentityRecord} joined with {@link observeLocalProcess}
+      // os-live-observation verdicts, and the transport through the §41.5.1
+      // verified process marker observed under its OWN declared nonce
+      // (FAKE_ZCODE_NONCE_VARIABLE) — the old exec route's composition
+      // adapted to this surface, where the marker process IS the route's
+      // fake-ZCode worker. A missing record, an absent/invalid marker, or an
+      // unestablished observation keeps its slot unnamed (fail-closed) —
+      // never an ancestry-witness shortcut, never a fabricated identity.
+      // (P2-1, 2026-11-19 codex re-review) the consumer's aggregate ancestry
+      // gate is the RUNTIME ANCESTRY JOIN's attribution verdict (the observed
+      // generations' ppid chain + lifetimes + the marker binding) — the SAME
+      // verdict the barrier's ancestry conjunct requires, never the per-
+      // record witness admission statuses: individually valid witness
+      // records describing stale or disjoint generations keep the trio
+      // unnamed. A consumer fault propagates (throw) to the choreography's
+      // redact seam.
+      const chain = await gatherLocalChainEvidence();
+      const captureDirectory = chain.captureDirectory;
+      const scopeNonce = chain.scopeNonce;
+      const markerNonce = chain.markerNonce;
+      /** @type {string[]} */
+      let localNames = [];
+      let localSummary = /** @type {string | null} */ (null);
+      if (captureDirectory !== null && scopeNonce !== null && chain.armed === true) {
+        // (P2-1) the aggregate ancestry gate: the RUNTIME JOIN's attribution
+        // verdict — the witnesses rode the join inside the gather; their
+        // per-record admission statuses are never the gate by themselves.
+        const ancestryEstablished = chain.joinVerdict?.companionToTransportAttributed === true;
+        const invocationRecord = chain.invocationRecord;
+        const brokerRecord = chain.brokerRecord;
+        const invocationObservation = chain.invocationObservation;
+        const brokerObservation = chain.brokerObservation;
+        let transportObservation = chain.transportObservation;
+        /** @type {{ code: string | null }} */
+        const transportCaptureFault = chain.transportCaptureFault;
+        // (P1-3, 2026-11-19 codex review) the §24.7 exit adjudication per
+        // applicable local slot: the FIRST established verdict latches the
+        // slot's PRESENCE BASELINE (the generation the settlement will bind
+        // to); every later read accumulates as a post-baseline read and the
+        // REAL adjudicator ({@link adjudicateLocalExit}) re-decides the
+        // generation-bound exit each read. A transport capture that throws
+        // the verified `ZCODE_SHELL_WAIT_PROCESS_EXITED` with a latched
+        // baseline contributes the bound confirmed-absence read (the exact
+        // fake-ZCode worker's verified disappearance). Presence baselines
+        // are RETAINED — an exited process never loses its baseline slot,
+        // and a still-live process keeps its slot unsettled.
+        const localSequences = [
+          ['invocation', invocationObservation],
+          ['broker', brokerObservation],
+          ['transport', transportObservation],
+        ];
+        for (const [slot, observation] of localSequences) {
+          const track = state.localExits[/** @type {'invocation' | 'broker' | 'transport'} */ (slot)];
+          const verdict = /** @type {any} */ (observation);
+          if (verdict === null || verdict === undefined) continue;
+          if (track.presence === null && verdict.status === 'established') track.presence = verdict;
+          if (track.presence === null) continue;
+          if (track.lastReadEpochMs !== null && verdict.readEpochMs === track.lastReadEpochMs) continue;
+          track.lastReadEpochMs = typeof verdict.readEpochMs === 'number' ? verdict.readEpochMs : null;
+          track.reads.push(verdict);
+          track.exit = adjudicateLocalExit({ presence: track.presence, absenceReads: track.reads });
+        }
+        // The transport's verified capture-exited throw: with a latched
+        // baseline, the throw IS the generation-bound confirmed absence (the
+        // identity machinery verified the exact process exited before the
+        // capture) — a bound absent read for THIS slot's adjudication.
+        const transportTrack = state.localExits.transport;
+        if (transportCaptureFault.code === 'ZCODE_SHELL_WAIT_PROCESS_EXITED'
+          && transportTrack.presence !== null && markerNonce !== null
+          && transportTrack.presence.observation !== null && typeof transportTrack.presence.observation === 'object') {
+          const boundPid = transportTrack.presence.observation.pid;
+          const absenceEpochMs = Date.now();
+          transportTrack.reads.push({
+            localProcessObservationVersion: LOCAL_PROCESS_OBSERVATION_VERSION,
+            class: 'os-live-observation',
+            status: 'absent',
+            reason: 'process-absent',
+            observation: null,
+            queried: { pid: boundPid, nonce: markerNonce },
+            readStartedEpochMs: absenceEpochMs,
+            readEpochMs: absenceEpochMs,
+            absenceConfirmed: true,
+          });
+          transportTrack.exit = adjudicateLocalExit({ presence: transportTrack.presence, absenceReads: transportTrack.reads });
+        }
+        const localVerdict = adjudicateLocalDuties({
+          nonce: scopeNonce,
+          invocation: { startupRecord: invocationRecord, osObservation: invocationObservation },
+          broker: { startupRecord: brokerRecord, osObservation: brokerObservation },
+          transport: { startupRecord: null, osObservation: transportObservation },
+          expectedTransportNonce: markerNonce ?? undefined,
+          ancestryEstablished,
+        });
+        // The consumer's NAMED aggregate gate: when the two-hop ancestry
+        // admission did not attribute the chain, the local layer may NEVER
+        // settle (`ancestryRefusal: 'ancestry-hops-unattributed'`) — the trio
+        // slots stay unnamed even when every per-duty verdict would
+        // establish, and the refusal surfaces in the returned reason (never
+        // silently dropped by the compressed projection).
+        const localRefusal = typeof localVerdict.ancestryRefusal === 'string' && localVerdict.ancestryRefusal.length > 0
+          ? localVerdict.ancestryRefusal
+          : null;
+        if (localRefusal === null) {
+          for (const duty of localVerdict.duties) {
+            if (duty.status !== 'established') continue;
+            if (duty.duty === 'invocation-process') localNames.push('invocation');
+            else if (duty.duty === 'broker-daemon') localNames.push('broker');
+            else if (duty.duty === 'transport-descendant') localNames.push('transport');
+          }
+        }
+        localSummary = `${localRefusal === null ? '' : `ancestry-refusal=${localRefusal}; `}${localVerdict.duties
+          .map((duty) => `${duty.duty}:${duty.status}${Array.isArray(duty.reasons) && duty.reasons.length > 0 ? `(${duty.reasons.join('+')})` : ''}`)
+          .join(',')}`;
+      }
+      const endedAtMs = now();
+      state.readIntervals.push({ startedAtMs, endedAtMs });
+      const deadline = deadlineNow();
+      const collectionIntervalsValid = deadline !== null
+        && state.readIntervals.every((interval) => interval.startedAtMs >= 0 && interval.endedAtMs >= interval.startedAtMs && interval.endedAtMs <= deadline);
+      // (P2-2, round-18 re-review) the EXECUTOR LINKAGE premise: the job slot
+      // is credited only with VERIFIED linkage to the joined Child (the
+      // snapshot's executorLinkage === 'verified'). With the expected
+      // executor unresolved the reader reports the verification as
+      // not-applicable and a different job under the same Root could
+      // otherwise satisfy the interrupted Child's durable duties — no
+      // linkage established → the job slot stays unnamed, never credited,
+      // and the settled aggregate is never credited either.
+      const executorLinkageVerified = snapshot?.executorLinkage === 'verified';
+      const jobFound = executorLinkageVerified && snapshot?.job?.presence === 'found';
+      // (P1-2, round-20 codex re-review) a SESSION-END stop cause on the
+      // LINKED job's snapshot is a CLEANUP CAUSE with its own boundary: the
+      // genuine SessionEnd cleanup that settles the durable job after the
+      // RPC persists stopCause/stopIntent.cause 'session-end' (the bounded
+      // production STOP_CAUSES member — scripts/lib/state.mjs's
+      // finishSessionEndedRescueContinuation path), and crediting
+      // `snapshot.aggregate === 'settled'` without inspecting that
+      // provenance left the fence UNPROVEN, so finalization substituted its
+      // own LATER teardown time and replay could accept duties the
+      // SessionEnd cleanup discharged as pre-cleanup native settlement.
+      // The earliest OBSERVED boundary of the cause on the CONTROLLER clock
+      // is the read that first observed it (this read's start instant): the
+      // stop intent's own `requestedAt` is a wall-clock ISO — a FOREIGN
+      // clock domain that can never enter the controller-monotonic
+      // cleanupFenceAtMs (the settlement clock gate would refuse it as
+      // out-of-bounds). The fence latches only while UNPROVEN — the
+      // earliest observed cause wins, a later read never moves it — so the
+      // credited duty snapshot carries the genuine cleanup boundary and the
+      // round-19 P1-4 teardown-time substitution never applies to a
+      // SessionEnd-discharged settlement.
+      const jobProjection = snapshot?.job?.projection !== null && typeof snapshot?.job?.projection === 'object' ? snapshot.job.projection : {};
+      const jobStopCause = typeof jobProjection.stopCause === 'string' ? jobProjection.stopCause : null;
+      const jobStopIntent = jobProjection.stopIntent !== null && typeof jobProjection.stopIntent === 'object' ? jobProjection.stopIntent : {};
+      const jobStopIntentCause = typeof jobStopIntent.cause === 'string' ? jobStopIntent.cause : null;
+      if (jobFound === true && state.cleanupFenceAtMs === null
+        && (jobStopCause === 'session-end' || jobStopIntentCause === 'session-end')) {
+        state.cleanupFenceAtMs = startedAtMs;
+        state.cleanupCause = 'session-end';
+      }
+      // (P1-3, round-22 codex review) an explicit USER stop on the linked
+      // job is an INDEPENDENT stop authority — the same external-authority
+      // class as the SessionEnd cleanup (production uses the bounded
+      // STOP_CAUSES member `user` for EXPLICIT cancellation, a stop decided
+      // outside the native delivery). The cause latches at the read that
+      // first observed it (never the per-read projection, so a later
+      // snapshot that drops the stop fields cannot re-credit the slot; the
+      // earliest observed cause wins), and it rides the credited
+      // adjudication so the replay can name the separate cancellation.
+      // (The SessionEnd cleanup keeps its OWN fence latch above; a user
+      // stop is a stop authority, and the fence stays the SessionEnd
+      // cleanup boundary.)
+      if (jobFound === true && state.cleanupCause === null && state.cleanupFenceAtMs === null
+        && (jobStopCause === 'user' || jobStopIntentCause === 'user')) {
+        state.cleanupCause = 'user';
+      }
+      // (P1-1, round-21 codex review) a SESSION-END-DISCHARGED durable
+      // settlement is a CLEANUP OUTCOME, never native credit: if the Child
+      // terminal and the poll resolution were observed BEFORE SessionEnd
+      // settled the job, `snapshot.aggregate === 'settled'` still credited
+      // durableSettled and replay compared only those two earlier
+      // resolutions against the cleanup fence — certifying all-duty native
+      // settlement for an obligation the SessionEnd cleanup discharged. The
+      // latched cause (never the per-read projection, so a later snapshot
+      // that drops the stop fields cannot re-credit it) refuses the durable
+      // slot's native-settlement credit BY NAME, and the cause rides the
+      // credited adjudication so the replay can never credit the cleanup
+      // discharge either.
+      // (P1-3, round-22 codex review) the USER stop joins the exclusion: a
+      // separate user cancellation that discharged the linked job is an
+      // external stop authority, never native durable settlement — only a
+      // NATURAL terminal winner (no latched stop cause) keeps the settled
+      // aggregate's durable credit.
+      const sessionEndCleanupDischarge = state.cleanupCause === 'session-end';
+      const userStopDischarge = state.cleanupCause === 'user';
+      const externalStopDischarge = sessionEndCleanupDischarge === true || userStopDischarge === true;
+      // (P2-1, round-18 re-review) a TERMINAL-WINNER SNAPSHOT READ is not a
+      // cleanup action, and a natural terminal winner is not a cleanup
+      // either: the cleanup fence is recorded only from the earliest
+      // observed CLEANUP CAUSE and its actual boundary — a snapshot read
+      // leaves the fence UNPROVEN (null), so replay can never mistake
+      // post-cleanup resolution evidence for pre-cleanup evidence.
+      // The duty names come ONLY from the consumers this composition actually
+      // runs (§24.7/§41.6). The DURABLE quartet is named from the durable
+      // consumer's PER-LAYER verdicts: the exact-record presence (job),
+      // RESOLVED runnerCleanupDuty/writableGuard verdicts (a not-applicable
+      // claim only with its demonstrated production-path reason — the §24.7
+      // never-substitute rule; an applicable claim only with its observed
+      // outstanding fact), and the PROVEN passive snapshot equality
+      // (integrity). The LOCAL trio is named from the §24.7 local consumer's
+      // own established verdicts above.
+      const observedNames = new Set();
+      if (jobFound) {
+        observedNames.add('job');
+      }
+      const runnerLayer = snapshot?.layers?.runnerCleanupDuty;
+      if (runnerLayer !== null && typeof runnerLayer === 'object'
+        && ((runnerLayer.applicable === false && typeof runnerLayer.reason === 'string' && runnerLayer.reason.length > 0)
+          || (runnerLayer.applicable === true && runnerLayer.outstanding === true))) {
+        observedNames.add('runner');
+      }
+      const guardLayer = snapshot?.layers?.writableGuard;
+      if (guardLayer !== null && typeof guardLayer === 'object'
+        && ((guardLayer.applicable === false && typeof guardLayer.reason === 'string' && guardLayer.reason.length > 0)
+          || (guardLayer.applicable === true && typeof guardLayer.retained === 'boolean'))) {
+        observedNames.add('guard');
+      }
+      if (snapshot?.passive?.snapshotEqual === true) {
+        observedNames.add('integrity');
+      }
+      for (const localName of localNames) {
+        observedNames.add(localName);
+      }
+      // The BASELINE names (the §41.6 admission premise): presence-based, per
+      // slot, exactly as the consumers established them this read.
+      const duties = CONFIRMED_WINDOW_DUTY_SLOTS.filter((slot) => observedNames.has(slot));
+      // (P1-3, 2026-11-19 codex review) the SETTLED names (the §24.7
+      // all-duty settlement premise): an applicable local slot names its
+      // settlement ONLY with its observed generation-bound exit verdict
+      // (`disappeared`) — presence never certifies settlement, a process
+      // observed live-at-delivery and still live post-cutoff keeps its slot
+      // UNSETTLED (never silently dropped, never settled-by-presence), and a
+      // correctly exited process KEEPS its settled slot (the latched exit).
+      const settledNames = new Set(observedNames);
+      for (const localName of /** @type {const} */ (['invocation', 'broker', 'transport'])) {
+        settledNames.delete(localName);
+        const track = state.localExits[localName];
+        if (track.exit?.status === 'disappeared') settledNames.add(localName);
+      }
+      if (externalStopDischarge === true) settledNames.delete('job');
+      const settledDuties = CONFIRMED_WINDOW_DUTY_SLOTS.filter((slot) => settledNames.has(slot));
+      const durableSettled = executorLinkageVerified && snapshot?.aggregate === 'settled' && externalStopDischarge !== true;
+      const durableReason = snapshot === null
+        ? 'the durable job store is not bound (a bounded owner session and data root are required)'
+        : !executorLinkageVerified
+          ? `the durable job's executor linkage to the joined Child is not verified (${String(snapshot?.executorLinkage ?? 'unestablished')}) — the owned settlement duties stay unnamed until the job is linked to the interrupted Child`
+          : sessionEndCleanupDischarge === true
+            ? 'the durable job was DISCHARGED by the SessionEnd cleanup (a cleanup outcome, never native durable-settlement credit)'
+            : userStopDischarge === true
+              ? 'the durable job was DISCHARGED by the user\'s explicit Stop (a separate stop authority outside the native delivery, never native durable-settlement credit)'
+              : jobFound
+                ? null
+                : `the durable job store carries no exact job record (${String(snapshot?.job?.reason ?? snapshot?.aggregate ?? 'unestablished')})`;
+      const localReason = localSummary !== null && localNames.length < 3
+        ? `the local duty consumer has not adjudicated every local slot (local duty verdict: ${localSummary})`
+        : localSummary !== null && settledDuties.filter((slot) => slot === 'invocation' || slot === 'broker' || slot === 'transport').length < 3
+          ? `the local duty consumer has not settled every local slot with a generation-bound exit verdict (local duty verdict: ${localSummary})`
+          : null;
+      // (P2-2, 2026-11-19 codex review) the observable fact is the MANDATORY
+      // baseline: the frozen seven-slot set must ALL be present — a partial
+      // name list is never observable (incomplete instrumentation cannot
+      // consume the bounded case), and the missing slots are named.
+      const missingBaselineSlots = CONFIRMED_WINDOW_DUTY_SLOTS.filter((slot) => !observedNames.has(slot));
+      const observable = missingBaselineSlots.length === 0;
+      const reason = durableReason ?? localReason ?? (missingBaselineSlots.length > 0
+        ? `the mandatory duty baselines are incomplete (missing: ${missingBaselineSlots.join(', ')}) — incomplete instrumentation is never observable`
+        : null);
+      Object.assign(dutyAdjudication, {
+        allObserved: settledDuties.length === CONFIRMED_WINDOW_DUTY_SLOTS.length,
+        names: settledDuties,
+        durableSettled,
+        cleanupFenceAtMs: state.cleanupFenceAtMs,
+        cleanupCause: state.cleanupCause,
+        collectionIntervalsValid,
+        clockDomain: CONFIRMED_WINDOW_CLOCK_DOMAIN,
+      });
+      return {
+        observable,
+        duties,
+        settledDuties,
+        durableSettled,
+        cleanupFenceAtMs: state.cleanupFenceAtMs,
+        cleanupCause: state.cleanupCause,
+        collectionIntervalsValid,
+        clockDomain: CONFIRMED_WINDOW_CLOCK_DOMAIN,
+        reason,
+      };
+    },
+    controlFacts: async () => {
+      const fixture = requireFixture();
+      const controlPath = typeof fixture.survivalControlPath === 'string' && fixture.survivalControlPath.length > 0 ? fixture.survivalControlPath : null;
+      if (controlPath === null) {
+        return { active: false, freshAtMs: null, declaredLifetimeMs: null, lineIndex: null, lastEmissionTag: null, clockDomain: CONFIRMED_WINDOW_CLOCK_DOMAIN, reason: 'the fixture exposes no survival control path' };
+      }
+      // Read errors THROW (never a returned reason): only the choreography's
+      // redact seam may persist an error text that can carry private paths.
+      const rollouts = await loadRollouts(fixture.codexHome);
+      // The EXISTING control collector's call-scoped facts (§41.6's frozen
+      // control source): the ONE exec_command launch of the control script,
+      // its grounded handle, and the linked read events' own outputs. The
+      // interrupt interaction rides the REAL extractor over the SAME
+      // rollouts — on this route the staging phase carries no model-tool
+      // interrupt, so the honest attempted-false fact is the extractor's own
+      // verdict (no delivery bound exists and no post-delivery exit is
+      // claimed by this collector). The scan never leaves the control's OWN
+      // exec output — a prefix match inside any foreign rollout string field
+      // (including the Child's) attributes nothing.
+      // (P1-3, round-21 codex review) the OVERLAPPING SAME-TARGET model-tool
+      // interrupt: the scan this collector already runs for control
+      // extraction now also RULES OUT the competing delivery — an
+      // interrupt-shaped call (v2 interrupt_agent or v1 send_input) whose
+      // sanitized target is the joined Child (or a target that cannot be
+      // proven different) and that was not affirmatively rejected means the
+      // Child's interrupted terminal event is not attributable to the
+      // controller's RPC ALONE. The controller's receipt latches the fact
+      // and the replay names the ambiguity — same-host-rpc settlement is
+      // never silently credited for a terminal event a model-tool call could
+      // have caused.
+      const interruptInteraction = extractInterruptInteraction(rollouts);
+      const control = extractSurvivalControlFacts(rollouts, controlPath, {
+        lineCount: SURVIVAL_CONTROL_LINE_COUNT,
+        interruptInteraction,
+        // (P1-2, 2026-11-19 codex re-review) the OWNING-ROOT binding: the
+        // extractor resolves the owning Root session from the observed
+        // Child's own parent binding (the childThreadId option — the SAME
+        // joined-Child identity premise the observation scan consumes) and
+        // attributes the launch rollout's ownership. A control launched
+        // inside the Child or an unrelated session is NOT the §16.4
+        // Root-owned control, whatever handle it grounds.
+        childThreadId: resolvePremise(childObservationThreadIdPremise),
+      });
+      const joinedChildThreadId = resolvePremise(childObservationThreadIdPremise);
+      // (P1-2, round-22 codex review) EVERY potentially competing model-tool
+      // attempt: the extractor's bounded per-call list carries each
+      // interrupt-shaped call's OWN sanitized target and delivery outcome,
+      // and the ambiguity fact is the DISJUNCTION over that list — any call
+      // whose target is the joined Child (or a target that cannot be proven
+      // different) and that was not affirmatively rejected. The HISTORICAL
+      // last-call summary (target/delivered) stays unchanged for the bound
+      // derivation: a LATER different-target call, or a later call rejected
+      // before the next collector read, can never CLEAR an EARLIER
+      // same-target competing attempt. A call whose response was never
+      // decoded stays UNKNOWN (delivered !== false) — fail closed.
+      const interruptCallPotentiallyCompeting = (/** @type {any} */ call) => call?.delivered !== false
+        && !(call?.target?.kind === 'agent-id'
+          && typeof call?.target?.value === 'string'
+          && joinedChildThreadId !== null
+          // (P1, round-23 codex review) the SAME canonical-hex UUID
+          // normalization the historical attribution uses: the pinned host
+          // resolves compact/simple/URN/braced and case-spellings of the
+          // joined Child's id to the SAME thread, so a target is provably
+          // different ONLY when it differs lexically AND its normalized hex
+          // form (both sides UUID-shaped) differs too — a compact or
+          // uppercase spelling of the joined Child never rules the call out.
+          && (call.target.value !== joinedChildThreadId
+            && !(INTERRUPT_TARGET_HEX_SHAPE.test(canonicalUuidHex(call.target.value))
+              && INTERRUPT_TARGET_HEX_SHAPE.test(canonicalUuidHex(joinedChildThreadId))
+              && canonicalUuidHex(call.target.value) === canonicalUuidHex(joinedChildThreadId))));
+      // (P2-1, round-23 codex review) the list is a bounded TRUNCATED
+      // diagnostic: when the extractor dropped calls past its cap, the scan
+      // is not exhaustive and the disjunction over the retained calls can
+      // never rule the ambiguity OUT — overflow fails closed (true).
+      const sameTargetModelToolInterrupt = interruptInteraction.callsTruncated === true
+        || (Array.isArray(interruptInteraction.calls) ? interruptInteraction.calls : [])
+          .some(interruptCallPotentiallyCompeting);
+      if (control.launchCount !== 1 || control.launched !== true || control.handleGrounded !== true) {
+        return { active: false, freshAtMs: null, declaredLifetimeMs: null, lineIndex: null, lastEmissionTag: null, clockDomain: CONFIRMED_WINDOW_CLOCK_DOMAIN, reason: `the survival control launch is not observed exactly once with a grounded exec handle in the fixture rollouts (${String(control.launchCount)} launch-shaped call(s) observed)` };
+      }
+      // (P1-2) the ownership verdict is ENFORCED: only the observed owning
+      // ROOT's own control satisfies admission or survival. A child-owned
+      // or unidentifiable launch (no owning-Root binding resolvable from the
+      // joined Child's parent) refuses by name.
+      if (control.ownership !== 'root') {
+        return { active: false, freshAtMs: null, declaredLifetimeMs: null, lineIndex: null, lastEmissionTag: null, clockDomain: CONFIRMED_WINDOW_CLOCK_DOMAIN, reason: control.ownership === 'child'
+          ? 'the survival control is owned by the CHILD, not the observed owning Root (a control launched inside the Child or a subagent session is never the §16.4 Root-owned control)'
+          : `the survival control launch is not attributable to the observed owning Root (ownership ${String(control.ownership)}: the joined Child parent binding resolves no owning Root session that top-level hosts this launch)` };
+      }
+      if (control.emittedLines === null) {
+        return { active: false, freshAtMs: null, declaredLifetimeMs: null, lineIndex: null, lastEmissionTag: null, clockDomain: CONFIRMED_WINDOW_CLOCK_DOMAIN, reason: 'the survival control\'s emission evidence is contradictory (the control collector refused line facts)' };
+      }
+      const highest = control.emittedLines.length > 0 ? control.emittedLines[control.emittedLines.length - 1] : null;
+      if (highest === null) {
+        return { active: false, freshAtMs: null, declaredLifetimeMs: null, lineIndex: null, lastEmissionTag: null, clockDomain: CONFIRMED_WINDOW_CLOCK_DOMAIN, reason: 'no survival-control progress line was observed in the control\'s own exec reads' };
+      }
+      // §41.5.2's "no completion/exit observed" clause: the designed-end
+      // completion marker AND the control's OWN exec completion both END the
+      // control — a control that exits or crashes before line 60 is inactive
+      // with zero credited life. (P2-3, 2026-11-19 codex re-review) the exit
+      // is attributed by the GROUNDED CONTROL HANDLE (the launch-epoch scan
+      // below: the FIRST completed output on the handle with a numeric exit
+      // code, REGARDLESS of output contents): a terminal read whose output is
+      // EMPTY (the progress already consumed) still ends the control; the
+      // old whole-rollout progress-prefix text scan missed exactly that
+      // shape.
+      const epochScan = scanControlLaunchAndReadEpochs(rollouts, controlPath, resolvePremise(childObservationThreadIdPremise));
+      const observedExitCode = epochScan.exitCode;
+      const designedEnd = control.completionMarker !== null;
+      // (P1-1, 2026-11-19 codex re-review) the structured END discriminator:
+      // 'designed-end' = the control reached its designed completion line
+      // (the natural lifecycle end — the §16.4 control that survives the
+      // interrupt and completes as designed); 'premature-exit' = an exit
+      // observed before the designed end (an abnormal/early exit-code
+      // completion — the LOSS evidence that revokes the no-collateral
+      // credit); null = still running. The choreography's survival gate
+      // consumes this, never a free-form reason string.
+      // (P2, round-9 re-review) a KNOWN ABNORMAL EXIT OVERRIDES the
+      // completion marker: `designed-end` is the ZERO-EXIT lifecycle end
+      // only — a control that emits its designed final line 60 but dies
+      // with a nonzero exit code is a `premature-exit` (the marker never
+      // launders an abnormal death into the no-collateral credit's
+      // non-revoking end).
+      const abnormalExit = observedExitCode !== null && observedExitCode !== 0;
+      const controlEnded = abnormalExit
+        ? 'premature-exit'
+        : designedEnd === true
+          ? 'designed-end'
+          : observedExitCode !== null
+            ? 'premature-exit'
+            : null;
+      // (P1-1, 2026-11-19 codex re-review) the newest line's EMISSION instant
+      // expressed on the CONTROLLER clock: the collection instant minus the
+      // launch-epoch-anchored age (round-5's one-domain arithmetic mapped
+      // back through the collector's own read). Survival adjudication
+      // compares THIS instant against the delivery bound — a collection read
+      // after the interrupt proves nothing about when the line was emitted.
+      const emissionReadAtMs = now();
+      const emissionAgeMs = epochScan.launchEpochMs !== null
+        ? Date.now() - epochScan.launchEpochMs - highest.tag
+        : null;
+      const emittedAtControllerMs = emissionAgeMs !== null && emissionAgeMs >= 0
+        ? emissionReadAtMs - emissionAgeMs
+        : null;
+      if (designedEnd === false && observedExitCode === null) {
+        const readAtMs = now();
+        if (state.controlLineIndex === null || highest.index > state.controlLineIndex) {
+          // (P2-1 + P1-3, 2026-11-19 codex reviews) the §41.5.2 frozen rule:
+          // the collector must ESTABLISH that the emission-to-read delay of
+          // the newest line is at most one cadence before granting freshness
+          // and remaining-life credit. The anchor is the control's OWN
+          // LAUNCH ENVELOPE — the launch event's rollout timestamp (the
+          // attributable launch-time bound, epoch domain) — and the delay is
+          // the newest line's CARRYING READ EVENT timestamp minus the launch
+          // minus the emission tag, all in ONE epoch domain:
+          // (readEpoch − launchEpoch − T_new) ∈ [0, one cadence]. The tag IS
+          // the line's age at emission relative to control birth, so this
+          // bounds the line's ABSOLUTE age; the controller-clock arrival
+          // time of a buffered line can never re-birth the control, and
+          // matching read-delta changes prove nothing by themselves.
+          // (P1-1, 2026-11-19 codex re-review) the age is measured at the
+          // COLLECTOR'S OWN READ of the rollout (its real read instant, same
+          // epoch domain as the launch envelope): a prompt MODEL read
+          // collected long after the control ended is stale — the subsequent
+          // collection delay is accounted before any credit, and freshness
+          // holds at collection, never merely at the embedded model-read
+          // timestamp.
+          const collectorNowEpochMs = Date.now();
+          const demonstrated = epochScan.launchEpochMs !== null
+            && (collectorNowEpochMs - epochScan.launchEpochMs) - highest.tag >= 0
+            && (collectorNowEpochMs - epochScan.launchEpochMs) - highest.tag <= SURVIVAL_CONTROL_CADENCE_MS;
+          state.controlLineIndex = highest.index;
+          state.lastEmissionTag = highest.tag;
+          if (demonstrated) {
+            state.controlFreshAtMs = readAtMs;
+            state.controlFreshForTag = highest.tag;
+          }
+        }
+        // The credited bound exists ONLY while the demonstrated freshness
+        // stamp backs the NEWEST line: an index that advanced without a new
+        // demonstration leaves declaredLifetimeMs null (the barrier's
+        // lifetime predicate refuses).
+        const freshBacksNewestLine = state.controlFreshAtMs !== null && state.controlFreshForTag === state.lastEmissionTag;
+        const declaredLifetimeMs = freshBacksNewestLine
+          ? Math.max(0, (SURVIVAL_CONTROL_LINE_COUNT - state.controlLineIndex - 1) * SURVIVAL_CONTROL_CADENCE_MS)
+          : null;
+        return {
+          active: true,
+          freshAtMs: state.controlFreshAtMs,
+          declaredLifetimeMs,
+          lineIndex: state.controlLineIndex,
+          // (P1-1) the emission instant on the controller clock — the
+          // survival gate's causal input, never the collection stamp.
+          emittedAtControllerMs,
+          ended: controlEnded,
+          // §41.5.2: the control's own emission tag stays collector-internal —
+          // never compared to a controller fence and never projected.
+          lastEmissionTag: state.lastEmissionTag,
+          // (P1-2, round-21 codex review) the registered TWO-READ pre-delivery
+          // sequence from the control's OWN read events (an earlier read at/above
+          // the readiness floor, then the separate fresh post-floor read) — the
+          // barrier's send gate consumes it.
+          preDeliveryReadSequence: control.preDeliveryReadSequence,
+          // (P1-3, round-21 codex review) the overlapping same-target model-tool
+          // interrupt — the receipt's competing-delivery fact.
+          sameTargetModelToolInterrupt,
+          clockDomain: CONFIRMED_WINDOW_CLOCK_DOMAIN,
+          reason: freshBacksNewestLine ? null : 'the emission-to-read delay of the newest control line was not demonstrated within one cadence (a long-buffered or stale read credits no remaining life)',
+        };
+      }
+      // The ended control: zero credited remaining life; a fresh stamp exists
+      // only if a still-active read latched one earlier (the freshness of a
+      // dead control is never refreshed).
+      if (state.controlLineIndex === null || highest.index > state.controlLineIndex) {
+        state.controlLineIndex = highest.index;
+        state.lastEmissionTag = highest.tag;
+      }
+      return {
+        active: false,
+        freshAtMs: state.controlFreshAtMs,
+        declaredLifetimeMs: 0,
+        lineIndex: state.controlLineIndex,
+        emittedAtControllerMs,
+        ended: controlEnded,
+        lastEmissionTag: state.lastEmissionTag,
+        // (P1-2, round-21 codex review) the registered TWO-READ pre-delivery
+        // sequence rides the ended-control read too — the barrier refuses an
+        // ended control on its own ground, and the fact stays observable.
+        preDeliveryReadSequence: control.preDeliveryReadSequence,
+        // (P1-3, round-21 codex review) the overlapping same-target model-tool
+        // interrupt rides the ended-control read too.
+        sameTargetModelToolInterrupt,
+        clockDomain: CONFIRMED_WINDOW_CLOCK_DOMAIN,
+        reason: controlEnded === 'designed-end'
+          ? `the survival control reached its designed completion line ${SURVIVAL_CONTROL_LINE_COUNT}`
+          : `the survival control's exec completed with exit code ${String(observedExitCode)} before its designed end${controlEnded === 'premature-exit' && designedEnd ? ' (the abnormal exit overrides the completion marker)' : ''}`,
+      };
+    },
+  };
+  return Object.freeze({ observers: Object.freeze(observers), dutyAdjudication });
 }
 
 /** The production acknowledgement render shapes that carry a reserved job ID (render.mjs renderOutput). */
@@ -12262,9 +14185,9 @@ export function mapShellWaitLiveFacts(input, held, evidence, codexVersion, rollo
   // lowercase-hyphenated form). The comparison therefore normalizes both
   // sides to the canonical hex form before failing lexical equality; the
   // normalization basis is recorded on the facts, and a genuinely different
-  // uuid stays rejected.
-  /** @param {string} value */
-  const canonicalUuidHex = (value) => value.replace(/[-{}]/g, '').replace(/^urn:uuid:/iu, '').toLowerCase();
+  // uuid stays rejected. (P1, round-23 codex review) the normalization is
+  // the shared module-level `canonicalUuidHex` — the per-call ambiguity
+  // list consumes the SAME spelling-insensitive comparison.
   const targetValue = interruptInteraction.target.value;
   const lexicalOrNormalized = targetValue !== null && evidenceChildThreadId !== null
     ? (targetValue === evidenceChildThreadId

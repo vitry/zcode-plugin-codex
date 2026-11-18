@@ -16374,8 +16374,9 @@ describe('local-settlement task 3 review round 6 (four P2): the replay binds the
     // (§33.7 finding 3, v9) the spawn-witness preload seam's generator module
     // joins the driver's construction right after the closure-preload
     // generator; (§40.5, v10) the confirmed-window controller runtime and its
-    // pure reload-side consumer join right after it — the expectation mirrors
-    // the v10 input set.
+    // pure reload-side consumer join right after it; (P2-5, round-22) the
+    // production launcher-command renderer joins right after the consumer —
+    // the expectation mirrors the v11 input set.
     const spawnWitnessPreloadModule = await import('../tools/shell-wait-probe/spawn-witness-preload.mjs');
     const confirmedWindowModule = await import('../tools/shell-wait-probe/confirmed-window.mjs');
     const nativeControlEvidenceModule = await import('../tools/shell-wait-probe/native-control-evidence.mjs');
@@ -16386,8 +16387,9 @@ describe('local-settlement task 3 review round 6 (four P2): the replay binds the
     // executing helper-copy digests: a construction that omits them cannot
     // produce the recorded digest (load-bearing, not just labelled).
     const driverSource = readFileSync(fileURLToPath(new URL('../tools/shell-wait-probe/driver.mjs', import.meta.url)));
+    const launcherRendererSource = readFileSync(fileURLToPath(new URL('../scripts/lib/rescue-launcher-command.mjs', import.meta.url)));
     const expected = createHash('sha256')
-      .update('zcode-shell-wait-observer-v10\0')
+      .update('zcode-shell-wait-observer-v11\0')
       .update(evidenceModule.EXECUTING_EVIDENCE_SOURCE).update('\0')
       .update(shapeModule.EXECUTING_SHAPE_DIAGNOSTIC_SOURCE).update('\0')
       .update(releaseModule.EXECUTING_RELEASE_QUALIFICATION_SOURCE).update('\0')
@@ -16396,6 +16398,7 @@ describe('local-settlement task 3 review round 6 (four P2): the replay binds the
       .update(spawnWitnessPreloadModule.EXECUTING_SPAWN_WITNESS_PRELOAD_SOURCE).update('\0')
       .update(confirmedWindowModule.EXECUTING_CONFIRMED_WINDOW_SOURCE).update('\0')
       .update(nativeControlEvidenceModule.EXECUTING_NATIVE_CONTROL_EVIDENCE_SOURCE).update('\0')
+      .update(launcherRendererSource).update('\0')
       .update(observerModule.EXECUTING_LOCAL_PROCESS_OBSERVATION_SOURCE).update('\0')
       .update(driverSource).update('\0')
       .update(EXECUTING_HELPER_MATERIALIZATION.bytes['scripts/lib/fs.mjs']).update('\0')

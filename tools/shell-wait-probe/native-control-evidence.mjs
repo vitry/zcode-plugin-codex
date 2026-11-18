@@ -45,9 +45,12 @@ const RESPONSE_BOUND_MS = 60_000;
  * The route's registered applicable duty slots (the §24.7 duty table as the
  * confirmed-window route injects it): settlement certifies these slots from
  * the PERSISTED names — aggregate flags alone never certify all-duty
- * settlement (round-4 P2).
+ * settlement (round-4 P2). (P2-2, 2026-11-19 codex review) the SAME frozen
+ * set is the ADMISSION baseline: all slots must be present before any
+ * delivery, so it is exported as the single source for the controller's
+ * barrier and the live composition's observable fact.
  */
-const REQUIRED_CONFIRMED_WINDOW_DUTY_SLOTS = Object.freeze(['invocation', 'broker', 'transport', 'runner', 'job', 'guard', 'integrity']);
+export const REQUIRED_CONFIRMED_WINDOW_DUTY_SLOTS = Object.freeze(['invocation', 'broker', 'transport', 'runner', 'job', 'guard', 'integrity']);
 
 /** @param {string} message @returns {TypeError} */
 function invalidEvidenceContractInput(message) {
@@ -97,6 +100,19 @@ export function projectConfirmedWindowDutyAdjudication(duties) {
       : null,
     durableSettled: duties.durableSettled === true,
     cleanupFenceAtMs: safeStamp(duties.cleanupFenceAtMs),
+    // (P1-1, round-21 codex review) the latched CLEANUP CAUSE that settled
+    // the linked durable job — the bounded 'session-end' discharge name the
+    // live collector latches with the fence. The persisted projection
+    // carries it so the replay's second-line contradiction check (a record
+    // claiming BOTH the cause and durable credit) can name it; unknown or
+    // unbounded values stay null, never passed through.
+    // (P1-3, round-22 codex review) the bounded 'user' discharge name joins
+    // the whitelist — an explicit USER stop is an INDEPENDENT stop authority
+    // the live collector preserves the same way, and the replay's
+    // contradiction check names it separately.
+    cleanupCause: typeof duties.cleanupCause === 'string' && (duties.cleanupCause === 'session-end' || duties.cleanupCause === 'user')
+      ? duties.cleanupCause
+      : null,
     collectionIntervalsValid: duties.collectionIntervalsValid === true,
   };
 }
@@ -228,8 +244,30 @@ export function projectConfirmedWindowBlock(session) {
       childResolutionBasis: typeof receipt.childResolutionBasis === 'string' ? receipt.childResolutionBasis : null,
       completedTurnId: boundedThreadId(receipt.completedTurnId),
       observationResolvedAtMs: safeStamp(receipt.observationResolvedAtMs),
+      // (P2-4, round-22 codex review) the LATE-resolution diagnostics: a
+      // resolution that first arrived during the teardown horizon, retained
+      // with its OWN arrival timestamp — the record distinguishes an
+      // unresponsive Child/observation from a resolution outside the
+      // window. Late stamps NEVER grant cutoff credit (the round-19 P1-5
+      // freeze): the credited legs keep their own names and the replay adds
+      // the named late-resolution refusal.
+      childResolutionLateAtMs: safeStamp(receipt.childResolutionLateAtMs),
+      observationResolvedLateAtMs: safeStamp(receipt.observationResolvedLateAtMs),
+      // (P2-4, round-23 codex review) the foreign-turn diagnostic: a
+      // completion observed on the joined Child whose turn id does not
+      // positively bind to the REQUESTED turn (a different turn, or an
+      // event carrying no bounded turn id — TurnId null) is recorded as its
+      // own diagnostic with the observed turn id, never as the resolution
+      // leg. Schema-additive: unknown or absent values stay null.
+      childForeignTurnCompletionAtMs: safeStamp(receipt.childForeignTurnCompletionAtMs),
+      childForeignTurnCompletionTurnId: boundedThreadId(receipt.childForeignTurnCompletionTurnId),
       unrelatedCompletionReply: typeof receipt.unrelatedCompletionReply === 'boolean' ? receipt.unrelatedCompletionReply : null,
       parentCancellationAtMs: safeStamp(receipt.parentCancellationAtMs),
+      // (P1-3, round-21 codex review) the OVERLAPPING SAME-TARGET model-tool
+      // interrupt the controller's receipt latched from its post-delivery
+      // control reads — the competing-delivery fact the replay's ambiguity
+      // refusal consumes. Unknown or non-boolean values stay null.
+      sameTargetModelToolInterrupt: typeof receipt.sameTargetModelToolInterrupt === 'boolean' ? receipt.sameTargetModelToolInterrupt : null,
     },
     fences: {
       caseDeadlineAtMs: safeStamp(session?.fences?.caseDeadlineAtMs),
@@ -268,10 +306,14 @@ export function projectConfirmedWindowBlock(session) {
  * the persisted duty adjudication (an absent one keeps the verdict
  * UNESTABLISHED — null, never guessed).
  * @param {any} block the persisted, JSON-round-tripped block
- * @param {{ allObserved?: boolean | null, names?: string[] | null, durableSettled?: boolean | null, cleanupFenceAtMs?: number | null, collectionIntervalsValid?: boolean | null } | null} [duties]
+ * @param {{ allObserved?: boolean | null, names?: string[] | null, durableSettled?: boolean | null, cleanupFenceAtMs?: number | null, cleanupCause?: 'session-end' | 'user' | null, collectionIntervalsValid?: boolean | null } | null} [duties]
  *   the persisted duty adjudication. `durableSettled` is ENFORCED (anything
  *   but `true` refuses with `durable-settlement-unresolved`); an absent duty
- *   adjudication keeps the whole verdict unestablished.
+ *   adjudication keeps the whole verdict unestablished. `cleanupCause` is
+ *   the (P1-1, round-21) latched SessionEnd discharge name — a record
+ *   claiming BOTH the cause and durable credit is contradictory and refuses
+ *   by name. (P1-3, round-22) the preserved 'user' stop-cause name joins it
+ *   with its own contradiction check.
  */
 export function admitConfirmedWindowNativeEvidence(block, duties = null) {
   if (!block || typeof block !== 'object') throw invalidEvidenceContractInput('the persisted native-control block is required.');
@@ -388,6 +430,23 @@ export function admitConfirmedWindowNativeEvidence(block, duties = null) {
   const intervalStartedAtMs = safeStamp(window.pendingIntervalStartedAtMs);
   const requestSentAtMs = safeStamp(request.sentAtMs);
   const repliedAtMs = safeStamp(request.repliedAtMs);
+  // (P2-3, round-20 codex re-review) the CONFIRMATION ORDERING premise for
+  // the native responsiveness comparison: the pending-observation
+  // confirmation and the window confirmation must NOT POSTDATE the request
+  // initiation. Replay used to check only that the confirmation stamps
+  // EXIST before admitting the delivery — the order check ran later, for
+  // settlement only — so a record with the send at 100 ms and both
+  // confirmations at 105 ms still reported an admitted delivery and
+  // nativeResponseWithinBound: true. The ordering check is part of CAUSAL
+  // ADMISSION now: a window established only AFTER the send cannot earn the
+  // native responsiveness comparison (the transport bounds stay for
+  // diagnosis; the existing order-based settlement refusal below stays and
+  // the delivery attribution itself is untouched).
+  const windowConfirmedAtMs = safeStamp(window.confirmedAtMs);
+  const pendingObservationConfirmedAtMs = safeStamp(window.pendingObservationConfirmedAtMs);
+  const nativeComparisonOrderingProven = requestSentAtMs !== null
+    && windowConfirmedAtMs !== null && windowConfirmedAtMs <= requestSentAtMs
+    && (pendingObservationConfirmedAtMs === null || pendingObservationConfirmedAtMs <= requestSentAtMs);
   // (round-3 P2-9) the responsiveness comparison is RECOMPUTED from the
   // validated persisted bounds against the fixed 60000 ms bound: a stale
   // summary flag can never grant responsiveness credit, and evidence whose
@@ -407,6 +466,18 @@ export function admitConfirmedWindowNativeEvidence(block, duties = null) {
   else requestInsidePendingInterval = requestSentAtMs >= intervalStartedAtMs && requestSentAtMs <= Math.min(...intervalUpperBoundAtMs);
   if (requestInsidePendingInterval === false) deliveryReasons.push('initiation-outside-pending-interval');
   else if (requestInsidePendingInterval === null && requestBoundsPresent) deliveryReasons.push('causal-interval-unprovable');
+  // (P2-4, round-19 re-review) POSITIVE pre-send window evidence is part of
+  // CAUSAL ADMISSION: a record with valid send/reply stamps and interval
+  // endpoints but NO confirmed pending observation is not an admitted
+  // delivery — responsiveness credit (nativeLatencyMs /
+  // nativeResponseWithinBound) is granted only after THIS admission, so a
+  // record that never confirmed the pending window cannot report native
+  // responsiveness even though its transport bounds are well-formed. The
+  // pending observation's confirmation and the window's confirmation are
+  // BOTH required (the same §40.4 pre-initiation predicates the live
+  // admission check enforces).
+  if (safeStamp(window.pendingObservationConfirmedAtMs) === null) deliveryReasons.push('pending-window-unconfirmed-at-initiation');
+  if (safeStamp(window.confirmedAtMs) === null) deliveryReasons.push('window-unconfirmed-at-initiation');
   const deliveryAdmitted = deliveryReasons.length === 0;
 
   // The settlement layers (only meaningful on an admitted delivery; a
@@ -422,10 +493,28 @@ export function admitConfirmedWindowNativeEvidence(block, duties = null) {
   const childResolutionAtMs = safeStamp(receipt.childResolutionAtMs);
   const observationResolvedAtMs = safeStamp(receipt.observationResolvedAtMs);
   const cutoffAtMs = safeStamp(window.measurementCutoffAtMs);
+  // (P2-4, round-20 codex re-review) the receipt typing that already names the
+  // settlement's response-at-unrelated-completion refusal: the app-server
+  // can answer turn/interrupt when the Child finishes NATURALLY, and that
+  // reply's timing is about the unrelated completion — never native
+  // responsiveness. The latency fields below additionally require the CAUSAL
+  // interrupted receipt (the negation of this typing), while the raw reply
+  // timing stays in the transport block for diagnosis.
+  const receiptIdentifiesUnrelatedCompletion = receipt.unrelatedCompletionReply === true
+    || receipt.childResolutionBasis === 'natural-completion'
+    || (receipt.childTerminalStatus !== null && receipt.childTerminalStatus !== 'interrupted');
   if (deliveryAdmitted === true) {
-    if (receipt.unrelatedCompletionReply === true || receipt.childResolutionBasis === 'natural-completion'
-      || (receipt.childTerminalStatus !== null && receipt.childTerminalStatus !== 'interrupted')) {
+    if (receiptIdentifiesUnrelatedCompletion) {
       settlementReasons.push('response-at-unrelated-completion');
+    }
+    // (P1-3, round-21 codex review) the §39.8 source-class discipline: an
+    // OVERLAPPING model-tool interrupt on the SAME Child means the
+    // interrupted terminal event is not attributable to the RPC alone — the
+    // delivery/refusal names the AMBIGUITY and same-host-rpc settlement is
+    // never silently credited for a terminal event a model-tool call could
+    // have caused.
+    if (receipt.sameTargetModelToolInterrupt === true) {
+      settlementReasons.push('model-tool-delivery-attribution-ambiguous');
     }
     if (safeStamp(receipt.parentCancellationAtMs) !== null) settlementReasons.push('parent-only-cancellation');
     if (receipt.childResolutionBasis === 'teardown-signal' || receipt.childResolutionBasis === 'signal-cleanup') {
@@ -445,6 +534,15 @@ export function admitConfirmedWindowNativeEvidence(block, duties = null) {
     }
     if (childResolutionAtMs === null) settlementReasons.push('missing-child-resolution');
     if (observationResolvedAtMs === null) settlementReasons.push('missing-observation-resolution');
+    // (P2-4, round-22 codex review) the LATE-resolution diagnostics: the
+    // controller retained a resolution that first arrived during the teardown
+    // horizon with its timestamp — the record distinguishes an unresponsive
+    // Child/observation from a resolution outside the window, and the
+    // verdict NAMES the observed-late fact while still refusing cutoff
+    // credit (the round-19 P1-5 freeze: late facts never settle).
+    if (safeStamp(receipt.childResolutionLateAtMs) !== null || safeStamp(receipt.observationResolvedLateAtMs) !== null) {
+      settlementReasons.push('late-resolution-no-credit');
+    }
     if (safeStamp(window.pendingObservationConfirmedAtMs) === null) settlementReasons.push('missing-presence-baseline');
     // (round-2 P2) the positive window evidence must PRECEDE the request
     // initiation: an active Child turn is never proof of a pending
@@ -463,11 +561,20 @@ export function admitConfirmedWindowNativeEvidence(block, duties = null) {
         settlementReasons.push('window-unproven-before-initiation');
       }
     }
+    // (P2, round-13 re-review) BOTH persisted ancestry hops must carry
+    // AFFIRMATIVE verdicts before settlement credit: the opaque digest
+    // cannot establish either hop — a retained block whose ancestryHops is
+    // missing or reports either hop false/unaffirmative leaves the ancestry
+    // premise unestablished at replay, never certified from the digest
+    // alone.
+    const ancestryHopsAffirmative = window.ancestryHops !== null && typeof window.ancestryHops === 'object'
+      && window.ancestryHops.launcherToBroker === true && window.ancestryHops.brokerToTransport === true;
     if (typeof window.ancestryBaselineDigest !== 'string' || window.dutiesObservable !== true) {
       // §40.3's frozen name: the scan/baseline layer covers the generation/
       // ancestry baseline AND the observable applicable duties jointly.
       settlementReasons.push('missing-scan-baseline');
     }
+    if (ancestryHopsAffirmative !== true) settlementReasons.push('ancestry-hops-unproven');
     // (P2-4 companion, 2026-11-18 codex gate round) the control baseline
     // layer covers the active flag AND its required evidence: the freshness
     // stamp and the declared lifetime (§40.4's admission predicate). Nulls
@@ -485,6 +592,15 @@ export function admitConfirmedWindowNativeEvidence(block, duties = null) {
       && (requestSentAtMs - (/** @type {number} */ (safeStamp(window.controlFreshAtMs))) > CONTROL_FRESHNESS_CADENCE_MS
         || (/** @type {number} */ (safeStamp(window.controlFreshAtMs))) + (/** @type {number} */ (safeStamp(window.controlDeclaredLifetimeMs))) <= requestSentAtMs)) {
       settlementReasons.push('control-stale-or-expired-at-initiation');
+    }
+    // (P2-3, round-19 re-review) FUTURE-DATED control evidence refuses: the
+    // control sample must PRECEDE or coincide with the initiation before it
+    // can give settlement credit — a freshAtMs AFTER the send (a negative
+    // age) passes the stale-only check above but is not evidence about the
+    // control at delivery; the live admission check would have refused it.
+    if (requestSentAtMs !== null && safeStamp(window.controlFreshAtMs) !== null
+      && (/** @type {number} */ (safeStamp(window.controlFreshAtMs))) > requestSentAtMs) {
+      settlementReasons.push('control-evidence-postdates-initiation');
     }
     // (round-3 P2-9) evidence whose carried responsiveness flag CONTRADICTS
     // the retained stamps refuses the settlement (the flag is recomputed for
@@ -520,6 +636,23 @@ export function admitConfirmedWindowNativeEvidence(block, duties = null) {
   } else {
     if (duties.allObserved !== true) settlementReasons.push('duty-adjudication-incomplete');
     if (duties.durableSettled !== true) settlementReasons.push('durable-settlement-unresolved');
+    // (P1-1, round-21 codex review) the SECOND-LINE contradiction check: the
+    // persisted cleanup cause is load-bearing — a SessionEnd-discharged
+    // durable settlement is a cleanup outcome, never native credit, and a
+    // record claiming BOTH the 'session-end' cause AND durable settlement
+    // credit is contradictory evidence that refuses by name (the live
+    // collector refuses the credit itself; this check catches the stale or
+    // tampered persisted shape).
+    // (P1-3, round-22 codex review) the preserved USER stop cause joins the
+    // check with its own name — an explicit user stop is a separate stop
+    // authority, and a record claiming BOTH the 'user' cause AND durable
+    // settlement credit is contradictory the same way.
+    if (duties.cleanupCause === 'session-end' && duties.durableSettled === true) {
+      settlementReasons.push('session-end-cleanup-discharge-contradicts-durable-credit');
+    }
+    if (duties.cleanupCause === 'user' && duties.durableSettled === true) {
+      settlementReasons.push('user-stop-discharge-contradicts-durable-credit');
+    }
     // (round-4 P2) the REQUIRED duty slots are verified in BOTH the persisted
     // adjudication's names AND the window's projected duty names: an
     // aggregate allObserved flag with empty/partial names never certifies
@@ -528,6 +661,28 @@ export function admitConfirmedWindowNativeEvidence(block, duties = null) {
     const windowMissingSlots = REQUIRED_CONFIRMED_WINDOW_DUTY_SLOTS.filter((slot) => !Array.isArray(window.dutyNames) || !window.dutyNames.includes(slot));
     if (adjudicationMissingSlots.length > 0 || windowMissingSlots.length > 0) {
       settlementReasons.push('required-duty-slot-unproven');
+    }
+    // (P1-4, 2026-11-19 codex review) the §16.4 no-collateral duty is
+    // MANDATORY: the persisted adjudication must carry the controller's own
+    // post-delivery survival verdict — the 'control-survival' additional
+    // name the §41.5.2 projection rule allows. A dead/inactive control after
+    // the delivery, an unarmed collector, or a mere invocation without an
+    // establishing read never carries it, and the settlement refuses by
+    // name. (The controller strips a claimed-but-unestablished name before
+    // this verdict — this is the second-line replay check.)
+    if (!Array.isArray(duties.names) || !duties.names.includes('control-survival')) {
+      settlementReasons.push('control-survival-unproven');
+    }
+    // (P2-2, 2026-11-19 codex re-review) the controller-encoded settlement
+    // clock refusal rides the projected adjudication's name list (the raw
+    // clock tag is dropped by the whitelist): a persisted name
+    // `clock-domain-mismatch` or `clock-bounds-violation` refuses the
+    // settlement identically on replay — never an upgrade to acceptance.
+    for (const clockRefusalName of ['clock-domain-mismatch', 'clock-bounds-violation']) {
+      if (Array.isArray(duties.names) && duties.names.includes(clockRefusalName)
+        && !settlementReasons.includes(clockRefusalName)) {
+        settlementReasons.push(clockRefusalName);
+      }
     }
     // The earliest genuine cleanup fence stays mandatory: an observed
     // resolution must be PROVABLY pre-fence; an absent resolution is
@@ -550,6 +705,20 @@ export function admitConfirmedWindowNativeEvidence(block, duties = null) {
     if (duties.collectionIntervalsValid !== true) settlementReasons.push('collection-intervals-invalid');
     settled = settlementReasons.length === 0 ? true : false;
   }
+  // (P2-2, round-21 codex review) the native responsiveness comparison's
+  // EXACT-RECEIPT premise: the Child terminal event POSITIVELY bound to the
+  // requested turn — an interrupted status on the child-terminal-event
+  // basis, with the terminal event's own completed turn id present and
+  // equal to the requested Child turn. A MISSING terminal, or one whose
+  // turn binding is absent, is transport timing ONLY — the same reply can
+  // accompany a natural completion, and the round-20 unrelated-completion
+  // exclusion extends to the absent case: the comparison stays UNSET until
+  // the terminal is positively bound.
+  const nativeReceiptPositivelyBound = receipt.childTerminalStatus === 'interrupted'
+    && receipt.childResolutionBasis === 'child-terminal-event'
+    && boundedThreadId(receipt.completedTurnId) !== null
+    && boundedThreadId(identity.childTurnId) !== null
+    && boundedThreadId(receipt.completedTurnId) === boundedThreadId(identity.childTurnId);
   return {
     evidenceVersion: NATIVE_CONTROL_EVIDENCE_VERSION,
     controllerVersion: block.controllerVersion ?? null,
@@ -577,7 +746,36 @@ export function admitConfirmedWindowNativeEvidence(block, duties = null) {
       basis: settled === true ? 'child-terminal-event-interrupted-plus-observation-plus-duties-pre-cutoff-pre-fence' : null,
       reasons: settlementReasons,
     },
-    nativeLatencyMs: requestSentAtMs !== null && repliedAtMs !== null ? repliedAtMs - requestSentAtMs : null,
-    nativeResponseWithinBound: recomputedResponseWithinBound,
+    // (P2-4, round-18 re-review) the NATIVE responsiveness comparison is
+    // emitted ONLY after causal admission: a REFUSED delivery (a rejected
+    // RPC) with valid send/reply timestamps has no native responsiveness
+    // credit — a fast rejection never reports as native responsiveness. The
+    // raw transport bounds stay in the diagnosis blocks above for
+    // interpretation.
+    // (P2-3 + P2-4, round-20 codex re-review) the comparison additionally
+    // requires its CAUSAL premises: the confirmations must PRECEDE the send
+    // (a window established after the send never earns the comparison) and
+    // the receipt must be the CAUSAL interrupted one (a reply at unrelated
+    // completion — the app-server answering turn/interrupt when the Child
+    // finished naturally — keeps its raw reply timing above but earns no
+    // native responsiveness).
+    // (P2-2, round-21 codex review) the causal receipt must be the EXACT
+    // INTERRUPTED one, POSITIVELY bound to the requested turn: an
+    // interrupted status on the child-terminal-event basis, with the
+    // terminal event's own completed turn id present and equal to the
+    // requested Child turn. A MISSING terminal, or one whose turn binding
+    // is absent, is transport timing ONLY — the same reply can accompany a
+    // natural completion, and the round-20 unrelated-completion exclusion
+    // extends to the absent case: the comparison stays UNSET until the
+    // terminal is positively bound.
+    // (P2-1, round-22 codex review) the receipt must also be UNAMBIGUOUS:
+    // a retained `sameTargetModelToolInterrupt` fact means an overlapping
+    // model-tool call on the same Child could have caused the terminal
+    // event — the exact turn ID identifies WHICH TURN ended, never WHICH
+    // interrupt ended it, so the recorded receipt cannot be attributed to
+    // the controller's RPC and the comparison stays UNESTABLISHED. The
+    // raw RPC timing stays in the transport block above for diagnosis.
+    nativeLatencyMs: deliveryAdmitted === true && nativeComparisonOrderingProven === true && !receiptIdentifiesUnrelatedCompletion && nativeReceiptPositivelyBound && receipt.sameTargetModelToolInterrupt !== true && requestSentAtMs !== null && repliedAtMs !== null ? repliedAtMs - requestSentAtMs : null,
+    nativeResponseWithinBound: deliveryAdmitted === true && nativeComparisonOrderingProven === true && !receiptIdentifiesUnrelatedCompletion && nativeReceiptPositivelyBound && receipt.sameTargetModelToolInterrupt !== true ? recomputedResponseWithinBound : null,
   };
 }
