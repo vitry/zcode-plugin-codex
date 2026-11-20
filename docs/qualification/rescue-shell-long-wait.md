@@ -38909,3 +38909,287 @@ passed, so the attempt-1 flake needed no further targeted rerun beyond this
 clean run (the count grew from round-22's 2008 by exactly the eight new
 rows). No hosted/provider contact, no model turn, no Companion invocation
 occurred.
+
+## 43. 2026-11-21 confirmed-window task 4: the ONE managed-child confirmed-window acceptance session (C) executed and adjudicated — the C slot SPENT (1/1) on the honest `staging-not-ready` outcome (no parent-bound spawn activity; zero interrupt attempts; fail-closed disposal clean)
+
+This section executes Task 4 of
+[the confirmed-window plan](../superpowers/plans/2026-11-17-rescue-shell-wait-confirmed-window.md)
+against the worktree at HEAD `4e19912a4c035f5c6f3c35c0a6041bd66c643b14` (branch
+`docs/rescue-shell-wait-confirmed-window`; clean before the launch; the readiness-commit bytes
+the §42 rounds amended are the launched bytes). **This task spent the counted C slot — the ONE
+primary hosted case of this plan — and records whatever it produced as the honest C outcome.
+No retry is authorized or performed.** The case ran EXACTLY ONCE through the ACTUAL standard
+entry (the §41.4 CLI form with `--interrupt-route-selector confirmed-window`), serialized (no
+other probe invocation ran while C was live), was NOT imposed any harness timeout shorter than
+the frozen 1200000-ms bound, and was monitored passively without intervention. The outcome is
+**`staging-not-ready`**: the identity join (parent `SubAgentActivity.agentThreadId` x Child
+`turn/started.threadId`) never held because **no parent-bound spawn activity was observed — no
+Child was spawned through the real parent** — so the positive window barrier never held, the
+ONE native interrupt was never sent (fail-closed, per the frozen §41.6 rule), and the case
+disposed cleanly. Per the plan's §1 rule this is ONE staging outcome, not fourteen independent
+product failures; per Task 4 it is adjudicated separately below and never relabeled.
+
+### 43.1 Pre-launch verification (offline; zero counted contact before the case)
+
+- **Worktree/HEAD/Node/OS:** `git rev-parse HEAD` = `4e19912a4c035f5c6f3c35c0a6041bd66c643b14`,
+  branch `docs/rescue-shell-wait-confirmed-window`, `git status --porcelain` EMPTY before the
+  launch (and the only file this section's commit changes is this report); the plan base
+  `547bad17fab6fe5c47f690fe76a3f76324c6c4e1` is an ancestor (verified across the §42 rounds).
+  Node **v24.14.0**; macOS **26.5.2** (Darwin kernel 25.5.0), **arm64**.
+- **Pinned binary RE-VERIFIED pre-launch (2026-11-21):**
+  `/Users/zhangzikai/Workspace/Codes/tmp/rescue-settlement-trial/codex-0.163.0/bin/codex`,
+  SHA-256 `8813367285524ac798dd96d1b071aea30d58708c7226fd236cd275cf1cfdee31` (re-measured by
+  `shasum -a 256`; matches §41.1/§34.2/§36.1/§39.1), reports `codex-cli 0.163.0`. The read-only
+  source pin `/Users/zhangzikai/Workspace/Codes/github/codex` HEAD ==
+  `dffa0deb69268ed4ac31578794c9ea897b336ae3`, clean; never written.
+- **The wired live composition verified on HEAD before launching:** the route executor composes
+  the live instrumentation from its OWN provider chain when the confirmed-window selectors are
+  present and no collectors are injected (`runShellWaitCase`'s route dispatch,
+  driver.mjs:769–823 → `createConfirmedWindowLiveComposition`, driver.mjs:10854; the round-18
+  P1-1 wiring with the round-19/21/22 amendments — the armed fixture handle, the producer's own
+  gate/sentinel and marker paths, the controller-computed absolute deadline, the observed
+  Root/Child identity premises, the pre-teardown evidence-checkpoint writer). The entry needs
+  NO injected observers; the offline preflight refusal §41.4 recorded no longer applies to the
+  wired bytes. Frozen constants re-read from the launched bytes: controller/evidence versions
+  **1/1** (confirmed-window.mjs:39, native-control-evidence.mjs:25/:31), staging bound
+  **180000 ms**, case deadline **1200000 ms**, native-response bound **60000 ms**,
+  `OBSERVER_DIGEST_TAG = 'zcode-shell-wait-observer-v11'` (driver.mjs:111 — the round-22 P2-5
+  construction binding the launcher renderer).
+- **Credentials verified through the existing isolated fixture setup (2026-11-21, PASS, no
+  value printed or retained):** a real `createShellWaitFixture` run with the exact route
+  composition (candidate variant, config-default, survival control, capture + spawn witness,
+  cap 3600000, poll 3600000, the pinned binary, sourceSha `4e19912a…`) completed and reported
+  **`credentialsCopied: true`**, `sessionEstablished: true`, `launcherDescriptorPublished: true`,
+  `roleStatus: "ready"`, `capVerified: true`; its `dispose()` completed and the disposable 0700
+  home was removed. First attempt passed (no `ECONNRESET` recurrence this round).
+- **Private owned directories (2026-11-21, pre-launch):**
+  `/Users/zhangzikai/Workspace/Codes/tmp/rescue-confirmed-window/` mode 0700; its child
+  `c-output/` mode 0700 and EMPTY (verified — this directory had never hosted a case); no
+  `${output}.hold-gate` sibling existed (the route creates and removes it). The scratch
+  accounting/adjudication scripts live in a separate 0700 directory OUTSIDE the repository and
+  were never staged.
+- **Focused gate on HEAD (one quick run, offline):** `node --test
+  --test-name-pattern='confirmed-window' tests/shell-wait-probe.test.mjs
+  tests/shell-wait-native-interruption.test.mjs tests/shell-wait-local-process.test.mjs` →
+  **222/222 pass, 0 fail** (the round-23 recorded count, reproduced exactly). The offline
+  standard-entry parse (without `ZCODE_SHELL_WAIT_E2E`) reproduced §41.4's refused shape with
+  sourceSha `4e19912a…` — the launch used the exact §41.4 CLI form with only `--source-sha`
+  moved to the then-HEAD `4e19912a…` (§41.4's rule: the live `--source-sha` is the THEN-HEAD
+  40-hex commit; the plugin bytes are identical across the docs-only commits between).
+
+### 43.2 The §41.1 digest refresh (dated 2026-11-21; the frozen anchors are stale by design)
+
+The readiness rounds (§42–§42.22) amended the controller/consumer/driver bytes; the fresh
+values observed at HEAD `4e19912a…` (each `git cat-file blob HEAD:<path>` == on-disk bytes) —
+these supersede §41.1's recorded digests for interpretation of THIS case only; §41.1's anchors
+remain the frozen Task-3 record:
+
+| Module | §41.1 (frozen at `f4b06d9e…`) | Refreshed at `4e19912a…` (2026-11-21) |
+| --- | --- | --- |
+| `tools/shell-wait-probe/driver.mjs` | `ee91c00295bda1136cb21cfd78258d1d27e266dbcf3b015e94782df154f3d8a3` | `b3d32e3becad4538a76577a9060f5e2bc864447f56d215b00bee30edfdf2b5ef` |
+| `tools/shell-wait-probe/confirmed-window.mjs` | `b78643f248fe377fa817c86e60929cd5ea29a751783c9e384d3f392462fbbcb9` | `56343e8c3fdd976ff44008b5f551e324f8e724e3ee84f68be7b1a46db10e3cda` |
+| `tools/shell-wait-probe/native-control-evidence.mjs` | `ed95137d34da586b6f7bfa1d2b7939cd374308f9876f474c45acd5cdaa7dc116` | `6c1eecb958b2e67b16c50a44df64de1933e4ead6de14c264fc6d761288334349` |
+| `tools/shell-wait-probe/fixture.mjs` | `995693236158cb368bd95e6466a7d2ccf779029274f3a6bb28cae862001ba36f` | **unchanged** (byte-identical) |
+
+- The instruction artifacts did NOT change across the rounds: the config-default candidate
+  paragraph's normalized delivery hashes observed from the 2026-11-21 credential-check fixture
+  are `2ea76cf02b0179f514835cbbed9780836d8687ff8d845546681863ea9bed927a` (named Role) and
+  `5800e3ab814ff06be932c312bb2065afb7d99034a148fd884d2b29675f284ff0` (generic message) —
+  byte-identical to §41.1/§37.3's recorded values — and the CASE's own record carries the same
+  two normalized hashes in its delivered-instructions block
+  (rescue-interrupt.record.json:33–39). The fixture-owned survival-control script digest is
+  unchanged: `c510d81f296881a9e4e3c174429758c3e2f26c08cf7a63b26ac75d2e5ca30172` (60 lines @
+  2000 ms). The per-fixture runtime values (the cap-key config hashes and the generated preload
+  digests) are runtime-computed per disposable home, never constants: the 2026-11-21
+  credential-check run observed cap-key before/after
+  `1f7a862fe35d6646075c1e91b6bbea86b79599a7f1132a77fdc22b5362de7317` /
+  `dc1965a8001d4c8f03d21396e3ff6b1eae3c50a4e5ce6ca7c5edefb867ca166d` (§41.1's
+  `18227580…`/`252eaf7e…` were that round's values; the frozen fact is the prepended-top-level-
+  key derivation, not the disposable bytes).
+- The CASE's own executing-observer provenance (the v11 construction, module-init snapshot +
+  record-time re-read): observer digest
+  `956b6ed2d4e9d9ce6aa43b3d3fa61bd8c23caf28cd3b8f7b8192c0ca342b89d6`, `digestInput` naming
+  evidence/shape-diagnostic/release-qualification/closure-observation/closure-preload/
+  spawn-witness-preload/confirmed-window/native-control-evidence/**the launcher renderer**
+  (scripts/lib/rescue-launcher-command.mjs — the round-22 P2-5 addition)/local-process-
+  observation/driver + the three executing helper digests
+  (rescue-interrupt.record.json:10–16); **`sourcesChangedDuringRun: false`** — the executing
+  bytes were stable across the whole case. `model: null` (:14) and `reachableToolFamily: null`
+  (:15): the effective model identity is NOT established, per §41.2.
+
+### 43.3 The C ledger entry (SPENT 1/1) — the accounting and the frozen-bound adherence
+
+- **Durable accounting anchor (written BEFORE the process spawn):**
+  `/Users/zhangzikai/Workspace/Codes/tmp/rescue-cw-task4-scratch/c-case-accounting.txt` records
+  `accountingWrittenAtUtc: 2026-11-20T16:36:10Z` (epoch `1795192570713`), the worktree HEAD
+  `4e19912a…`, the branch, the spent-ledger declaration (C 1/1, counting from persistent host
+  startup including initialization/auth failure), the case bounds, the re-verified binary
+  digest, and the EXACT command line launched. The process spawned seconds after the anchor
+  was durably written; the case's own controller clock started ≈16:36:18Z (derived from
+  `executedAt` − the controller-clock fence stamps below).
+- **Execution:** ONE standard-entry invocation (the §41.4 form, sourceSha `4e19912a…`),
+  backgrounded with a durable stdout/stderr capture; `CASE_EXIT=0`; stderr EMPTY; the printed
+  record byte-identical to the retained record file. Total wall-clock **≈112 s**
+  (accounting anchor 16:36:10Z → process exit 16:38:01Z; `executedAt:
+  "2026-11-20T16:38:01.817Z"`, rescue-interrupt.record.json:4).
+- **Frozen-bound adherence (every bound respected; nothing extended live):**
+
+| Frozen bound | Value | Observed |
+| --- | --- | --- |
+| Session time | ≤ 1200000 ms | ≈112 s wall-clock from the accounting anchor to exit — respected with two orders of magnitude of margin |
+| Staging readiness | ≤ 180000 ms from ACTUAL host launch | host `startedAtMs: 70352`, `stagingDeadlineAtMs: 250352` (:144–149, :227) — the case closed staging at the witnessed cleanup fence `cleanupFenceAtMs: 103876` (:247, checkpoint), i.e. ≈33.5 s into staging; the deadline was never reached and never extended |
+| Root inputs | ≤ 3 | **2/3**: `initial-staging` sent at 72537 (`turnId 01a1f9d1-fa77-…`), the ONE preregistered `directed-continuation` at 93072 (`turnId 01a1f9d2-4aac-…`) (:150–161); the post-interrupt request slot unused (no interrupt) |
+| Directed continuations | ≤ 1 | exactly 1 used (`staging.continuationUsed: true`, :181) |
+| Native deliveries | ≤ 1 admitted exact-target interrupt | **0 attempts** (`nativeRequest.attemptCount: 0`, `sentAtMs: null`, :199–209) — the fail-closed rule held: no window, no send |
+| Total hosted cases (this plan) | ≤ 2 | C = 1/1 SPENT; C-follow-up 0/1 (Task 5's eligibility decision governs any use; this task neither qualifies nor spends it) |
+
+- **What the case observed on the staging surface:** the ONE host launch (`launchCount: 1`,
+  pid 88422, argvDigest `2c2aadd3…`, :144–149) with the exact frozen host argv (argvDigest
+  recorded); the Root's initial staging turn and the directed continuation both ran
+  (send stamps above); `staging.descriptorPublicationObserved: null`,
+  `liveReceiptObserved: null`, `spawnActivityObserved: null` (:174–182) — **no parent-bound
+  spawn activity was ever observed** (`identity.childThreadId: null`, `childTurnId: null`,
+  `joinBasis: null`, :162–173). The persisted refusal
+  (:237–241): "the identity join never held (parent SubAgentActivity.agentThreadId x Child
+  turn/started.threadId; thread/started is never required): no parent-bound spawn activity was
+  observed; no Child was spawned through the real parent". The checkpoint persisted BEFORE
+  teardown agrees with the final record on every measured fact (finalState, refusal text, the
+  two root-input stamps, the null identity/window/nativeRequest blocks, the duty projection
+  with the witnessed fence 103876 — confirmed-window.checkpoint.json:1; the round-20 P2-4 /
+  round-22 P2-3 / round-23 P2-6 checkpoint semantics held).
+
+### 43.4 The separate adjudications (each frozen Task-4 conjunct, on its own)
+
+1. **Staging reached?** **NO — `staging-not-ready`**, with the named refusal above. The
+   precondition for every downstream conjunct (the positive window barrier) never held. This
+   is a STAGING outcome per the plan's §1 rule, NOT an interruption failure and NOT a delivery
+   refusal: the controller never had an admissible target. The staging machinery itself worked
+   exactly as contracted: the host launched once, the initial staging turn was sent, the ONE
+   directed continuation was spent within its rule (the drained evidence showed NO Child, the
+   §42.20 P1-3 guard), staging closed honestly inside its bound, and the cleanup ran fenced.
+2. **Causal native responsiveness?** **NOT PROVEN — no delivery existed.**
+   `admitConfirmedWindowNativeEvidence` reports delivery `refused` and emits NO
+   `nativeLatencyMs`/`nativeResponseWithinBound` (both null, :291–292) — the round-18 P2-4
+   rule (no responsiveness credit for refused deliveries) verbatim. The 60000-ms comparison
+   never applied.
+3. **Owned/local/remote/durable/guard/control duties?** **NOT ESTABLISHED — the duty baseline
+   never existed.** The barrier requires all seven baseline slots (`invocation/broker/
+   transport/runner/job/guard/integrity`) BEFORE any delivery (round-1 P2-2, §42 —
+   `REQUIRED_CONFIRMED_WINDOW_DUTY_SLOTS` as the single source); with no spawn there
+   were no local slots to latch, no unrelated control (STEP 2 launches it after the Child
+   launch — no Child, no control; `window.controlActiveAtMs: null`), no durable job, nothing
+   to settle. The credited adjudication honestly carries `allObserved: false, names: [],
+   durableSettled: false, collectionIntervalsValid: false` (:243–250) beside the witnessed
+   pre-teardown `cleanupFenceAtMs: 103876` (the controller's own cleanup boundary — the
+   round-23 P2-6 semantics; the fence is a SETTLEMENT gate, and settlement was refused anyway).
+4. **Composition with the inherited waiting cohort (§37.3's named-route limits)?** The
+   confirmed-window route is a SEPARATE measured surface (ONE owned `codex app-server`
+   persistent host; no `exec`), so NOTHING here composes upward into an exec-wide or
+   generic-route claim — and there is no positive native result to compose in any case. What
+   the cohort comparison DOES show: C is the second no-spawn observation in this campaign (T,
+   2026-11-16, exec surface, §36/§37: launcher never invoked; C, 2026-11-20, app-server
+   surface: no parent-bound spawn activity), with the SAME delivered-instruction normalized
+   hashes (`2ea76cf0…`/`5800e3ab…`), the same requested model spelling (`gpt-6.1-sol`),
+   and the same binary bytes (`8813367…dee31`); the calendar date differs (T launched
+   2026-11-16T16:01:04Z, §37.5; C 2026-11-20T16:36Z — a four-day gap; §37.3's own ancestor
+   gaps — 4 d, 1 d, 1 d, 23 d — share no repeated pattern, so the delta is §37.3's
+   "the calendar date differs" one, not a shared gap pattern). Consistent with §37.2–§37.4's
+   discipline:
+   **model variance is NOT inferred, unavailable delivery is NOT inferred, and the effective
+   model identity is NOT established** (the record's `model: null`); the setup's
+   `launcherDescriptorPublished: true` is descriptor PUBLICATION, not THIS session's receipt.
+   The specific cause of the absent spawn remains **UNDETERMINED** — unchanged from T — and
+   this record adds a surface datapoint, not a cause.
+5. **Disposal/settlement?** Disposal completed and is honestly recorded:
+   `connectionClosed: true`, `hostDisposed: true`, `teardownLabel:
+   "planned-observation-teardown"`, `settlementManufactured: false` (:231–236);
+   `cleanupComplete: true`, `cleanupErrorCount: 0`, `fixtureDisposed: true`,
+   `disposalError: null` (:380–387). The hold-gate sibling directory was removed, the host
+   process (pid 88422) was observed gone, and no fixture-path process survived (verified
+   post-exit; the §42.21 P2-5 late-worker recheck path had nothing to recheck — no worker
+   marker ever existed because no Companion was ever invoked). **No settlement of any kind was
+   manufactured**: the record refuses every settlement shape (see 43.5).
+
+### 43.5 The retained-record replay (the real consumer; the recomputation-equality check)
+
+The RETAINED record was reloaded OFFLINE through the real consumer
+`admitConfirmedWindowNativeEvidence(block, duties)` on the persisted inputs (the projected
+block + the projected duty adjudication from the record). The fresh recomputation reproduces
+the record's own persisted verdict EXACTLY: delivery `status: "refused"` with reasons
+`["identity-join-unproven", "unsent-request", "pending-window-unconfirmed-at-initiation",
+"window-unconfirmed-at-initiation"]` (identical to the persisted list, :255–264), settlement
+`settled: false` with the same four reasons (:281–290), `nativeLatencyMs: null`,
+`nativeResponseWithinBound: null`. The staging-refusal consistency guard fired as designed
+(`finalState === 'staging-not-ready'` with `attemptCount: 0` and no request bounds → the named
+`unsent-request`). The checkpoint-only inputs agree with the record (43.3). **The retained
+record is self-consistent under the versioned consumer; no drift between the live verdict and
+the persisted bytes.**
+
+### 43.6 The acceptance verdict
+
+**Precise not-proven — the staging conjunct (the positive window barrier) was never
+established; C is NOT `acceptance-proven`, and no downstream stage (delivery, causal native
+responsiveness, any duty, settlement) was measured.** Observer limits: NONE fired
+incorrectly — every armed collector and gate behaved as its offline contract predicts
+(fail-closed pre-admission refusal, honest nulls for never-observed facts, no
+`staging-not-ready` subterfuge). **No actual-path product defect is demonstrated BY this
+case**: the route's own machinery (host launch, protocol session, turn starts, event
+collection, refusal, disposal) performed exactly its contracted path end-to-end; what is
+absent is the MODEL-side managed Rescue launcher invocation inside the parent's two turns (a
+runtime tool-use outcome, the same §37.4 class-9 discipline — a single run's missing call is
+instrument/host-behavior uncertainty, never product-defect evidence). The honest verdict:
+`staging-not-ready`, cause of the absent spawn UNDETERMINED, acceptance requirements unchanged.
+
+### 43.7 S1–S7/Q1–Q6 on the C case (contracts versus actual observations; inherited coverage unchanged)
+
+| Item | Contract (what C would have measured) | Actual C observation |
+| --- | --- | --- |
+| S1 (entry points, one-shot preparation, atomic binding) | preserved through the real production preparation/spawn/binding inside the persistent host | fixture setup verified the chain ready (`roleStatus: "ready"`, descriptor published); the route never reached a spawn to observe binding — **not-proven on C, inherited fixture/installed coverage unchanged** |
+| S2 (one Companion, original handle, empty-input observation) | the pending-window barrier + original-handle premises | never reached (no Child) — not-proven on C |
+| S3 (byte-exact public results, semantics) | unchanged-instrument premises; empty terminal observations | not reached on C; no public result existed (no Child) |
+| S4 (placement matrix) | out of C's measured surface | not measured on C (rescue-interrupt app-server route only); inherited coverage unchanged |
+| S5 (explicit interruption, reconciliation, survival, no collateral) | the ONE `turn/interrupt` + `durableSettled` + `control-survival` | **the core not-proven of C**: zero interrupt attempts; no control ever launched; nothing survived or was cancelled |
+| S6 (named/generic alignment) | the delivered instruction hashes | the delivered instructions were verified byte-level ready (normalized hashes match the cohort); the named-route spawn decision never occurred — runtime outcome unobserved on C |
+| S7 (production unchanged) | zero production diff | unchanged: the case wrote ONLY the two private artifacts outside the repo; production bytes untouched (this commit touches only this report) |
+| Q1 (which host path launches the Child) | the persistent app-server host as the parent | the host launched and hosted the Root's turns; no Child spawn occurred — the launch path beyond Root stays as previously recorded (§32/§33 installed-observed on the exec/TUI-era chain) |
+| Q2 (long observation via named Role + generic) | the 3600000 poll through the managed Child | not reached on C; instruction delivery readiness re-verified (hashes above) |
+| Q3 (reduced re-entry) | the staged route removes Root re-entry by design (≤3 inputs) | 2 Root inputs observed with zero re-entry loops — but the substantive Q3 measurement (a real long observation) was not reached |
+| Q4 (native interruption + settlement, no collateral) | the ONE exact-target interrupt + all-duty settlement | **not-proven on C — the acceptance blocker**: nothing delivered, nothing settled |
+| Q5 (Root-owned commands) | out of C's surface | unchanged from the inherited record |
+| Q6 (smallest deployment change) | gated on qualification | unchanged: `do-not-adopt-yet`; no integration proposed from C |
+
+### 43.8 The honest production stance
+
+**`do-not-adopt-yet` — unchanged.** Research completion is PRECISELY BLOCKED at the staging
+stage on the confirmed-window route: no ready window was reached, so the native-interruption
+qualification this plan exists to measure remains unmeasured. This is NOT a claim of
+impossibility and NOT an instrument-defect claim — the §41-frozen instrument executed its full
+contract fail-closed, and the plan's own acceptance requirements never shrink. C-follow-up
+(0/1) is NOT spent here: whether any Task-5-eligible grounded change exists (a demonstrated
+instrument correction with RED→GREEN, or a TESTED supported staging/control choreography with
+a predicted per-conjunct distinction) is Task 5's reviewed eligibility decision, made from
+this section's retained record — not from this task. The T record and its undetermined cause
+remain intact; C's record adds the second undetermined no-spawn datapoint on a distinct
+surface. **Two undetermined no-spawn outcomes on two surfaces do not compose into a cause,
+a variance claim, or a delivery-failure claim** — each stays named-unestablished.
+
+### 43.9 Zero extra persistence, zero production contact
+
+The case persisted EXACTLY what the route itself persists: the two private artifacts under the
+0700 case root (`rescue-interrupt.record.json`, `confirmed-window.checkpoint.json`) — nothing
+was manually added, edited, or removed there (the hold-gate sibling was created and removed by
+the route's own producer/cleanup). No production file, cache, active session or the user's
+real `~/.codex` was touched; the only credential copy lived in the fixture's disposable home
+and was removed by `dispose()`. No task text, rollout body, private preparation/capability
+text, raw hook snapshot or credential value entered this report or any record.
+
+### 43.10 Gates for this section's commit
+
+`node scripts/check-line-endings.mjs` PASSES; `git diff --check` PASSES; `git status
+--porcelain` shows ONLY this report modified; the prohibited-path diff vs `4e19912a` (the
+launched HEAD: `scripts/ hooks/ skills/ agents/ .codex-plugin/ prompts/ schemas/ marketplace/
+package.json npm-shrinkwrap.json docs/superpowers/specs/`) is EMPTY — this section's commit
+changes ONLY this report (the case artifacts live OUTSIDE the repository by design). No test
+or executable byte changed in this task (no defect was demonstrated BY the case, so the defect
+protocol did not trigger and no fix belongs to this record — any eligibility decision belongs
+to Task 5). Historical sections remain byte-untouched (add-only).
