@@ -39193,3 +39193,280 @@ changes ONLY this report (the case artifacts live OUTSIDE the repository by desi
 or executable byte changed in this task (no defect was demonstrated BY the case, so the defect
 protocol did not trigger and no fix belongs to this record — any eligibility decision belongs
 to Task 5). Historical sections remain byte-untouched (add-only).
+
+## 44. 2026-11-21 confirmed-window task 5: the C-follow-up eligibility adjudication — UNSPENT (0/1), no grounded change or usable operator/control route exists — the final-byte battery on the converged record bytes, the scoped campaign close-out and the exact-source statement (offline; zero hosted/provider contacts, zero model turns in this task)
+
+This section executes Task 5 of
+[the confirmed-window plan](../superpowers/plans/2026-11-17-rescue-shell-wait-confirmed-window.md)
+against the worktree at HEAD `85d000941c95b988dc1d2f9e2166694619bce1fb` (branch
+`docs/rescue-shell-wait-confirmed-window`; `git status --porcelain` EMPTY while every battery
+command below ran). The C slot is SPENT (1/1, §43 — the honest `staging-not-ready` outcome), so
+Task 5's first duty is the reviewed C-follow-up eligibility decision made from the retained §43
+record; its second duty is the applicable final-byte battery; its third is the ONE concise
+effective result. This task launched NO hosted session and made NO provider contact: every
+execution below is a local test process or an offline git/node check, and no two probe-bearing
+commands overlapped at any time (the shell-research entry serializes its nested research suites
+by construction). Task 5's independent final reviews (the Spec/authority and the
+implementation/evidence/privacy reviews on the actual final bytes) remain **OPEN** at this
+commit — this section records the eligibility decision, the battery and the effective result,
+and does NOT claim those reviews returned; their record belongs to the round that obtains them
+(the sibling report's "independent review is pending" convention).
+
+### 44.1 The eligibility bar and the adjudication inputs (the failed stage C actually recorded)
+
+The plan's Task-5 bar admits a C-follow-up ONLY through (i) a demonstrated instrument
+correction with offline RED→GREEN, or (ii) a TESTED supported staging/control choreography with
+a predicted per-conjunct distinction — possibly the Task-1 preregistered distinct alternate
+(route (b), §39.4) — with explicit mechanism/authority/evidence differences and independent
+review. Named insufficient: an unchanged retry, speculative grammar expansion, a model/version
+change, and merely renaming no-call as variance; no closed slot revives automatically; a
+human-assisted route is not presumed executable unattended. No exact root-cause certainty is
+required — but SOME grounded change with a predicted distinction is.
+
+C's actual failed stage (§43, every fact below cited from it): **`staging-not-ready`** — no
+parent-bound spawn activity was EVER observed on the app-server surface (`identity.childThreadId:
+null`, `joinBasis: null`), so the positive window barrier never held and the ONE native
+interrupt was never sent (fail-closed, 0 attempts). Upstream facts: the host launched once and
+ran both authorized Root turns (2/3 inputs — the initial staging turn AND the ONE preregistered
+directed continuation, `continuationUsed: true`; the drained continuation evidence showed NO
+Child); staging closed honestly inside its 180000-ms bound (≈33.5 s in); disposal completed
+clean and fenced. Instrument facts: the retained-record replay through the real versioned
+consumer reproduces the persisted verdict EXACTLY (§43.5 — the same four refusal reasons, null
+latency fields, the staging-refusal guard firing as designed); every armed collector and gate
+behaved per its offline contract with zero observer misfires (§43.6); the executing bytes were
+stable across the whole case (`sourcesChangedDuringRun: false`, §43.2); the §43.2 record-level
+digest refresh values reproduce byte-exactly at the present HEAD (§44.5 below). The cause of
+the absent spawn remains UNDETERMINED (§43.4.4), and the effective model identity is NOT
+established (`model: null`).
+
+### 44.2 The candidate grounds, evaluated one by one against the bar (the reasoning chain)
+
+1. **A demonstrated instrument correction with RED→GREEN — FAILS: no demonstrated defect exists
+   to correct.** The instrument measured C correctly by its own record: replay equality verified
+   through the real consumer (§43.5), zero observer misfires (§43.6), stable executing bytes
+   (§43.2). There is no RED state: no misfired gate, no runtime-versus-persisted drift, no
+   unfaithful projection. This is the class-(a) absence §37.4 recorded for T — now STRONGER,
+   because C's replay equality closes the live-versus-persisted-drift question the T record
+   left open. Any "fix" would change bytes with no demonstrated causal defect — the named
+   insufficient class.
+2. **A TESTED supported staging/control choreography with a predicted per-conjunct
+   distinction — FAILS: the failed conjunct is upstream of every registered control route, and
+   no candidate predicts a distinction.** The staged choreography itself executed its full
+   contract (§43.4.1); what is absent is the MODEL-side managed Rescue launcher invocation
+   inside the parent's two turns (§43.6) — a runtime tool-use outcome upstream of the identity
+   join, the window barrier, every duty baseline, the unrelated control (launched only AFTER a
+   Child exists), and both registered control routes. Route (a) validates target/active-turn and
+   correctly refuses with no Child; rerunning it against the same absent spawn predicts the
+   identical refusal — no per-conjunct distinction exists to predict. The preregistered
+   alternate route (b) (the TUI operator-assisted exact-Child stop, §39.4) presupposes EXACTLY
+   the missing fact: its admission is the controller's own positive-window evidence, its target
+   is a visible mid-turn v2 Child in the agents overview (its installed visibility and stop
+   behavior are themselves unverified counted-case items), and it changes the DELIVERY
+   mechanism, not the failed STAGING stage — with no Child there is nothing to select, nothing
+   to stop, and no window to admit on, so it cannot reach the unproven conjunct. It is
+   additionally a human-assisted route: not presumed executable unattended, and no operator
+   request would even exist (no admission). Staging-side choreography changes (a
+   launch-anchored hold, a pre-armed window) were already evaluated and refuted for exactly
+   this case shape (§37.4 candidate 7): with no Child, no choreography change can produce a
+   pending-window fact or move ANY downstream conjunct — the predicted per-conjunct result on
+   the delivery conjunct is identical (no attempt), and a hold with no child inside it would
+   manufacture the very window the anchor rule forbids (§35.5/§41.5). The ONE authorized
+   changed staging step — the directed continuation — was ALREADY SPENT inside C and produced
+   no spawn (§43.3); a further staging content change would be a second obedience-directed
+   change of unchanged purpose (the named insufficient class, §37.4 candidates 3–4).
+3. **An unchanged retry — FORBIDDEN by name** (plan Task-5 bar; §37.4 candidate 8). C's bytes
+   were stable during the case and replay-identical after it; a retry would vary only the
+   calendar date — the exact content-free delta §37.3 shows explains nothing.
+4. **A speculative grammar/selector widening — insufficient by name** (§37.4 candidate 10): no
+   deviating spawn invocation exists to catch (no Child traces under any identity;
+   `joinBasis: null`), so widened gates would test an imagined shape with no reproduced defect.
+5. **A model/version change — insufficient by name, and unfounded besides**: the effective
+   model identity is NOT established on C (`model: null`), so there is no observed model fact
+   to vary FROM, and the requested spelling (`gpt-6.1-sol`) is identical to the five-run
+   successful exec cohort (§37.3) — no model-attributed mechanism exists to correct.
+6. **Renaming the no-call as variance — insufficient by name and explicitly refused**: two
+   undetermined no-spawn outcomes on two distinct surfaces (T: exec, 2026-11-16; C: app-server,
+   2026-11-20) share identical normalized instruction hashes, requested-model spelling and
+   binary bytes, and §43.4.4's discipline stands — they do NOT compose into a cause, a variance
+   claim, or a delivery-failure claim.
+7. **Slot discipline — no revival of closed slots**: T SPENT (1/1) and T-fix closed UNSPENT,
+   not transferred (§37.5); the old I/F, N/C, V/V-fix, E/E-fix ledgers stay closed (§41.7); C
+   is SPENT (1/1, §43.3) and is not re-runnable. C-follow-up is the only open slot and
+   activates only through THIS reviewed decision.
+
+### 44.3 The conclusion: C-follow-up UNSPENT (0/1) — the named precise limitation
+
+**No candidate ground qualifies; no usable operator/control route exists; C-follow-up is left
+UNSPENT (0/1), closed unspent at this commit, not transferred, and no further hosted work is
+authorized under this plan.** The precise evaluated limitation, named: **the model did not
+spawn through the real parent on the app-server surface** — the managed Rescue launcher
+invocation inside the persistent host's Root turns was never observed, so the identity join,
+the pending window, native delivery, causal native responsiveness and every duty/settlement
+conjunct stayed unreached; this stage is upstream of every registered control route (route (a)
+correctly refuses with no Child; route (b) presupposes the Child), and the ONE authorized
+staging continuation was already spent against it without effect. The stage was not reached
+across two measured no-spawn cases on distinct surfaces (T: exec, §36–§37; C: app-server,
+§43), cause UNDETERMINED in each. **Impossibility is NOT claimed**: the composition family
+demonstrably produced the full flow five times on the exec surface (§37.3), the instrument is
+verified able to observe that flow end-to-end (§35; replay equality §43.5), and this campaign
+is precisely blocked at staging with acceptance requirements unchanged. Per the plan's stop
+rule, any future attempt requires a NEW explicit user authorization and a fresh bounded ledger
+registered before any launch.
+
+### 44.4 The final-byte battery: every command, every outcome (the two execution irregularities recorded honestly)
+
+The battery ran in the plan's exact order on the converged record bytes, strictly serialized.
+This task is documentation-only, so the documentation-only reuse rule would have permitted
+targeted rechecks — the COMPLETE battery was run anyway, including `npm test` (the full
+canonical suite) in full.
+
+- **Pre-battery honesty records (three execution irregularities; NONE is a test failure):**
+  (a) the FIRST `npm run test:shell-research` attempt (started 2026-11-21 ≈01:07 local) was
+  KILLED by an execution-environment inactivity cutoff before producing ANY verdict — its log
+  captured zero test outcomes, no process survived, and the worktree was untouched; the FULL
+  command was then rerun cleanly and is the battery run of record below (no failure existed to
+  attribute, and none is averaged away). (b) ONE `tests/test-selection.test.mjs` invocation was
+  MIS-PATHED through the parent repository checkout (`main`) instead of this worktree (it
+  passed 6/6 there and modified nothing; it is NOT a battery run); the battery run below is the
+  worktree-path execution. (c) THIS TASK'S `scripts/check-line-endings.mjs` INVOCATIONS WERE
+  MIS-PATHED through the parent checkout the same way: with no `--root` argument the script
+  resolves its repository root from `process.cwd()` (scripts/check-line-endings.mjs:29), so
+  every invocation made from the parent checkout listed the PARENT's 549 tracked files and the
+  count first recorded below (549) was the parent checkout's observed value, NOT this tree's —
+  the correctly-pathed worktree run prints "LF line endings verified in **555** tracked files"
+  and PASSES (exit 0; the PASS verdict itself is unaffected and stands); the count correction
+  is applied at item 9 below.
+1. `npm run test:shell-research` — **PASS**: tests **2016**, suites 180, pass 2016, **fail 0**,
+   cancelled 0, skipped 0, duration **2050614.8 ms** (≈34.2 min), exit 0. The inherited PR #76
+   `ECONNRESET` research-builder failure class did NOT recur (zero occurrences in the log); no
+   targeted rerun was needed.
+2. `node --test tests/test-selection.test.mjs` — **PASS**: tests **6**, pass 6, fail 0,
+   duration 37.9 ms.
+3. `node --expose-gc --test --test-name-pattern='abandoned in-flight lock operation'
+   tests/state.test.mjs` — **PASS**: tests **1**, pass 1, fail 0, duration 300.5 ms (the same
+   regression `npm test` reports as skipped without `--expose-gc`).
+4. `node --test tests/rescue-preparation.test.mjs tests/rescue-binding.test.mjs
+   tests/rescue-route-planner.test.mjs` — **PASS**: tests **417**, pass 417, fail 0,
+   duration 25500.5 ms.
+5. `node --test tests/rescue-lifecycle.test.mjs tests/rescue-child-reconciliation.test.mjs
+   tests/rescue-progress-relay.test.mjs` — **PASS**: tests **126**, pass 126, fail 0,
+   duration 39463.7 ms.
+6. `node --test tests/job-control.test.mjs tests/mcp-result.test.mjs` — **PASS**: tests **213**,
+   pass 213, fail 0, duration 51740.6 ms.
+7. `npm run lint` — **PASS**: `eslint .` exit 0, no findings.
+8. `npm run typecheck` — **PASS**: `tsc --noEmit` exit 0.
+9. `node scripts/check-line-endings.mjs` — **PASS**: "LF line endings verified in **555**
+   tracked files", exit 0 — THE WORKTREE RUN OF RECORD. Provenance correction: the count first
+   recorded from this task's invocations was **549**, the PARENT checkout's observed value from
+   the mis-pathed executions disclosed as irregularity (c) above (the script derives its root
+   from `process.cwd()` without `--root`); the worktree's true count is **555**, consistent
+   with this branch's own Task-2 battery gate (§40.7: 555 on this same tree) — the §38-era 552
+   was that earlier tree's count (§38.7), not this one's.
+10. `git diff --check` — **PASS**: exit 0, no output.
+11. `git diff 547bad17fab6fe5c47f690fe76a3f76324c6c4e1 --stat -- scripts/ hooks/ skills/
+    agents/ .codex-plugin/ prompts/ schemas/ marketplace/ docs/superpowers/specs/ package.json
+    npm-shrinkwrap.json` — **EMPTY** (exit 0, no output): zero prohibited-path bytes changed
+    since the plan base.
+12. `npm test` — **PASS, complete**: the routine suite: tests **3398**, pass **3394**,
+    **fail 0**, cancelled 0, **skipped 4**, duration **654234.4 ms** (≈10.9 min); then the
+    marketplace-snapshot-build integration entry: tests **2**, pass 2, fail 0,
+    duration 17627.8 ms; overall exit 0. The four skips are the standing opt-in gates, named:
+    two `codex-skills-unqualified` E2E rows (`ZCODE_CODEX_SKILLS_E2E=1` /
+    `ZCODE_CODEX_RESCUE_E2E=1` required), one `real-zcode-unqualified` row
+    (`ZCODE_REAL_E2E=1`), and the `--expose-gc`-gated abandoned-lock row — covered by command
+    3's explicit PASS above. Zero `ECONNRESET` occurrences.
+
+**Battery verdict: 12/12 applicable commands PASS, 0 failures, 0 unexplained flakes; the
+prohibited-path diff is EMPTY.** No full command failed, so the failed-full-command-with-
+attributed-rerun rule never triggered; the two pre-battery irregularities are recorded as
+environment events with their full rerun/attribution above.
+
+### 44.5 The record-level digest verification (the §43.2 refresh values still match HEAD)
+
+The record commits `f584ddba` → `85d00094` changed ONLY this report (a 12-line diff in this
+file), so the §43.2 refreshed helper digests should — and DO — reproduce exactly at the present
+HEAD and on disk (`git cat-file blob HEAD:<path>` == on-disk bytes; SHA-256):
+`tools/shell-wait-probe/driver.mjs`
+`b3d32e3becad4538a76577a9060f5e2bc864447f56d215b00bee30edfdf2b5ef`;
+`tools/shell-wait-probe/confirmed-window.mjs`
+`56343e8c3fdd976ff44008b5f551e324f8e724e3ee84f68be7b1a46db10e3cda`;
+`tools/shell-wait-probe/native-control-evidence.mjs`
+`6c1eecb958b2e67b16c50a44df64de1933e4ead6de14c264fc6d761288334349`;
+`tools/shell-wait-probe/fixture.mjs`
+`995693236158cb368bd95e6466a7d2ccf779029274f3a6bb28cae862001ba36f` (the §41.1 frozen value,
+byte-identical, unchanged). **The executing/native/generated helper bytes that C ran are the
+bytes at this close-out's HEAD — verified at the record level.**
+
+### 44.6 The ONE concise effective result for the campaign
+
+**Not acceptance-proven; research completion PRECISELY BLOCKED at the staging stage; production
+`do-not-adopt-yet`; impossibility NOT claimed.** The campaign's measured span: the inherited
+NAMED-route cohort (the 386–388 s long/repeat observations, the 7→1 re-entry reduction, the
+complete public stdout — exec surface); the T trial (exec surface, no launcher call, cause
+UNDETERMINED); the C case (app-server surface, no parent-bound spawn activity, cause
+UNDETERMINED).
+
+| Item | Contract | Current evidence (campaign-wide) |
+| --- | --- | --- |
+| S1 (entry points, one-shot preparation, atomic binding) | the production preparation/spawn/binding chain | INHERITED proven (contract suites + the installed exec/TUI-era chain, §33/§38.3); T and C reached no spawn to extend it; unchanged |
+| S2 (one Companion, original handle, empty-input observation) | the managed Child's original-handle observation | INHERITED cohort + the no-call paths preserved their named-null semantics (§36.5/§38.3); C never reached a Child |
+| S3 (byte-exact public results, semantics) | complete public stdout | INHERITED proven on the NAMED route (386–388 s complete stdout); generic stays not-proven/unavailable (§17.14.4/§22.4); T's capture layer NAMED-absent (§36.5); C produced no public result (no Child) |
+| S4 (placement matrix, background, enqueue-only Review/Adversarial, observation-only Status) | out of both trials' surfaces | INHERITED unchanged; neither trial ran a placement variant |
+| S5 (explicit interruption, reconciliation, survival, timeouts, 100-hour ceiling) | THE core | **THE CORE NOT-PROVEN**: the offline machinery is complete and negative-complete (§35.3/§36.7; the §40/§41 staged controller, 222 focused tests); the LIVE conjuncts are unproven — no pending window ever admitted, ZERO native deliveries across both trials, every duty/settlement fact UNKNOWN/unestablished; no production timeout/ceiling change (zero production bytes) |
+| S6 (named/generic alignment, no fallback) | delivered instruction identity | INHERITED named-route alignment; T and C carry instruction hashes byte-identical to the cohort (`2ea76cf0…`/`5800e3ab…`); generic-route structural unreachability carried unchanged (G UNSPENT) |
+| S7 (production unchanged) | zero production diff | VERIFIED: the prohibited-path diff is EMPTY at every gate of this branch; both trials wrote only private 0700 artifacts outside the repository; zero adoption |
+
+| Question | Current evidence |
+| --- | --- |
+| Q1 (which host path launches the Child) | the launch-path/configuration answers ride the installed exec/TUI-era chain (§33/§38.4); T and C add content-free negative runtime datapoints (no spawn observed), not route or configuration discoveries |
+| Q2 (long observation via named Role + generic) | proven for the NAMED route only (the 386–388 s cohort); generic not-proven/unavailable unchanged; C never reached a poll |
+| Q3 (reduced re-entry) | the 7→1 reduction inherited on the named route; the staged route's ≤3-input design was observed only as C's 2 inputs with no re-entry loop, without a long observation |
+| Q4 (native interruption + settlement, no collateral) | **the unproven center**: both interruption attempts (T: exec model-tool; C: app-server `turn/interrupt`) never delivered — no window, no send, every settlement duty UNKNOWN; the offline instrument side complete and negative-complete |
+| Q5 (Root-owned commands) | retained separate and untouched; not enabled, not newly qualified |
+| Q6 (smallest deployment change) | none proposed; qualification not reached, so no integration is identified or enabled |
+
+**The ledgers (final):** T SPENT 1/1 (the 2026-11-16T16:01:04Z exec launch, inconclusive
+no-call, cause UNDETERMINED); T-fix UNSPENT 0/1, closed unspent, not transferred (§37.5); C
+SPENT 1/1 (the 2026-11-20T16:36Z app-server case, `staging-not-ready`, 2/3 Root inputs, the
+1/1 directed continuation, 0 native attempts, disposal clean, replay equality verified, §43);
+C-follow-up **UNSPENT 0/1, closed unspent at this commit** (§44.3). Total hosted cases this
+plan: ONE of the maximum TWO. The T record and its undetermined cause stand intact; the two
+no-spawn observations remain separately named and do not compose.
+
+**Production stance: `do-not-adopt-yet`.** No proven managed-Child long-wait applicability on
+the confirmed-window route (the window was never admitted); no proven native responsiveness
+(no delivery ever existed under this plan); no all-duty settlement (nothing was ever delivered
+to settle). The specific unproven stage, named once more: **the model did not spawn through
+the real parent on the app-server surface across two measured cases on distinct surfaces**
+(T: exec; C: app-server), cause UNDETERMINED in each. No enablement, no shared-default change,
+no Root-command policy change; acceptance requirements never shrink.
+
+### 44.7 The exact-source close-out statement
+
+Every claim in this close-out is bound to its recorded evidence: the inherited cohort and its
+per-version limits to §7.7/§17/§21–§23/§37.3; T's execution and adjudication to §36–§38; the
+route/implementation/freeze chain to §39–§41; C's execution, adjudication, replay equality and
+honesty record to §43; this task's eligibility chain, battery, digest verification and ledgers
+to §44.1–§44.6. Nothing is inferred from uncertainty: model variance, delivery failure,
+effective-model identity and the absent-spawn cause are each explicitly UNDETERMINED or
+unestablished in the records that observed them, and this close-out carries them forward as
+exactly that — no averaging, no composition of the two no-spawn observations, no relabeled
+outcome. The THREE execution irregularities (the environment-killed first shell-research
+attempt; the mis-pathed selection invocation; the mis-pathed line-endings gate invocations
+whose first-recorded count was the parent checkout's) are recorded as facts with their
+rerun/attribution, not silently substituted. Every count above is the actual observed value
+from the run that produced it: the first-recorded line-endings count (549) was literally the
+parent checkout's observed value under the disclosed mis-path, and the count of record for
+this tree is the correctly-pathed worktree run's 555 (exit 0) — corrected at §44.4 item 9, so
+no figure above is averaged away or silently substituted.
+
+### 44.8 Gates for this section's commit
+
+`node scripts/check-line-endings.mjs` PASSES (555 tracked files, the correctly-pathed worktree
+run); `git diff --check` PASSES;
+`git status --porcelain` shows ONLY this report modified; the prohibited-path diff vs
+`85d00094` (`scripts/ hooks/ skills/ agents/ .codex-plugin/ prompts/ schemas/ marketplace/
+package.json npm-shrinkwrap.json docs/superpowers/specs/`) is EMPTY — this section's commit
+changes ONLY this report. No test or executable byte changed in this task (the defect protocol
+never triggered — no RED state was demonstrated; §44.2). Historical sections remain
+byte-untouched (add-only).
