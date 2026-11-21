@@ -34460,6 +34460,37 @@ describe('cleanup-boundary attribution for exit-code settlements (round-9 review
       negative({ finalState: 'staging-not-ready' }, {}, 'unsent-request', ['unsent-request']);
     });
 
+    test('confirmed-window native evidence: a Child resolution stamp AT the measurement cutoff refuses settlement credit (=== is post-cutoff for credit, review round 1)', async () => {
+      // (user review round 1, Standards P2) settlement credit requires the
+      // resolution stamp STRICTLY BEFORE the measurement cutoff — unified
+      // with the runtime controller, whose credited duty snapshot and
+      // control-survival leg already require a strictly-pre-cutoff read and
+      // whose cutoff-crossing drain routes an at-cutoff arrival to the
+      // late-resolution diagnostic, never the credited leg. Replay's former
+      // `>` refusal left an exactly-at-cutoff stamp (`===`) credited.
+      const evidenceModule = await import('../tools/shell-wait-probe/native-control-evidence.mjs');
+      const atCutoffChild = persistedBlock(evidenceModule, greenRuntimeSession({
+        receipt: { transportReplyAtMs: 212, childResolutionAtMs: 410_000, childTerminalStatus: 'interrupted', childResolutionBasis: 'child-terminal-event', observationResolvedAtMs: 310, unrelatedCompletionReply: false, parentCancellationAtMs: null, completedTurnId: CHILD_TURN },
+      }));
+      const verdict = evidenceModule.admitConfirmedWindowNativeEvidence(atCutoffChild, greenDuties());
+      assert.equal(verdict.settlement.settled, false, `an at-cutoff Child resolution never settles (actual ${JSON.stringify(verdict.settlement)})`);
+      assert.deepEqual(verdict.settlement.reasons, ['post-cutoff-resolution-no-credit'], `the at-cutoff Child stamp refuses by the named post-cutoff reason (actual ${JSON.stringify(verdict.settlement.reasons)})`);
+    });
+
+    test('confirmed-window native evidence: an observation resolution stamp AT the measurement cutoff refuses settlement credit (=== is post-cutoff for credit, review round 1)', async () => {
+      // (user review round 1, Standards P2) the SAME strictly-before rule on
+      // the observation leg: the observation resolution is a post-cutoff
+      // fact like the Child's (§39.9 step 9), and `===` is post-cutoff for
+      // credit purposes.
+      const evidenceModule = await import('../tools/shell-wait-probe/native-control-evidence.mjs');
+      const atCutoffObservation = persistedBlock(evidenceModule, greenRuntimeSession({
+        receipt: { transportReplyAtMs: 212, childResolutionAtMs: 300, childTerminalStatus: 'interrupted', childResolutionBasis: 'child-terminal-event', observationResolvedAtMs: 410_000, unrelatedCompletionReply: false, parentCancellationAtMs: null, completedTurnId: CHILD_TURN },
+      }));
+      const verdict = evidenceModule.admitConfirmedWindowNativeEvidence(atCutoffObservation, greenDuties());
+      assert.equal(verdict.settlement.settled, false, `an at-cutoff observation resolution never settles (actual ${JSON.stringify(verdict.settlement)})`);
+      assert.deepEqual(verdict.settlement.reasons, ['post-cutoff-resolution-no-credit'], `the at-cutoff observation stamp refuses by the named post-cutoff reason (actual ${JSON.stringify(verdict.settlement.reasons)})`);
+    });
+
     test('confirmed-window native evidence replay: BOTH persisted ancestry hops must be AFFIRMATIVE before settlement — the opaque digest alone never certifies the ancestry premise (P2, 2026-11-20 codex re-review)', async () => {
       // The reviewer's exact read-only reproduction: replay accepted
       // settlement when ancestryHops was missing or explicitly reported both

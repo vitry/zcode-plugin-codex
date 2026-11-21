@@ -39258,14 +39258,20 @@ established (`model: null`).
    Child exists), and both registered control routes. Route (a) validates target/active-turn and
    correctly refuses with no Child; rerunning it against the same absent spawn predicts the
    identical refusal — no per-conjunct distinction exists to predict. The preregistered
-   alternate route (b) (the TUI operator-assisted exact-Child stop, §39.4) presupposes EXACTLY
-   the missing fact: its admission is the controller's own positive-window evidence, its target
-   is a visible mid-turn v2 Child in the agents overview (its installed visibility and stop
-   behavior are themselves unverified counted-case items), and it changes the DELIVERY
-   mechanism, not the failed STAGING stage — with no Child there is nothing to select, nothing
-   to stop, and no window to admit on, so it cannot reach the unproven conjunct. It is
-   additionally a human-assisted route: not presumed executable unattended, and no operator
-   request would even exist (no admission). Staging-side choreography changes (a
+   alternate route (b) (the TUI operator-assisted exact-Child stop, §39.4): its admission is
+   the controller's own positive-window evidence, its target is a visible mid-turn v2 Child in
+   the agents overview (its installed visibility and stop behavior are themselves unverified
+   counted-case items), and it changes the DELIVERY mechanism, not the failed STAGING stage.
+   (User-review round 1 amendment — the former continuation of this sentence, "with no Child
+   there is nothing to select, nothing to stop, and no window to admit on, so it cannot reach
+   the unproven conjunct", overreached into an on-the-merits exclusion:) this app-server case
+   NEVER observed a Child, so route (b)'s parent-session-creation and instruction-delivery
+   axes were never exercised and remain UNVERIFIED on the installed surface (exactly the
+   §39.4 axis record's NAMED-UNESTABLISHED items) — route (b) is NOT excluded on the merits.
+   It is additionally a human-assisted route: not presumed executable unattended, and no
+   operator request would even exist (no admission). What this record supports is only the
+   narrower ground that NO VERIFIED evidence-conformant alternate route exists today.
+   Staging-side choreography changes (a
    launch-anchored hold, a pre-armed window) were already evaluated and refuted for exactly
    this case shape (§37.4 candidate 7): with no Child, no choreography change can produce a
    pending-window fact or move ANY downstream conjunct — the predicted per-conjunct result on
@@ -39296,14 +39302,16 @@ established (`model: null`).
 
 ### 44.3 The conclusion: C-follow-up UNSPENT (0/1) — the named precise limitation
 
-**No candidate ground qualifies; no usable operator/control route exists; C-follow-up is left
-UNSPENT (0/1), closed unspent at this commit, not transferred, and no further hosted work is
-authorized under this plan.** The precise evaluated limitation, named: **the model did not
-spawn through the real parent on the app-server surface** — the managed Rescue launcher
-invocation inside the persistent host's Root turns was never observed, so the identity join,
-the pending window, native delivery, causal native responsiveness and every duty/settlement
-conjunct stayed unreached; this stage is upstream of every registered control route (route (a)
-correctly refuses with no Child; route (b) presupposes the Child), and the ONE authorized
+**No candidate ground qualifies; no VERIFIED evidence-conformant alternate route exists today;
+C-follow-up is left UNSPENT (0/1), closed unspent at this commit, not transferred, and no
+further hosted work is authorized under this plan.** The precise evaluated limitation, named:
+**the model did not spawn through the real parent on the app-server surface** — the managed
+Rescue launcher invocation inside the persistent host's Root turns was never observed, so the
+identity join, the pending window, native delivery, causal native responsiveness and every
+duty/settlement conjunct stayed unreached; this stage is upstream of every registered control
+route (route (a) correctly refuses with no Child; route (b) was never exercised — its
+parent-session-creation and instruction-delivery axes remain UNVERIFIED on the installed
+surface, not excluded on the merits; user-review round 1 amendment), and the ONE authorized
 staging continuation was already spent against it without effect. The stage was not reached
 across two measured no-spawn cases on distinct surfaces (T: exec, §36–§37; C: app-server,
 §43), cause UNDETERMINED in each. **Impossibility is NOT claimed**: the composition family
@@ -39470,3 +39478,171 @@ package.json npm-shrinkwrap.json docs/superpowers/specs/`) is EMPTY — this sec
 changes ONLY this report. No test or executable byte changed in this task (the defect protocol
 never triggered — no RED state was demonstrated; §44.2). Historical sections remain
 byte-untouched (add-only).
+
+## 45. The user-review round 1 record (2026-11-21, TWO P2s on the pushed confirmed-window close-out — the at-cutoff settlement-credit strictness correction and the §44.2/§44.3 alternate-route qualification amendment)
+
+This section records the user's independent review round over the pushed PR #78 (branch
+`docs/rescue-shell-wait-confirmed-window`, reviewed HEAD `6f0b821cfca3aee19147ed53041bfe0571794d15`)
+and the fixes applied ON TOP of that HEAD as ONE new commit (pushed history is never amended or
+rebased). Worktree: the plan's correctly-pathed worktree; every execution offline (zero hosted or
+provider contacts, zero model turns in this round); sibling-campaign review-record convention
+followed (§23.13.1 / the §42 chain).
+
+### 45.1 The findings, as returned
+
+1. **[Standards P2] `tools/shell-wait-probe/native-control-evidence.mjs` (the settlement's
+   post-cutoff check, then line 619) — a resolution timestamp EXACTLY EQUAL to the measurement
+   cutoff was misjudged as passing.** The reviewer required: unify runtime and replay so
+   settlement credit requires the resolution stamps STRICTLY BEFORE the measurement cutoff
+   (`resolvedAtMs < measurementCutoffAtMs`) on BOTH legs (`childResolutionAtMs` and
+   `observationResolvedAtMs`), refuse an `===` stamp by the named post-cutoff reason, add two
+   boundary regressions, and change ONLY the credit class — never the snapshot-freeze capture
+   points (the round-22 P1-5 first-observation-instant freeze, the round-19 cutoff-crossing
+   collector semantics).
+2. **[Spec P2] the report §44.2 (the route-(b) ground) and the §44.3 conclusion sentence it
+   feeds — the close-out prematurely excluded the TUI alternate route ON THE MERITS.** The
+   required correction: this app-server case never observed a Child, so the TUI route's
+   parent-session-creation and instruction-delivery axes remain UNVERIFIED on the installed
+   surface; the accurate statement is that NO VERIFIED evidence-conformant alternate route
+   exists today; C-follow-up stays UNSPENT (0/1) unchanged.
+
+### 45.2 Finding 1 fix — the credit rule is STRICTLY BEFORE the cutoff (regression-first; offline RED→GREEN; runtime bytes UNCHANGED)
+
+**The change (one comparison operator per leg, `native-control-evidence.mjs` lines 619–620):**
+the replay settlement's post-cutoff refusal now fires on `childResolutionAtMs >= cutoffAtMs`
+and `observationResolvedAtMs >= cutoffAtMs` — an exactly-at-cutoff stamp is POST-CUTOFF for
+credit purposes and refuses with the existing named reason `post-cutoff-resolution-no-credit`
+(no new reason name; the freeze vocabulary stays). **This is a deliberate strictness
+correction, recorded plainly: at-cutoff stamps previously CREDITED settlement on replay and now
+REFUSE it.** No legacy positive row regressed: the check ran over every persisted
+`measurementCutoffAtMs` shape in the suite (values 400_000 and 410_000; every SETTLING record
+carries its resolutions strictly before the cutoff — the green shape's 300/310 versus 410_000;
+the 400_000-cutoff rows already refuse on their own grounds), so NO pre-existing positive row
+relied on an at-cutoff stamp and no assertion was weakened.
+
+**The credit-versus-capture classification of EVERY cutoff comparison site** (the audit the
+reviewer required; consumer AND runtime controller):
+
+Consumer (`tools/shell-wait-probe/native-control-evidence.mjs`):
+- Lines 619–620 — the settlement post-cutoff refusal, BOTH legs: **CREDIT class — CHANGED**
+  (`>` → `>=`); the only credit-granting cutoff comparison in the consumer.
+- Lines 616–617 — `cutoffAtMs === null` → `measurement-cutoff-unproven`: presence class
+  (the unproven-cutoff refusal, not a stamp comparison); unchanged.
+- Lines 707–709 — `fenceMissed` (`childResolutionAtMs >= fenceAtMs` /
+  `observationResolvedAtMs >= fenceAtMs`): the CLEANUP FENCE (`cleanupFenceAtMs`), not the
+  measurement cutoff; already refuses at-fence stamps; untouched.
+- No other cutoff comparison exists in the consumer (the remaining `cutoffAtMs` uses are the
+  presence check above and the changed site).
+
+Runtime controller (`tools/shell-wait-probe/confirmed-window.mjs`, bytes UNCHANGED — audited
+and confirmed aligned):
+- Line 1731–1732 — cutoff/teardown computation (`Math.min` arithmetic): not a comparison;
+  unchanged.
+- Line 1783–1784 — `transportReplyAtMs > cutoffAtMs` → `receipt.transportReplyLateAtMs`:
+  **CAPTURE class** (the typed late-reply diagnostic naming; the field is not even whitelisted
+  into the persisted block, so it grants no credit either way); unchanged.
+- Line 1846 — `now() < cutoff` gates the CREDITED duty-adjudication snapshot refresh:
+  **CREDIT class — already strictly before** (an at-cutoff read never refreshes); unchanged.
+- Lines 1877 / 1946 / 2014 — `now() < collectionDeadlineAtMs` loop windows: **CAPTURE class**
+  (the collection window's open/close semantics: collection runs strictly before the cutoff);
+  unchanged.
+- Lines 2132–2134 — `drainArrivalAtMs >= drainCutoffAtMs` routes an at/after-cutoff arrival to
+  `childResolutionLateAtMs`, never the credited leg: **CAPTURE class with a
+  credit-protecting effect** (exactly the round-19 cutoff-crossing collector semantics the
+  reviews approved — at/after cutoff arrivals are ALREADY excluded from the credited leg);
+  unchanged.
+- Lines 2251–2289 — the round-22 P1-5 horizon late-resolution retention (first-observation
+  instant ≥ the measurement cutoff freeze): **CAPTURE class** (retains late facts with their
+  own stamps, sets neither credited leg); unchanged.
+- Lines 2371–2375 — `facts.controlSurvival.readAtMs < survivalCutoffAtMs` (the
+  `control-survival` credit name): **CREDIT class — already strictly before**; unchanged.
+
+**Runtime alignment confirmed (no runtime path credits an at-cutoff resolution):** the
+in-loop Child leg is consumed only while `now() < cutoff` (loop condition, line 1877) and its
+stamp is the event's retained arrival instant on the same controller clock, so an at-cutoff
+stamp cannot enter the credited leg in-loop; the in-loop observation leg validates
+`resolvedAtMs` against the read instant (a stamp beyond the read instant is the named
+`clock-bounds-violation`, line 1866) under the same loop window; the drain routes at/after
+cutoff arrivals to the late diagnostics (line 2134); the credited duty snapshot and the
+control-survival name already require strictly-pre-cutoff reads (lines 1846/2375). Replay is
+now unified with all of these.
+
+**RED→GREEN evidence (the two new boundary rows, `tests/shell-wait-probe.test.mjs` lines
+34463–34496, both inside the `confirmed-window` pattern the gate executes):**
+- Row 1 (`childResolutionAtMs === measurementCutoffAtMs`, 410_000): RED verbatim —
+  `AssertionError [ERR_ASSERTION]: an at-cutoff Child resolution never settles (actual
+  {"settled":true,"basis":"child-terminal-event-interrupted-plus-observation-plus-duties-pre-cutoff-pre-fence","reasons":[]})`
+  → `true !== false`; GREEN after the fix with the exact one-reason assertion
+  `settlement.reasons` deep-equals `['post-cutoff-resolution-no-credit']`.
+- Row 2 (`observationResolvedAtMs === measurementCutoffAtMs`, 410_000): RED verbatim —
+  `AssertionError [ERR_ASSERTION]: an at-cutoff observation resolution never settles (actual
+  {"settled":true,...,"reasons":[]})` → `true !== false`; GREEN after the fix, same exact
+  one-reason assertion.
+- Both rows assert the refusal by the NAMED post-cutoff reason with an exact `deepEqual`
+  (never a weakened substring check).
+
+### 45.3 Finding 2 fix — the §44.2 route-(b) ground and the §44.3 conclusion amended in place; the TUI route NOT excluded on the merits
+
+The two sentences the finding named were amended in place; everything else in §39–§44 stays
+byte-untouched:
+- **§44.2 candidate 2 (route (b)):** the overreaching continuation ("with no Child there is
+  nothing to select, nothing to stop, and no window to admit on, so it cannot reach the
+  unproven conjunct") is replaced, with the superseded phrase quoted and attributed
+  (user-review round 1), by the accurate statement: C never observed a Child, so route (b)'s
+  parent-session-creation and instruction-delivery axes were never exercised and remain
+  UNVERIFIED on the installed surface (exactly the §39.4 axis record's NAMED-UNESTABLISHED
+  items) — route (b) is NOT excluded on the merits; what the record supports is only the
+  narrower ground that NO VERIFIED evidence-conformant alternate route exists today.
+- **§44.3 conclusion sentence:** "no usable operator/control route exists" → "no VERIFIED
+  evidence-conformant alternate route exists today", and the parenthetical "route (b)
+  presupposes the Child" → "route (b) was never exercised — its parent-session-creation and
+  instruction-delivery axes remain UNVERIFIED on the installed surface, not excluded on the
+  merits; user-review round 1 amendment".
+- **C-follow-up stays UNSPENT (0/1) unchanged** — the slot decision, the stop rule and the
+  new-authorization requirement stand exactly as recorded.
+- Honesty notes: the §44 section heading (line-level title) retains its original wording —
+  this section is the authoritative amendment of the two named sentences only; §44.8's
+  "no RED state was demonstrated" record remains true OF THAT TASK and this round
+  superseded it with the demonstrated RED→GREEN above (a NEW commit, not a rewrite of that
+  record).
+
+### 45.4 Gates for this round's commit (all on the FINAL bytes; strictly serialized)
+
+The battery ran strictly serialized on the round's bytes, in the gate order. Two full-suite
+attempts are recorded honestly (the §44.4 convention):
+
+1. The FIRST `npm run test:shell-research` attempt was killed by the execution environment (the
+   agent session's inactivity cutoff terminated the background run mid-way through its first
+   nested entry) — NO gate result is claimed from it; its partial log ended inside the probe
+   entry with the in-flight test marked cancelled and a file-level pending-promise drain
+   message, both attributed to that kill and superseded by the complete rerun below.
+2. The rerun `npm run test:shell-research` (the registered serialized entry): exit code 0; its
+   final aggregate block reads `ℹ tests 2018`, `ℹ suites 180`, `ℹ pass 2018`, `ℹ fail 0`,
+   `ℹ cancelled 0`, `ℹ skipped 0`, `ℹ todo 0`, `ℹ duration_ms 2045165.721916` (~34.1 minutes;
+   the counts include the nested generations the suite's own registered nested-selection tests
+   spawn, whose output interleaves into the same stream by construction). No nested-suite flake
+   occurred — no targeted solo rerun was needed.
+
+The remaining gates then ran on the FINAL bytes (the only delta between the suite run and the
+final bytes is THIS subsection's prose in this report file — a file no test, lint rule or
+provenance digest reads; the report is not an input to any gate command):
+- `node --test --test-name-pattern='confirmed-window' tests/shell-wait-probe.test.mjs
+  tests/shell-wait-native-interruption.test.mjs tests/shell-wait-local-process.test.mjs` —
+  224 tests, 3 suites, 224 pass, 0 fail, 0 cancelled (`duration_ms 197709.873458`); the pattern
+  EXECUTES the two new round-1 boundary rows of §45.2 (both ✔ in this run).
+- `node --test tests/test-selection.test.mjs` — 6 tests, 6 pass, 0 fail, 0 cancelled.
+- `npm run lint` — exit 0, no findings.
+- `npm run typecheck` — exit 0, no errors.
+- `node scripts/check-line-endings.mjs` (run from THIS worktree) — `LF line endings verified
+  in 555 tracked files.` (exit 0; the 555 count matches the §44.4 record).
+- `git diff --check` — this subsection's in-progress append briefly left a blank line at EOF
+  which the check flagged; the append was completed and the EOF normalized, and the recorded
+  outcome is the rerun on the final bytes: clean (exit 0).
+- `git status --porcelain` — exactly the three intended files
+  (`docs/qualification/rescue-shell-long-wait.md`, `tests/shell-wait-probe.test.mjs`,
+  `tools/shell-wait-probe/native-control-evidence.mjs`); the prohibited-path diff vs
+  `6f0b821c` (scripts/, hooks/, skills/, agents/, .codex-plugin/, prompts/, schemas/,
+  marketplace/, dependency files, `tools/shell-wait-probe/fixture.mjs`, `tests/fixtures/`) is
+  EMPTY; the historical §39–§44 text is byte-untouched except the two named §44.2/§44.3
+  sentences amended at §45.3; this section is add-only. ONE new commit on top of the pushed
+  `6f0b821c` — pushed history is never amended or rebased.

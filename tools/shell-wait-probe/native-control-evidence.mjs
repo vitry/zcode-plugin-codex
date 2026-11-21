@@ -616,10 +616,21 @@ export function admitConfirmedWindowNativeEvidence(block, duties = null) {
     if ((childResolutionAtMs !== null || observationResolvedAtMs !== null) && cutoffAtMs === null) {
       settlementReasons.push('measurement-cutoff-unproven');
     }
-    if ((childResolutionAtMs !== null && cutoffAtMs !== null && childResolutionAtMs > cutoffAtMs)
-      || (observationResolvedAtMs !== null && cutoffAtMs !== null && observationResolvedAtMs > cutoffAtMs)) {
+    if ((childResolutionAtMs !== null && cutoffAtMs !== null && childResolutionAtMs >= cutoffAtMs)
+      || (observationResolvedAtMs !== null && cutoffAtMs !== null && observationResolvedAtMs >= cutoffAtMs)) {
       // (§39.9 step 9) post-cutoff facts get zero settlement credit — the
       // observation resolution is a post-cutoff fact like the Child's.
+      // (user review round 1, Standards P2) the CREDIT rule is STRICTLY
+      // BEFORE the cutoff: an exactly-at-cutoff stamp is post-cutoff for
+      // credit purposes (the former `>` refusal left `===` credited), which
+      // unifies replay with the runtime controller — the credited duty
+      // snapshot (`now() < cutoff` refresh) and the control-survival leg
+      // (`readAtMs < cutoff`) already require strictly-pre-cutoff reads,
+      // and the cutoff-crossing drain classifies an at-cutoff arrival as a
+      // late-resolution fact, never the credited leg. The SNAPSHOT-FREEZE
+      // capture points (the round-22 first-observation-instant freeze and
+      // the round-19 cutoff-crossing collector semantics) keep their
+      // at/after-cutoff capture semantics — only the credit class changed.
       settlementReasons.push('post-cutoff-resolution-no-credit');
     }
   }
