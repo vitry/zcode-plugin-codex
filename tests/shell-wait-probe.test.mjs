@@ -7,11 +7,11 @@
 // entry because that would trigger the entry's test registrations.
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
-import { chmod, cp, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { appendFile, chmod, cp, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { after, before, describe, test } from 'node:test';
 
@@ -1526,6 +1526,16 @@ if (process.env[selfTestGuard] === '1') {
       // runtime and the MATERIALIZED executing helper copies
       // (scripts/lib/{fs,process,errors}.mjs).
       const witnessPreloadSource = await readFile(fileURLToPath(new URL('../tools/shell-wait-probe/spawn-witness-preload.mjs', import.meta.url)));
+      // v10 (2026-11-17 confirmed-window Task 2, §40.5): the staged
+      // controller's runtime module and its pure reload-side consumer join
+      // the SAME construction.
+      const confirmedWindowSource = await readFile(fileURLToPath(new URL('../tools/shell-wait-probe/confirmed-window.mjs', import.meta.url)));
+      const nativeControlEvidenceSource = await readFile(fileURLToPath(new URL('../tools/shell-wait-probe/native-control-evidence.mjs', import.meta.url)));
+      // (P2-5, round-22 codex review) the PRODUCTION launcher-command
+      // renderer — EXECUTED by the observation-premises scan when it
+      // decides which launcher acknowledgement grounds the original
+      // handle — joins the SAME construction (v11).
+      const launcherRendererSource = await readFile(fileURLToPath(new URL('../scripts/lib/rescue-launcher-command.mjs', import.meta.url)));
       const localProcessSource = await readFile(fileURLToPath(new URL('../tools/shell-wait-probe/local-process-observation.mjs', import.meta.url)));
       // (Review round 21, report §25.10) the construction mirrors the
       // driver's `executingHelperDigest`: the MATERIALIZED copy digests when
@@ -1537,7 +1547,7 @@ if (process.env[selfTestGuard] === '1') {
         ? EXECUTING_HELPER_MATERIALIZATION.bytes[relative]
         : createHash('sha256').update(await readFile(fileURLToPath(new URL(`../${relative}`, import.meta.url)))).digest('hex'));
       const expectedDigest = createHash('sha256')
-        .update('zcode-shell-wait-observer-v9\0')
+        .update('zcode-shell-wait-observer-v11\0')
         .update(evidenceSource)
         .update('\0')
         .update(shapeSource)
@@ -1549,6 +1559,12 @@ if (process.env[selfTestGuard] === '1') {
         .update(preloadSource)
         .update('\0')
         .update(witnessPreloadSource)
+        .update('\0')
+        .update(confirmedWindowSource)
+        .update('\0')
+        .update(nativeControlEvidenceSource)
+        .update('\0')
+        .update(launcherRendererSource)
         .update('\0')
         .update(localProcessSource)
         .update('\0')
@@ -6718,6 +6734,10 @@ if (process.env[selfTestGuard] === '1') {
     // the exit adjudication and the bounded duty verdict).
     const { EXECUTING_CLOSURE_PRELOAD_SOURCE: EXECUTING_CLOSURE_PRELOAD_SOURCE_SNAPSHOT } = await import('../tools/shell-wait-probe/closure-preload.mjs');
     const { EXECUTING_SPAWN_WITNESS_PRELOAD_SOURCE: EXECUTING_SPAWN_WITNESS_PRELOAD_SOURCE_SNAPSHOT } = await import('../tools/shell-wait-probe/spawn-witness-preload.mjs');
+    // (§40.5, v10) the staged controller's runtime module and its pure
+    // reload-side consumer join BOTH constructions.
+    const { EXECUTING_CONFIRMED_WINDOW_SOURCE } = await import('../tools/shell-wait-probe/confirmed-window.mjs');
+    const { EXECUTING_NATIVE_CONTROL_EVIDENCE_SOURCE } = await import('../tools/shell-wait-probe/native-control-evidence.mjs');
     const { EXECUTING_LOCAL_PROCESS_OBSERVATION_SOURCE } = await import('../tools/shell-wait-probe/local-process-observation.mjs');
     // (Review round 21, report §25.10) the constructions mirror the driver's
     // `executingHelperDigest`: the MATERIALIZED copy digests when
@@ -6728,8 +6748,15 @@ if (process.env[selfTestGuard] === '1') {
       ? materialization.bytes[relative]
       : createHash('sha256').update(readFileSync(fileURLToPath(new URL(`../${relative}`, import.meta.url)))).digest('hex'));
     const executingHelperDigest = executingHelperDigestWith(EXECUTING_HELPER_MATERIALIZATION);
-    const digestV8With = (/** @type {{ dir: string | null, bytes: Record<string, string> }} */ materialization) => (evidenceBytes, shapeBytes, oracleBytes, closureBytes, preloadBytes, witnessPreloadBytes, driverBytes) => createHash('sha256')
-      .update('zcode-shell-wait-observer-v9\0')
+    // (P2-5, round-22 codex review) the PRODUCTION launcher-command renderer
+    // (scripts/lib/rescue-launcher-command.mjs) — EXECUTED by the observation
+    // premises scan when it decides which launcher acknowledgement grounds
+    // the original handle — joins BOTH digest inputs, so changing the
+    // renderer alone can never change admission without changing both
+    // digests.
+    const rendererSource = readFileSync(fileURLToPath(new URL('../scripts/lib/rescue-launcher-command.mjs', import.meta.url)));
+    const digestV11With = (/** @type {{ dir: string | null, bytes: Record<string, string> }} */ materialization) => (evidenceBytes, shapeBytes, oracleBytes, closureBytes, preloadBytes, witnessPreloadBytes, controllerBytes, consumerBytes, rendererBytes, driverBytes) => createHash('sha256')
+      .update('zcode-shell-wait-observer-v11\0')
       .update(evidenceBytes)
       .update('\0')
       .update(shapeBytes)
@@ -6744,6 +6771,16 @@ if (process.env[selfTestGuard] === '1') {
       // module joins right after the closure-preload generator.
       .update(witnessPreloadBytes)
       .update('\0')
+      // (§40.5, v10) the confirmed-window controller runtime and its pure
+      // reload-side consumer join right after the witness-preload generator.
+      .update(controllerBytes)
+      .update('\0')
+      .update(consumerBytes)
+      .update('\0')
+      // (P2-5, round-22 codex review) the launcher-command renderer joins
+      // right after the confirmed-window consumer.
+      .update(rendererBytes)
+      .update('\0')
       .update(EXECUTING_LOCAL_PROCESS_OBSERVATION_SOURCE)
       .update('\0')
       .update(driverBytes)
@@ -6756,11 +6793,11 @@ if (process.env[selfTestGuard] === '1') {
       .update('\0')
       .update(executingHelperDigestWith(materialization)('scripts/lib/errors.mjs'))
       .digest('hex');
-    const digestV8 = (evidenceBytes, shapeBytes, oracleBytes, closureBytes, preloadBytes, witnessPreloadBytes, driverBytes) => digestV8With(EXECUTING_HELPER_MATERIALIZATION)(evidenceBytes, shapeBytes, oracleBytes, closureBytes, preloadBytes, witnessPreloadBytes, driverBytes);
+    const digestV11 = (evidenceBytes, shapeBytes, oracleBytes, closureBytes, preloadBytes, witnessPreloadBytes, controllerBytes, consumerBytes, rendererBytes, driverBytes) => digestV11With(EXECUTING_HELPER_MATERIALIZATION)(evidenceBytes, shapeBytes, oracleBytes, closureBytes, preloadBytes, witnessPreloadBytes, controllerBytes, consumerBytes, rendererBytes, driverBytes);
 
-    test('the executing digest binds the shape-diagnostic, release-qualification, closure-observation, extracted closure-preload AND local-process runtime bytes under the versioned v8 construction (round 6 adds the executing helper copies)', () => {
+    test('the executing digest binds the shape-diagnostic, release-qualification, closure-observation, extracted closure-preload AND local-process runtime bytes under the versioned v11 construction (round 6 added the executing helper copies; §40.5 added the controller/consumer inputs; P2-5, round-22 added the launcher-command renderer)', () => {
       const driverBytes = readFileSync(driverPath);
-      const expected = digestV8(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, EXECUTING_RELEASE_QUALIFICATION_SOURCE, EXECUTING_CLOSURE_OBSERVATION_SOURCE, EXECUTING_CLOSURE_PRELOAD_SOURCE_SNAPSHOT, EXECUTING_SPAWN_WITNESS_PRELOAD_SOURCE_SNAPSHOT, driverBytes);
+      const expected = digestV11(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, EXECUTING_RELEASE_QUALIFICATION_SOURCE, EXECUTING_CLOSURE_OBSERVATION_SOURCE, EXECUTING_CLOSURE_PRELOAD_SOURCE_SNAPSHOT, EXECUTING_SPAWN_WITNESS_PRELOAD_SOURCE_SNAPSHOT, EXECUTING_CONFIRMED_WINDOW_SOURCE, EXECUTING_NATIVE_CONTROL_EVIDENCE_SOURCE, rendererSource, driverBytes);
       assert.equal(EXECUTING_OBSERVER_PROVENANCE.digest, expected,
         'the digest must hash the executing evidence + shape-diagnostic + release-qualification + closure-observation + closure-preload + driver module-init bytes');
       assert.match(String(EXECUTING_OBSERVER_PROVENANCE.digestInput), /shape-diagnostic\.mjs/u,
@@ -6771,7 +6808,7 @@ if (process.env[selfTestGuard] === '1') {
         'the digest input description must name the closure-observation capture helper');
       assert.match(String(EXECUTING_OBSERVER_PROVENANCE.digestInput), /closure-preload\.mjs/u,
         'the digest input description must name the extracted preload module');
-      assert.match(String(EXECUTING_OBSERVER_PROVENANCE.digestInput), /v9|version/u,
+      assert.match(String(EXECUTING_OBSERVER_PROVENANCE.digestInput), /v11|version/u,
         'the construction version must be recorded explicitly');
       assert.match(String(EXECUTING_OBSERVER_PROVENANCE.digestInput), /local-process-observation\.mjs/u,
         'the digest input description must name the local-process runtime the held turn executes');
@@ -6788,10 +6825,10 @@ if (process.env[selfTestGuard] === '1') {
       // `bytes ?? ''` formula produced a different digest under this seam,
       // failing the assertions in the supported environment).
       const driverBytes = readFileSync(driverPath);
-      const underSeam = digestV8With({ dir: null, bytes: {} })(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, EXECUTING_RELEASE_QUALIFICATION_SOURCE, EXECUTING_CLOSURE_OBSERVATION_SOURCE, EXECUTING_CLOSURE_PRELOAD_SOURCE_SNAPSHOT, EXECUTING_SPAWN_WITNESS_PRELOAD_SOURCE_SNAPSHOT, driverBytes);
+      const underSeam = digestV11With({ dir: null, bytes: {} })(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, EXECUTING_RELEASE_QUALIFICATION_SOURCE, EXECUTING_CLOSURE_OBSERVATION_SOURCE, EXECUTING_CLOSURE_PRELOAD_SOURCE_SNAPSHOT, EXECUTING_SPAWN_WITNESS_PRELOAD_SOURCE_SNAPSHOT, EXECUTING_CONFIRMED_WINDOW_SOURCE, EXECUTING_NATIVE_CONTROL_EVIDENCE_SOURCE, rendererSource, driverBytes);
       assert.equal(EXECUTING_OBSERVER_PROVENANCE.digest, underSeam,
         'with materialization unavailable the construction binds the PRODUCTION helper digest strings — the driver\'s own fallback loads those very modules, so the expectation and the executing digest agree at rest in BOTH states');
-      const available = digestV8(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, EXECUTING_RELEASE_QUALIFICATION_SOURCE, EXECUTING_CLOSURE_OBSERVATION_SOURCE, EXECUTING_CLOSURE_PRELOAD_SOURCE_SNAPSHOT, EXECUTING_SPAWN_WITNESS_PRELOAD_SOURCE_SNAPSHOT, driverBytes);
+      const available = digestV11(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, EXECUTING_RELEASE_QUALIFICATION_SOURCE, EXECUTING_CLOSURE_OBSERVATION_SOURCE, EXECUTING_CLOSURE_PRELOAD_SOURCE_SNAPSHOT, EXECUTING_SPAWN_WITNESS_PRELOAD_SOURCE_SNAPSHOT, EXECUTING_CONFIRMED_WINDOW_SOURCE, EXECUTING_NATIVE_CONTROL_EVIDENCE_SOURCE, rendererSource, driverBytes);
       assert.equal(EXECUTING_OBSERVER_PROVENANCE.digest, available,
         'the available-materialization state keeps its existing equality');
     });
@@ -6810,19 +6847,19 @@ if (process.env[selfTestGuard] === '1') {
         'a construction without the release-qualification and closure bytes must not reproduce the executing digest');
       const mutatedOracle = Buffer.concat([EXECUTING_RELEASE_QUALIFICATION_SOURCE, Buffer.from('\n')]);
       assert.notEqual(
-        digestV8(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, mutatedOracle, EXECUTING_CLOSURE_OBSERVATION_SOURCE, EXECUTING_CLOSURE_PRELOAD_SOURCE_SNAPSHOT, EXECUTING_SPAWN_WITNESS_PRELOAD_SOURCE_SNAPSHOT, driverBytes),
+        digestV11(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, mutatedOracle, EXECUTING_CLOSURE_OBSERVATION_SOURCE, EXECUTING_CLOSURE_PRELOAD_SOURCE_SNAPSHOT, EXECUTING_SPAWN_WITNESS_PRELOAD_SOURCE_SNAPSHOT, EXECUTING_CONFIRMED_WINDOW_SOURCE, EXECUTING_NATIVE_CONTROL_EVIDENCE_SOURCE, rendererSource, driverBytes),
         EXECUTING_OBSERVER_PROVENANCE.digest,
         'a release-qualification-only byte change must change the digest',
       );
       const mutatedClosure = Buffer.concat([EXECUTING_CLOSURE_OBSERVATION_SOURCE, Buffer.from('\n')]);
       assert.notEqual(
-        digestV8(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, EXECUTING_RELEASE_QUALIFICATION_SOURCE, mutatedClosure, EXECUTING_CLOSURE_PRELOAD_SOURCE_SNAPSHOT, EXECUTING_SPAWN_WITNESS_PRELOAD_SOURCE_SNAPSHOT, driverBytes),
+        digestV11(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, EXECUTING_RELEASE_QUALIFICATION_SOURCE, mutatedClosure, EXECUTING_CLOSURE_PRELOAD_SOURCE_SNAPSHOT, EXECUTING_SPAWN_WITNESS_PRELOAD_SOURCE_SNAPSHOT, EXECUTING_CONFIRMED_WINDOW_SOURCE, EXECUTING_NATIVE_CONTROL_EVIDENCE_SOURCE, rendererSource, driverBytes),
         EXECUTING_OBSERVER_PROVENANCE.digest,
         'a closure-observation-only byte change must change the digest',
       );
       assert.notEqual(
-        digestV8(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, readFileSync(oraclePath), EXECUTING_CLOSURE_OBSERVATION_SOURCE, EXECUTING_CLOSURE_PRELOAD_SOURCE_SNAPSHOT, EXECUTING_SPAWN_WITNESS_PRELOAD_SOURCE_SNAPSHOT, driverBytes),
-        digestV8(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, mutatedOracle, EXECUTING_CLOSURE_OBSERVATION_SOURCE, EXECUTING_CLOSURE_PRELOAD_SOURCE_SNAPSHOT, EXECUTING_SPAWN_WITNESS_PRELOAD_SOURCE_SNAPSHOT, driverBytes),
+        digestV11(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, readFileSync(oraclePath), EXECUTING_CLOSURE_OBSERVATION_SOURCE, EXECUTING_CLOSURE_PRELOAD_SOURCE_SNAPSHOT, EXECUTING_SPAWN_WITNESS_PRELOAD_SOURCE_SNAPSHOT, EXECUTING_CONFIRMED_WINDOW_SOURCE, EXECUTING_NATIVE_CONTROL_EVIDENCE_SOURCE, rendererSource, driverBytes),
+        digestV11(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, mutatedOracle, EXECUTING_CLOSURE_OBSERVATION_SOURCE, EXECUTING_CLOSURE_PRELOAD_SOURCE_SNAPSHOT, EXECUTING_SPAWN_WITNESS_PRELOAD_SOURCE_SNAPSHOT, EXECUTING_CONFIRMED_WINDOW_SOURCE, EXECUTING_NATIVE_CONTROL_EVIDENCE_SOURCE, rendererSource, driverBytes),
       );
     });
 
@@ -6834,7 +6871,7 @@ if (process.env[selfTestGuard] === '1') {
       const { EXECUTING_CLOSURE_PRELOAD_SOURCE } = await import('../tools/shell-wait-probe/closure-preload.mjs');
       const driverBytes = readFileSync(driverPath);
       const withPreload = createHash('sha256')
-        .update('zcode-shell-wait-observer-v9\0')
+        .update('zcode-shell-wait-observer-v11\0')
         .update(EXECUTING_EVIDENCE_SOURCE)
         .update('\0')
         .update(EXECUTING_SHAPE_DIAGNOSTIC_SOURCE)
@@ -6846,6 +6883,14 @@ if (process.env[selfTestGuard] === '1') {
         .update(EXECUTING_CLOSURE_PRELOAD_SOURCE)
         .update('\0')
         .update(EXECUTING_SPAWN_WITNESS_PRELOAD_SOURCE_SNAPSHOT)
+        .update('\0')
+        .update(EXECUTING_CONFIRMED_WINDOW_SOURCE)
+        .update('\0')
+        .update(EXECUTING_NATIVE_CONTROL_EVIDENCE_SOURCE)
+        .update('\0')
+        // (P2-5, round-22 codex review) the launcher-command renderer joins
+        // the manual construction the same way it joins the builder.
+        .update(rendererSource)
         .update('\0')
         .update(EXECUTING_LOCAL_PROCESS_OBSERVATION_SOURCE)
         .update('\0')
@@ -6894,7 +6939,7 @@ if (process.env[selfTestGuard] === '1') {
       assert.equal(recordTime.model, null, 'the requested/effective model stays unknown in the observer provenance');
     });
 
-    test('the executing digest binds the SPAWN-WITNESS preload generator module bytes (§33.7 finding 3; the v9 input) — the retained alternative binding to the witness capture provenance', () => {
+    test('the executing digest binds the SPAWN-WITNESS preload generator AND the confirmed-window controller/consumer module bytes (§33.7 finding 3; the v9 input; §40.5 the v10 inputs) — the retained alternative binding to the witness capture provenance', () => {
       // (§33.7 finding 3) the spawn-witness preload seam's generator module is
       // the SECOND generated-preload seam: the generated witness preload
       // bytes (whose digest the fixture record's spawnWitnessCapture block —
@@ -6904,10 +6949,10 @@ if (process.env[selfTestGuard] === '1') {
       // digest-input description must name the module.
       const driverBytes = readFileSync(driverPath);
       assert.equal(EXECUTING_OBSERVER_PROVENANCE.digest,
-        digestV8(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, EXECUTING_RELEASE_QUALIFICATION_SOURCE, EXECUTING_CLOSURE_OBSERVATION_SOURCE, EXECUTING_CLOSURE_PRELOAD_SOURCE_SNAPSHOT, EXECUTING_SPAWN_WITNESS_PRELOAD_SOURCE_SNAPSHOT, driverBytes),
+        digestV11(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, EXECUTING_RELEASE_QUALIFICATION_SOURCE, EXECUTING_CLOSURE_OBSERVATION_SOURCE, EXECUTING_CLOSURE_PRELOAD_SOURCE_SNAPSHOT, EXECUTING_SPAWN_WITNESS_PRELOAD_SOURCE_SNAPSHOT, EXECUTING_CONFIRMED_WINDOW_SOURCE, EXECUTING_NATIVE_CONTROL_EVIDENCE_SOURCE, rendererSource, driverBytes),
         'the digest must bind the spawn-witness preload generator module bytes');
       assert.notEqual(
-        digestV8(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, EXECUTING_RELEASE_QUALIFICATION_SOURCE, EXECUTING_CLOSURE_OBSERVATION_SOURCE, EXECUTING_CLOSURE_PRELOAD_SOURCE_SNAPSHOT, Buffer.concat([EXECUTING_SPAWN_WITNESS_PRELOAD_SOURCE_SNAPSHOT, Buffer.from('\n')]), driverBytes),
+        digestV11(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, EXECUTING_RELEASE_QUALIFICATION_SOURCE, EXECUTING_CLOSURE_OBSERVATION_SOURCE, EXECUTING_CLOSURE_PRELOAD_SOURCE_SNAPSHOT, Buffer.concat([EXECUTING_SPAWN_WITNESS_PRELOAD_SOURCE_SNAPSHOT, Buffer.from('\n')]), EXECUTING_CONFIRMED_WINDOW_SOURCE, EXECUTING_NATIVE_CONTROL_EVIDENCE_SOURCE, rendererSource, driverBytes),
         EXECUTING_OBSERVER_PROVENANCE.digest,
         'a witness-preload-only byte change must change the digest (the generator module is load-bearing)');
       const withoutWitnessInput = createHash('sha256')
@@ -6936,6 +6981,40 @@ if (process.env[selfTestGuard] === '1') {
         'a construction without the witness-preload generator bytes must not reproduce the digest (the §33.7 finding-3 gap)');
       assert.match(String(EXECUTING_OBSERVER_PROVENANCE.digestInput), /spawn-witness-preload\.mjs/u,
         'the digest input description must name the witness preload generator module');
+    });
+
+    test('confirmed-window observer provenance binds the PRODUCTION launcher-command renderer in BOTH constructions (P2-5, round-22 codex review) — the observation-premises scan executes renderRescueLauncherCommand, so a renderer-only mutation must change the startup AND record-time digests', async () => {
+      // The reviewer's exact finding: the new collector executes
+      // renderRescueLauncherCommand from the working tree to decide which
+      // launcher acknowledgement can ground the original handle — changing
+      // that helper alone could change admission WITHOUT changing either
+      // digest. The renderer's file joins BOTH digest inputs (the v11
+      // construction): the module-init snapshot binds the executing bytes
+      // and the record-time reader re-reads them, and the existing
+      // mutation-negative machinery proves a renderer-only byte change
+      // flips the digest.
+      const driverBytes = readFileSync(driverPath);
+      // (1) The module-init digest reproduces only WITH the renderer bytes:
+      // the digest-input description names the renderer, and a construction
+      // without it cannot reproduce the executing digest.
+      assert.match(String(EXECUTING_OBSERVER_PROVENANCE.digestInput), /rescue-launcher-command\.mjs/u,
+        'the module-init digest input description must name the launcher-command renderer');
+      assert.equal(EXECUTING_OBSERVER_PROVENANCE.digest,
+        digestV11(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, EXECUTING_RELEASE_QUALIFICATION_SOURCE, EXECUTING_CLOSURE_OBSERVATION_SOURCE, EXECUTING_CLOSURE_PRELOAD_SOURCE_SNAPSHOT, EXECUTING_SPAWN_WITNESS_PRELOAD_SOURCE_SNAPSHOT, EXECUTING_CONFIRMED_WINDOW_SOURCE, EXECUTING_NATIVE_CONTROL_EVIDENCE_SOURCE, rendererSource, driverBytes),
+        'the executing digest must bind the launcher-command renderer bytes');
+      assert.notEqual(
+        digestV11(EXECUTING_EVIDENCE_SOURCE, EXECUTING_SHAPE_DIAGNOSTIC_SOURCE, EXECUTING_RELEASE_QUALIFICATION_SOURCE, EXECUTING_CLOSURE_OBSERVATION_SOURCE, EXECUTING_CLOSURE_PRELOAD_SOURCE_SNAPSHOT, EXECUTING_SPAWN_WITNESS_PRELOAD_SOURCE_SNAPSHOT, EXECUTING_CONFIRMED_WINDOW_SOURCE, EXECUTING_NATIVE_CONTROL_EVIDENCE_SOURCE, Buffer.concat([rendererSource, Buffer.from('\n')]), driverBytes),
+        EXECUTING_OBSERVER_PROVENANCE.digest,
+        'a launcher-renderer-only byte change must change the startup digest (the renderer is load-bearing)',
+      );
+      // (2) The record-time reader binds the SAME input: the description
+      // names the renderer and the working-tree re-read equals the
+      // module-init digest at rest.
+      const recordTime = await observerProvenance();
+      assert.match(String(recordTime.digestInput), /rescue-launcher-command\.mjs/u,
+        'the record-time digest input description must name the launcher-command renderer');
+      assert.equal(recordTime.digest, EXECUTING_OBSERVER_PROVENANCE.digest,
+        'at rest the record-time digest (renderer re-read included) equals the module-init digest');
     });
   });
 
@@ -32539,7 +32618,7 @@ describe('cleanup-boundary attribution for exit-code settlements (round-9 review
 
     test("the witness preload's builtin-ESM sync composes with an earlier foreign preload that also patches and syncs spawn: the last installer owns the ESM face and the wrapper chain stays intact (review round 6, finding 1 — the chaining/ordering arm)", async (t) => {
       // The foreign early wrapper patches spawn and calls its OWN sync (any
-      // inherited instrument of that shape), THEN the witness wrapper
+      // inherited instrument of that shape), THEN the witness preload
       // installs and syncs: the ESM face must be the LAST installer (the
       // witness wrapper — one stub interception) while the foreign wrapper
       // keeps running INSIDE the chain (the witness wrapper's originalSpawn
@@ -32550,6 +32629,11958 @@ describe('cleanup-boundary attribution for exit-code settlements (round-9 review
       const run = await runEsmFaceConsumer(stage, { form: 'esm', deadlineMs: 5_000 });
       assert.equal(run.interceptions, 1, `the witness wrapper owns the ESM face after its sync (actual ${JSON.stringify(run)})`);
       assert.equal(run.chainWraps, 1, `the earlier foreign wrapper keeps running inside the chain (actual ${JSON.stringify(run)})`);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Confirmed-window staged controller (2026-11-17 confirmed-window plan,
+  // Task 2): the preregistered §40 interface, validated OFFLINE through the
+  // public parser and the standard entry. Zero hosted/provider contacts: the
+  // protocol host is a deterministic fake stream fixture in every test, and
+  // the live gate stays closed. Every new name carries the literal
+  // `confirmed-window` prefix so the focused pattern executes these rows.
+  // ---------------------------------------------------------------------------
+  describe('confirmed-window staged controller (2026-11-17 confirmed-window plan task 2)', async () => {
+    const driver = await import('../tools/shell-wait-probe/driver.mjs');
+    const { parseShellWaitArguments, runShellWaitCase } = driver;
+    const codexBinary = process.execPath;
+    const output = '/private/tmp/unused-shell-wait-output';
+
+    /** A parser argv vector with the confirmed-window route declared per §40.1; `replace` swaps a value by option name (never duplicates an option). */
+    const confirmedWindowArguments = (replace = {}) => {
+      const argv = [
+        '--case', 'rescue-interrupt',
+        '--codex', codexBinary,
+        '--source-sha', 'a'.repeat(40),
+        '--output', output,
+        '--wait-policy', 'config-default',
+        '--exec-default-ms', '3600000',
+        '--interrupt-route-selector', 'confirmed-window',
+      ];
+      for (const [option, value] of Object.entries(replace)) {
+        const index = argv.indexOf(option);
+        if (index === -1) argv.push(option, value);
+        else argv[index + 1] = value;
+      }
+      return argv;
+    };
+
+    test('confirmed-window selector: the public parser accepts the single closed literal for rescue-interrupt at the declared config-default window', () => {
+      const parsed = parseShellWaitArguments(confirmedWindowArguments());
+      assert.equal(parsed.case, 'rescue-interrupt');
+      assert.equal(parsed.interruptRouteSelector, 'confirmed-window');
+      assert.equal(parsed.waitPolicy, 'config-default');
+      assert.equal(parsed.execDefaultMs, 3_600_000);
+      assert.equal(parsed.pollMs, 3_600_000, 'the declared candidate 3600000 observation window');
+    });
+
+    test('confirmed-window selector: absent keeps the legacy parse byte-for-byte unchanged', () => {
+      const legacy = parseShellWaitArguments(['--case', 'rescue-interrupt', '--codex', codexBinary, '--source-sha', 'a'.repeat(40), '--output', output]);
+      assert.equal(legacy.interruptRouteSelector, null);
+      assert.equal(legacy.waitPolicy, null);
+      assert.equal(legacy.execDefaultMs, null);
+      assert.equal('interruptRouteSelector' in parseShellWaitArguments(['--case', 'rescue-baseline', '--codex', codexBinary, '--source-sha', 'a'.repeat(40), '--output', output]), true, 'the field rides every parsed input (null when absent)');
+    });
+
+    test('confirmed-window selector: every other case, value, window, and selector combination is refused by the public parser and the programmatic gate alike', async () => {
+      // A foreign literal fails closed at the parser (the base vector's
+      // route value REPLACED, never duplicated).
+      const foreign = confirmedWindowArguments();
+      foreign.splice(foreign.indexOf('--interrupt-route-selector') + 1, 1, 'operator-child-stop');
+      assert.throws(() => parseShellWaitArguments(foreign), /only accepts the literal value confirmed-window/u);
+      // Another case with the route selected.
+      assert.throws(() => parseShellWaitArguments(confirmedWindowArguments({ '--case': 'rescue-long' })), /only valid for the rescue-interrupt case/u);
+      // A short observation window.
+      assert.throws(() => parseShellWaitArguments(confirmedWindowArguments({ '--poll-ms': '60000' })), /requires the candidate 3600000 observation window/u);
+      // Without the config-default pair (the route selector alone; both pair
+      // flags removed together so the generic pair rule does not fire first).
+      const noPair = confirmedWindowArguments();
+      noPair.splice(noPair.indexOf('--wait-policy'), 2);
+      noPair.splice(noPair.indexOf('--exec-default-ms'), 2);
+      assert.throws(() => parseShellWaitArguments(noPair), /requires the --wait-policy config-default --exec-default-ms pair/u);
+      // Each existing interrupt selector beside the route is a double declaration.
+      assert.throws(() => parseShellWaitArguments([...confirmedWindowArguments(), '--interrupt-baseline-selector', 'short-window-60000']), /mutually exclusive/u);
+      assert.throws(() => parseShellWaitArguments([...confirmedWindowArguments(), '--survival-control-selector', 'progress-terminal']), /mutually exclusive/u);
+      // The programmatic mirror refuses the same shapes through the standard
+      // entry BEFORE any fixture work (validateCaseInput precedes every side
+      // effect; the createFixture spy below must never run).
+      const baseInput = {
+        case: 'rescue-interrupt',
+        codexBinary,
+        sourceSha: 'a'.repeat(40),
+        output,
+        workerDurationMs: 420_000,
+        capMs: null,
+        pollMs: 3_600_000,
+        budgetMs: 720_000,
+        waitPolicy: 'config-default',
+        execDefaultMs: 3_600_000,
+      };
+      let fixtureBuilt = false;
+      const refusingDependencies = { createFixture: async () => { fixtureBuilt = true; return { dispose: async () => {} }; } };
+      await assert.rejects(runShellWaitCase({ ...baseInput, interruptRouteSelector: 'other-route' }, refusingDependencies), /interruptRouteSelector must be exactly/u);
+      await assert.rejects(runShellWaitCase({ ...baseInput, case: 'rescue-long', interruptRouteSelector: 'confirmed-window' }, refusingDependencies), /only valid for the rescue-interrupt case/u);
+      await assert.rejects(runShellWaitCase({ ...baseInput, pollMs: 60_000, interruptRouteSelector: 'confirmed-window' }, refusingDependencies), /requires the candidate 3600000 observation window/u);
+      assert.equal(fixtureBuilt, false, 'the route refusals must precede any fixture creation');
+    });
+
+    // --- deterministic offline protocol fixtures (§40.2's fake streams) -----
+
+    const PARENT_THREAD = 'parent-thread-aaaa-aaaa-aaaa-aaaa-aaaa';
+    const CHILD_THREAD = '0f1e2d3c4b5a69788796a5b4c3d2e1f0';
+    const CHILD_TURN = 'child-turn-1';
+    const HOST_PID = 4711;
+
+    /** A deterministic virtual clock: timers resolve by advancing to their scripted target in registration order. */
+    function deterministicClock() {
+      let current = 0;
+      const wallBase = Date.parse('2026-11-17T00:00:00.000Z');
+      return {
+        now: () => current,
+        wallClockNow: () => wallBase + current,
+        advanceTo(target) { current = Math.max(current, target); },
+        advance(ms) { this.advanceTo(current + ms); },
+        sleep: (ms) => new Promise((resolve) => setImmediate(() => { current += ms; resolve(); })),
+        // The ADVANCING wait (used by the fake host's notification scheduling:
+        // the wait moves the shared clock to its target). Distinct from the
+        // PURE deadline signal below — the choreography's deadline-bounded
+        // observer races must never move the shared clock (they are signals,
+        // not scheduling).
+        waitUntilAdvance: (target) => new Promise((resolve) => setImmediate(() => { current = Math.max(current, target); resolve(); })),
+        waitUntil: () => new Promise((resolve) => setImmediate(resolve)),
+      };
+    }
+
+    /**
+     * A deterministic fake `codex app-server` host: scripted replies per
+     * method, a scripted notification queue with fixed virtual delivery
+     * times, and a recorded request log. Nothing here opens a process or a
+     * socket — the whole choreography runs against this fixture.
+     * @param {{ replies?: Record<string, any>, notifications?: { atMs: number, method: string, params: any }[], requestDelayMs?: number, requestDelayMsByMethod?: Record<string, number>, pureReplyAtMsByMethod?: Record<string, number>, refuseMethods?: Record<string, string>, requestHook?: (method: string, params: any) => void, neverReply?: string[] }} script
+     */
+    function fakeConfirmedWindowHost(script = {}) {
+      const clock = deterministicClock();
+      const queue = [...(script.notifications ?? [])].sort((a, b) => a.atMs - b.atMs);
+      /** @type {{ method: string, params: any, sentAtMs: number, repliedAtMs: number | null, errorText: string | null }[]} */
+      const requestLog = [];
+      let disposed = false;
+      let connectionClosed = false;
+      const host = {
+        clock,
+        requestLog,
+        identity: { pid: HOST_PID, argv: ['codex', 'app-server'], startedAtMs: 0 },
+        get disposed() { return disposed; },
+        launchCount: 0,
+        /** The injectable `launchConfirmedWindowHost` factory. */
+        factory: async (launchContext) => {
+          host.launchCount += 1;
+          host.launchContext = launchContext;
+          host.identity.startedAtMs = clock.now();
+          // Bind the shared green collectors to THIS run's clock (sequential
+          // rows rebind; the collectors read the binding lazily at read time).
+          greenObservationClock.now = clock.now;
+          greenObservationClock.clock = clock;
+          return host;
+        },
+        connection: {
+          request: (method, params) => {
+            const sentAtMs = clock.now();
+            const entry = { method, params, sentAtMs, repliedAtMs: null, errorText: null };
+            requestLog.push(entry);
+            if (script.requestHook) script.requestHook(method, params);
+            const delay = script.requestDelayMs ?? script.requestDelayMsByMethod?.[method] ?? 0;
+            const pureTarget = script.pureReplyAtMsByMethod?.[method];
+            const waitForReply = pureTarget !== undefined
+              ? new Promise((resolve) => {
+                  const tick = () => { if (clock.now() >= /** @type {number} */ (pureTarget)) resolve(); else setImmediate(tick); };
+                  setImmediate(tick);
+                })
+              : (delay > 0 ? clock.sleep(delay) : Promise.resolve());
+            return waitForReply.then(() => {
+              if (script.refuseMethods && typeof script.refuseMethods[method] === 'string') {
+                // The refusal models the real launcher's error path: the
+                // attributable initiation and rejection bounds ride the
+                // rejection (round-4 P2).
+                entry.errorText = script.refuseMethods[method];
+                entry.repliedAtMs = clock.now();
+                return Promise.reject(Object.assign(new Error(script.refuseMethods[method]), { initiatedAtMs: sentAtMs, repliedAtMs: entry.repliedAtMs }));
+              }
+              entry.repliedAtMs = clock.now();
+              if (script.neverReply?.includes(method)) {
+                return new Promise(() => {});
+              }
+              const reply = script.replies?.[method];
+              if (reply === undefined) throw new Error(`the fake host has no scripted reply for ${method}`);
+              return { result: typeof reply === 'function' ? reply(params, entry) : reply, sentAtMs, repliedAtMs: entry.repliedAtMs };
+            });
+          },
+          nextNotification: (deadlineAtMs) => {
+            // (round-5 P3-1) a scripted MID-DRAIN fatal: the notification wait
+            // rejects once the shared clock passes the trigger (the horizon
+            // drain shape — the escalation and its typed refusal are already
+            // recorded by then).
+            if (typeof script.rejectNotificationsAtClock === 'number' && clock.now() >= script.rejectNotificationsAtClock) {
+              return Promise.reject(new Error(script.rejectNotificationsError ?? 'the owned host exited mid-drain (simulated)'));
+            }
+            const head = queue[0];
+            const target = head ? Math.min(head.atMs, deadlineAtMs) : deadlineAtMs;
+            return clock.waitUntilAdvance(target).then(() => {
+              const next = queue[0];
+              if (next && next.atMs <= clock.now()) {
+                queue.shift();
+                // The scripted arrival instant IS the event's arrival time in
+                // the virtual timeline; the consumption may lag it when a
+                // concurrent scripted delay jumps the shared clock past the
+                // queue head (P1-5). Stamping the CONSUMPTION time would
+                // fabricate a post-cutoff arrival for an event the schedule
+                // delivered earlier.
+                return { method: next.method, params: next.params, receivedAtMs: Math.min(clock.now(), next.atMs) };
+              }
+              return null;
+            });
+          },
+          close: async () => { connectionClosed = true; },
+          closed: () => connectionClosed,
+        },
+        dispose: async () => { disposed = true; },
+        connectionClosed: () => connectionClosed,
+      };
+      return host;
+    }
+
+    /** The scripted happy-shape staging notification set (identity join). */
+    function identityJoinNotifications({ atMs = 100, childThreadId = CHILD_THREAD, parentThreadId = PARENT_THREAD, kind = 'started' } = {}) {
+      return [
+        { atMs, method: 'thread/started', params: { threadId: parentThreadId } },
+        {
+          atMs: atMs + 10,
+          method: 'thread/notification', params: {
+            type: 'SubAgentActivity', threadId: parentThreadId, item: { type: 'SubAgentActivity', id: 'activity-1', kind, agentThreadId: childThreadId, model: 'gpt-5.1', reasoningEffort: 'high' },
+          },
+        },
+        {
+          atMs: atMs + 20,
+          method: 'thread/notification', params: {
+            type: 'turn/started', threadId: childThreadId, turn: { id: CHILD_TURN, status: 'inProgress', items: [] },
+          },
+        },
+      ];
+    }
+
+    /**
+     * The all-green injected observers (the fake collectors agree). The
+     * pending observation is STILL PENDING until its scripted resolution
+     * instant (320 ms on the run's OWN clock — the §39.9 step 6 conjunct
+     * requires the original observation to be pending AT admission), and the
+     * unrelated control reports fresh-at-read evidence. The run clock is
+     * bound by the fake host factory when the choreography launches (the
+     * rows are sequential, so the single binding slot is safe).
+     */
+    const greenObservationClock = { now: null, clock: null };
+    const greenObservers = () => ({
+      pendingObservation: async () => {
+        const resolvedAtMs = 320;
+        const current = typeof greenObservationClock.now === 'function' ? greenObservationClock.now() : null;
+        const resolved = current !== null && current >= resolvedAtMs;
+        // (§41.5.2) the frozen derivation: holdDeadlineAtMs = observedAtMs +
+        // 420000 on the controller clock (observed 50 -> 420050); the
+        // collector facts carry the closed controller-monotonic tag.
+        return { confirmed: true, observedAtMs: 50, resolved, resolvedAtMs: resolved ? resolvedAtMs : null, holdDeadlineAtMs: 420_050, clockDomain: 'controller-monotonic', reason: null };
+      },
+      ancestryBaseline: async () => ({ established: true, digest: 'a'.repeat(64), hops: { launcherToBroker: true, brokerToTransport: true }, clockDomain: 'controller-monotonic', reason: null }),
+      dutyFacts: async () => ({ observable: true, duties: ['invocation', 'broker', 'transport', 'runner', 'job', 'guard', 'integrity'], clockDomain: 'controller-monotonic', reason: null }),
+      controlFacts: async () => {
+        const current = typeof greenObservationClock.now === 'function' ? greenObservationClock.now() : 0;
+        // (§41.5.2 bound (c)) a registered remaining life at or below the
+        // 1200000-ms case ceiling — never the 3600000 design total.
+        // (P1-1, 2026-11-19 codex re-review) the green control claim carries
+        // its EMISSION instant: the fresh line was emitted AT the fresh read
+        // (a post-delivery emission, the survival gate's causal input).
+        // (P1-2, round-21 codex review) the green control claim also carries
+        // the REGISTERED TWO-READ pre-delivery sequence: its line index sits
+        // past the readiness floor, an EARLIER read reached the floor and the
+        // latest read is the separate fresh post-floor line (the §41 schedule
+        // the controller now verifies at the send boundary).
+        return {
+          active: true, freshAtMs: current, declaredLifetimeMs: 120_000, emittedAtControllerMs: current,
+          lineIndex: 45,
+          preDeliveryReadSequence: { floorReachedInEarlierRead: true, separatePostFloorFreshRead: true },
+          clockDomain: 'controller-monotonic', reason: null,
+        };
+      },
+    });
+
+    /** The scripted host replies for a real parent session. */
+    const parentSessionReplies = () => ({
+      initialize: { userAgent: 'codex-cli/0.163.0 (x86_64-unknown-linux; 0.163.0) codex_cli' },
+      'thread/start': { thread: { id: PARENT_THREAD } },
+      'turn/start': (params) => ({ thread: { id: params?.threadId ?? PARENT_THREAD }, turn: { id: params?.turnId ?? 'root-turn-1', status: 'inProgress' } }),
+      'turn/interrupt': {},
+    });
+
+    /**
+     * Run the choreography against a fake host with the all-green observers.
+     * `overrides` patch the script / observers / session fields.
+     */
+    async function runOfflineChoreography({ script = {}, observers = greenObservers(), session = {}, dependencies = {} } = {}) {
+      const confirmedWindow = await import('../tools/shell-wait-probe/confirmed-window.mjs');
+      const host = fakeConfirmedWindowHost({ replies: parentSessionReplies(), ...script });
+      const fakeFixture = {
+        workspace: '/private/tmp/confirmed-window-offline-workspace',
+        codexHome: '/private/tmp/confirmed-window-offline-codex-home',
+        installedRoot: '/private/tmp/confirmed-window-offline-installed',
+        env: { CODEX_HOME: '/private/tmp/confirmed-window-offline-codex-home', HOME: '/private/tmp/confirmed-window-offline-home' },
+        record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
+        dispose: async () => {},
+      };
+      const result = await confirmedWindow.runConfirmedWindowChoreography({
+        case: 'rescue-interrupt',
+        codexBinary: process.execPath,
+        sourceSha: 'a'.repeat(40),
+        output: '/private/tmp/confirmed-window-offline-output',
+        budgetMs: 720_000,
+        workerDurationMs: 420_000,
+        stagingPrompt: 'staging prompt with the control directive',
+        continuationPrompt: 'a CHANGED continuation prompt',
+        fixture: fakeFixture,
+        ...session,
+      }, {
+        now: host.clock.now,
+        wallClockNow: host.clock.wallClockNow,
+        sleep: host.clock.sleep,
+        launchConfirmedWindowHost: host.factory,
+        observers,
+        ...dependencies,
+      });
+      return { result, host };
+    }
+
+    test('confirmed-window choreography: the green offline shape reaches pending-window-confirmed, sends exactly ONE turn/interrupt at the joined identity, and observes the child resolution', async () => {
+      const { result, host } = await runOfflineChoreography({
+        script: {
+          notifications: [
+            ...identityJoinNotifications({ atMs: 100 }),
+            { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+          ],
+        },
+      });
+      const states = result.states.map((entry) => entry.state);
+      assert.deepEqual(states, ['pending-window-confirmed', 'native-request-sent', 'native-resolution-observed'], `the escalation order carries (actual ${JSON.stringify(states)})`);
+      const interrupts = host.requestLog.filter((entry) => entry.method === 'turn/interrupt');
+      assert.equal(interrupts.length, 1, `exactly one native delivery (actual ${JSON.stringify(host.requestLog.map((entry) => entry.method))})`);
+      assert.deepEqual(interrupts[0].params, { threadId: CHILD_THREAD, turnId: CHILD_TURN }, 'the exact joined identity is the interrupt target');
+      assert.equal(interrupts[0].sentAtMs >= 100, true, 'the request bounds ride the choreography clock');
+      assert.equal(result.source, 'same-host-rpc', 'the primary route records its transport-specific source class');
+      assert.equal(result.identity.childThreadId, CHILD_THREAD);
+      assert.equal(result.identity.childTurnId, CHILD_TURN);
+      assert.equal(result.identity.parentThreadId, PARENT_THREAD);
+      assert.equal(result.receipt.completedTurnId, CHILD_TURN, 'the terminal event carries the interrupted turn\'s OWN id (the resolution is attributable)');
+      assert.equal(result.identity.threadStartedRequired, false, 'a spawned Child NEVER requires thread/started');
+      assert.equal(host.disposed, true, 'the host is disposed deterministically');
+      assert.equal(host.connectionClosed(), true, 'the one connection is closed before disposal');
+    });
+
+    test('confirmed-window protocol shape: the research thread is created with the fixture-only hook-trust bypass — thread/start carries the supported config.bypass_hook_trust override (round-4 P1)', async () => {
+      // Verified at the source pin (2026-11-18): `ThreadStartParams.config`
+      // (a map) rides the request overrides and `config_manager.rs:472-477`
+      // removes `bypass_hook_trust` into `ConfigOverrides` (boolean
+      // required); `codex-rs/hooks/src/engine/discovery.rs:715-720` admits an
+      // enabled handler only when `source.bypass_hook_trust || trust_status
+      // is Managed|Trusted` — with a FRESH isolated fixture home the fixture
+      // hooks are untrusted, so without the bypass the real parent's
+      // UserPromptSubmit/SubagentStart hooks are filtered out and the
+      // managed Rescue preparation/binding flow can never run. The repo's
+      // own installed-suite precedent carries the same override as the argv
+      // `-c bypass_hook_trust=true`; the staged thread carries it at the
+      // thread-creation config boundary.
+      const { result, host } = await runOfflineChoreography({
+        script: {
+          notifications: [
+            ...identityJoinNotifications({ atMs: 100 }),
+            { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+          ],
+        },
+      });
+      const threadStart = host.requestLog.find((entry) => entry.method === 'thread/start');
+      assert.ok(threadStart, 'the hosted thread was started');
+      assert.deepEqual(threadStart.params.config, { bypass_hook_trust: true, sandbox_mode: 'danger-full-access', approval_policy: 'never' }, `the research thread carries the fixture-only hook-trust bypass (actual ${JSON.stringify(threadStart.params.config)})`);
+      assert.equal(result.finalState, 'native-resolution-observed', 'the green shape still escalates fully with the override riding');
+    });
+
+    test('confirmed-window protocol shape: the research thread carries the fixture-only SANDBOX and APPROVAL bypass at thread creation — the same overrides the exec route composes (P1-1, 2026-11-19 codex re-review)', async () => {
+      // The reviewer's finding: the thread/start request only bypassed hook
+      // trust; the fresh fixture home has no trusted-project permission
+      // override, so the Root and Child inherit restrictive sandbox/approval
+      // defaults and preparation/launcher writes can require approvals this
+      // protocol client never answers. The exec route composes
+      // `--dangerously-bypass-approvals-and-sandbox` (CODEX_EXEC_COMMON_
+      // ARGUMENTS); the equivalent CONFIG overrides ride the SAME
+      // thread-creation config boundary as bypass_hook_trust: verified
+      // against the codex-rs source (the 0.163.0 pin is no longer on disk —
+      // the nearest checkout carries the identical surface):
+      // `protocol/src/config_types.rs` SandboxMode = "read-only" |
+      // "workspace-write" | "danger-full-access"; `protocol/src/protocol.rs`
+      // AskForApproval (kebab-case) includes "never"; `config/src/
+      // config_toml.rs` keys `sandbox_mode` (:224) and `approval_policy`
+      // (:195); `app-server/src/config_manager.rs` `load_with_cli_overrides`
+      // chains every non-bypass request-override key into the standard
+      // CLI-override (−c) path. The exec route's combined bypass flag is
+      // therefore spelled at this boundary as sandbox_mode
+      // "danger-full-access" + approval_policy "never".
+      const { result, host } = await runOfflineChoreography({
+        script: {
+          notifications: [
+            ...identityJoinNotifications({ atMs: 100 }),
+            { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+          ],
+        },
+      });
+      const threadStart = host.requestLog.find((entry) => entry.method === 'thread/start');
+      assert.ok(threadStart, 'the hosted thread was started');
+      assert.equal(threadStart.params.config.sandbox_mode, 'danger-full-access', `the fixture-only sandbox bypass rides thread creation (actual ${JSON.stringify(threadStart.params.config)})`);
+      assert.equal(threadStart.params.config.approval_policy, 'never', 'the fixture-only approval bypass rides thread creation');
+      assert.equal(threadStart.params.config.bypass_hook_trust, true, 'the round-4 hook-trust bypass still rides the same boundary');
+      assert.equal(result.finalState, 'native-resolution-observed', 'the green shape still escalates fully with the overrides riding');
+    });
+
+    test('confirmed-window protocol shape (verified against the pinned 0.163.0 schema, 2026-11-18): turn/start carries the schema-REQUIRED `input` field on BOTH Root inputs — `items` is not a TurnStartParams field', async () => {
+      // The pinned binary's `TurnStartParams` requires exactly
+      // `['input', 'threadId']` where `input` is an array of `UserInput`
+      // (`{type: 'text', text}`); `items` is not a field of the request, so
+      // the real server rejects the request during validation instead of
+      // starting the Root turn (schema generation against the pinned binary,
+      // offline). Both Root turn/start requests — the initial staging AND
+      // the ONE directed continuation — must carry the required shape.
+      const { result, host } = await runOfflineChoreography({
+        script: {
+          notifications: [
+            // The initial staging turn produces NO qualifying Child, so the
+            // ONE directed continuation is issued — both Root turn/start
+            // requests are exercised in one deterministic shape.
+            { atMs: 100, method: 'thread/notification', params: { type: 'turn/completed', threadId: PARENT_THREAD, turn: { id: 'root-turn-1', status: 'completed', items: [] } } },
+            { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: PARENT_THREAD, turn: { id: 'root-turn-2', status: 'completed', items: [] } } },
+          ],
+        },
+      });
+      assert.equal(result.finalState, 'staging-not-ready', 'the no-spawn shape stays a staging refusal (this row pins the REQUEST shape, not the outcome)');
+      const turnStarts = host.requestLog.filter((entry) => entry.method === 'turn/start');
+      assert.equal(turnStarts.length, 2, `exactly the initial staging and the ONE continuation (actual ${JSON.stringify(host.requestLog.map((entry) => entry.method))})`);
+      const expectedTexts = ['staging prompt with the control directive', 'a CHANGED continuation prompt'];
+      turnStarts.forEach((entry, index) => {
+        assert.deepEqual(entry.params, { threadId: PARENT_THREAD, input: [{ type: 'text', text: expectedTexts[index] }] }, `turn/start request ${index} matches the pinned TurnStartParams shape {threadId, input: UserInput[]} (actual ${JSON.stringify(entry.params)})`);
+      });
+    });
+
+    test('confirmed-window protocol shape (verified against the pinned 0.163.0 schema, 2026-11-18): the REAL sub-agent activity envelope — item type `subAgentActivity` — completes the identity join and the full escalation', async () => {
+      // The pinned protocol serializes the spawn activity as a thread item
+      // with the DISCRIMINANT `subAgentActivity` (the
+      // SubAgentActivityThreadItemType enum value — NOT `SubAgentActivity`),
+      // riding the `item/started` notification with params
+      // `{threadId, turnId, item, startedAtMs}` (schema generation + source
+      // pin event_mapping.rs; the direct EventMsg::SubAgentActivity mapping
+      // rides `item/completed` with the same item shape). The join reads the
+      // ITEM's type/kind — never the carrier method.
+      const { result, host } = await runOfflineChoreography({
+        script: {
+          notifications: [
+            { atMs: 100, method: 'item/started', params: { threadId: PARENT_THREAD, turnId: 'root-turn-1', item: { type: 'subAgentActivity', id: 'activity-1', kind: 'started', agentThreadId: CHILD_THREAD, agentPath: '/root/child', model: 'gpt-5.1', reasoningEffort: 'high' }, startedAtMs: 100 } },
+            { atMs: 110, method: 'turn/started', params: { threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'inProgress' } } },
+            { atMs: 300, method: 'turn/completed', params: { threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted' } } },
+          ],
+        },
+      });
+      const states = result.states.map((entry) => entry.state);
+      assert.deepEqual(states, ['pending-window-confirmed', 'native-request-sent', 'native-resolution-observed'], `the REAL envelope joins and escalates fully (actual ${JSON.stringify(states)}; refusal ${JSON.stringify(result.refusal)})`);
+      const interrupts = host.requestLog.filter((entry) => entry.method === 'turn/interrupt');
+      assert.equal(interrupts.length, 1, 'exactly one native delivery on the real envelope');
+      assert.deepEqual(interrupts[0].params, { threadId: CHILD_THREAD, turnId: CHILD_TURN });
+      // (round-2 P2, evidence levels) the parent-bound started activity is
+      // SPAWN evidence — recorded as staging.spawnActivityObserved — and is
+      // NEVER the §39.8 L1 hook-receipt level: the controller collects no
+      // hook witness, so hook receipt stays named-unestablished (null).
+      assert.equal(result.staging.spawnActivityObserved, true, 'the real envelope records the spawn activity fact');
+      assert.notEqual(result.staging.liveReceiptObserved, true, 'a spawn activity never stamps the L1 hook receipt (§39.8: L1 is a session/turn-bound hook invocation)');
+      assert.equal(result.block.identity.modelObservedDigest, createHash('sha256').update('gpt-5.1').digest('hex'), 'the item model rides the real envelope (projected as its bounded digest)');
+      // The direct EventMsg::SubAgentActivity mapping rides `item/completed`
+      // with the SAME item shape (source pin event_mapping.rs:184): the same
+      // kind-`started` item on that carrier joins too.
+      const second = await runOfflineChoreography({
+        script: {
+          notifications: [
+            { atMs: 100, method: 'item/completed', params: { threadId: PARENT_THREAD, turnId: 'root-turn-1', item: { type: 'subAgentActivity', id: 'activity-1', kind: 'started', agentThreadId: CHILD_THREAD, agentPath: '/root/child', model: 'gpt-5.1' }, completedAtMs: 100 } },
+            { atMs: 110, method: 'turn/started', params: { threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'inProgress' } } },
+            { atMs: 300, method: 'turn/completed', params: { threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted' } } },
+          ],
+        },
+      });
+      const secondStates = second.result.states.map((entry) => entry.state);
+      assert.deepEqual(secondStates, ['pending-window-confirmed', 'native-request-sent', 'native-resolution-observed'], `the item/completed carrier of the same kind-started item joins too (actual ${JSON.stringify(secondStates)}; refusal ${JSON.stringify(second.result.refusal)})`);
+    });
+
+    test('confirmed-window staging: descriptor publication without a live receipt never admits (the L0-only refusal stops escalation before any native delivery)', async () => {
+      const { result, host } = await runOfflineChoreography({
+        script: {
+          notifications: [
+            // The descriptor publication (L0: the fixture rendered/published the
+            // instruction artifacts) is the ONLY staging signal: no
+            // SubAgentActivity, no Child turn — no live receipt exists.
+            { atMs: 100, method: 'thread/notification', params: { type: 'sessionConfigured', threadId: PARENT_THREAD, descriptor: { published: true } } },
+            { atMs: 200, method: 'thread/notification', params: { type: 'turn/completed', threadId: PARENT_THREAD, turn: { id: 'root-turn-1', status: 'completed', items: [] } } },
+          ],
+        },
+      });
+      assert.equal(result.finalState, 'staging-not-ready', `the named refusal state (actual ${result.finalState})`);
+      assert.match(String(result.refusal?.reason ?? ''), /receipt|spawn|join/u, 'the refusal names the missing live evidence');
+      assert.equal(result.staging.descriptorPublicationObserved, true, 'the L0 descriptor publication is recorded');
+      assert.notEqual(result.staging.liveReceiptObserved, true, 'the L0 descriptor publication is NEVER the L1 live receipt (§39.8)');
+      assert.notEqual(result.staging.spawnActivityObserved, true, 'no spawn activity rode the descriptor-only shape either');
+      assert.equal(host.requestLog.some((entry) => entry.method === 'turn/interrupt'), false, 'no native delivery is ever attempted');
+      assert.equal(host.disposed, true, 'the refusal still disposes safely');
+    });
+
+    test('confirmed-window staging: an accepted instruction without a spawn never admits (turn accepted, no SubAgentActivity, no Child turn)', async () => {
+      const { result, host } = await runOfflineChoreography({
+        script: {
+          notifications: [
+            // The host ACCEPTED the staging instruction (the turn started on the
+            // parent) but the model never spawned a Child: no SubAgentActivity
+            // item, no Child turn/started — the join has no side to make.
+            { atMs: 100, method: 'thread/notification', params: { type: 'turn/started', threadId: PARENT_THREAD, turn: { id: 'root-turn-1', status: 'inProgress', items: [] } } },
+            { atMs: 200, method: 'thread/notification', params: { type: 'turn/completed', threadId: PARENT_THREAD, turn: { id: 'root-turn-1', status: 'completed', items: [] } } },
+          ],
+        },
+      });
+      assert.equal(result.finalState, 'staging-not-ready');
+      assert.match(String(result.refusal?.reason ?? ''), /join|spawn|child/u, 'the refusal names the missing Child side of the join');
+      assert.equal(host.requestLog.some((entry) => entry.method === 'turn/interrupt'), false);
+    });
+
+    test('confirmed-window staging: wrong-parent activity is recorded as the named wrong join, and an unmatched foreign Child turn/started stays buffered (never a join, never a wrongJoin, never delivered to)', async () => {
+      const { result, host } = await runOfflineChoreography({
+        script: {
+          notifications: [
+            // A SubAgentActivity on a FOREIGN parent thread: never joined.
+            { atMs: 100, method: 'thread/notification', params: { type: 'SubAgentActivity', threadId: 'foreign-parent-thread', item: { type: 'SubAgentActivity', id: 'a-foreign', kind: 'started', agentThreadId: CHILD_THREAD, model: null } } },
+            // A Child turn/started on a thread no parent activity ever named:
+            // BUFFERED for the order-free join (F2) — it is neither a join nor
+            // a wrong join while its SubAgentActivity side is missing.
+            { atMs: 110, method: 'thread/notification', params: { type: 'turn/started', threadId: 'foreign-child-thread', turn: { id: 'foreign-turn', status: 'inProgress', items: [] } } },
+            { atMs: 200, method: 'thread/notification', params: { type: 'turn/completed', threadId: PARENT_THREAD, turn: { id: 'root-turn-1', status: 'completed', items: [] } } },
+          ],
+        },
+      });
+      assert.equal(result.finalState, 'staging-not-ready');
+      const kinds = result.identity.wrongJoins.map((entry) => entry.kind);
+      assert.deepEqual(kinds, ['wrong-parent-thread'], `only the genuinely wrong join is recorded (actual ${JSON.stringify(kinds)})`);
+      assert.match(String(result.refusal?.reason ?? ''), /never held/u);
+      assert.equal(host.requestLog.some((entry) => entry.method === 'turn/interrupt'), false, 'a wrong join is never delivered to');
+    });
+
+    test('confirmed-window identity join: the Child turn/started arriving BEFORE the parent SubAgentActivity still completes the join (the order-free §39.3 join)', async () => {
+      // §39.3 frames the join as the JOIN of two observed events, not an
+      // ordering discipline: the Child's own turn/started may arrive on the
+      // Child stream before the parent's SubAgentActivity item (the two ride
+      // independent event paths). The controller must BUFFER the unmatched
+      // side and complete the join when the other arrives — a false
+      // staging-not-ready here would burn the counted case.
+      const { result, host } = await runOfflineChoreography({
+        script: {
+          notifications: [
+            // REVERSED order: the Child's turn first (atMs 100), the parent's
+            // SubAgentActivity second (atMs 200).
+            { atMs: 100, method: 'thread/notification', params: { type: 'turn/started', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'inProgress', items: [] } } },
+            { atMs: 200, method: 'thread/notification', params: { type: 'SubAgentActivity', threadId: PARENT_THREAD, item: { type: 'SubAgentActivity', id: 'activity-1', kind: 'started', agentThreadId: CHILD_THREAD, model: 'gpt-5.1', reasoningEffort: 'high' } } },
+            { atMs: 400, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+          ],
+        },
+      });
+      const states = result.states.map((entry) => entry.state);
+      assert.deepEqual(states, ['pending-window-confirmed', 'native-request-sent', 'native-resolution-observed'], `the reversed order must still reach the full escalation (actual ${JSON.stringify(states)}; refusal ${JSON.stringify(result.refusal)})`);
+      const interrupts = host.requestLog.filter((entry) => entry.method === 'turn/interrupt');
+      assert.equal(interrupts.length, 1);
+      assert.deepEqual(interrupts[0].params, { threadId: CHILD_THREAD, turnId: CHILD_TURN });
+      assert.equal(result.identity.childTurnId, CHILD_TURN);
+      assert.equal(result.identity.wrongJoins.length, 0, 'the buffered order produces no wrong joins');
+    });
+
+    test('confirmed-window identity join: the buffer binds the LAST matching buffered turn/started for the thread (the most recent turn is the active-turn candidate)', async () => {
+      // A Child produced MULTIPLE turns before its parent's activity arrived:
+      // turn 1 started+completed, turn 2 started — all while childThreadId
+      // was null, so both turn/started events are buffered. The join must
+      // bind the MOST RECENT buffered turn (the server's active-turn
+      // equality will reject anything else as stale and the counted case
+      // would burn on the stale-turn-target refusal).
+      const { result, host } = await runOfflineChoreography({
+        script: {
+          notifications: [
+            { atMs: 100, method: 'thread/notification', params: { type: 'turn/started', threadId: CHILD_THREAD, turn: { id: 'child-turn-1', status: 'inProgress', items: [] } } },
+            { atMs: 110, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: 'child-turn-1', status: 'completed', items: [] } } },
+            { atMs: 120, method: 'thread/notification', params: { type: 'turn/started', threadId: CHILD_THREAD, turn: { id: 'child-turn-2', status: 'inProgress', items: [] } } },
+            { atMs: 200, method: 'thread/notification', params: { type: 'SubAgentActivity', threadId: PARENT_THREAD, item: { type: 'SubAgentActivity', id: 'activity-1', kind: 'started', agentThreadId: CHILD_THREAD, model: 'gpt-5.1', reasoningEffort: 'high' } } },
+            { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: 'child-turn-2', status: 'interrupted', items: [] } } },
+          ],
+          // The host's own active-turn equality: an interrupt naming the
+          // stale first turn is rejected exactly like the real refusal.
+          replies: {
+            ...parentSessionReplies(),
+            'turn/interrupt': (params) => {
+              if (params?.turnId !== 'child-turn-2') throw new Error('expected active turn id child-turn-2 but found child-turn-1');
+              return {};
+            },
+          },
+        },
+      });
+      const states = result.states.map((entry) => entry.state);
+      assert.deepEqual(states, ['pending-window-confirmed', 'native-request-sent', 'native-resolution-observed'], `the join must bind the most recent buffered turn (actual ${JSON.stringify(states)}; refusal ${JSON.stringify(result.refusal)})`);
+      assert.equal(result.identity.childTurnId, 'child-turn-2', `the LAST buffered turn/started for the thread is the active-turn candidate (actual ${result.identity.childTurnId})`);
+      const interrupts = host.requestLog.filter((entry) => entry.method === 'turn/interrupt');
+      assert.equal(interrupts.length, 1, 'exactly one native delivery');
+      assert.deepEqual(interrupts[0].params, { threadId: CHILD_THREAD, turnId: 'child-turn-2' }, 'the interrupt names the ACTIVE turn, never the stale first one');
+      assert.equal(result.nativeRequest.outcome, 'sent', `the delivery is not rejected as stale (actual ${result.nativeRequest.outcome}: ${result.nativeRequest.errorText ?? ''})`);
+      assert.equal(result.refusal, null);
+    });
+
+    test('confirmed-window identity join: a started activity WITHOUT the exact observed parent threadId is a named wrong join — null never bypasses the parent match (round-2 P2, parent identity)', async () => {
+      // A parentless started activity (missing/malformed threadId) used to
+      // bypass the parent check entirely and complete the join once the
+      // named Child's turn started — admitting an interrupt on an identity
+      // whose parent side was never actually bound to the observed parent.
+      const { result, host } = await runOfflineChoreography({
+        script: {
+          notifications: [
+            // The activity carries NO threadId at all: the parent identity is
+            // unestablishable from this event.
+            { atMs: 100, method: 'thread/notification', params: { type: 'SubAgentActivity', item: { type: 'SubAgentActivity', id: 'activity-1', kind: 'started', agentThreadId: CHILD_THREAD, model: 'gpt-5.1' } } },
+            { atMs: 110, method: 'thread/notification', params: { type: 'turn/started', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'inProgress', items: [] } } },
+            { atMs: 200, method: 'thread/notification', params: { type: 'turn/completed', threadId: PARENT_THREAD, turn: { id: 'root-turn-1', status: 'completed', items: [] } } },
+          ],
+        },
+      });
+      assert.equal(result.finalState, 'staging-not-ready', `a parentless started activity never joins (actual ${result.finalState}: ${JSON.stringify(result.refusal)})`);
+      const kinds = result.identity.wrongJoins.map((entry) => entry.kind);
+      assert.ok(kinds.includes('unidentified-parent-thread'), `the parentless activity is named (actual ${JSON.stringify(kinds)})`);
+      assert.notEqual(result.identity.joinHolds, true, 'the join never holds without the parent side');
+      assert.equal(host.requestLog.some((entry) => entry.method === 'turn/interrupt'), false, 'no delivery without the exact parent identity');
+      // A MALFORMED (non-string) threadId is the same refusal.
+      const malformed = await runOfflineChoreography({
+        script: {
+          notifications: [
+            { atMs: 100, method: 'thread/notification', params: { type: 'SubAgentActivity', threadId: 12345, item: { type: 'SubAgentActivity', id: 'activity-2', kind: 'started', agentThreadId: CHILD_THREAD, model: null } } },
+            { atMs: 200, method: 'thread/notification', params: { type: 'turn/completed', threadId: PARENT_THREAD, turn: { id: 'root-turn-1', status: 'completed', items: [] } } },
+          ],
+        },
+      });
+      assert.equal(malformed.result.finalState, 'staging-not-ready');
+      assert.ok(malformed.result.identity.wrongJoins.some((entry) => entry.kind === 'unidentified-parent-thread'));
+    });
+
+    test('confirmed-window identity join: a buffered Child turn whose completion ALSO arrived before its parent activity is never resurrected as an active target (P2-3: the order-free join tracks terminal state)', async () => {
+      // A Child's start AND completion both arrive before its parent's
+      // activity item: the completion used to be IGNORED (childThreadId
+      // still null), so the later activity reactivated the buffered start
+      // and admitted an interrupt against an already-terminal target. The
+      // completion must bind to the buffered start; the join completes the
+      // identity but the stale-id refusal fires — never a delivery.
+      const { result, host } = await runOfflineChoreography({
+        script: {
+          notifications: [
+            { atMs: 100, method: 'thread/notification', params: { type: 'turn/started', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'inProgress', items: [] } } },
+            { atMs: 150, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'completed', items: [] } } },
+            { atMs: 200, method: 'thread/notification', params: { type: 'SubAgentActivity', threadId: PARENT_THREAD, item: { type: 'SubAgentActivity', id: 'activity-1', kind: 'started', agentThreadId: CHILD_THREAD, model: 'gpt-5.1' } } },
+          ],
+        },
+      });
+      assert.equal(result.finalState, 'staging-not-ready', `the terminal buffered turn is never reactivated for delivery (actual ${result.finalState}: ${JSON.stringify(result.refusal)})`);
+      assert.equal(result.staging.childTerminalPreAdmission, true, 'the buffered completion is recognized as the pre-admission terminal');
+      assert.equal(host.requestLog.some((entry) => entry.method === 'turn/interrupt'), false, 'no delivery is ever attempted against the already-terminal target');
+    });
+
+    test('confirmed-window identity join: a buffered terminal turn does not block a LATER active turn from joining (the terminal binding picks the most recent non-terminal candidate, P2-3)', async () => {
+      // The terminal binding composes with the last-buffered-turn rule: a
+      // Child whose first turn died before its activity arrived but whose
+      // SECOND turn is still active joins the ACTIVE turn.
+      const { result, host } = await runOfflineChoreography({
+        script: {
+          notifications: [
+            { atMs: 100, method: 'thread/notification', params: { type: 'turn/started', threadId: CHILD_THREAD, turn: { id: 'child-turn-1', status: 'inProgress', items: [] } } },
+            { atMs: 110, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: 'child-turn-1', status: 'failed', items: [] } } },
+            { atMs: 120, method: 'thread/notification', params: { type: 'turn/started', threadId: CHILD_THREAD, turn: { id: 'child-turn-2', status: 'inProgress', items: [] } } },
+            { atMs: 200, method: 'thread/notification', params: { type: 'SubAgentActivity', threadId: PARENT_THREAD, item: { type: 'SubAgentActivity', id: 'activity-1', kind: 'started', agentThreadId: CHILD_THREAD, model: 'gpt-5.1' } } },
+            { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: 'child-turn-2', status: 'interrupted', items: [] } } },
+          ],
+          replies: {
+            ...parentSessionReplies(),
+            'turn/interrupt': (params) => {
+              if (params?.turnId !== 'child-turn-2') throw new Error('expected active turn id child-turn-2 but found child-turn-1');
+              return {};
+            },
+          },
+        },
+      });
+      const states = result.states.map((entry) => entry.state);
+      assert.deepEqual(states, ['pending-window-confirmed', 'native-request-sent', 'native-resolution-observed'], `the ACTIVE second turn is the join candidate (actual ${JSON.stringify(states)}; refusal ${JSON.stringify(result.refusal)})`);
+      assert.equal(result.identity.childTurnId, 'child-turn-2');
+      assert.deepEqual(host.requestLog.filter((entry) => entry.method === 'turn/interrupt')[0].params, { threadId: CHILD_THREAD, turnId: 'child-turn-2' });
+    });
+
+    test('confirmed-window identity join: the unmatched turn/started buffer is bounded by a NAMED cap with a named overflow fact (never an unbounded accumulation)', async () => {
+      // The F2 buffer mirrors MAX_WRONG_JOINS: a pathological host may emit
+      // an arbitrary number of Child turn/started events that never meet
+      // their SubAgentActivity side — the buffer must hold a small named
+      // maximum (evicting the OLDEST, keeping the most recent candidate)
+      // and record the overflow as a named projected fact, never grow
+      // unbounded (previously bounded only indirectly by the launcher's
+      // stdout cap). The healthy join below proves the cap does not break
+      // the normal order-free join.
+      const overflowNotifications = [];
+      for (let index = 1; index <= 17; index += 1) {
+        overflowNotifications.push({
+          atMs: index,
+          method: 'thread/notification',
+          params: { type: 'turn/started', threadId: `overflow-child-thread-${String(index).padStart(2, '0')}`, turn: { id: `overflow-turn-${String(index).padStart(2, '0')}`, status: 'inProgress', items: [] } },
+        });
+      }
+      const { result } = await runOfflineChoreography({
+        script: {
+          notifications: [
+            ...overflowNotifications,
+            ...identityJoinNotifications({ atMs: 100 }),
+            { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+          ],
+        },
+      });
+      const states = result.states.map((entry) => entry.state);
+      assert.deepEqual(states, ['pending-window-confirmed', 'native-request-sent', 'native-resolution-observed'], 'the cap never breaks the healthy order-free join');
+      assert.equal(result.identity.childTurnId, CHILD_TURN, 'the real Child turn is still the join candidate (the most recent for its thread)');
+      assert.equal(result.block.identity.unmatchedTurnStartOverflow, true, `the named overflow fact is projected (actual ${JSON.stringify(result.block.identity)})`);
+    });
+
+    test('confirmed-window identity join: a non-started SubAgentActivity kind never joins identity and never marks the live receipt', async () => {
+      // §39.9 step 3 names kind `started` as the join source; an
+      // interacted/interrupted/completed activity item is NOT the spawn
+      // witness — it must never complete the join nor stamp the L1 receipt.
+      const { result, host } = await runOfflineChoreography({
+        script: {
+          notifications: [
+            { atMs: 100, method: 'thread/notification', params: { type: 'SubAgentActivity', threadId: PARENT_THREAD, item: { type: 'SubAgentActivity', id: 'activity-1', kind: 'interacted', agentThreadId: CHILD_THREAD, model: null } } },
+            { atMs: 110, method: 'thread/notification', params: { type: 'turn/started', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'inProgress', items: [] } } },
+            { atMs: 200, method: 'thread/notification', params: { type: 'turn/completed', threadId: PARENT_THREAD, turn: { id: 'root-turn-1', status: 'completed', items: [] } } },
+          ],
+        },
+      });
+      assert.equal(result.finalState, 'staging-not-ready');
+      assert.notEqual(result.staging.liveReceiptObserved, true, 'a non-started activity never stamps the live receipt');
+      assert.notEqual(result.staging.spawnActivityObserved, true, 'a non-started activity is never the spawn witness either (kind started is the join source)');
+      assert.equal(result.identity.childThreadId, null, 'a non-started activity never completes the identity side');
+      assert.equal(result.identity.childTurnId, null, 'the join never holds without the started witness');
+      assert.equal(host.requestLog.some((entry) => entry.method === 'turn/interrupt'), false);
+    });
+
+    test('confirmed-window identity join: two conflicting started activities leave the identity ambiguous and named-unestablished (never admitted; the consumer refuses the ambiguous record)', async () => {
+      const { result, host } = await runOfflineChoreography({
+        script: {
+          notifications: [
+            { atMs: 100, method: 'thread/notification', params: { type: 'SubAgentActivity', threadId: PARENT_THREAD, item: { type: 'SubAgentActivity', id: 'activity-1', kind: 'started', agentThreadId: CHILD_THREAD, model: null } } },
+            { atMs: 110, method: 'thread/notification', params: { type: 'SubAgentActivity', threadId: PARENT_THREAD, item: { type: 'SubAgentActivity', id: 'activity-2', kind: 'started', agentThreadId: 'ffffeeeeddddccccbbbaa998877665544', model: null } } },
+            { atMs: 120, method: 'thread/notification', params: { type: 'turn/started', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'inProgress', items: [] } } },
+            { atMs: 200, method: 'thread/notification', params: { type: 'turn/completed', threadId: PARENT_THREAD, turn: { id: 'root-turn-1', status: 'completed', items: [] } } },
+          ],
+        },
+      });
+      assert.equal(result.finalState, 'staging-not-ready', 'ambiguous identity is never admitted (§39.9 step 3: named-unestablished)');
+      const kinds = result.identity.wrongJoins.map((entry) => entry.kind);
+      assert.ok(kinds.includes('conflicting-agent-thread-id'), `the conflicting started activity is recorded (actual ${JSON.stringify(kinds)})`);
+      assert.equal(host.requestLog.some((entry) => entry.method === 'turn/interrupt'), false);
+      // The reload-side consumer refuses the ambiguous record too.
+      const evidence = await import('../tools/shell-wait-probe/native-control-evidence.mjs');
+      const ambiguous = persistedBlock(evidence, greenRuntimeSession({
+        identity: {
+          parentThreadId: PARENT_THREAD, childThreadId: CHILD_THREAD, childTurnId: CHILD_TURN,
+          joinBasis: 'SubAgentActivity.agentThreadId x turn/started.threadId', joinObservedAtMs: 120,
+          modelObserved: null,
+          wrongJoins: [{ kind: 'conflicting-agent-thread-id', atMs: 110 }],
+        },
+      }));
+      const verdict = evidence.admitConfirmedWindowNativeEvidence(ambiguous, greenDuties());
+      assert.equal(verdict.delivery.status, 'refused');
+      assert.ok(verdict.delivery.reasons.includes('identity-join-unproven'), `an ambiguous recorded join is unproven to the consumer (actual ${JSON.stringify(verdict.delivery)})`);
+    });
+
+    test('confirmed-window staging: an ambiguous identity never spends the directed continuation (the parent staging turn ending with two started activities closes staging with the ambiguous refusal)', async () => {
+      // §39.9 step 4 authorizes the ONE directed continuation only when the
+      // staging turn "produces no qualifying Child". With TWO conflicting
+      // started activities a Child exists (the identity is ambiguous, never
+      // absent) — firing the continuation would invite a THIRD Child and
+      // further pollute the identity it can never resolve.
+      const { result, host } = await runOfflineChoreography({
+        script: {
+          notifications: [
+            { atMs: 100, method: 'thread/notification', params: { type: 'SubAgentActivity', threadId: PARENT_THREAD, item: { type: 'SubAgentActivity', id: 'activity-1', kind: 'started', agentThreadId: CHILD_THREAD, model: null } } },
+            { atMs: 110, method: 'thread/notification', params: { type: 'SubAgentActivity', threadId: PARENT_THREAD, item: { type: 'SubAgentActivity', id: 'activity-2', kind: 'started', agentThreadId: 'ffffeeeeddddccccbbbaa998877665544', model: null } } },
+            { atMs: 200, method: 'thread/notification', params: { type: 'turn/completed', threadId: PARENT_THREAD, turn: { id: 'root-turn-1', status: 'completed', items: [] } } },
+          ],
+        },
+      });
+      assert.equal(result.finalState, 'staging-not-ready');
+      assert.match(String(result.refusal?.reason ?? ''), /ambiguous/u, 'staging closes with the ambiguous refusal');
+      const turnStarts = host.requestLog.filter((entry) => entry.method === 'turn/start');
+      assert.equal(turnStarts.length, 1, `the continuation is NEVER sent under an ambiguous identity (actual ${JSON.stringify(host.requestLog.map((entry) => entry.method))})`);
+      assert.equal(result.rootInputs.length, 1, 'Root inputs carry the initial staging turn only');
+      assert.notEqual(result.staging.continuationUsed, true, 'the ONE continuation stays unspent');
+      assert.equal(host.requestLog.some((entry) => entry.method === 'turn/interrupt'), false);
+      assert.ok(result.identity.wrongJoins.some((entry) => entry.kind === 'conflicting-agent-thread-id'), 'the conflicting activity is recorded');
+    });
+
+    test('confirmed-window state machine: the parent staging turn\'s completion forces ONE final positive-barrier evaluation before staging closes', async () => {
+      // The join holds and the Child turn is active when the PARENT's staging
+      // turn completes: the window may still be confirmed — the Child's
+      // pending observation does not end with the parent's turn. Closing
+      // staging without the final evaluation would burn the counted case.
+      const { result, host } = await runOfflineChoreography({
+        script: {
+          notifications: [
+            ...identityJoinNotifications({ atMs: 100 }),
+            // The PARENT's staging turn completes while the Child stays active.
+            { atMs: 200, method: 'thread/notification', params: { type: 'turn/completed', threadId: PARENT_THREAD, turn: { id: 'root-turn-1', status: 'completed', items: [] } } },
+            { atMs: 400, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+          ],
+        },
+      });
+      const states = result.states.map((entry) => entry.state);
+      assert.equal(states.includes('pending-window-confirmed'), true, `the final barrier evaluation admits the held window (actual ${JSON.stringify(states)})`);
+      assert.equal(host.requestLog.filter((entry) => entry.method === 'turn/interrupt').length, 1, 'the admitted window proceeds to its ONE delivery');
+      assert.equal(result.rootInputs.length, 1, 'no continuation was spent: the join already held');
+    });
+
+    test('confirmed-window state machine: native-resolution-observed owes BOTH the interrupted child terminal AND the resolved observation', async () => {
+      // §40.4: native-resolution-observed = the Child's own interrupted
+      // terminal AND the original observation's resolution. Child terminal
+      // alone keeps escalation at native-request-sent with the named refusal.
+      const { result } = await runOfflineChoreography({
+        script: {
+          notifications: [
+            ...identityJoinNotifications({ atMs: 100 }),
+            { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+          ],
+        },
+        observers: {
+          ...greenObservers(),
+          pendingObservation: async () => ({ confirmed: true, observedAtMs: 50, resolved: false, resolvedAtMs: null, holdDeadlineAtMs: 420_050, clockDomain: 'controller-monotonic', reason: null }),
+        },
+        dependencies: { dutyAdjudication: greenDuties() },
+      });
+      assert.equal(result.finalState, 'native-request-sent', `child terminal alone does NOT reach native-resolution-observed (actual ${result.finalState})`);
+      assert.equal(result.states.some((entry) => entry.state === 'native-resolution-observed'), false);
+      assert.match(String(result.refusal?.reason ?? ''), /observation/i, 'the refusal names the unresolved original observation');
+      assert.ok(result.evidenceVerdict.settlement.reasons.includes('missing-observation-resolution'), `the consumer names the same conjunct (actual ${JSON.stringify(result.evidenceVerdict.settlement)})`);
+    });
+
+    test('confirmed-window collection: a method-only terminal envelope (the notification METHOD carries the kind, no params.type) is still the Child resolution — both phases of ONE controller accept the same envelope spellings', async () => {
+      // (F4) The event KIND is read `params.type`-first with the notification
+      // METHOD name as fallback in BOTH phases. The staging loop already
+      // accepts the method-only spelling, so a method-only host ADMITS and
+      // the ONE interrupt is sent — a collection loop that still keys on
+      // `params.type` alone then never observes the resolution and burns the
+      // counted case post-delivery (a blast-radius regression vs the shape
+      // that failed closed at staging before any delivery).
+      const { result, host } = await runOfflineChoreography({
+        script: {
+          notifications: [
+            ...identityJoinNotifications({ atMs: 100 }),
+            // The Child's interrupted terminal WITHOUT `params.type`: the
+            // method name itself is the discriminant.
+            { atMs: 300, method: 'turn/completed', params: { threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+          ],
+        },
+      });
+      const states = result.states.map((entry) => entry.state);
+      assert.deepEqual(states, ['pending-window-confirmed', 'native-request-sent', 'native-resolution-observed'], `the method-only terminal must still be the resolution (actual ${JSON.stringify(states)}; refusal ${JSON.stringify(result.refusal)})`);
+      assert.equal(result.receipt.childResolutionAtMs, 300, 'the method-only terminal stamps the child resolution');
+      assert.equal(result.receipt.childTerminalStatus, 'interrupted');
+      assert.equal(result.receipt.childResolutionBasis, 'child-terminal-event');
+      const interrupts = host.requestLog.filter((entry) => entry.method === 'turn/interrupt');
+      assert.equal(interrupts.length, 1, 'exactly one native delivery');
+    });
+
+    test('confirmed-window collection: a late-resolving observation (resolved only AFTER the Child terminal) still reaches native-resolution-observed — the second leg stays collectable in its natural ordering', async () => {
+      // The natural late ordering: the interrupt lands, the Child turn ends,
+      // the held worker releases, and the original instrument resolves only
+      // on a read AFTER the terminal. Scripted reads (deterministic clock):
+      // call 1 = the admission barrier; calls 2 and 3 = the in-loop
+      // collection reads at 1120/2120 BEFORE the terminal at 2500 (the
+      // instrument is still unresolved: the worker has not released);
+      // call 4 = the first read AFTER the terminal was consumed.
+      let observationCalls = 0;
+      const { result } = await runOfflineChoreography({
+        script: {
+          notifications: [
+            ...identityJoinNotifications({ atMs: 100 }),
+            { atMs: 2500, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+          ],
+        },
+        observers: {
+          ...greenObservers(),
+          pendingObservation: async () => {
+            observationCalls += 1;
+            return { confirmed: true, observedAtMs: 50, resolved: observationCalls > 3, resolvedAtMs: observationCalls > 3 ? 3120 : null, holdDeadlineAtMs: 420_050, clockDomain: 'controller-monotonic', reason: null };
+          },
+        },
+      });
+      const states = result.states.map((entry) => entry.state);
+      assert.deepEqual(states, ['pending-window-confirmed', 'native-request-sent', 'native-resolution-observed'], `both legs occurred, so BOTH must be observed (actual ${JSON.stringify(states)}; refusal ${JSON.stringify(result.refusal)})`);
+      assert.equal(result.receipt.childResolutionAtMs, 2500, 'the Child terminal leg is observed');
+      assert.notEqual(result.receipt.observationResolvedAtMs, null, 'the observation leg is never abandoned after the terminal');
+      assert.ok(result.receipt.observationResolvedAtMs > result.receipt.childResolutionAtMs, `the observation resolved strictly AFTER the terminal (actual ${JSON.stringify(result.receipt)})`);
+      assert.ok(result.receipt.observationResolvedAtMs <= result.window.measurementCutoffAtMs, 'the late resolution still lands inside the measurement window');
+      assert.equal(result.refusal, null);
+    });
+
+    test('confirmed-window staging: a Child already terminal before the window refuses as the named stale-id outcome (no delivery)', async () => {
+      const { result, host } = await runOfflineChoreography({
+        script: {
+          notifications: [
+            ...identityJoinNotifications({ atMs: 100 }),
+            // The Child's turn completes BEFORE the observation ever confirmed
+            // (the unconfirmed collectors keep the barrier down): the stale-id
+            // refusal — no window, no delivery.
+            { atMs: 120, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'completed', items: [] } } },
+          ],
+        },
+        observers: {
+          ...greenObservers(),
+          pendingObservation: async () => ({ confirmed: false, observedAtMs: null, resolved: false, resolvedAtMs: null, holdDeadlineAtMs: null, clockDomain: 'controller-monotonic', reason: 'the original-handle observation never confirmed in time' }),
+        },
+      });
+      assert.equal(result.finalState, 'staging-not-ready');
+      assert.equal(result.staging.childTerminalPreAdmission, true, 'the stale-Child fact is recorded');
+      assert.match(String(result.refusal?.reason ?? ''), /terminal before the pending window/u);
+      assert.equal(host.requestLog.some((entry) => entry.method === 'turn/interrupt'), false);
+    });
+
+    test('confirmed-window staging: the initial no-call receives exactly ONE directed continuation with a CHANGED prompt on the SAME parent, and exhausting it refuses', async () => {
+      const { result, host } = await runOfflineChoreography({
+        script: {
+          notifications: [
+            // The initial staging turn produces NO qualifying Child (it ends
+            // without any SubAgentActivity/Child turn).
+            { atMs: 100, method: 'thread/notification', params: { type: 'turn/completed', threadId: PARENT_THREAD, turn: { id: 'root-turn-1', status: 'completed', items: [] } } },
+            // The continuation ALSO produces no qualifying Child.
+            { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: PARENT_THREAD, turn: { id: 'root-turn-2', status: 'completed', items: [] } } },
+          ],
+        },
+      });
+      assert.equal(result.finalState, 'staging-not-ready');
+      assert.equal(result.staging.continuationUsed, true, 'the ONE permitted continuation was spent');
+      const turnStarts = host.requestLog.filter((entry) => entry.method === 'turn/start');
+      assert.equal(turnStarts.length, 2, `exactly the initial staging and the ONE continuation (actual ${JSON.stringify(host.requestLog.map((entry) => entry.method))})`);
+      assert.deepEqual(turnStarts[1].params.input, [{ type: 'text', text: 'a CHANGED continuation prompt' }], 'the continuation is an explicitly AUTHORIZED CHANGED step, never an unchanged retry (the pinned TurnStartParams requires `input`, not `items`)');
+      assert.equal(turnStarts[1].params.threadId, PARENT_THREAD, 'the continuation rides the SAME parent thread');
+      assert.equal(result.rootInputs.length, 2, 'Root inputs stay within the ceiling');
+      assert.equal(host.requestLog.some((entry) => entry.method === 'turn/interrupt'), false);
+    });
+
+    test('confirmed-window staging: the lifecycle queue is drained BEFORE the no-spawn decision — a Root completion dequeued ahead of an ALREADY-QUEUED started activity never fires the continuation, and the ONE spawn instruction stays unspent (P1-3, round-20 codex re-review)', async () => {
+      // The reviewer's exact order finding: the round-11 childThreadId-known
+      // guard drained only when the Child id was ALREADY bound — but a
+      // Root completion dequeued BEFORE an already-queued SubAgentActivity
+      // leaves childThreadId still null at the completion's handling, the
+      // drain is skipped, and the controller fires the continuation's
+      // SECOND spawn instruction even though the first Child already
+      // exists in the queue. The queue is now drained and the identity
+      // RECHECKED before the no-spawn decision: an incomplete drain is
+      // never proof of Child absence, and the continuation fires only
+      // when the drained queue shows NO Child evidence.
+      // (1) The activity sits QUEUED BEHIND the completion (both already
+      // arrived): the drain reveals the first Child, the join completes on
+      // the Child's own later turn/started, and the case escalates over
+      // its ONE spawn instruction.
+      const { result, host } = await runOfflineChoreography({
+        script: {
+          notifications: [
+            // The parent's staging turn completes FIRST in the stream; the
+            // started activity for the FIRST Child is ALREADY QUEUED behind
+            // it (its arrival instant precedes the completion's handling).
+            { atMs: 200, method: 'thread/notification', params: { type: 'turn/completed', threadId: PARENT_THREAD, turn: { id: 'root-turn-1', status: 'completed', items: [] } } },
+            { atMs: 200, method: 'thread/notification', params: { type: 'SubAgentActivity', threadId: PARENT_THREAD, item: { type: 'SubAgentActivity', id: 'activity-1', kind: 'started', agentThreadId: CHILD_THREAD, model: null } } },
+            { atMs: 300, method: 'thread/notification', params: { type: 'turn/started', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'inProgress', items: [] } } },
+            { atMs: 400, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+          ],
+        },
+      });
+      const turnStarts = host.requestLog.filter((entry) => entry.method === 'turn/start');
+      assert.equal(turnStarts.length, 1, `the queued first Child is revealed by the drain BEFORE the no-spawn decision — the ONE spawn instruction stays unspent (actual ${JSON.stringify(host.requestLog.map((entry) => entry.method))})`);
+      assert.equal(result.rootInputs.length, 1, `Root inputs carry the initial staging turn only (actual ${JSON.stringify(result.rootInputs)})`);
+      assert.notEqual(result.staging.continuationUsed, true, 'the directed continuation is NEVER fired with a Child already queued');
+      assert.equal(result.identity.childThreadId, CHILD_THREAD, 'the drained activity binds the first Child\'s identity');
+      assert.equal(result.finalState, 'native-resolution-observed', `the case escalates over the drained identity (actual ${result.finalState}; refusal ${JSON.stringify(result.refusal)})`);
+      assert.equal(host.requestLog.filter((entry) => entry.method === 'turn/interrupt').length, 1, 'the single native delivery still happens');
+      // (2) The queued activity WITHOUT the Child's own turn/started: the
+      // drain reveals the Child but the join stays incomplete — staging
+      // keeps waiting within its deadline and the continuation stays
+      // unspent (never a second spawn, never a closed no-spawn decision).
+      const { result: waiting, host: waitingHost } = await runOfflineChoreography({
+        script: {
+          notifications: [
+            { atMs: 200, method: 'thread/notification', params: { type: 'turn/completed', threadId: PARENT_THREAD, turn: { id: 'root-turn-1', status: 'completed', items: [] } } },
+            { atMs: 200, method: 'thread/notification', params: { type: 'SubAgentActivity', threadId: PARENT_THREAD, item: { type: 'SubAgentActivity', id: 'activity-1', kind: 'started', agentThreadId: CHILD_THREAD, model: null } } },
+          ],
+        },
+      });
+      assert.equal(waitingHost.requestLog.filter((entry) => entry.method === 'turn/start').length, 1, `a drained Child with an incomplete join still never fires the continuation (actual ${JSON.stringify(waitingHost.requestLog.map((entry) => entry.method))})`);
+      assert.notEqual(waiting.staging.continuationUsed, true, 'the continuation stays unspent while the Child\'s own evidence is awaited');
+      assert.equal(waiting.identity.childThreadId, CHILD_THREAD, 'the drain still binds the revealed Child');
+      assert.equal(waiting.finalState, 'staging-not-ready', `staging closes honestly at its deadline with the join uncompleted (actual ${waiting.finalState})`);
+      assert.equal(waitingHost.requestLog.some((entry) => entry.method === 'turn/interrupt'), false, 'no delivery may follow an incomplete join');
+    });
+
+    test('confirmed-window staging: a TRANSIENT torn rollout row is an UNCONFIRMED barrier sample retried at the passive cadence — the counted case survives a mid-append read, while PERSISTENT corruption fails closed with the named refusal (P2-2, round-20 codex re-review)', async () => {
+      // The reviewer's exact finding: a staging read that catches a Root or
+      // Child rollout MID-APPEND rejects through loadShellWaitRollouts() on
+      // the incomplete JSONL row (the qualification reader's
+      // rollout-json-invalid signature), and that rejection ESCAPED
+      // boundedObserver() — the counted case ended immediately. A transient
+      // partial read is now an UNCONFIRMED barrier sample: the collector is
+      // retried at the passive-read cadence, while the SAME corrupt content
+      // across consecutive reads (the persistent-corruption cap) or past the
+      // staging deadline fails closed with the named refusal.
+      const { CodexRescueEvidenceMismatchError } = await import('../tests/helpers/codex-rescue-qualification.mjs');
+      const tornRolloutRowError = () => new CodexRescueEvidenceMismatchError('rollout-json-invalid', 'A rollout record is not valid JSON.');
+      // (1) TRANSIENT: the pending-observation collector's first read rejects
+      // with the torn-row signature (exactly what loadShellWaitRollouts
+      // rejects with when a rollout is caught mid-append); the next cadence
+      // read returns the green shape and the case escalates normally.
+      let tornReads = 0;
+      const pendingObservationWithTornFirstRead = async () => {
+        if (tornReads === 0) {
+          tornReads += 1;
+          throw tornRolloutRowError();
+        }
+        const resolvedAtMs = 5_000;
+        const current = typeof greenObservationClock.now === 'function' ? greenObservationClock.now() : null;
+        const resolved = current !== null && current >= resolvedAtMs;
+        return { confirmed: true, observedAtMs: 50, resolved, resolvedAtMs: resolved ? resolvedAtMs : null, holdDeadlineAtMs: 420_050, clockDomain: 'controller-monotonic', reason: null };
+      };
+      const { result, host } = await runOfflineChoreography({
+        script: {
+          notifications: [
+            ...identityJoinNotifications({ atMs: 100 }),
+            // The Child's interrupted terminal lands AFTER the cadence
+            // retry admits the window (the mid-append read delayed the
+            // admission by one passive-read cadence).
+            { atMs: 5_000, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+          ],
+        },
+        observers: {
+          ...greenObservers(),
+          pendingObservation: pendingObservationWithTornFirstRead,
+        },
+      });
+      assert.equal(result.finalState, 'native-resolution-observed', `a transient torn read never ends the counted case — the cadence retry escalates normally (actual ${result.finalState}; refusal ${JSON.stringify(result.refusal)})`);
+      assert.equal(tornReads, 1, `exactly the ONE transient torn read was consumed and retried (actual ${String(tornReads)})`);
+      assert.equal(host.requestLog.filter((entry) => entry.method === 'turn/interrupt').length, 1, 'the single native delivery still happens after the cadence retry');
+      // (2) PERSISTENT: the same corrupt content across consecutive reads —
+      // the bounded cap fails the case closed with the NAMED refusal, never
+      // an immediate end on the first rejection.
+      let persistentReads = 0;
+      const { result: persistent, host: persistentHost } = await runOfflineChoreography({
+        script: {
+          notifications: [...identityJoinNotifications({ atMs: 100 })],
+        },
+        observers: {
+          ...greenObservers(),
+          pendingObservation: async () => {
+            persistentReads += 1;
+            throw tornRolloutRowError();
+          },
+        },
+      });
+      assert.equal(persistent.finalState, 'staging-not-ready', `persistent corruption fails the counted case closed (actual ${persistent.finalState})`);
+      assert.equal(persistentReads, 3, `the bounded consecutive reads were consumed before the refusal (actual ${String(persistentReads)})`);
+      assert.match(String(persistent.refusal?.reason ?? ''), /stayed corrupt|persistent rollout corruption/u, `the refusal NAMES the persistent corruption (actual ${JSON.stringify(persistent.refusal)})`);
+      assert.equal(persistentHost.requestLog.some((entry) => entry.method === 'turn/interrupt'), false, 'no delivery may follow a persistently corrupt rollout read');
+    });
+
+    test('confirmed-window staging: a missing control, an unestablished ancestry, unobservable duties, and an unconfirmed pending observation each refuse BY NAME before any native delivery (structural setup success never manufactures readiness)', async () => {
+      const joinScript = {
+        notifications: [
+          ...identityJoinNotifications({ atMs: 100 }),
+          { atMs: 150, method: 'thread/notification', params: { type: 'turn/completed', threadId: PARENT_THREAD, turn: { id: 'root-turn-1', status: 'completed', items: [] } } },
+        ],
+      };
+      const scenarios = [
+        {
+          name: 'control-inactive',
+          observers: { ...greenObservers(), controlFacts: async () => ({ active: false, freshAtMs: null, declaredLifetimeMs: null, clockDomain: 'controller-monotonic', reason: 'the unrelated control was never started' }) },
+          pattern: /unrelated control was never active/u,
+        },
+        {
+          name: 'ancestry-unestablished',
+          observers: { ...greenObservers(), ancestryBaseline: async () => ({ established: false, digest: null, hops: { launcherToBroker: false, brokerToTransport: false }, clockDomain: 'controller-monotonic', reason: 'the generation/ancestry witness never established' }) },
+          pattern: /ancestry baseline never held/u,
+        },
+        {
+          name: 'duties-unobservable',
+          observers: { ...greenObservers(), dutyFacts: async () => ({ observable: false, duties: null, clockDomain: 'controller-monotonic', reason: 'no applicable duty was observable' }) },
+          pattern: /duties were never observable/u,
+        },
+        {
+          name: 'pending-unconfirmed',
+          observers: { ...greenObservers(), pendingObservation: async () => ({ confirmed: false, observedAtMs: null, resolved: false, resolvedAtMs: null, holdDeadlineAtMs: null, clockDomain: 'controller-monotonic', reason: 'the original-handle observation never confirmed' }) },
+          pattern: /pending ORIGINAL observation never confirmed/u,
+        },
+      ];
+      for (const scenario of scenarios) {
+        const { result, host } = await runOfflineChoreography({ script: joinScript, observers: scenario.observers });
+        assert.equal(result.finalState, 'staging-not-ready', `${scenario.name}: the named refusal state`);
+        assert.match(String(result.refusal?.reason ?? ''), scenario.pattern, `${scenario.name}: the refusal names its conjunct`);
+        assert.equal(host.requestLog.some((entry) => entry.method === 'turn/interrupt'), false, `${scenario.name}: initialize/thread/start/turn/start all succeeded, yet no native delivery may follow`);
+        assert.equal(host.disposed, true, `${scenario.name}: the refusal still disposes safely`);
+      }
+    });
+
+    test('confirmed-window staging: incomplete duty baselines never consume the bounded case — a collector naming only job is not admissible even when it claims observable, and the missing slots are named (P2-2, 2026-11-19 codex review)', async () => {
+      // The reviewer's exact offline reproduction: the live composition
+      // returned `observable: true` whenever even ONE duty slot was present
+      // and the barrier accepted the boolean without checking the mandatory
+      // names — a collector returning only `duties: ['job']` consumed the
+      // single interrupt attempt despite missing the local and durable
+      // baselines. Admission now requires ALL registered applicable baseline
+      // slots (the frozen seven-slot set) at the barrier AND in the live
+      // composition's observable fact.
+      const { result, host } = await runOfflineChoreography({
+        script: {
+          notifications: [
+            ...identityJoinNotifications({ atMs: 100 }),
+            { atMs: 150, method: 'thread/notification', params: { type: 'turn/completed', threadId: PARENT_THREAD, turn: { id: 'root-turn-1', status: 'completed', items: [] } } },
+          ],
+        },
+        observers: {
+          ...greenObservers(),
+          dutyFacts: async () => ({ observable: true, duties: ['job'], clockDomain: 'controller-monotonic', reason: null }),
+        },
+      });
+      assert.equal(host.requestLog.some((entry) => entry.method === 'turn/interrupt'), false, `incomplete instrumentation never consumes the single interrupt attempt (actual ${JSON.stringify(host.requestLog.map((entry) => entry.method))})`);
+      assert.equal(result.nativeRequest.attemptCount, 0, 'no delivery attempt was recorded');
+      assert.equal(result.finalState, 'staging-not-ready');
+      assert.match(String(result.refusal?.reason ?? ''), /missing: .*invocation/u, `the refusal names the missing mandatory slots (actual ${String(result.refusal?.reason ?? '')})`);
+      assert.equal(host.disposed, true, 'the refusal still disposes safely');
+    });
+
+    test('confirmed-window admission: the queued-event drain CONTINUES after a parent completion — a Child completion queued behind it still vetoes the delivery before the attempt is consumed (P2-1, 2026-11-19 codex re-review)', async () => {
+      // The reviewer's exact offline reproduction: a queued parent
+      // completion at 130 ms preceded a queued Child completion at 140 ms;
+      // the drain returned at the parent event and admission treated the
+      // partially drained queue as acceptable — the controller sent its
+      // single interrupt against the already-terminal Child. The drain now
+      // continues past the parent completion so subsequent terminal or
+      // conflicting-identity evidence can still veto.
+      const { result, host } = await runOfflineChoreography({
+        script: {
+          replies: parentSessionReplies(),
+          refuseMethods: { 'turn/interrupt': 'expected active turn id child-turn-1 but found none' },
+          notifications: [
+            { atMs: 100, method: 'thread/started', params: { threadId: PARENT_THREAD } },
+            { atMs: 110, method: 'thread/notification', params: { type: 'SubAgentActivity', threadId: PARENT_THREAD, item: { type: 'SubAgentActivity', id: 'activity-1', kind: 'started', agentThreadId: CHILD_THREAD, model: 'gpt-5.1', reasoningEffort: 'high' } } },
+            { atMs: 120, method: 'thread/notification', params: { type: 'turn/started', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'inProgress', items: [] } } },
+            // The queued PARENT completion (130) precedes the queued CHILD
+            // completion (140) — both already delivered when the collectors
+            // finish at ~150.
+            { atMs: 130, method: 'thread/notification', params: { type: 'turn/completed', threadId: PARENT_THREAD, turn: { id: 'root-turn-1', status: 'completed', items: [] } } },
+            { atMs: 140, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+          ],
+        },
+        // The collectors finish at 150 so both completions are due at the
+        // admission drain.
+        observers: {
+          ...greenObservers(),
+          pendingObservation: async () => {
+            greenObservationClock.clock?.advanceTo?.(150);
+            return greenObservers().pendingObservation();
+          },
+        },
+      });
+      assert.equal(host.requestLog.some((entry) => entry.method === 'turn/interrupt'), false, `the drain continues past the parent completion and the Child terminal vetoes the delivery (actual ${JSON.stringify(host.requestLog.map((entry) => entry.method))})`);
+      assert.equal(result.nativeRequest.attemptCount, 0, 'the single attempt is never consumed against the terminal Child');
+      assert.equal(result.staging.childTerminalPreAdmission, true, 'the pre-admission terminal refusal is recorded by name');
+      assert.equal(result.finalState, 'staging-not-ready');
+      assert.match(String(result.refusal?.reason ?? ''), /terminal/u, `the refusal names the pre-admission terminal (actual ${String(result.refusal?.reason ?? '')})`);
+      assert.equal(host.disposed, true, 'the refusal still disposes safely');
+    });
+
+    test('confirmed-window admission: the COMPLETE identity predicate is rechecked after the queued-event drain — a conflicting started activity arriving during collector reads vetoes the delivery before the attempt is consumed (P2-2, 2026-11-19 codex re-review)', async () => {
+      // The reviewer's exact offline reproduction: a conflicting started
+      // activity queued behind the join is processed BY the drain and sets
+      // joinAmbiguous, but the admission still returned admitted (only Child
+      // terminals vetoed) — the interrupt was sent with joinAmbiguous: true
+      // and the replay refused it only after the single attempt was consumed.
+      const { result, host } = await runOfflineChoreography({
+        script: {
+          replies: parentSessionReplies(),
+          refuseMethods: { 'turn/interrupt': 'expected active turn id child-turn-1 but found none' },
+          notifications: [
+            { atMs: 100, method: 'thread/started', params: { threadId: PARENT_THREAD } },
+            { atMs: 110, method: 'thread/notification', params: { type: 'SubAgentActivity', threadId: PARENT_THREAD, item: { type: 'SubAgentActivity', id: 'activity-1', kind: 'started', agentThreadId: CHILD_THREAD, model: 'gpt-5.1', reasoningEffort: 'high' } } },
+            { atMs: 120, method: 'thread/notification', params: { type: 'turn/started', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'inProgress', items: [] } } },
+            // The CONFLICTING started activity, already queued behind the
+            // join: two started activities name two different Children.
+            { atMs: 120, method: 'thread/notification', params: { type: 'SubAgentActivity', threadId: PARENT_THREAD, item: { type: 'SubAgentActivity', id: 'activity-2', kind: 'started', agentThreadId: '0f0e0d0c0b0a69688796a5b4c3d2e1f0', model: 'gpt-5.1', reasoningEffort: 'high' } } },
+          ],
+        },
+      });
+      assert.equal(host.requestLog.some((entry) => entry.method === 'turn/interrupt'), false, `the ambiguous identity vetoes the delivery before any attempt (actual ${JSON.stringify(host.requestLog.map((entry) => entry.method))})`);
+      assert.equal(result.nativeRequest.attemptCount, 0, 'the single attempt is never consumed on an ambiguous identity');
+      assert.equal(result.identity.wrongJoins.some((entry) => entry.kind === 'conflicting-agent-thread-id'), true, 'the conflicting activity is recorded');
+      assert.equal(result.finalState, 'staging-not-ready');
+      assert.match(String(result.refusal?.reason ?? ''), /ambiguous/u, `the refusal names the ambiguous identity (actual ${String(result.refusal?.reason ?? '')})`);
+      assert.equal(host.disposed, true, 'the refusal still disposes safely');
+    });
+
+    test('confirmed-window admission: exhausting the drain event cap FAILS CLOSED — a queued Child terminal behind capped ordinary notifications is never certified clear and the attempt is never consumed (P2-3, 2026-11-19 codex re-review)', async () => {
+      // The reviewer's exact offline reproduction: 64 ordinary notifications
+      // preceding an already-queued Child terminal exhausted the drain loop,
+      // which returned clear WITHOUT examining the terminal — the interrupt
+      // was sent against the completed turn. Reaching the cap now refuses
+      // pre-admission by name (the incomplete drain); it never certifies
+      // queued lifecycle evidence as clear.
+      const fillerNotifications = Array.from({ length: 64 }, (_, index) => ({
+        atMs: 120,
+        method: 'thread/notification',
+        params: { type: 'state.updated', threadId: PARENT_THREAD, revision: index },
+      }));
+      const { result, host } = await runOfflineChoreography({
+        script: {
+          replies: parentSessionReplies(),
+          refuseMethods: { 'turn/interrupt': 'expected active turn id child-turn-1 but found none' },
+          notifications: [
+            { atMs: 100, method: 'thread/started', params: { threadId: PARENT_THREAD } },
+            { atMs: 110, method: 'thread/notification', params: { type: 'SubAgentActivity', threadId: PARENT_THREAD, item: { type: 'SubAgentActivity', id: 'activity-1', kind: 'started', agentThreadId: CHILD_THREAD, model: 'gpt-5.1', reasoningEffort: 'high' } } },
+            { atMs: 120, method: 'thread/notification', params: { type: 'turn/started', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'inProgress', items: [] } } },
+            ...fillerNotifications,
+            { atMs: 190, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+          ],
+        },
+      });
+      assert.equal(host.requestLog.some((entry) => entry.method === 'turn/interrupt'), false, `the capped drain never certifies the queue clear (actual ${JSON.stringify(host.requestLog.map((entry) => entry.method))})`);
+      assert.equal(result.nativeRequest.attemptCount, 0, 'the single attempt is never consumed against an unexamined queue');
+      assert.equal(result.finalState, 'staging-not-ready');
+      assert.match(String(result.refusal?.reason ?? ''), /incomplete|drain/u, `the refusal names the incomplete admission drain (actual ${String(result.refusal?.reason ?? '')})`);
+      assert.equal(host.disposed, true, 'the refusal still disposes safely');
+    });
+
+    test('confirmed-window staging: AVAILABLE queued lifecycle events are drained and the exact active turn revalidated BEFORE admission — a Child completion already queued behind the join refuses pre-admission by name WITHOUT consuming the attempt (P2-3, 2026-11-19 codex review)', async () => {
+      // The reviewer's exact offline reproduction: the controller admitted
+      // immediately after consuming the matching Child start, without
+      // processing the terminal notification already queued behind it — it
+      // sent turn/interrupt and received stale-turn-target, consuming the
+      // only attempt instead of recording the pre-admission terminal refusal.
+      // The Child completion rides the SAME scripted instant as the joining
+      // turn/started (after it in insertion order): it is ALREADY QUEUED when
+      // the positive barrier holds, so the pre-admission drain must observe
+      // it before any delivery.
+      const { result, host } = await runOfflineChoreography({
+        script: {
+          replies: parentSessionReplies(),
+          refuseMethods: { 'turn/interrupt': 'expected active turn id child-turn-1 but found none (the turn already reached terminal)' },
+          notifications: [
+            { atMs: 100, method: 'thread/started', params: { threadId: PARENT_THREAD } },
+            { atMs: 110, method: 'thread/notification', params: { type: 'SubAgentActivity', threadId: PARENT_THREAD, item: { type: 'SubAgentActivity', id: 'activity-1', kind: 'started', agentThreadId: CHILD_THREAD, model: 'gpt-5.1', reasoningEffort: 'high' } } },
+            { atMs: 120, method: 'thread/notification', params: { type: 'turn/started', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'inProgress', items: [] } } },
+            { atMs: 120, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+          ],
+        },
+      });
+      assert.equal(host.requestLog.some((entry) => entry.method === 'turn/interrupt'), false, `the queued terminal vetoes admission before any delivery (actual ${JSON.stringify(host.requestLog.map((entry) => entry.method))})`);
+      assert.equal(result.nativeRequest.attemptCount, 0, 'the single attempt is never consumed by a stale target');
+      assert.equal(result.staging.childTerminalPreAdmission, true, 'the pre-admission terminal refusal is recorded by name');
+      assert.equal(result.finalState, 'staging-not-ready');
+      assert.match(String(result.refusal?.reason ?? ''), /terminal/u, `the refusal names the pre-admission terminal (actual ${String(result.refusal?.reason ?? '')})`);
+      assert.equal(host.disposed, true, 'the refusal still disposes safely');
+    });
+
+    test('confirmed-window staging: an observation without an operative measurement window never admits (the window conjunct is load-bearing)', async () => {
+      const { result, host } = await runOfflineChoreography({
+        script: {
+          notifications: [
+            ...identityJoinNotifications({ atMs: 100 }),
+            { atMs: 150, method: 'thread/notification', params: { type: 'turn/completed', threadId: PARENT_THREAD, turn: { id: 'root-turn-1', status: 'completed', items: [] } } },
+          ],
+        },
+        observers: {
+          ...greenObservers(),
+          // The observation confirmed but carries NO hold deadline: the
+          // operative measurement window can never open.
+          pendingObservation: async () => ({ confirmed: true, observedAtMs: 50, resolved: false, resolvedAtMs: null, holdDeadlineAtMs: null, clockDomain: 'controller-monotonic', reason: null }),
+        },
+      });
+      assert.equal(result.finalState, 'staging-not-ready');
+      assert.match(String(result.refusal?.reason ?? ''), /measurement window/u);
+      assert.equal(host.requestLog.some((entry) => entry.method === 'turn/interrupt'), false);
+    });
+
+    test('confirmed-window staging: an observation that has ALREADY resolved never admits (historical confirmation is not proof the observation is STILL pending, round-3 P2-1)', async () => {
+      // A pending observer returning confirmed:true AND resolved:true used to
+      // admit the delivery provided the hold deadline stayed future — the
+      // single interrupt was consumed against an observation that had already
+      // ended (in-memory: resolution at 16 ms, interrupt at 20 ms).
+      const { result, host } = await runOfflineChoreography({
+        script: {
+          // The Child turn STAYS ACTIVE: the resolved-observation fact is the
+          // failing conjunct (the stale-id refusal must not mask it).
+          notifications: [...identityJoinNotifications({ atMs: 10 })],
+        },
+        observers: {
+          ...greenObservers(),
+          pendingObservation: async () => ({ confirmed: true, observedAtMs: 16, resolved: true, resolvedAtMs: 16, holdDeadlineAtMs: 420_016, clockDomain: 'controller-monotonic', reason: null }),
+        },
+      });
+      assert.equal(result.finalState, 'staging-not-ready', `an already-resolved observation never admits (actual ${result.finalState}: ${JSON.stringify(result.refusal)})`);
+      assert.match(String(result.refusal?.reason ?? ''), /already resolved|STILL pending/u, 'the refusal names the resolved-before-admission fact');
+      assert.equal(host.requestLog.some((entry) => entry.method === 'turn/interrupt'), false, 'the single interrupt attempt is never consumed');
+    });
+
+    test('confirmed-window admission: the control freshness and declared lifetime are evaluated at the POST-COLLECTION time, not the pre-read stamp (round-3 P2-2)', async () => {
+      // A collector that takes longer than the freshness cadence / remaining
+      // lifetime: the predicates used the stamp captured BEFORE the four
+      // async reads, so delivery happened after both had expired (the
+      // collector advancing the clock 20 → 2020 ms with freshness 20 and
+      // lifetime 1000 still delivered).
+      const { result, host } = await runOfflineChoreography({
+        script: {
+          // The Child turn STAYS ACTIVE: the recomputed freshness miss is the
+          // failing conjunct (the stale-id refusal must not mask it).
+          notifications: [...identityJoinNotifications({ atMs: 10 })],
+        },
+        observers: {
+          ...greenObservers(),
+          controlFacts: async () => { greenObservationClock.clock?.advanceTo(2020); return { active: true, freshAtMs: 20, declaredLifetimeMs: 1000, clockDomain: 'controller-monotonic', reason: null }; },
+        },
+      });
+      assert.equal(result.finalState, 'staging-not-ready', `an expired-at-read control never admits (actual ${result.finalState}: ${JSON.stringify(result.refusal)})`);
+      assert.match(String(result.refusal?.reason ?? ''), /no fresh evidence at admission|exhausted at request/u, 'the refusal names the recomputed freshness/lifetime miss');
+      assert.equal(host.requestLog.some((entry) => entry.method === 'turn/interrupt'), false);
+    });
+
+    test('confirmed-window staging: the directed continuation is bounded by the staging deadline like the initial setup (round-4 P2)', async () => {
+      // A parent turn completing exactly AT the staging bound used to send
+      // the ONE directed continuation past the allowance: the continuation
+      // bypassed the setup bounding entirely.
+      const { result, host } = await runOfflineChoreography({
+        script: {
+          notifications: [
+            // No Child at all; the parent's staging turn completes exactly at
+            // the staging bound (the loop delivers events AT the deadline).
+            { atMs: 180_000, method: 'thread/notification', params: { type: 'turn/completed', threadId: PARENT_THREAD, turn: { id: 'root-turn-1', status: 'completed', items: [] } } },
+          ],
+        },
+      });
+      assert.equal(result.finalState, 'staging-not-ready');
+      const turnStarts = host.requestLog.filter((entry) => entry.method === 'turn/start');
+      assert.equal(turnStarts.length, 1, `no continuation is ever sent past the staging allowance (actual ${JSON.stringify(host.requestLog.map((entry) => entry.method))})`);
+      assert.match(String(result.refusal?.reason ?? ''), /staging readiness bound/u, `the refusal names the staging bound (actual ${String(result.refusal?.reason ?? '')})`);
+    });
+
+    test('confirmed-window staging: the setup requests are bounded by the staging deadline — no protocol work starts or continues past the staging allowance (round-3 P2-3)', async () => {
+      // Slow initialization completing at 200000 ms: thread/start and the
+      // staging turn/start used to be sent AFTER the 180000 ms staging bound
+      // had expired.
+      const { result, host } = await runOfflineChoreography({
+        script: {
+          requestDelayMs: 200_000,
+          replies: parentSessionReplies(),
+          notifications: [],
+        },
+      });
+      assert.equal(result.finalState, 'staging-not-ready');
+      assert.match(String(result.refusal?.reason ?? ''), /staging readiness bound/u, `the refusal names the staging bound (actual ${String(result.refusal?.reason ?? '')})`);
+      const methods = host.requestLog.map((entry) => entry.method);
+      assert.equal(methods.includes('initialize'), true, 'the initialize request itself was issued');
+      assert.equal(methods.includes('thread/start'), false, `no thread/start was sent past the staging bound (actual ${JSON.stringify(methods)})`);
+      assert.equal(methods.includes('turn/start'), false, 'no staging turn was started past the staging bound');
+      assert.equal(host.disposed, true, 'the host is still disposed deterministically');
+    });
+
+    test('confirmed-window delivery: a rejected request keeps its attributable initiation bounds — the rejection time is NEVER substituted as the send stamp (round-3 P2-5)', async () => {
+      // The interrupt was initiated at 20 ms and the rejection arrived at
+      // 5020 ms: the old fallback recorded the REJECTION time as the
+      // persisted initiation; a write failure fabricated a send stamp the
+      // same way. An unattributable initiation stays explicitly unsent.
+      const { result, host } = await runOfflineChoreography({
+        script: {
+          notifications: [...identityJoinNotifications({ atMs: 10 })],
+          requestDelayMs: 5000,
+          refuseMethods: { 'turn/interrupt': 'expected active turn id child-turn-1 but found child-turn-0' },
+          replies: parentSessionReplies(),
+        },
+        // The observation is STILL PENDING throughout this scenario (the
+        // delayed rejection must not race the scripted resolution instant).
+        observers: {
+          ...greenObservers(),
+          pendingObservation: async () => ({ confirmed: true, observedAtMs: 16, resolved: false, resolvedAtMs: null, holdDeadlineAtMs: 420_016, clockDomain: 'controller-monotonic', reason: null }),
+        },
+      });
+      assert.equal(result.nativeRequest.outcome, 'stale-turn-target');
+      // (round-4 P2) the attributable bounds SURVIVE the rejection: the send
+      // stamp is the REAL initiation (never the rejection time), and the
+      // rejection arrival rides with it.
+      const interruptEntry = host.requestLog.find((entry) => entry.method === 'turn/interrupt');
+      assert.ok(interruptEntry, 'the interrupt was issued');
+      assert.equal(result.nativeRequest.sentAtMs, interruptEntry.sentAtMs, `the initiation stamp is preserved (actual ${String(result.nativeRequest.sentAtMs)} vs ${String(interruptEntry.sentAtMs)})`);
+      assert.equal(result.nativeRequest.repliedAtMs, interruptEntry.repliedAtMs, 'the rejection arrival stamp is preserved');
+      assert.ok(result.nativeRequest.repliedAtMs > result.nativeRequest.sentAtMs, 'the rejection is later than the initiation (the rejection time is never substituted as the send stamp)');
+      assert.match(String(result.refusal?.reason ?? ''), /not delivered/);
+      assert.equal(host.requestLog.filter((entry) => entry.method === 'turn/interrupt').length, 1);
+    });
+
+    test('confirmed-window admission: the parent-completion final evaluation SCHEDULES at the next permitted passive-read time — the 1000 ms floor is never bypassed (round-3 P2-7)', async () => {
+      greenObservationClock.reads = [];
+      // Join at 100 ms + parent completion at 130 ms: the forced barrier(true)
+      // reread every collector immediately after a recent evaluation — two
+      // pending-observation reads 10 ms apart, violating the passive-read
+      // floor. The final evaluation now waits for the next permitted slot.
+      const { result, host } = await runOfflineChoreography({
+        script: {
+          notifications: [
+            ...identityJoinNotifications({ atMs: 100 }),
+            { atMs: 130, method: 'thread/notification', params: { type: 'turn/completed', threadId: PARENT_THREAD, turn: { id: 'root-turn-1', status: 'completed', items: [] } } },
+            { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+          ],
+        },
+        observers: {
+          ...greenObservers(),
+          pendingObservation: async () => {
+            const current = greenObservationClock.now?.() ?? 0;
+            (greenObservationClock.reads ??= []).push(current);
+            return { confirmed: true, observedAtMs: 50, resolved: current >= 320, resolvedAtMs: current >= 320 ? 320 : null, holdDeadlineAtMs: 420_050, clockDomain: 'controller-monotonic', reason: null };
+          },
+        },
+      });
+      const reads = greenObservationClock.reads ?? [];
+      assert.ok(reads.length >= 2, `the collectors were read at least twice (actual ${JSON.stringify(reads)})`);
+      assert.ok(reads[1] - reads[0] >= 1000, `consecutive pending-observation reads respect the 1000 ms passive-read floor (actual ${JSON.stringify(reads)})`);
+      assert.equal(result.states.some((entry) => entry.state === 'pending-window-confirmed'), true, 'the scheduled final evaluation still admits the held window');
+      assert.equal(host.requestLog.filter((entry) => entry.method === 'turn/interrupt').length, 1);
+    });
+
+    test('confirmed-window admission: the pending state is evaluated LAST so a slow collector cannot consume the interrupt outside the pending window (round-4 P2)', async () => {
+      // The original observation ended at 200 ms; a SLOW ancestry read
+      // advanced the clock to 1110 ms BEFORE the pending snapshot was read —
+      // the stale not-resolved snapshot still admitted the delivery at 1110
+      // ms, outside the observation's pending window. The pending observation
+      // is read LAST (immediately before admission), so its snapshot is the
+      // freshest evidence the evaluation can have.
+      const { result, host } = await runOfflineChoreography({
+        script: {
+          notifications: [...identityJoinNotifications({ atMs: 10 })],
+        },
+        observers: {
+          ...greenObservers(),
+          ancestryBaseline: async () => { greenObservationClock.clock?.advanceTo(1110); return { established: true, digest: 'a'.repeat(64), hops: { launcherToBroker: true, brokerToTransport: true }, clockDomain: 'controller-monotonic', reason: null }; },
+          pendingObservation: async () => {
+            const current = greenObservationClock.now?.() ?? 0;
+            return { confirmed: true, observedAtMs: 50, resolved: current >= 200, resolvedAtMs: current >= 200 ? 200 : null, holdDeadlineAtMs: 420_050, clockDomain: 'controller-monotonic', reason: null };
+          },
+        },
+      });
+      assert.equal(result.finalState, 'staging-not-ready', `a delivery outside the pending window never admits (actual ${result.finalState}: ${JSON.stringify(result.refusal)})`);
+      assert.match(String(result.refusal?.reason ?? ''), /already resolved|STILL pending/u, 'the refusal names the resolved-before-admission fact');
+      assert.equal(host.requestLog.some((entry) => entry.method === 'turn/interrupt'), false, 'the single interrupt attempt is never consumed outside the pending window');
+    });
+
+    test('confirmed-window staging: the barrier observers are BOUNDED by the remaining deadlines and admission RECHECKS the staging deadline before any delivery (round-2 P1)', async () => {
+      // (a) A never-resolving collector cannot hold the choreography past its
+      // deadlines: the run still completes with the named refusal and safe
+      // disposal (previously the barrier awaited the collector forever).
+      const confirmedWindow = await import('../tools/shell-wait-probe/confirmed-window.mjs');
+      const hungHost = fakeConfirmedWindowHost({
+        replies: parentSessionReplies(),
+        notifications: [...identityJoinNotifications({ atMs: 100 })],
+      });
+      const hungFixture = {
+        workspace: '/private/tmp/confirmed-window-offline-workspace',
+        codexHome: '/private/tmp/confirmed-window-offline-codex-home',
+        installedRoot: '/private/tmp/confirmed-window-offline-installed',
+        env: { CODEX_HOME: '/private/tmp/confirmed-window-offline-codex-home', HOME: '/private/tmp/confirmed-window-offline-home' },
+        record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
+        dispose: async () => {},
+      };
+      const hungOutcome = await Promise.race([
+        confirmedWindow.runConfirmedWindowChoreography({
+          case: 'rescue-interrupt', codexBinary: process.execPath, sourceSha: 'a'.repeat(40),
+          // A small case budget keeps the REAL-timer deadline signal (the
+          // bounding default, computed from the injected clock) fast offline.
+          output: '/private/tmp/confirmed-window-offline-output', budgetMs: 500, workerDurationMs: 420_000,
+          stagingPrompt: 'staging prompt with the control directive', continuationPrompt: 'a CHANGED continuation prompt',
+          fixture: hungFixture,
+        }, {
+          now: hungHost.clock.now, wallClockNow: hungHost.clock.wallClockNow, sleep: hungHost.clock.sleep,
+          launchConfirmedWindowHost: hungHost.factory,
+          observers: { ...greenObservers(), pendingObservation: () => new Promise(() => {}) },
+        }).then(() => 'completed', () => 'completed'),
+        new Promise((resolve) => { const timer = setTimeout(() => resolve('hung'), 1500); timer.unref?.(); }),
+      ]);
+      assert.notEqual(hungOutcome, 'hung', 'a never-resolving collector must not hold the choreography past its deadlines');
+      // (b) A collector that completes AFTER the staging bound (advancing the
+      // shared clock to 180001 ms) can never cause an interrupt: admission
+      // rechecks the staging deadline BEFORE the delivery.
+      const lateHost = fakeConfirmedWindowHost({
+        replies: parentSessionReplies(),
+        notifications: [...identityJoinNotifications({ atMs: 100 })],
+      });
+      const lateFixture = JSON.parse(JSON.stringify({ workspace: '/private/tmp/confirmed-window-offline-workspace', codexHome: '/private/tmp/confirmed-window-offline-codex-home', installedRoot: '/private/tmp/confirmed-window-offline-installed', env: { CODEX_HOME: '/private/tmp/confirmed-window-offline-codex-home', HOME: '/private/tmp/confirmed-window-offline-home' }, record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] }, dispose: async () => {} }));
+      const lateResult = await confirmedWindow.runConfirmedWindowChoreography({
+        case: 'rescue-interrupt', codexBinary: process.execPath, sourceSha: 'a'.repeat(40),
+        output: '/private/tmp/confirmed-window-offline-output', budgetMs: 720_000, workerDurationMs: 420_000,
+        stagingPrompt: 'staging prompt with the control directive', continuationPrompt: 'a CHANGED continuation prompt',
+        fixture: lateFixture,
+      }, {
+        now: lateHost.clock.now, wallClockNow: lateHost.clock.wallClockNow, sleep: lateHost.clock.sleep,
+        waitUntil: lateHost.clock.waitUntil, launchConfirmedWindowHost: lateHost.factory,
+        observers: {
+          pendingObservation: async () => { lateHost.clock.advanceTo(180_001); return { confirmed: true, observedAtMs: 180_001, resolved: false, resolvedAtMs: null, holdDeadlineAtMs: 600_001, clockDomain: 'controller-monotonic', reason: null }; },
+          ancestryBaseline: greenObservers().ancestryBaseline,
+          dutyFacts: greenObservers().dutyFacts,
+          controlFacts: async () => ({ active: true, freshAtMs: lateHost.clock.now(), declaredLifetimeMs: 120_000, clockDomain: 'controller-monotonic', reason: null }),
+        },
+      });
+      assert.equal(lateResult.finalState, 'staging-not-ready', `a post-deadline barrier completion never admits (actual ${lateResult.finalState}: ${JSON.stringify(lateResult.refusal)})`);
+      assert.equal(lateHost.requestLog.some((entry) => entry.method === 'turn/interrupt'), false, 'no delivery past the staging deadline');
+    });
+
+    test('confirmed-window resources: the horizon collection and the disposal error paths ride the SAME redaction boundary (round-2 P2, redaction)', async () => {
+      const confirmedWindow = await import('../tools/shell-wait-probe/confirmed-window.mjs');
+      const privatePath = '/private/tmp/confirmed-window-offline-codex-home';
+      const redact = (error) => String(error instanceof Error ? error.message : error).split(privatePath).join('<redacted>');
+      // (a) a horizon collector failure carrying a fixture-private path.
+      const horizonHost = fakeConfirmedWindowHost({
+        replies: parentSessionReplies(),
+        notifications: [
+          ...identityJoinNotifications({ atMs: 100 }),
+          { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+        ],
+      });
+      let horizonReads = 0;
+      const horizonFixture = { workspace: '/private/tmp/confirmed-window-offline-workspace', codexHome: privatePath, installedRoot: '/private/tmp/confirmed-window-offline-installed', env: { CODEX_HOME: privatePath, HOME: '/private/tmp/confirmed-window-offline-home' }, record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] }, dispose: async () => {} };
+      const horizonResult = await confirmedWindow.runConfirmedWindowChoreography({
+        case: 'rescue-interrupt', codexBinary: process.execPath, sourceSha: 'a'.repeat(40),
+        output: '/private/tmp/confirmed-window-offline-output', budgetMs: 720_000, workerDurationMs: 420_000,
+        stagingPrompt: 'staging prompt with the control directive', continuationPrompt: 'a CHANGED continuation prompt',
+        fixture: horizonFixture,
+      }, {
+        now: horizonHost.clock.now, wallClockNow: horizonHost.clock.wallClockNow, sleep: horizonHost.clock.sleep,
+        waitUntil: horizonHost.clock.waitUntil, launchConfirmedWindowHost: horizonHost.factory,
+        observers: { ...greenObservers(), pendingObservation: async () => { horizonReads += 1; if (horizonReads > 2) throw new Error(`the collector failed against ${privatePath} (fs error)`); return greenObservers().pendingObservation(); } },
+        dutyAdjudication: greenDuties(),
+        redact,
+      });
+      assert.ok(horizonResult.inconclusive !== null, 'the horizon collector failure is recorded as inconclusive');
+      assert.doesNotMatch(String(horizonResult.inconclusive.reason), /confirmed-window-offline-codex-home/u, `the private path never enters the inconclusive reason (actual ${String(horizonResult.inconclusive.reason)})`);
+      assert.match(String(horizonResult.inconclusive.reason), /<redacted>/u, 'the redaction boundary rode the horizon failure');
+      // (b) a connection close failure carrying a fixture-private path.
+      const closeHost = fakeConfirmedWindowHost({
+        replies: parentSessionReplies(),
+        notifications: [
+          ...identityJoinNotifications({ atMs: 100 }),
+          { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+        ],
+      });
+      closeHost.connection.close = async () => { throw new Error(`close failed against ${privatePath}`); };
+      const closeFixture = { workspace: '/private/tmp/confirmed-window-offline-workspace', codexHome: privatePath, installedRoot: '/private/tmp/confirmed-window-offline-installed', env: { CODEX_HOME: privatePath, HOME: '/private/tmp/confirmed-window-offline-home' }, record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] }, dispose: async () => {} };
+      const closeResult = await confirmedWindow.runConfirmedWindowChoreography({
+        case: 'rescue-interrupt', codexBinary: process.execPath, sourceSha: 'a'.repeat(40),
+        output: '/private/tmp/confirmed-window-offline-output', budgetMs: 720_000, workerDurationMs: 420_000,
+        stagingPrompt: 'staging prompt with the control directive', continuationPrompt: 'a CHANGED continuation prompt',
+        fixture: closeFixture,
+      }, {
+        now: closeHost.clock.now, wallClockNow: closeHost.clock.wallClockNow, sleep: closeHost.clock.sleep,
+        waitUntil: closeHost.clock.waitUntil, launchConfirmedWindowHost: closeHost.factory,
+        observers: greenObservers(), dutyAdjudication: greenDuties(), redact,
+      });
+      assert.doesNotMatch(String(closeResult.inconclusive?.reason ?? ''), /confirmed-window-offline-codex-home/u, `the close failure is redacted (actual ${String(closeResult.inconclusive?.reason ?? '')})`);
+      assert.match(String(closeResult.inconclusive?.reason ?? ''), /<redacted>/u);
+      // (c) a host disposal failure carrying a fixture-private path.
+      const disposeHost = fakeConfirmedWindowHost({
+        replies: parentSessionReplies(),
+        notifications: [
+          ...identityJoinNotifications({ atMs: 100 }),
+          { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+        ],
+      });
+      disposeHost.dispose = async () => { throw new Error(`dispose failed against ${privatePath}`); };
+      const disposeFixture = { workspace: '/private/tmp/confirmed-window-offline-workspace', codexHome: privatePath, installedRoot: '/private/tmp/confirmed-window-offline-installed', env: { CODEX_HOME: privatePath, HOME: '/private/tmp/confirmed-window-offline-home' }, record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] }, dispose: async () => {} };
+      const disposeResult = await confirmedWindow.runConfirmedWindowChoreography({
+        case: 'rescue-interrupt', codexBinary: process.execPath, sourceSha: 'a'.repeat(40),
+        output: '/private/tmp/confirmed-window-offline-output', budgetMs: 720_000, workerDurationMs: 420_000,
+        stagingPrompt: 'staging prompt with the control directive', continuationPrompt: 'a CHANGED continuation prompt',
+        fixture: disposeFixture,
+      }, {
+        now: disposeHost.clock.now, wallClockNow: disposeHost.clock.wallClockNow, sleep: disposeHost.clock.sleep,
+        waitUntil: disposeHost.clock.waitUntil, launchConfirmedWindowHost: disposeHost.factory,
+        observers: greenObservers(), dutyAdjudication: greenDuties(), redact,
+      });
+      assert.doesNotMatch(String(disposeResult.inconclusive?.reason ?? ''), /confirmed-window-offline-codex-home/u, `the dispose failure is redacted (actual ${String(disposeResult.inconclusive?.reason ?? '')})`);
+      assert.match(String(disposeResult.inconclusive?.reason ?? ''), /<redacted>/u);
+    });
+
+    test('confirmed-window staging: the positive barrier is RE-EVALUATED while the protocol stream is silent (a readiness arriving after the join is never missed for lack of a notification, P2-2)', async () => {
+      // If the identity join arrives BEFORE the pending-observation or
+      // ancestry artifacts become ready, the barrier initially fails and the
+      // wait used to sleep until the ENTIRE staging deadline when no further
+      // notification arrived — a valid window was missed. The choreography
+      // wakes at the passive-read cadence and re-evaluates instead of
+      // treating a notification timeout as exhausted staging.
+      const confirmedWindow = await import('../tools/shell-wait-probe/confirmed-window.mjs');
+      const host = fakeConfirmedWindowHost({
+        replies: parentSessionReplies(),
+        notifications: [
+          ...identityJoinNotifications({ atMs: 100 }),
+          // NOTHING after the join: the protocol stream stays silent while
+          // the collectors become ready only at 5000 ms.
+        ],
+      });
+      const fakeFixture = {
+        workspace: '/private/tmp/confirmed-window-offline-workspace',
+        codexHome: '/private/tmp/confirmed-window-offline-codex-home',
+        installedRoot: '/private/tmp/confirmed-window-offline-installed',
+        env: { CODEX_HOME: '/private/tmp/confirmed-window-offline-codex-home', HOME: '/private/tmp/confirmed-window-offline-home' },
+        record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
+        dispose: async () => {},
+      };
+      const result = await confirmedWindow.runConfirmedWindowChoreography({
+        case: 'rescue-interrupt',
+        codexBinary: process.execPath,
+        sourceSha: 'a'.repeat(40),
+        output: '/private/tmp/confirmed-window-offline-output',
+        budgetMs: 720_000,
+        workerDurationMs: 420_000,
+        stagingPrompt: 'staging prompt with the control directive',
+        continuationPrompt: 'a CHANGED continuation prompt',
+        fixture: fakeFixture,
+      }, {
+        now: host.clock.now,
+        wallClockNow: host.clock.wallClockNow,
+        sleep: host.clock.sleep,
+        launchConfirmedWindowHost: host.factory,
+        observers: {
+          pendingObservation: async () => host.clock.now() >= 5000
+            ? { confirmed: true, observedAtMs: 5000, resolved: false, resolvedAtMs: null, holdDeadlineAtMs: 425_000, clockDomain: 'controller-monotonic', reason: null }
+            : { confirmed: false, observedAtMs: null, resolved: false, resolvedAtMs: null, holdDeadlineAtMs: null, reason: 'the pending observation confirms only on a later read' },
+          ancestryBaseline: greenObservers().ancestryBaseline,
+          dutyFacts: greenObservers().dutyFacts,
+          controlFacts: async () => ({ active: true, freshAtMs: host.clock.now(), declaredLifetimeMs: 120_000, lineIndex: 45, preDeliveryReadSequence: { floorReachedInEarlierRead: true, separatePostFloorFreshRead: true }, clockDomain: 'controller-monotonic', reason: null }),
+        },
+        dutyAdjudication: greenDuties(),
+      });
+      const states = result.states.map((entry) => entry.state);
+      assert.ok(states.includes('pending-window-confirmed'), `the silent-stream barrier re-evaluation admits once the collectors are ready (actual ${JSON.stringify(states)}; refusal ${JSON.stringify(result.refusal)})`);
+      assert.equal(result.finalState, 'native-request-sent', 'the ONE delivery rides the re-evaluated window; the resolution stays unobserved without further events');
+      assert.match(String(result.refusal?.reason ?? ''), /never observed inside the measurement window/u);
+      assert.equal(host.requestLog.filter((entry) => entry.method === 'turn/interrupt').length, 1, 'exactly one native delivery');
+    });
+
+    test('confirmed-window admission: the control conjunct requires fresh evidence (≤ the 1000 ms passive-read cadence) AND sufficient declared lifetime at request — `{active: true}` alone never admits (P2-4)', async () => {
+      // §40.4's admission predicate is "the unrelated control active with
+      // fresh data and declared lifetime"; an observer returning only
+      // `{active: true}` used to satisfy the barrier. The freshness cadence
+      // and the sufficient-lifetime rule are the §3 Task-3 schedule
+      // constants (passive reads no faster than 1000 ms).
+      const scenarios = [
+        {
+          name: 'freshness-stamp-missing',
+          controlFacts: async () => ({ active: true, freshAtMs: null, declaredLifetimeMs: 120_000, clockDomain: 'controller-monotonic', reason: null }),
+          pattern: /fresh/u,
+        },
+        {
+          name: 'declared-lifetime-missing',
+          controlFacts: async () => ({ active: true, freshAtMs: greenObservationClock.now?.() ?? 60, declaredLifetimeMs: null, clockDomain: 'controller-monotonic', reason: null }),
+          pattern: /lifetime/u,
+        },
+        {
+          name: 'declared-lifetime-exhausted-at-request',
+          controlFacts: async () => ({ active: true, freshAtMs: greenObservationClock.now?.() ?? 60, declaredLifetimeMs: 0, clockDomain: 'controller-monotonic', reason: null }),
+          pattern: /lifetime/u,
+        },
+      ];
+      for (const scenario of scenarios) {
+        const { result, host } = await runOfflineChoreography({
+          script: {
+            notifications: [
+              ...identityJoinNotifications({ atMs: 100 }),
+              { atMs: 150, method: 'thread/notification', params: { type: 'turn/completed', threadId: PARENT_THREAD, turn: { id: 'root-turn-1', status: 'completed', items: [] } } },
+            ],
+          },
+          observers: { ...greenObservers(), controlFacts: scenario.controlFacts },
+        });
+        assert.equal(result.finalState, 'staging-not-ready', `${scenario.name}: the control conjunct without its evidence never admits`);
+        assert.match(String(result.refusal?.reason ?? ''), scenario.pattern, `${scenario.name}: the refusal names the missing control evidence (actual ${String(result.refusal?.reason ?? '')})`);
+        assert.equal(host.requestLog.some((entry) => entry.method === 'turn/interrupt'), false, `${scenario.name}: no delivery without the control evidence`);
+      }
+    });
+
+    test('confirmed-window admission: fresh, sufficiently-lifetime control evidence still ADMITS (the P2-4 conjunct is additive, never a regression of the green shape)', async () => {
+      const { result, host } = await runOfflineChoreography({
+        script: {
+          notifications: [
+            ...identityJoinNotifications({ atMs: 100 }),
+            { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+          ],
+        },
+        observers: {
+          ...greenObservers(),
+          controlFacts: async () => ({ active: true, freshAtMs: 60, declaredLifetimeMs: 120_000, lineIndex: 45, preDeliveryReadSequence: { floorReachedInEarlierRead: true, separatePostFloorFreshRead: true }, clockDomain: 'controller-monotonic', reason: null }),
+        },
+      });
+      const states = result.states.map((entry) => entry.state);
+      assert.deepEqual(states, ['pending-window-confirmed', 'native-request-sent', 'native-resolution-observed'], `the green control evidence still admits (actual ${JSON.stringify(states)}; refusal ${JSON.stringify(result.refusal)})`);
+      assert.equal(host.requestLog.filter((entry) => entry.method === 'turn/interrupt').length, 1);
+    });
+
+    // --- the pure native-control evidence consumer (§40.3) ------------------
+
+    /** Build a persisted block through the registered projector, then JSON round-trip it. */
+    function persistedBlock(runtime, dutiesProjection) {
+      const { projectConfirmedWindowBlock } = runtime;
+      return JSON.parse(JSON.stringify(projectConfirmedWindowBlock(dutiesProjection)));
+    }
+
+    /** The green runtime session facts (same shape the choreography builds). */
+    const greenRuntimeSession = (overrides = {}) => ({
+      source: 'same-host-rpc',
+      host: { pid: HOST_PID, argvDigest: 'd'.repeat(64), startedAtMs: 0, launchCount: 1 },
+      rootInputs: [{ kind: 'initial-staging', turnId: 'root-turn-1', sentAtMs: 5 }],
+      identity: {
+        parentThreadId: PARENT_THREAD, childThreadId: CHILD_THREAD, childTurnId: CHILD_TURN,
+        joinBasis: 'SubAgentActivity.agentThreadId x turn/started.threadId', joinObservedAtMs: 120,
+        modelObserved: 'gpt-5.1', wrongJoins: [],
+      },
+      staging: { startedAtMs: 0, descriptorPublicationObserved: true, liveReceiptObserved: null, spawnActivityObserved: true, childTerminalPreAdmission: false, continuationUsed: false },
+      window: {
+        confirmedAtMs: 200, pendingObservationConfirmedAtMs: 50, childTurnStartedAtMs: 120,
+        pendingIntervalStartedAtMs: 120, holdDeadlineAtMs: 400_000,
+        ancestryBaselineDigest: 'a'.repeat(64),
+        ancestryHops: { launcherToBroker: true, brokerToTransport: true },
+        dutiesObservable: true, dutyNames: ['invocation', 'broker', 'transport', 'runner', 'job', 'guard', 'integrity'],
+        controlActiveAtMs: 130, controlFreshAtMs: 130, controlDeclaredLifetimeMs: 3_600_000,
+        measurementCutoffAtMs: 410_000, observationTeardownAtMs: 415_000,
+      },
+      nativeRequest: {
+        sentAtMs: 210, repliedAtMs: 212, threadId: CHILD_THREAD, turnId: CHILD_TURN,
+        outcome: 'sent', errorText: null, attemptCount: 1, responseWithinBound: true,
+      },
+      receipt: {
+        transportReplyAtMs: 212, childResolutionAtMs: 300, childTerminalStatus: 'interrupted',
+        childResolutionBasis: 'child-terminal-event', observationResolvedAtMs: 310,
+        unrelatedCompletionReply: false, parentCancellationAtMs: null, completedTurnId: CHILD_TURN,
+      },
+      fences: { caseDeadlineAtMs: 1_200_000, stagingDeadlineAtMs: 180_000, persistedBeforeDisposal: true },
+      disposal: { connectionClosed: true, hostDisposed: true, teardownLabel: 'planned-observation-teardown' },
+      finalState: 'native-resolution-observed',
+      refusal: null,
+      ...overrides,
+    });
+
+    const greenDuties = (overrides = {}) => ({
+      allObserved: true,
+      // (P1-4, 2026-11-19 codex review) the §16.4 post-interrupt survival
+      // verdict rides the adjudication as the 'control-survival' additional
+      // name (the §41.5.2 projection rule); the consumer's mandatory check
+      // refuses a settlement without it.
+      names: ['invocation', 'broker', 'transport', 'runner', 'job', 'guard', 'integrity', 'control-survival'],
+      durableSettled: true,
+      cleanupFenceAtMs: 500_000,
+      collectionIntervalsValid: true,
+      clockDomain: 'controller-monotonic',
+      ...overrides,
+    });
+
+    test('confirmed-window native evidence: the versioned consumer admits the green same-host-rpc delivery, keeps the transport reply separate, and settles ONLY with the child resolution plus every duty', async () => {
+      const evidence = await import('../tools/shell-wait-probe/native-control-evidence.mjs');
+      const block = persistedBlock(evidence, greenRuntimeSession());
+      const verdict = evidence.admitConfirmedWindowNativeEvidence(block, greenDuties());
+      assert.equal(verdict.evidenceVersion, evidence.NATIVE_CONTROL_EVIDENCE_VERSION, 'the verdict carries its prospective version');
+      assert.equal(verdict.source, 'same-host-rpc');
+      assert.equal(verdict.delivery.status, 'admitted', `the delivery is admitted (actual ${JSON.stringify(verdict.delivery)})`);
+      assert.deepEqual(verdict.delivery.reasons, []);
+      assert.equal(verdict.causal.requestInsidePendingInterval, true, 'the causal request sits inside the proven pending interval');
+      assert.equal(verdict.causal.initiationMoved, false, 'a delayed acknowledgement never moves the initiation');
+      assert.equal(verdict.transportReply.isSettlement, false, 'the transport reply is NEVER itself the settlement');
+      assert.equal(verdict.settlement.settled, true, 'the green shape settles: child resolution + resolved observation + every duty');
+      assert.equal(verdict.settlement.reasons.length, 0);
+      assert.equal(verdict.nativeLatencyMs, 2, 'the native responsiveness comparison fact is recorded');
+    });
+
+    test('confirmed-window native evidence: duties absent or incomplete keep the settlement UNESTABLISHED (RPC success alone is never all-duty settlement)', async () => {
+      const evidence = await import('../tools/shell-wait-probe/native-control-evidence.mjs');
+      const block = persistedBlock(evidence, greenRuntimeSession());
+      // RPC success + turn snapshot + interrupted child, but NO duty facts:
+      const verdict = evidence.admitConfirmedWindowNativeEvidence(block, null);
+      assert.equal(verdict.delivery.status, 'admitted', 'the delivery itself is still attributable');
+      assert.equal(verdict.settlement.settled, null, 'settlement is unestablished, never guessed');
+      assert.deepEqual(verdict.settlement.reasons, ['duty-adjudication-unestablished']);
+      const partial = evidence.admitConfirmedWindowNativeEvidence(block, greenDuties({ allObserved: false, names: ['invocation'] }));
+      assert.equal(partial.settlement.settled, false);
+      // (round-4 P2) the partial adjudication ALSO misses the required duty
+      // slots (aggregate flags alone never certify all-duty settlement), and
+      // (P1-4) the mandatory §16.4 survival name.
+      assert.deepEqual(partial.settlement.reasons, ['duty-adjudication-incomplete', 'required-duty-slot-unproven', 'control-survival-unproven']);
+    });
+
+    test('confirmed-window native evidence: every named negative fails closed with its own reason', async () => {
+      const evidence = await import('../tools/shell-wait-probe/native-control-evidence.mjs');
+      const negative = (runtimeOverrides, dutiesOverrides = {}, expectedDeliveryReason = null, expectedSettlementReasons = null) => {
+        const block = persistedBlock(evidence, greenRuntimeSession(runtimeOverrides));
+        const verdict = evidence.admitConfirmedWindowNativeEvidence(block, greenDuties(dutiesOverrides));
+        if (expectedDeliveryReason !== null) {
+          assert.equal(verdict.delivery.status, 'refused', `the delivery refuses (actual ${JSON.stringify(verdict.delivery)})`);
+          assert.deepEqual(verdict.delivery.reasons, [expectedDeliveryReason]);
+        }
+        if (expectedSettlementReasons !== null) {
+          assert.equal(verdict.settlement.settled, false);
+          assert.deepEqual(verdict.settlement.reasons, expectedSettlementReasons);
+        }
+        return verdict;
+      };
+      negative({ source: 'carrier-pigeon' }, {}, 'unknown-native-source');
+      negative({ source: 'model-tool' }, {}, 'source-route-mismatch', ['source-route-mismatch']);
+      negative({ nativeRequest: { sentAtMs: 210, repliedAtMs: 212, threadId: 'another-child-thread', turnId: CHILD_TURN, outcome: 'sent', attemptCount: 1 } }, {}, 'wrong-turn-target');
+      negative({ nativeRequest: { sentAtMs: 210, repliedAtMs: 212, threadId: CHILD_THREAD, turnId: CHILD_TURN, outcome: 'stale-turn-target', errorText: 'expected active turn id a but found b', attemptCount: 1 } }, {}, 'stale-turn-target');
+      negative({ nativeRequest: { sentAtMs: null, repliedAtMs: null, threadId: CHILD_THREAD, turnId: CHILD_TURN, outcome: 'unsent-request', errorText: 'the connection closed before the write', attemptCount: 1 } }, {}, 'unsent-request');
+      negative({ nativeRequest: { sentAtMs: 210, repliedAtMs: 211, threadId: CHILD_THREAD, turnId: CHILD_TURN, outcome: 'rejected', errorText: 'invalid_request: thread not found', attemptCount: 1 } }, {}, 'rejected-request');
+      negative({ nativeRequest: { sentAtMs: 210, repliedAtMs: 212, threadId: CHILD_THREAD, turnId: CHILD_TURN, outcome: 'sent', attemptCount: 2 } }, {}, 'duplicate-request');
+      negative({ nativeRequest: { sentAtMs: null, repliedAtMs: null, threadId: null, turnId: '', outcome: 'forbidden-empty-turn-id', attemptCount: 1 } }, {}, 'empty-turn-id-forbidden');
+      negative({ nativeRequest: { sentAtMs: 90, repliedAtMs: 212, threadId: CHILD_THREAD, turnId: CHILD_TURN, outcome: 'sent', attemptCount: 1 } }, {}, 'initiation-outside-pending-interval');
+      negative({ receipt: { transportReplyAtMs: 212, childResolutionAtMs: 300, childTerminalStatus: 'completed', childResolutionBasis: 'natural-completion', observationResolvedAtMs: 310, unrelatedCompletionReply: true, parentCancellationAtMs: null, completedTurnId: CHILD_TURN } }, {}, null, ['response-at-unrelated-completion', 'child-terminal-authority-unproven']);
+      negative({ receipt: { transportReplyAtMs: 212, childResolutionAtMs: null, childTerminalStatus: null, childResolutionBasis: null, observationResolvedAtMs: null, unrelatedCompletionReply: false, parentCancellationAtMs: 260 } }, {}, null, ['parent-only-cancellation', 'missing-child-resolution', 'missing-observation-resolution']);
+      negative({ receipt: { transportReplyAtMs: 212, childResolutionAtMs: 300, childTerminalStatus: 'interrupted', childResolutionBasis: 'teardown-signal', observationResolvedAtMs: 310, unrelatedCompletionReply: false, parentCancellationAtMs: null, completedTurnId: CHILD_TURN } }, {}, null, ['signal-or-cleanup-attribution', 'child-terminal-authority-unproven']);
+      negative({ receipt: { transportReplyAtMs: 212, childResolutionAtMs: null, childTerminalStatus: null, childResolutionBasis: null, observationResolvedAtMs: null, unrelatedCompletionReply: false, parentCancellationAtMs: null } }, {}, null, ['missing-child-resolution', 'missing-observation-resolution']);
+      negative({ window: { confirmedAtMs: 200, pendingObservationConfirmedAtMs: null, childTurnStartedAtMs: 120, pendingIntervalStartedAtMs: 120, holdDeadlineAtMs: 400_000, ancestryBaselineDigest: 'a'.repeat(64), ancestryHops: { launcherToBroker: true, brokerToTransport: true }, dutiesObservable: true, dutyNames: ['invocation', 'broker', 'transport', 'runner', 'job', 'guard', 'integrity'], controlActiveAtMs: 130, controlFreshAtMs: 130, controlDeclaredLifetimeMs: 3_600_000, measurementCutoffAtMs: 410_000, observationTeardownAtMs: 415_000 } }, {}, 'pending-window-unconfirmed-at-initiation');
+      negative({ window: { confirmedAtMs: 200, pendingObservationConfirmedAtMs: 50, childTurnStartedAtMs: 120, pendingIntervalStartedAtMs: 120, holdDeadlineAtMs: 400_000, ancestryBaselineDigest: null, ancestryHops: { launcherToBroker: true, brokerToTransport: true }, dutiesObservable: true, dutyNames: ['invocation', 'broker', 'transport', 'runner', 'job', 'guard', 'integrity'], controlActiveAtMs: 130, controlFreshAtMs: 130, controlDeclaredLifetimeMs: 3_600_000, measurementCutoffAtMs: 410_000, observationTeardownAtMs: 415_000 } }, {}, null, ['missing-scan-baseline']);
+      negative({ window: { confirmedAtMs: 200, pendingObservationConfirmedAtMs: 50, childTurnStartedAtMs: 120, pendingIntervalStartedAtMs: 120, holdDeadlineAtMs: 400_000, ancestryBaselineDigest: 'a'.repeat(64), ancestryHops: { launcherToBroker: true, brokerToTransport: true }, dutiesObservable: false, dutyNames: ['invocation', 'broker', 'transport', 'runner', 'job', 'guard', 'integrity'], controlActiveAtMs: null, measurementCutoffAtMs: 410_000, observationTeardownAtMs: 415_000 } }, {}, null, ['missing-scan-baseline', 'missing-control-baseline']);
+      negative({ receipt: { transportReplyAtMs: 212, childResolutionAtMs: 420_000, childTerminalStatus: 'interrupted', childResolutionBasis: 'child-terminal-event', observationResolvedAtMs: 420_100, unrelatedCompletionReply: false, parentCancellationAtMs: null, completedTurnId: CHILD_TURN } }, {}, null, ['post-cutoff-resolution-no-credit']);
+      negative({}, { allObserved: true, names: ['invocation'], durableSettled: true, cleanupFenceAtMs: 250, collectionIntervalsValid: true }, null, ['required-duty-slot-unproven', 'control-survival-unproven', 'cleanup-fence-unproven']);
+      negative({ finalState: 'staging-not-ready' }, {}, 'unsent-request', ['unsent-request']);
+    });
+
+    test('confirmed-window native evidence: a Child resolution stamp AT the measurement cutoff refuses settlement credit (=== is post-cutoff for credit, review round 1)', async () => {
+      // (user review round 1, Standards P2) settlement credit requires the
+      // resolution stamp STRICTLY BEFORE the measurement cutoff — unified
+      // with the runtime controller, whose credited duty snapshot and
+      // control-survival leg already require a strictly-pre-cutoff read and
+      // whose cutoff-crossing drain routes an at-cutoff arrival to the
+      // late-resolution diagnostic, never the credited leg. Replay's former
+      // `>` refusal left an exactly-at-cutoff stamp (`===`) credited.
+      const evidenceModule = await import('../tools/shell-wait-probe/native-control-evidence.mjs');
+      const atCutoffChild = persistedBlock(evidenceModule, greenRuntimeSession({
+        receipt: { transportReplyAtMs: 212, childResolutionAtMs: 410_000, childTerminalStatus: 'interrupted', childResolutionBasis: 'child-terminal-event', observationResolvedAtMs: 310, unrelatedCompletionReply: false, parentCancellationAtMs: null, completedTurnId: CHILD_TURN },
+      }));
+      const verdict = evidenceModule.admitConfirmedWindowNativeEvidence(atCutoffChild, greenDuties());
+      assert.equal(verdict.settlement.settled, false, `an at-cutoff Child resolution never settles (actual ${JSON.stringify(verdict.settlement)})`);
+      assert.deepEqual(verdict.settlement.reasons, ['post-cutoff-resolution-no-credit'], `the at-cutoff Child stamp refuses by the named post-cutoff reason (actual ${JSON.stringify(verdict.settlement.reasons)})`);
+    });
+
+    test('confirmed-window native evidence: an observation resolution stamp AT the measurement cutoff refuses settlement credit (=== is post-cutoff for credit, review round 1)', async () => {
+      // (user review round 1, Standards P2) the SAME strictly-before rule on
+      // the observation leg: the observation resolution is a post-cutoff
+      // fact like the Child's (§39.9 step 9), and `===` is post-cutoff for
+      // credit purposes.
+      const evidenceModule = await import('../tools/shell-wait-probe/native-control-evidence.mjs');
+      const atCutoffObservation = persistedBlock(evidenceModule, greenRuntimeSession({
+        receipt: { transportReplyAtMs: 212, childResolutionAtMs: 300, childTerminalStatus: 'interrupted', childResolutionBasis: 'child-terminal-event', observationResolvedAtMs: 410_000, unrelatedCompletionReply: false, parentCancellationAtMs: null, completedTurnId: CHILD_TURN },
+      }));
+      const verdict = evidenceModule.admitConfirmedWindowNativeEvidence(atCutoffObservation, greenDuties());
+      assert.equal(verdict.settlement.settled, false, `an at-cutoff observation resolution never settles (actual ${JSON.stringify(verdict.settlement)})`);
+      assert.deepEqual(verdict.settlement.reasons, ['post-cutoff-resolution-no-credit'], `the at-cutoff observation stamp refuses by the named post-cutoff reason (actual ${JSON.stringify(verdict.settlement.reasons)})`);
+    });
+
+    test('confirmed-window native evidence replay: BOTH persisted ancestry hops must be AFFIRMATIVE before settlement — the opaque digest alone never certifies the ancestry premise (P2, 2026-11-20 codex re-review)', async () => {
+      // The reviewer's exact read-only reproduction: replay accepted
+      // settlement when ancestryHops was missing or explicitly reported both
+      // hops as false, provided the digest remained a string and
+      // dutiesObservable stayed true — a record with both hop flags false
+      // returned settled: true. The opaque digest cannot establish either
+      // hop: both persisted launcher-to-broker and broker-to-transport
+      // verdicts must be explicitly true in the retained block —
+      // missing/false/unaffirmative hops are the ancestry premise
+      // unestablished at replay, never certified from the digest alone.
+      const evidence = await import('../tools/shell-wait-probe/native-control-evidence.mjs');
+      const greenWindow = greenRuntimeSession().window;
+      // (1) The reviewer's shape: BOTH hop flags explicitly false.
+      const bothFalseBlock = persistedBlock(evidence, greenRuntimeSession({ window: { ...greenWindow, ancestryHops: { launcherToBroker: false, brokerToTransport: false } } }));
+      const bothFalseVerdict = evidence.admitConfirmedWindowNativeEvidence(bothFalseBlock, greenDuties());
+      assert.equal(bothFalseVerdict.settlement.settled, false, `both hops false never settles (actual ${JSON.stringify(bothFalseVerdict.settlement)})`);
+      assert.ok(bothFalseVerdict.settlement.reasons.includes('ancestry-hops-unproven'), `the refusal names the unproven ancestry hops (actual ${JSON.stringify(bothFalseVerdict.settlement.reasons)})`);
+      // (2) The hops MISSING from the retained block.
+      const windowWithoutHops = { ...greenWindow };
+      delete windowWithoutHops.ancestryHops;
+      const missingBlock = persistedBlock(evidence, greenRuntimeSession({ window: windowWithoutHops }));
+      const missingVerdict = evidence.admitConfirmedWindowNativeEvidence(missingBlock, greenDuties());
+      assert.equal(missingVerdict.settlement.settled, false, `missing ancestry hops never settle (actual ${JSON.stringify(missingVerdict.settlement)})`);
+      assert.ok(missingVerdict.settlement.reasons.includes('ancestry-hops-unproven'), `the refusal names the missing ancestry hops (actual ${JSON.stringify(missingVerdict.settlement.reasons)})`);
+      // (3) An unaffirmative hop value (one hop true, one non-boolean).
+      const partialBlock = persistedBlock(evidence, greenRuntimeSession({ window: { ...greenWindow, ancestryHops: { launcherToBroker: true, brokerToTransport: 'established' } } }));
+      const partialVerdict = evidence.admitConfirmedWindowNativeEvidence(partialBlock, greenDuties());
+      assert.equal(partialVerdict.settlement.settled, false, `an unaffirmative hop never settles (actual ${JSON.stringify(partialVerdict.settlement)})`);
+      assert.ok(partialVerdict.settlement.reasons.includes('ancestry-hops-unproven'), `the refusal names the unaffirmative hop (actual ${JSON.stringify(partialVerdict.settlement.reasons)})`);
+      // The affirmative control: both hops explicitly true settles as before.
+      const affirmativeBlock = persistedBlock(evidence, greenRuntimeSession());
+      const affirmativeVerdict = evidence.admitConfirmedWindowNativeEvidence(affirmativeBlock, greenDuties());
+      assert.equal(affirmativeVerdict.settlement.settled, true, `the affirmative both-hop record still settles (actual ${JSON.stringify(affirmativeVerdict.settlement)})`);
+    });
+
+    test('confirmed-window duties: an unresolved durable-settlement layer refuses the settlement by name (durableSettled is enforced, never ignored)', async () => {
+      const evidenceModule = await import('../tools/shell-wait-probe/native-control-evidence.mjs');
+      const block = persistedBlock(evidenceModule, greenRuntimeSession());
+      const verdict = evidenceModule.admitConfirmedWindowNativeEvidence(block, greenDuties({ durableSettled: false }));
+      assert.equal(verdict.delivery.status, 'admitted', 'the delivery itself is unaffected');
+      assert.equal(verdict.settlement.settled, false, 'an unresolved durable layer NEVER settles');
+      assert.deepEqual(verdict.settlement.reasons, ['durable-settlement-unresolved']);
+    });
+
+    test('confirmed-window native evidence: the observation resolution owes pre-cutoff credit too, and the terminal event owes the interrupted turn\'s own id', async () => {
+      const evidenceModule = await import('../tools/shell-wait-probe/native-control-evidence.mjs');
+      // (§39.9 step 9) post-cutoff facts get zero settlement credit — the
+      // observation resolution is a post-cutoff fact like the child's.
+      const lateObservation = persistedBlock(evidenceModule, greenRuntimeSession({
+        receipt: { transportReplyAtMs: 212, childResolutionAtMs: 300, childTerminalStatus: 'interrupted', childResolutionBasis: 'child-terminal-event', observationResolvedAtMs: 420_100, unrelatedCompletionReply: false, parentCancellationAtMs: null, completedTurnId: CHILD_TURN },
+      }));
+      const lateVerdict = evidenceModule.admitConfirmedWindowNativeEvidence(lateObservation, greenDuties());
+      assert.equal(lateVerdict.settlement.settled, false);
+      assert.ok(lateVerdict.settlement.reasons.includes('post-cutoff-resolution-no-credit'), `the late observation owes no credit (actual ${JSON.stringify(lateVerdict.settlement)})`);
+      // The completed-turn id binds the terminal event to the interrupted
+      // turn itself; a foreign turn id is the named wrong-target refusal.
+      const foreignTerminal = persistedBlock(evidenceModule, greenRuntimeSession({
+        receipt: { transportReplyAtMs: 212, childResolutionAtMs: 300, childTerminalStatus: 'interrupted', childResolutionBasis: 'child-terminal-event', observationResolvedAtMs: 310, unrelatedCompletionReply: false, parentCancellationAtMs: null, completedTurnId: 'some-other-turn' },
+      }));
+      const foreignVerdict = evidenceModule.admitConfirmedWindowNativeEvidence(foreignTerminal, greenDuties());
+      assert.equal(foreignVerdict.delivery.status, 'refused');
+      assert.ok(foreignVerdict.delivery.reasons.includes('wrong-turn-target'), `a foreign terminal turn id is the wrong target (actual ${JSON.stringify(foreignVerdict.delivery)})`);
+    });
+
+    test('confirmed-window native evidence: a delayed acknowledgement never moves the causal initiation and a delayed in-window resolution stays credited', async () => {
+      const evidence = await import('../tools/shell-wait-probe/native-control-evidence.mjs');
+      const delayed = persistedBlock(evidence, greenRuntimeSession({
+        // A GENUINELY slow reply (60790 ms > the 60000 ms bound): the
+        // responsiveness fact is recomputed from the bounds, so the carried
+        // flag must agree with the retained stamps (round-3 P2-9).
+        nativeRequest: { sentAtMs: 210, repliedAtMs: 61_000, threadId: CHILD_THREAD, turnId: CHILD_TURN, outcome: 'sent', attemptCount: 1, responseWithinBound: false },
+        receipt: { transportReplyAtMs: 61_000, childResolutionAtMs: 900, childTerminalStatus: 'interrupted', childResolutionBasis: 'child-terminal-event', observationResolvedAtMs: 950, unrelatedCompletionReply: false, parentCancellationAtMs: null, completedTurnId: CHILD_TURN },
+      }));
+      const verdict = evidence.admitConfirmedWindowNativeEvidence(delayed, greenDuties());
+      assert.equal(verdict.causal.requestInsidePendingInterval, true, 'the initiation stays inside the proven pending interval');
+      assert.equal(verdict.causal.initiationMoved, false);
+      assert.equal(verdict.settlement.settled, true, 'the delayed resolution inside the window stays credited');
+      assert.equal(verdict.nativeLatencyMs, 60_790, 'the slow reply is recorded as the responsiveness fact');
+      assert.equal(verdict.nativeResponseWithinBound, false, 'the recomputed comparison agrees with the carried flag');
+    });
+
+    test('confirmed-window native evidence: old model-tool records and historical adjudications stay untouched — the module never fabricates or consumes a tool event', async () => {
+      const evidence = await import('../tools/shell-wait-probe/native-control-evidence.mjs');
+      // A historical model-tool-shaped record (the exec cohort's fields) fed
+      // to the RPC consumer: refused by source class, and NO tool-event field
+      // is ever produced or consumed (callCount/family/previousStatus).
+      const historical = persistedBlock(evidence, greenRuntimeSession({
+        source: 'model-tool',
+        nativeRequest: { sentAtMs: 210, repliedAtMs: 212, threadId: CHILD_THREAD, turnId: CHILD_TURN, outcome: 'sent', attemptCount: 1, callCount: 1, family: 'interrupt_agent', previousStatus: 'running' },
+      }));
+      const verdict = evidence.admitConfirmedWindowNativeEvidence(historical, greenDuties());
+      assert.deepEqual(verdict.delivery.reasons, ['source-route-mismatch']);
+      assert.equal(Object.hasOwn(verdict, 'callCount'), false, 'no model-tool count is ever fabricated');
+      assert.equal(Object.hasOwn(verdict, 'family'), false);
+      assert.equal(JSON.stringify(verdict).includes('interrupt_agent'), false, 'the RPC verdict never borrows the model-tool vocabulary');
+      // The closed source-class set: exactly the three §39.9 classes.
+      assert.deepEqual([...evidence.NATIVE_CONTROL_SOURCES].sort(), ['model-tool', 'operator-child-stop', 'same-host-rpc']);
+      assert.equal(evidence.validateNativeControlSource('model-tool').rpcAttributable, false, 'a model-tool source is never RPC-attributable');
+      assert.equal(evidence.validateNativeControlSource('operator-child-stop').rpcAttributable, false, 'the operator route has no controller-attributable request bounds');
+      assert.equal(evidence.validateNativeControlSource('same-host-rpc').rpcAttributable, true);
+      assert.equal(evidence.validateNativeControlSource('unknown').supported, false);
+    });
+
+    test('confirmed-window native evidence: the remaining implemented reasons are pinned (collection-intervals-invalid, record-version-mismatch, identity-join-unproven, request-outcome-unrecorded, causal-interval-unprovable)', async () => {
+      const evidenceModule = await import('../tools/shell-wait-probe/native-control-evidence.mjs');
+      // collection-intervals-invalid: a torn duty collection interval refuses.
+      const tornIntervals = persistedBlock(evidenceModule, greenRuntimeSession());
+      const tornVerdict = evidenceModule.admitConfirmedWindowNativeEvidence(tornIntervals, greenDuties({ collectionIntervalsValid: false }));
+      assert.equal(tornVerdict.settlement.settled, false);
+      assert.ok(tornVerdict.settlement.reasons.includes('collection-intervals-invalid'), `the torn intervals refuse (actual ${JSON.stringify(tornVerdict.settlement)})`);
+      // record-version-mismatch: a foreign block version is refused by name.
+      const foreignVersion = persistedBlock(evidenceModule, greenRuntimeSession());
+      foreignVersion.controllerVersion = 99;
+      const foreignVerdict = evidenceModule.admitConfirmedWindowNativeEvidence(foreignVersion, greenDuties());
+      assert.equal(foreignVerdict.delivery.status, 'refused');
+      assert.deepEqual(foreignVerdict.delivery.reasons, ['record-version-mismatch']);
+      // identity-join-unproven: a Child turn id the projector could not bind.
+      const unprovenJoin = persistedBlock(evidenceModule, greenRuntimeSession({
+        identity: { parentThreadId: PARENT_THREAD, childThreadId: CHILD_THREAD, childTurnId: null, joinBasis: null, joinObservedAtMs: null, modelObserved: null, wrongJoins: [] },
+      }));
+      const unprovenVerdict = evidenceModule.admitConfirmedWindowNativeEvidence(unprovenJoin, greenDuties());
+      assert.equal(unprovenVerdict.delivery.status, 'refused');
+      assert.ok(unprovenVerdict.delivery.reasons.includes('identity-join-unproven'), `the unproven join refuses (actual ${JSON.stringify(unprovenVerdict.delivery)})`);
+      // request-outcome-unrecorded: an unregistered outcome never passes.
+      const unrecordedOutcome = persistedBlock(evidenceModule, greenRuntimeSession({
+        nativeRequest: { sentAtMs: 210, repliedAtMs: 212, threadId: CHILD_THREAD, turnId: CHILD_TURN, outcome: 'delivered-elsewhere', attemptCount: 1 },
+      }));
+      const outcomeVerdict = evidenceModule.admitConfirmedWindowNativeEvidence(unrecordedOutcome, greenDuties());
+      assert.equal(outcomeVerdict.delivery.status, 'refused');
+      assert.deepEqual(outcomeVerdict.delivery.reasons, ['request-outcome-unrecorded']);
+      // causal-interval-unprovable: a sent request with no proven interval start.
+      const unprovableInterval = persistedBlock(evidenceModule, greenRuntimeSession({
+        window: { confirmedAtMs: 200, pendingObservationConfirmedAtMs: 50, childTurnStartedAtMs: 120, pendingIntervalStartedAtMs: null, holdDeadlineAtMs: 400_000, ancestryBaselineDigest: 'a'.repeat(64), dutiesObservable: true, controlActiveAtMs: 130, controlFreshAtMs: 130, controlDeclaredLifetimeMs: 3_600_000, measurementCutoffAtMs: 410_000, observationTeardownAtMs: 415_000 },
+      }));
+      const intervalVerdict = evidenceModule.admitConfirmedWindowNativeEvidence(unprovableInterval, greenDuties());
+      assert.equal(intervalVerdict.delivery.status, 'refused');
+      assert.deepEqual(intervalVerdict.delivery.reasons, ['causal-interval-unprovable']);
+    });
+
+    // --- the codex gate round (2026-11-18): fail-closed consumer hardening ---
+
+    test('confirmed-window native evidence: the causal interval is bounded on BOTH sides — a request initiated after observation expiry or Child resolution gets no causal credit (P2-7)', async () => {
+      const evidenceModule = await import('../tools/shell-wait-probe/native-control-evidence.mjs');
+      // sentAtMs 500000: after the hold deadline 400000 AND after the Child
+      // resolution 300 — the old lower-bound-only check admitted it (with a
+      // negative native latency when the reply is also late-ordered).
+      const lateInitiation = persistedBlock(evidenceModule, greenRuntimeSession({
+        nativeRequest: { sentAtMs: 500_000, repliedAtMs: 500_500, threadId: CHILD_THREAD, turnId: CHILD_TURN, outcome: 'sent', attemptCount: 1, responseWithinBound: true },
+      }));
+      const verdict = evidenceModule.admitConfirmedWindowNativeEvidence(lateInitiation, greenDuties());
+      assert.equal(verdict.delivery.status, 'refused', `a request initiated outside the pending interval's bounds is refused (actual ${JSON.stringify(verdict.delivery)})`);
+      assert.ok(verdict.delivery.reasons.includes('initiation-outside-pending-interval'), `the upper-bound miss is the named causal refusal (actual ${JSON.stringify(verdict.delivery.reasons)})`);
+      // A request after the Child resolution but before the hold deadline is
+      // equally outside the pending interval (the Child's resolution ends it).
+      const afterResolution = persistedBlock(evidenceModule, greenRuntimeSession({
+        nativeRequest: { sentAtMs: 350, repliedAtMs: 352, threadId: CHILD_THREAD, turnId: CHILD_TURN, outcome: 'sent', attemptCount: 1, responseWithinBound: true },
+      }));
+      const afterVerdict = evidenceModule.admitConfirmedWindowNativeEvidence(afterResolution, greenDuties());
+      assert.equal(afterVerdict.delivery.status, 'refused');
+      assert.ok(afterVerdict.delivery.reasons.includes('initiation-outside-pending-interval'));
+    });
+
+    test('confirmed-window native evidence: incomplete attributable request bounds are REFUSED, and their absence never bypasses the exact-target validation (P2-8)', async () => {
+      const evidenceModule = await import('../tools/shell-wait-probe/native-control-evidence.mjs');
+      // A sent request with valid sentAtMs but a null reply timestamp: the
+      // old requestBoundsPresent gate SKIPPED the target comparison entirely
+      // — a foreign-thread request was admitted and settled.
+      const foreignIncomplete = persistedBlock(evidenceModule, greenRuntimeSession({
+        nativeRequest: { sentAtMs: 210, repliedAtMs: null, threadId: 'foreign-thread-9999', turnId: 'foreign-turn-9999', outcome: 'sent', attemptCount: 1, responseWithinBound: null },
+        receipt: { transportReplyAtMs: null, childResolutionAtMs: 300, childTerminalStatus: 'interrupted', childResolutionBasis: 'child-terminal-event', observationResolvedAtMs: 310, unrelatedCompletionReply: false, parentCancellationAtMs: null, completedTurnId: CHILD_TURN },
+      }));
+      const verdict = evidenceModule.admitConfirmedWindowNativeEvidence(foreignIncomplete, greenDuties());
+      assert.equal(verdict.delivery.status, 'refused', `incomplete attributable bounds refuse (actual ${JSON.stringify(verdict.delivery)})`);
+      assert.ok(verdict.delivery.reasons.includes('request-bounds-incomplete'), `the incomplete bounds are named (actual ${JSON.stringify(verdict.delivery.reasons)})`);
+      assert.ok(verdict.delivery.reasons.includes('wrong-turn-target'), `the named foreign target is NEVER skipped because the bounds are incomplete (actual ${JSON.stringify(verdict.delivery.reasons)})`);
+      // A sent request with a reply stamp but a null sent stamp is equally
+      // incomplete.
+      const missingSent = persistedBlock(evidenceModule, greenRuntimeSession({
+        nativeRequest: { sentAtMs: null, repliedAtMs: 212, threadId: CHILD_THREAD, turnId: CHILD_TURN, outcome: 'sent', attemptCount: 1, responseWithinBound: null },
+      }));
+      const missingVerdict = evidenceModule.admitConfirmedWindowNativeEvidence(missingSent, greenDuties());
+      assert.equal(missingVerdict.delivery.status, 'refused');
+      assert.ok(missingVerdict.delivery.reasons.includes('request-bounds-incomplete'));
+    });
+
+    test('confirmed-window native evidence: settlement requires POSITIVE exact-Child terminal evidence — timestamps without their native authority never settle (P2-9)', async () => {
+      const evidenceModule = await import('../tools/shell-wait-probe/native-control-evidence.mjs');
+      // Removing childTerminalStatus, childResolutionBasis and
+      // completedTurnId from an otherwise green record still yielded
+      // settled: true when the resolution timestamps remained.
+      const stripped = persistedBlock(evidenceModule, greenRuntimeSession({
+        receipt: { transportReplyAtMs: 212, childResolutionAtMs: 300, childTerminalStatus: null, childResolutionBasis: null, observationResolvedAtMs: 310, unrelatedCompletionReply: false, parentCancellationAtMs: null, completedTurnId: null },
+      }));
+      const verdict = evidenceModule.admitConfirmedWindowNativeEvidence(stripped, greenDuties());
+      assert.equal(verdict.delivery.status, 'admitted', 'the delivery bounds themselves stay attributable');
+      assert.equal(verdict.settlement.settled, false, `timestamps without their native authority never settle (actual ${JSON.stringify(verdict.settlement)})`);
+      assert.ok(verdict.settlement.reasons.includes('child-terminal-authority-unproven'), `the missing terminal authority is named (actual ${JSON.stringify(verdict.settlement.reasons)})`);
+    });
+
+    test('confirmed-window native evidence: a missing or malformed measurement cutoff makes temporal qualification unestablished — pre-cutoff credit is never granted without it (P2-10)', async () => {
+      const evidenceModule = await import('../tools/shell-wait-probe/native-control-evidence.mjs');
+      const noCutoff = persistedBlock(evidenceModule, greenRuntimeSession({
+        window: { confirmedAtMs: 200, pendingObservationConfirmedAtMs: 50, childTurnStartedAtMs: 120, pendingIntervalStartedAtMs: 120, holdDeadlineAtMs: 400_000, ancestryBaselineDigest: 'a'.repeat(64), ancestryHops: { launcherToBroker: true, brokerToTransport: true }, dutiesObservable: true, controlActiveAtMs: 130, controlFreshAtMs: 130, controlDeclaredLifetimeMs: 3_600_000, measurementCutoffAtMs: null, observationTeardownAtMs: null },
+      }));
+      const verdict = evidenceModule.admitConfirmedWindowNativeEvidence(noCutoff, greenDuties());
+      assert.equal(verdict.settlement.settled, false, `a null cutoff never grants pre-cutoff credit (actual ${JSON.stringify(verdict.settlement)})`);
+      assert.ok(verdict.settlement.reasons.includes('measurement-cutoff-unproven'), `the missing cutoff is named (actual ${JSON.stringify(verdict.settlement.reasons)})`);
+    });
+
+    test('confirmed-window native evidence: collection-interval validation requires the AFFIRMATIVE true — omitted or null evidence no longer settles (P2-11)', async () => {
+      const evidenceModule = await import('../tools/shell-wait-probe/native-control-evidence.mjs');
+      const block = persistedBlock(evidenceModule, greenRuntimeSession());
+      const omitted = evidenceModule.admitConfirmedWindowNativeEvidence(block, greenDuties({ collectionIntervalsValid: undefined }));
+      assert.equal(omitted.settlement.settled, false, `omitting the collection-interval fact refuses (actual ${JSON.stringify(omitted.settlement)})`);
+      assert.ok(omitted.settlement.reasons.includes('collection-intervals-invalid'));
+      const nulled = evidenceModule.admitConfirmedWindowNativeEvidence(block, greenDuties({ collectionIntervalsValid: null }));
+      assert.equal(nulled.settlement.settled, false);
+      assert.ok(nulled.settlement.reasons.includes('collection-intervals-invalid'));
+    });
+
+    test('confirmed-window native evidence: an affirmative attempt count of exactly ONE is required whenever a sent request is credited (P2-12)', async () => {
+      const evidenceModule = await import('../tools/shell-wait-probe/native-control-evidence.mjs');
+      // Missing (normalizes to 0), malformed, and zero counts never accompany
+      // an admitted settled delivery.
+      for (const attemptCount of [undefined, 'one', 0]) {
+        const verdict = evidenceModule.admitConfirmedWindowNativeEvidence(
+          persistedBlock(evidenceModule, greenRuntimeSession({
+            nativeRequest: { sentAtMs: 210, repliedAtMs: 212, threadId: CHILD_THREAD, turnId: CHILD_TURN, outcome: 'sent', errorText: null, attemptCount, responseWithinBound: true },
+          })),
+          greenDuties(),
+        );
+        assert.equal(verdict.delivery.status, 'refused', `attempt count ${JSON.stringify(attemptCount)} refuses a credited sent request (actual ${JSON.stringify(verdict.delivery)})`);
+        assert.ok(verdict.delivery.reasons.includes('request-attempt-count-unproven'), `the unproven attempt count is named for ${JSON.stringify(attemptCount)} (actual ${JSON.stringify(verdict.delivery.reasons)})`);
+      }
+    });
+
+    test('confirmed-window native evidence: a SENT request must positively identify BOTH the joined Child thread AND turn — the targetless shape is reserved for pre-send refusals (round-2 P2, target IDs)', async () => {
+      const evidenceModule = await import('../tools/shell-wait-probe/native-control-evidence.mjs');
+      // Removing BOTH target ids from an otherwise valid record used to skip
+      // the exact-target check entirely (requestTargetNamed false) and still
+      // admit + settle the delivery.
+      const targetless = persistedBlock(evidenceModule, greenRuntimeSession({
+        nativeRequest: { sentAtMs: 210, repliedAtMs: 212, threadId: null, turnId: null, outcome: 'sent', errorText: null, attemptCount: 1, responseWithinBound: true },
+      }));
+      const verdict = evidenceModule.admitConfirmedWindowNativeEvidence(targetless, greenDuties());
+      assert.equal(verdict.delivery.status, 'refused', `a sent request without both target ids is refused (actual ${JSON.stringify(verdict.delivery)})`);
+      assert.ok(verdict.delivery.reasons.includes('request-target-unidentified'), `the unidentified target is named (actual ${JSON.stringify(verdict.delivery.reasons)})`);
+      // Each id alone is equally insufficient.
+      const threadOnly = evidenceModule.admitConfirmedWindowNativeEvidence(
+        persistedBlock(evidenceModule, greenRuntimeSession({
+          nativeRequest: { sentAtMs: 210, repliedAtMs: 212, threadId: CHILD_THREAD, turnId: null, outcome: 'sent', errorText: null, attemptCount: 1, responseWithinBound: true },
+        })),
+        greenDuties(),
+      );
+      assert.equal(threadOnly.delivery.status, 'refused');
+      assert.ok(threadOnly.delivery.reasons.includes('request-target-unidentified'));
+      // The targetless shape stays reserved for the pre-send refusal outcome.
+      const preSend = evidenceModule.admitConfirmedWindowNativeEvidence(
+        persistedBlock(evidenceModule, greenRuntimeSession({
+          nativeRequest: { sentAtMs: null, repliedAtMs: null, threadId: null, turnId: '', outcome: 'forbidden-empty-turn-id', errorText: null, attemptCount: 1, responseWithinBound: null },
+        })),
+        greenDuties(),
+      );
+      assert.ok(preSend.delivery.reasons.includes('empty-turn-id-forbidden'), `the pre-send refusal shape keeps its own reason (actual ${JSON.stringify(preSend.delivery.reasons)})`);
+      assert.equal(preSend.delivery.reasons.includes('request-target-unidentified'), false, 'the targetless shape is NOT flagged when the record is the typed pre-send refusal');
+    });
+
+    test('confirmed-window native evidence: the window evidence must PRECEDE the request initiation — an active Child turn is never proof of a pending observation (round-2 P2, window ordering)', async () => {
+      const evidenceModule = await import('../tools/shell-wait-probe/native-control-evidence.mjs');
+      // Initiation at 210 with the pending-observation confirmation observed
+      // at 250 (AFTER the initiation): the old replay compared initiation only
+      // against the interval start and still admitted + settled.
+      const lateConfirmation = persistedBlock(evidenceModule, greenRuntimeSession({
+        window: { confirmedAtMs: 260, pendingObservationConfirmedAtMs: 250, childTurnStartedAtMs: 120, pendingIntervalStartedAtMs: 120, holdDeadlineAtMs: 400_000, ancestryBaselineDigest: 'a'.repeat(64), ancestryHops: { launcherToBroker: true, brokerToTransport: true }, dutiesObservable: true, dutyNames: ['invocation', 'broker', 'transport', 'runner', 'job', 'guard', 'integrity'], controlActiveAtMs: 130, controlFreshAtMs: 130, controlDeclaredLifetimeMs: 3_600_000, measurementCutoffAtMs: 410_000, observationTeardownAtMs: 415_000 },
+        nativeRequest: { sentAtMs: 210, repliedAtMs: 212, threadId: CHILD_THREAD, turnId: CHILD_TURN, outcome: 'sent', errorText: null, attemptCount: 1, responseWithinBound: true },
+      }));
+      const verdict = evidenceModule.admitConfirmedWindowNativeEvidence(lateConfirmation, greenDuties());
+      assert.equal(verdict.settlement.settled, false, `a window confirmed AFTER initiation never settles (actual ${JSON.stringify(verdict.settlement)})`);
+      assert.ok(verdict.settlement.reasons.includes('window-unproven-before-initiation'), `the ordering miss is named (actual ${JSON.stringify(verdict.settlement.reasons)})`);
+      // A window-confirmation stamp after the initiation is equally unproven
+      // even when the pending-observation confirmation preceded it.
+      const lateWindow = evidenceModule.admitConfirmedWindowNativeEvidence(
+        persistedBlock(evidenceModule, greenRuntimeSession({
+          window: { confirmedAtMs: 260, pendingObservationConfirmedAtMs: 50, childTurnStartedAtMs: 120, pendingIntervalStartedAtMs: 120, holdDeadlineAtMs: 400_000, ancestryBaselineDigest: 'a'.repeat(64), ancestryHops: { launcherToBroker: true, brokerToTransport: true }, dutiesObservable: true, dutyNames: ['invocation', 'broker', 'transport', 'runner', 'job', 'guard', 'integrity'], controlActiveAtMs: 130, controlFreshAtMs: 130, controlDeclaredLifetimeMs: 3_600_000, measurementCutoffAtMs: 410_000, observationTeardownAtMs: 415_000 },
+          nativeRequest: { sentAtMs: 210, repliedAtMs: 212, threadId: CHILD_THREAD, turnId: CHILD_TURN, outcome: 'sent', errorText: null, attemptCount: 1, responseWithinBound: true },
+        })),
+        greenDuties(),
+      );
+      assert.equal(lateWindow.settlement.settled, false);
+      assert.ok(lateWindow.settlement.reasons.includes('window-unproven-before-initiation'));
+    });
+
+    test('confirmed-window native evidence: the control freshness and declared lifetime are RECOMPUTED against the request initiation during replay (round-2 P2, control at initiation)', async () => {
+      const evidenceModule = await import('../tools/shell-wait-probe/native-control-evidence.mjs');
+      // Freshness stamp 0 with a 1 ms declared lifetime and the request at
+      // 210 ms: the presence-only checks used to settle an expired control.
+      const expiredLifetime = persistedBlock(evidenceModule, greenRuntimeSession({
+        window: { confirmedAtMs: 200, pendingObservationConfirmedAtMs: 50, childTurnStartedAtMs: 120, pendingIntervalStartedAtMs: 120, holdDeadlineAtMs: 400_000, ancestryBaselineDigest: 'a'.repeat(64), ancestryHops: { launcherToBroker: true, brokerToTransport: true }, dutiesObservable: true, dutyNames: ['invocation', 'broker', 'transport', 'runner', 'job', 'guard', 'integrity'], controlActiveAtMs: 130, controlFreshAtMs: 0, controlDeclaredLifetimeMs: 1, measurementCutoffAtMs: 410_000, observationTeardownAtMs: 415_000 },
+      }));
+      const verdict = evidenceModule.admitConfirmedWindowNativeEvidence(expiredLifetime, greenDuties());
+      assert.equal(verdict.settlement.settled, false, `an expired declared lifetime never settles (actual ${JSON.stringify(verdict.settlement)})`);
+      assert.ok(verdict.settlement.reasons.includes('control-stale-or-expired-at-initiation'), `the recomputed lifetime miss is named (actual ${JSON.stringify(verdict.settlement.reasons)})`);
+      // A freshness stamp older than the passive-read cadence at initiation
+      // is equally stale (the record is kept internally consistent: the
+      // initiation still sits inside the pending interval).
+      const stale = evidenceModule.admitConfirmedWindowNativeEvidence(
+        persistedBlock(evidenceModule, greenRuntimeSession({
+          window: { confirmedAtMs: 2000, pendingObservationConfirmedAtMs: 50, childTurnStartedAtMs: 120, pendingIntervalStartedAtMs: 120, holdDeadlineAtMs: 400_000, ancestryBaselineDigest: 'a'.repeat(64), ancestryHops: { launcherToBroker: true, brokerToTransport: true }, dutiesObservable: true, dutyNames: ['invocation', 'broker', 'transport', 'runner', 'job', 'guard', 'integrity'], controlActiveAtMs: 130, controlFreshAtMs: 0, controlDeclaredLifetimeMs: 3_600_000, measurementCutoffAtMs: 400_000, observationTeardownAtMs: 405_000 },
+          nativeRequest: { sentAtMs: 2100, repliedAtMs: 2102, threadId: CHILD_THREAD, turnId: CHILD_TURN, outcome: 'sent', errorText: null, attemptCount: 1, responseWithinBound: true },
+          receipt: { transportReplyAtMs: 2102, childResolutionAtMs: 2500, childTerminalStatus: 'interrupted', childResolutionBasis: 'child-terminal-event', observationResolvedAtMs: 2600, unrelatedCompletionReply: false, parentCancellationAtMs: null, completedTurnId: CHILD_TURN },
+        })),
+        greenDuties({ cleanupFenceAtMs: 400_000 }),
+      );
+      assert.equal(stale.settlement.settled, false, `a stale control at initiation never settles (actual ${JSON.stringify(stale.settlement)})`);
+      assert.ok(stale.settlement.reasons.includes('control-stale-or-expired-at-initiation'), `the recomputed freshness miss is named (actual ${JSON.stringify(stale.settlement.reasons)})`);
+    });
+
+    test('confirmed-window native evidence: the ORIGINAL observation resolution bounds the causal interval too — an interrupt delivered after the observation ended gets no credit (round-3 P2-4)', async () => {
+      const evidenceModule = await import('../tools/shell-wait-probe/native-control-evidence.mjs');
+      // Observation resolution 100 ms, pending confirmation 150 ms,
+      // initiation 210 ms, Child interruption 300 ms: the old upper bound
+      // (hold deadline + Child terminal) admitted and settled a delivery
+      // that landed AFTER the original observation had already ended.
+      const afterObservation = persistedBlock(evidenceModule, greenRuntimeSession({
+        window: { confirmedAtMs: 200, pendingObservationConfirmedAtMs: 150, childTurnStartedAtMs: 120, pendingIntervalStartedAtMs: 120, holdDeadlineAtMs: 400_000, ancestryBaselineDigest: 'a'.repeat(64), ancestryHops: { launcherToBroker: true, brokerToTransport: true }, dutiesObservable: true, controlActiveAtMs: 130, controlFreshAtMs: 130, controlDeclaredLifetimeMs: 3_600_000, measurementCutoffAtMs: 410_000, observationTeardownAtMs: 415_000 },
+        nativeRequest: { sentAtMs: 210, repliedAtMs: 212, threadId: CHILD_THREAD, turnId: CHILD_TURN, outcome: 'sent', errorText: null, attemptCount: 1, responseWithinBound: true },
+        receipt: { transportReplyAtMs: 212, childResolutionAtMs: 300, childTerminalStatus: 'interrupted', childResolutionBasis: 'child-terminal-event', observationResolvedAtMs: 100, unrelatedCompletionReply: false, parentCancellationAtMs: null, completedTurnId: CHILD_TURN },
+      }));
+      const verdict = evidenceModule.admitConfirmedWindowNativeEvidence(afterObservation, greenDuties());
+      assert.equal(verdict.delivery.status, 'refused', `an initiation after the observation's resolution is refused (actual ${JSON.stringify(verdict.delivery)})`);
+      assert.ok(verdict.delivery.reasons.includes('initiation-outside-pending-interval'), `the causal miss is named (actual ${JSON.stringify(verdict.delivery.reasons)})`);
+    });
+
+    test('confirmed-window projection: duty-name elements are BOUNDED WHITELISTED strings — nested runtime data cannot bypass the privacy boundary (round-3 P2-8)', async () => {
+      const evidenceModule = await import('../tools/shell-wait-probe/native-control-evidence.mjs');
+      // The array-length cap alone copied elements unchanged: a runtime
+      // object element preserved its whole nested shape in the persisted
+      // block, and individual strings were unbounded.
+      const projected = persistedBlock(evidenceModule, greenRuntimeSession({
+        window: { confirmedAtMs: 200, pendingObservationConfirmedAtMs: 50, childTurnStartedAtMs: 120, pendingIntervalStartedAtMs: 120, holdDeadlineAtMs: 400_000, ancestryBaselineDigest: 'a'.repeat(64), ancestryHops: { launcherToBroker: true, brokerToTransport: true }, dutiesObservable: true, dutyNames: [{ task: 'private task', rawHook: { token: 'credential' } }, 'invocation', 'x'.repeat(200)], controlActiveAtMs: 130, controlFreshAtMs: 130, controlDeclaredLifetimeMs: 3_600_000, measurementCutoffAtMs: 410_000, observationTeardownAtMs: 415_000 },
+      }));
+      assert.deepEqual(projected.window.dutyNames, [null, 'invocation', null], `only bounded duty-name strings project (actual ${JSON.stringify(projected.window.dutyNames)})`);
+      const serialized = JSON.stringify(projected);
+      assert.doesNotMatch(serialized, /private task|credential/u, 'no nested runtime data survives the projection');
+      assert.doesNotMatch(serialized, /x{100}/u, 'unbounded strings are refused by the bound');
+    });
+
+    test('confirmed-window native evidence: the responsiveness comparison is RECOMPUTED from the persisted request bounds — a stale summary flag never grants credit (round-3 P2-9)', async () => {
+      const evidenceModule = await import('../tools/shell-wait-probe/native-control-evidence.mjs');
+      // 70000 ms latency with responseWithinBound: true: the verdict used to
+      // return both the contradicting latency and the responsiveness credit.
+      const contradictory = persistedBlock(evidenceModule, greenRuntimeSession({
+        nativeRequest: { sentAtMs: 210, repliedAtMs: 70_212, threadId: CHILD_THREAD, turnId: CHILD_TURN, outcome: 'sent', errorText: null, attemptCount: 1, responseWithinBound: true },
+      }));
+      const verdict = evidenceModule.admitConfirmedWindowNativeEvidence(contradictory, greenDuties());
+      assert.equal(verdict.nativeLatencyMs, 70_002, 'the latency is recomputed from the bounds');
+      assert.equal(verdict.nativeResponseWithinBound, false, `the responsiveness fact is RECOMPUTED, never trusted from the flag (actual ${String(verdict.nativeResponseWithinBound)})`);
+      assert.equal(verdict.settlement.settled, false, `contradictory responsiveness evidence refuses the settlement (actual ${JSON.stringify(verdict.settlement)})`);
+      assert.ok(verdict.settlement.reasons.includes('response-bound-contradicted'), `the contradiction is named (actual ${JSON.stringify(verdict.settlement.reasons)})`);
+      // A consistent flag recomputes cleanly (the recomputed value agrees).
+      const consistent = evidenceModule.admitConfirmedWindowNativeEvidence(
+        persistedBlock(evidenceModule, greenRuntimeSession({
+          nativeRequest: { sentAtMs: 210, repliedAtMs: 212, threadId: CHILD_THREAD, turnId: CHILD_TURN, outcome: 'sent', errorText: null, attemptCount: 1, responseWithinBound: true },
+        })),
+        greenDuties(),
+      );
+      assert.equal(consistent.nativeResponseWithinBound, true);
+      assert.equal(consistent.settlement.settled, true, 'a consistent record still settles');
+    });
+
+    test('confirmed-window native evidence: the native responsiveness comparison requires the confirmations to PRECEDE the send — a window established only AFTER the send earns no native latency, while the delivery attribution and the order-based settlement refusal stand (P2-3, round-20 codex re-review)', async () => {
+      // The reviewer's exact finding: replay checked only that the
+      // confirmation stamps EXIST before admitting the delivery — the
+      // ORDER check ran later, for settlement only. A record with the send
+      // at 100 ms and BOTH confirmations at 105 ms still reported an
+      // admitted delivery and nativeResponseWithinBound: true. The
+      // ordering premise is now part of CAUSAL ADMISSION for the
+      // responsiveness comparison: a window established after the send
+      // cannot earn the native latency fields (the transport bounds stay
+      // for diagnosis; the order-based settlement refusal stays).
+      const evidenceModule = await import('../tools/shell-wait-probe/native-control-evidence.mjs');
+      // The interval starts at 60, the send at 100, the reply at 106 — but
+      // BOTH confirmations postdate the send (the pending-observation
+      // confirmation at 104, the window confirmation at 105).
+      const lateConfirmedWindow = persistedBlock(evidenceModule, greenRuntimeSession({
+        window: { confirmedAtMs: 105, pendingObservationConfirmedAtMs: 104, childTurnStartedAtMs: 60, pendingIntervalStartedAtMs: 60, holdDeadlineAtMs: 400_000, ancestryBaselineDigest: 'a'.repeat(64), ancestryHops: { launcherToBroker: true, brokerToTransport: true }, dutiesObservable: true, dutyNames: ['invocation', 'broker', 'transport', 'runner', 'job', 'guard', 'integrity'], controlActiveAtMs: 55, controlFreshAtMs: 55, controlDeclaredLifetimeMs: 3_600_000, measurementCutoffAtMs: 410_000, observationTeardownAtMs: 415_000 },
+        nativeRequest: { sentAtMs: 100, repliedAtMs: 106, threadId: CHILD_THREAD, turnId: CHILD_TURN, outcome: 'sent', errorText: null, attemptCount: 1, responseWithinBound: true },
+      }));
+      const verdict = evidenceModule.admitConfirmedWindowNativeEvidence(lateConfirmedWindow, greenDuties());
+      assert.equal(verdict.delivery.status, 'admitted', `the delivery attribution itself stands (the ordering gate closes the COMPARISON, not the attribution; actual ${JSON.stringify(verdict.delivery)})`);
+      assert.equal(verdict.nativeLatencyMs, null, `a window established AFTER the send earns NO native latency credit (actual ${JSON.stringify(verdict.nativeLatencyMs)})`);
+      assert.equal(verdict.nativeResponseWithinBound, null, `a window established AFTER the send earns NO responsiveness bound credit (actual ${JSON.stringify(verdict.nativeResponseWithinBound)})`);
+      // The raw reply timing stays for diagnosis (the receipt's transport
+      // stamp is untouched by the comparison gate), and the EXISTING
+      // order-based settlement refusal still fires by name.
+      assert.equal(verdict.transportReply.observedAtMs, 212, 'the raw transport reply timing stays for diagnosis');
+      assert.equal(verdict.settlement.settled, false, `the order-based settlement refusal stays (actual ${JSON.stringify(verdict.settlement)})`);
+      assert.ok(verdict.settlement.reasons.includes('window-unproven-before-initiation'), `the frozen ordering refusal is still named (actual ${JSON.stringify(verdict.settlement.reasons)})`);
+      // The contrast: the SAME bounds with the confirmations PRECEDING the
+      // send keep their responsiveness credit (the gate compares order, not
+      // presence).
+      const orderedWindow = persistedBlock(evidenceModule, greenRuntimeSession({
+        window: { confirmedAtMs: 95, pendingObservationConfirmedAtMs: 90, childTurnStartedAtMs: 60, pendingIntervalStartedAtMs: 60, holdDeadlineAtMs: 400_000, ancestryBaselineDigest: 'a'.repeat(64), ancestryHops: { launcherToBroker: true, brokerToTransport: true }, dutiesObservable: true, dutyNames: ['invocation', 'broker', 'transport', 'runner', 'job', 'guard', 'integrity'], controlActiveAtMs: 55, controlFreshAtMs: 55, controlDeclaredLifetimeMs: 3_600_000, measurementCutoffAtMs: 410_000, observationTeardownAtMs: 415_000 },
+        nativeRequest: { sentAtMs: 100, repliedAtMs: 106, threadId: CHILD_THREAD, turnId: CHILD_TURN, outcome: 'sent', errorText: null, attemptCount: 1, responseWithinBound: true },
+      }));
+      const orderedVerdict = evidenceModule.admitConfirmedWindowNativeEvidence(orderedWindow, greenDuties());
+      assert.equal(orderedVerdict.nativeLatencyMs, 6, `an ordered window keeps its native latency credit (actual ${JSON.stringify(orderedVerdict)})`);
+      assert.equal(orderedVerdict.nativeResponseWithinBound, true, 'an ordered window keeps its responsiveness bound credit');
+      // A window confirmation exactly AT the send is not AFTER it — the
+      // boundary is inclusive.
+      const coincidentWindow = persistedBlock(evidenceModule, greenRuntimeSession({
+        window: { confirmedAtMs: 100, pendingObservationConfirmedAtMs: 90, childTurnStartedAtMs: 60, pendingIntervalStartedAtMs: 60, holdDeadlineAtMs: 400_000, ancestryBaselineDigest: 'a'.repeat(64), ancestryHops: { launcherToBroker: true, brokerToTransport: true }, dutiesObservable: true, dutyNames: ['invocation', 'broker', 'transport', 'runner', 'job', 'guard', 'integrity'], controlActiveAtMs: 55, controlFreshAtMs: 55, controlDeclaredLifetimeMs: 3_600_000, measurementCutoffAtMs: 410_000, observationTeardownAtMs: 415_000 },
+        nativeRequest: { sentAtMs: 100, repliedAtMs: 106, threadId: CHILD_THREAD, turnId: CHILD_TURN, outcome: 'sent', errorText: null, attemptCount: 1, responseWithinBound: true },
+      }));
+      const coincidentVerdict = evidenceModule.admitConfirmedWindowNativeEvidence(coincidentWindow, greenDuties());
+      assert.equal(coincidentVerdict.nativeLatencyMs, 6, 'a confirmation coinciding with the send is not a late-confirmed window');
+    });
+
+    test('confirmed-window native evidence: a reply at UNRELATED COMPLETION never earns native responsiveness — the app-server answering turn/interrupt when the Child finished naturally keeps its raw reply timing for diagnosis only (P2-4, round-20 codex re-review)', async () => {
+      // The reviewer's exact finding: the app-server can answer
+      // turn/interrupt when the Child finishes naturally — replay correctly
+      // refuses settlement for this outcome (response-at-unrelated-
+      // completion), but still reported a fast native response because the
+      // latency fields depended only on deliveryAdmitted. The latency
+      // fields now additionally require the CAUSAL interrupted receipt: a
+      // receipt identifying unrelated completion (the existing
+      // response-at-unrelated-completion typing) reports NO native
+      // responsiveness, while the raw reply timing stays for diagnosis.
+      const evidenceModule = await import('../tools/shell-wait-probe/native-control-evidence.mjs');
+      // The natural-completion reply: the transport answered at 212 (fast),
+      // but the receipt identifies the UNRELATED completion (the Child
+      // finished naturally, unrelatedCompletionReply: true, the terminal
+      // status 'completed', the resolution basis 'natural-completion').
+      const naturalCompletion = persistedBlock(evidenceModule, greenRuntimeSession({
+        receipt: { transportReplyAtMs: 212, childResolutionAtMs: 300, childTerminalStatus: 'completed', childResolutionBasis: 'natural-completion', observationResolvedAtMs: 310, unrelatedCompletionReply: true, parentCancellationAtMs: null, completedTurnId: CHILD_TURN },
+      }));
+      const verdict = evidenceModule.admitConfirmedWindowNativeEvidence(naturalCompletion, greenDuties());
+      assert.equal(verdict.delivery.status, 'admitted', `the delivery attribution itself stands (actual ${JSON.stringify(verdict.delivery)})`);
+      assert.equal(verdict.nativeLatencyMs, null, `a reply at unrelated completion earns NO native latency credit (actual ${JSON.stringify(verdict.nativeLatencyMs)})`);
+      assert.equal(verdict.nativeResponseWithinBound, null, `a reply at unrelated completion earns NO responsiveness bound credit (actual ${JSON.stringify(verdict.nativeResponseWithinBound)})`);
+      // The raw reply timing stays for diagnosis, and the settlement
+      // refusal still names the unrelated completion.
+      assert.equal(verdict.transportReply.observedAtMs, 212, 'the raw transport reply timing stays for diagnosis');
+      assert.equal(verdict.settlement.settled, false, `the settlement still refuses (actual ${JSON.stringify(verdict.settlement)})`);
+      assert.ok(verdict.settlement.reasons.includes('response-at-unrelated-completion'), `the frozen unrelated-completion refusal is still named (actual ${JSON.stringify(verdict.settlement.reasons)})`);
+      // The same gate holds for the terminal-status-only spelling of the
+      // typing: a non-interrupted terminal status identifies unrelated
+      // completion even without the explicit reply flag.
+      const terminalStatusOnly = persistedBlock(evidenceModule, greenRuntimeSession({
+        receipt: { transportReplyAtMs: 212, childResolutionAtMs: 300, childTerminalStatus: 'failed', childResolutionBasis: 'child-terminal-event', observationResolvedAtMs: 310, unrelatedCompletionReply: false, parentCancellationAtMs: null, completedTurnId: CHILD_TURN },
+      }));
+      const terminalStatusVerdict = evidenceModule.admitConfirmedWindowNativeEvidence(terminalStatusOnly, greenDuties());
+      assert.equal(terminalStatusVerdict.nativeLatencyMs, null, `a non-interrupted terminal status also withholds the latency credit (actual ${JSON.stringify(terminalStatusVerdict.nativeLatencyMs)})`);
+      assert.equal(terminalStatusVerdict.nativeResponseWithinBound, null, 'the responsiveness bound is withheld the same way');
+      // The contrast: the causal INTERRUPTED receipt keeps its fast native
+      // responsiveness (the gate requires the causal receipt, never a
+      // blanket refusal).
+      const interrupted = evidenceModule.admitConfirmedWindowNativeEvidence(persistedBlock(evidenceModule, greenRuntimeSession()), greenDuties());
+      assert.equal(interrupted.nativeLatencyMs, 2, `the causal interrupted receipt keeps its native latency credit (actual ${JSON.stringify(interrupted)})`);
+      assert.equal(interrupted.nativeResponseWithinBound, true, 'the causal interrupted receipt keeps its responsiveness bound credit');
+    });
+
+    test('confirmed-window native evidence: the cleanup fence applies to BOTH resolution legs — the observation resolution owes pre-fence credit too (round-2 P2, fence on both legs)', async () => {
+      const evidenceModule = await import('../tools/shell-wait-probe/native-control-evidence.mjs');
+      // Child terminal 300 pre-fence (fence 320), but the observation
+      // resolution at 400000 AFTER cleanup: cleanup may have released the
+      // original observation rather than the native interrupt — never
+      // settles.
+      const lateObservation = persistedBlock(evidenceModule, greenRuntimeSession({
+        receipt: { transportReplyAtMs: 212, childResolutionAtMs: 300, childTerminalStatus: 'interrupted', childResolutionBasis: 'child-terminal-event', observationResolvedAtMs: 400_000, unrelatedCompletionReply: false, parentCancellationAtMs: null, completedTurnId: CHILD_TURN },
+      }));
+      const verdict = evidenceModule.admitConfirmedWindowNativeEvidence(lateObservation, greenDuties({ cleanupFenceAtMs: 320 }));
+      assert.equal(verdict.settlement.settled, false, `a post-fence observation resolution never settles (actual ${JSON.stringify(verdict.settlement)})`);
+      assert.ok(verdict.settlement.reasons.includes('cleanup-fence-unproven'), `the fence miss is named (actual ${JSON.stringify(verdict.settlement.reasons)})`);
+      // A missing fence with both legs observed is equally unproven.
+      const missingFence = evidenceModule.admitConfirmedWindowNativeEvidence(
+        persistedBlock(evidenceModule, greenRuntimeSession()),
+        greenDuties({ cleanupFenceAtMs: null }),
+      );
+      assert.equal(missingFence.settlement.settled, false);
+      assert.ok(missingFence.settlement.reasons.includes('cleanup-fence-unproven'));
+    });
+
+    test('confirmed-window native evidence: settlement verifies the REQUIRED duty slots in BOTH the adjudication and the window — aggregate flags alone never certify all-duty settlement (round-4 P2)', async () => {
+      const evidenceModule = await import('../tools/shell-wait-probe/native-control-evidence.mjs');
+      // An otherwise-green record with allObserved: true and names: [] used
+      // to settle: neither the adjudication's names nor the window's duty
+      // names were checked against the mandatory duty slots.
+      const emptyNames = persistedBlock(evidenceModule, greenRuntimeSession({
+        window: { confirmedAtMs: 200, pendingObservationConfirmedAtMs: 50, childTurnStartedAtMs: 120, pendingIntervalStartedAtMs: 120, holdDeadlineAtMs: 400_000, ancestryBaselineDigest: 'a'.repeat(64), ancestryHops: { launcherToBroker: true, brokerToTransport: true }, dutiesObservable: true, dutyNames: [], controlActiveAtMs: 130, controlFreshAtMs: 130, controlDeclaredLifetimeMs: 3_600_000, measurementCutoffAtMs: 410_000, observationTeardownAtMs: 415_000 },
+      }));
+      const verdict = evidenceModule.admitConfirmedWindowNativeEvidence(emptyNames, greenDuties({ names: [] }));
+      assert.equal(verdict.settlement.settled, false, `aggregate flags without the duty slots never settle (actual ${JSON.stringify(verdict.settlement)})`);
+      assert.ok(verdict.settlement.reasons.includes('required-duty-slot-unproven'), `the missing slots are named (actual ${JSON.stringify(verdict.settlement.reasons)})`);
+      // A window carrying the slots but an adjudication missing one refuses.
+      const adjudicationMissing = evidenceModule.admitConfirmedWindowNativeEvidence(
+        persistedBlock(evidenceModule, greenRuntimeSession()),
+        greenDuties({ names: ['invocation', 'broker', 'transport', 'runner', 'job', 'guard'] }),
+      );
+      assert.equal(adjudicationMissing.settlement.settled, false);
+      assert.ok(adjudicationMissing.settlement.reasons.includes('required-duty-slot-unproven'));
+      // The full slot set on BOTH layers still settles.
+      const full = evidenceModule.admitConfirmedWindowNativeEvidence(
+        persistedBlock(evidenceModule, greenRuntimeSession()),
+        greenDuties(),
+      );
+      assert.equal(full.settlement.settled, true, 'the complete duty slot set still settles');
+    });
+
+    test('confirmed-window executor: the persisted duty adjudication rides the BOUNDED WHITELISTED projection — extra diagnostics/private paths/oversized names never persist (round-4 P2)', async (t) => {
+      const privatePath = '/private/tmp/confirmed-window-duties-leak-';
+      const { record } = await runRouteThroughEntry(t, {
+        script: {
+          notifications: [
+            ...identityJoinNotifications({ atMs: 100 }),
+            { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+          ],
+        },
+        dutyAdjudication: {
+          ...greenDuties(),
+          extraDiagnostic: { rawPath: `${privatePath}x`, credential: 'secret-token' },
+          names: [...greenDuties().names, 'y'.repeat(200)],
+        },
+      });
+      assert.equal(record.status, 'executed');
+      const persistedDuties = record.confirmedWindow.duties;
+      assert.equal(persistedDuties.extraDiagnostic, undefined, `extra diagnostics never persist (actual ${JSON.stringify(Object.keys(persistedDuties))})`);
+      assert.equal(persistedDuties.names.every((name) => name === null || (typeof name === 'string' && name.length <= 64)), true, `every projected duty name is a bounded string or null (actual ${JSON.stringify(persistedDuties.names)})`);
+      assert.ok(persistedDuties.names.includes(null), 'the oversized name projected to null (never a bounded pass-through)');
+      assert.deepEqual(persistedDuties.names.slice(0, 7), greenDuties().names.slice(0, 7), 'the seven required slots ride the projection');
+      // (P1-4) the choreography's own §16.4 survival verdict (established by
+      // the post-delivery green control reads) rides the ADJUDICATED names —
+      // never the raw injected claim alone.
+      assert.equal(persistedDuties.names.includes('control-survival'), true, 'the adjudicated §16.4 survival verdict rides the persisted names');
+      const serialized = JSON.stringify(record);
+      assert.doesNotMatch(serialized, /secret-token|confirmed-window-duties-leak/u, 'no private payload rides the persisted record');
+      // The offline replay over the projected representation reproduces the
+      // persisted verdict (one representation for adjudication and replay).
+      const evidence = await import('../tools/shell-wait-probe/native-control-evidence.mjs');
+      const recomputed = evidence.admitConfirmedWindowNativeEvidence(JSON.parse(JSON.stringify(record.confirmedWindow.block)), record.confirmedWindow.duties);
+      assert.deepEqual(recomputed, record.confirmedWindow.evidence, 'the projected adjudication is the SAME representation the verdict consumed');
+    });
+
+    test('confirmed-window native evidence: the control baseline layer requires the freshness and declared-lifetime evidence too — nulls never settle (P2-4, the reload side)', async () => {
+      const evidenceModule = await import('../tools/shell-wait-probe/native-control-evidence.mjs');
+      const missingControlEvidence = persistedBlock(evidenceModule, greenRuntimeSession({
+        window: { confirmedAtMs: 200, pendingObservationConfirmedAtMs: 50, childTurnStartedAtMs: 120, pendingIntervalStartedAtMs: 120, holdDeadlineAtMs: 400_000, ancestryBaselineDigest: 'a'.repeat(64), ancestryHops: { launcherToBroker: true, brokerToTransport: true }, dutiesObservable: true, controlActiveAtMs: 130, controlFreshAtMs: null, controlDeclaredLifetimeMs: null, measurementCutoffAtMs: 410_000, observationTeardownAtMs: 415_000 },
+      }));
+      const verdict = evidenceModule.admitConfirmedWindowNativeEvidence(missingControlEvidence, greenDuties());
+      assert.equal(verdict.settlement.settled, false, `null control freshness/lifetime evidence never settles (actual ${JSON.stringify(verdict.settlement)})`);
+      assert.ok(verdict.settlement.reasons.includes('missing-control-baseline'), `the control baseline layer names the missing evidence (actual ${JSON.stringify(verdict.settlement.reasons)})`);
+    });
+
+    test('confirmed-window native evidence: identity.joinAmbiguous is a projected whitelisted boolean the consumer reads DIRECTLY (an ambiguity beyond the wrongJoins slice can never become invisible)', async () => {
+      // The wrongJoins projection is slice-bounded to the FIRST 16 entries;
+      // a conflicting entry beyond that position in a pathological record
+      // would make the ambiguity invisible to the reload consumer if it
+      // detected ambiguity only through the wrongJoins entries. The runtime
+      // `joinAmbiguous` fact is therefore projected as a whitelisted boolean
+      // and the consumer reads it directly, in BOTH shapes.
+      const evidence = await import('../tools/shell-wait-probe/native-control-evidence.mjs');
+      // (a) An ambiguous session whose wrongJoins list is empty in the
+      // projected block (the flag is the only carrier of the fact).
+      const flagOnly = persistedBlock(evidence, greenRuntimeSession({
+        identity: {
+          parentThreadId: PARENT_THREAD, childThreadId: CHILD_THREAD, childTurnId: CHILD_TURN,
+          joinBasis: 'SubAgentActivity.agentThreadId x turn/started.threadId', joinObservedAtMs: 120,
+          modelObserved: null, joinAmbiguous: true, wrongJoins: [],
+        },
+      }));
+      assert.equal(flagOnly.identity.joinAmbiguous, true, 'the boolean is projected (never dropped by the whitelist)');
+      const flagVerdict = evidence.admitConfirmedWindowNativeEvidence(flagOnly, greenDuties());
+      assert.equal(flagVerdict.delivery.status, 'refused', `an ambiguous record is refused by the flag alone (actual ${JSON.stringify(flagVerdict.delivery)})`);
+      assert.ok(flagVerdict.delivery.reasons.includes('identity-join-unproven'));
+      // (b) A pathological record whose conflicting entry sits BEYOND the
+      // 16-entry wrongJoins slice: the flag still carries the ambiguity.
+      const farConflicts = Array.from({ length: 17 }, (_, index) => ({ kind: index === 16 ? 'conflicting-agent-thread-id' : 'wrong-child-thread', atMs: 100 + index }));
+      const sliced = persistedBlock(evidence, greenRuntimeSession({
+        identity: {
+          parentThreadId: PARENT_THREAD, childThreadId: CHILD_THREAD, childTurnId: CHILD_TURN,
+          joinBasis: 'SubAgentActivity.agentThreadId x turn/started.threadId', joinObservedAtMs: 120,
+          modelObserved: null, joinAmbiguous: true, wrongJoins: farConflicts,
+        },
+      }));
+      assert.equal(sliced.identity.wrongJoins.some((entry) => entry.kind === 'conflicting-agent-thread-id'), false, 'the conflicting entry is beyond the projected slice');
+      const slicedVerdict = evidence.admitConfirmedWindowNativeEvidence(sliced, greenDuties());
+      assert.equal(slicedVerdict.delivery.status, 'refused', `the sliced ambiguity is still visible through the flag (actual ${JSON.stringify(slicedVerdict.delivery)})`);
+      assert.ok(slicedVerdict.delivery.reasons.includes('identity-join-unproven'));
+    });
+
+    test('confirmed-window host composition: the ONE owned host argv is pinned byte-for-byte (the §39.7 config-transport keys through the app-server surface)', async () => {
+      const confirmedWindow = await import('../tools/shell-wait-probe/confirmed-window.mjs');
+      const fixture = { workspace: '/w', codexHome: '/h', env: { CODEX_HOME: '/h' } };
+      // The expected bytes are INDEPENDENT literals from §39.7 — never
+      // derived from the composer's own output. The `--listen` value is the
+      // SUPPORTED transport URL `stdio://` (verified against the pinned
+      // 0.163.0 binary on 2026-11-18: bare `stdio` is rejected during
+      // argument parsing — "unsupported --listen URL `stdio`; expected
+      // `stdio://`, `unix://`, `unix://PATH`, `ws://IP:PORT`, or `off`" —
+      // so the host exited before initialization and the composed arguments
+      // could never launch the research session; §40.7's dated correction).
+      assert.deepEqual(
+        confirmedWindow.composeConfirmedWindowHostArguments(fixture, { execDefaultMs: 3_600_000 }),
+        ['app-server', '--listen', 'stdio://', '--enable', 'hooks', '-c', 'shell_environment_policy.inherit=all', '-c', 'features.code_mode.default_exec_yield_time_ms=3600000'],
+        'the composed research argv is the §39.7 transport over the SUPPORTED stdio:// URL',
+      );
+      // Without the exec-default override the fourth pair is absent.
+      assert.deepEqual(
+        confirmedWindow.composeConfirmedWindowHostArguments(fixture, {}),
+        ['app-server', '--listen', 'stdio://', '--enable', 'hooks', '-c', 'shell_environment_policy.inherit=all'],
+      );
+      // Known-invalid compositions refuse before any launch would happen.
+      assert.throws(() => confirmedWindow.composeConfirmedWindowHostArguments(fixture, { execDefaultMs: 0 }), /exec default override/u);
+      assert.throws(() => confirmedWindow.composeConfirmedWindowHostArguments({ workspace: '', codexHome: '/h' }, {}), /workspace/u);
+      assert.throws(() => confirmedWindow.composeConfirmedWindowHostArguments(fixture, { model: 'bad model' }), /bounded safe identifier/u);
+    });
+
+    // --- the actual standard entry (§40.1: parser + runShellWaitCase) --------
+
+    /** A fast offline fixture handle shaped like the real one (the entry composes the route on it). */
+    const offlineRouteFixture = async (/** @type {string} */ temporary) => {
+      const entryRealpath = join(temporary, 'installed', 'skills', 'rescue', 'launcher.mjs');
+      const brokerEntryRealpath = join(temporary, 'installed', 'scripts', 'zcode-broker.mjs');
+      const preloadPath = join(temporary, 'capture', 'closure-observe.cjs');
+      const captureDirectory = join(temporary, 'capture');
+      // ONE synthetic arming source for the handle, the effective capture env
+      // and the record-level declaration (every digest agrees by construction).
+      const record = syntheticArming(entryRealpath, brokerEntryRealpath, preloadPath, captureDirectory);
+      const env = { CODEX_HOME: join(temporary, 'codex-home'), HOME: join(temporary, 'home'), ZCODE_DATA_ROOT: join(temporary, 'data-root') };
+      return {
+        workspace: join(temporary, 'workspace'),
+        codexHome: join(temporary, 'codex-home'),
+        installedRoot: join(temporary, 'installed'),
+        record: {
+          variant: 'candidate',
+          capMs: null,
+          pollMs: 3_600_000,
+          appliedArtifacts: [],
+          closureStdoutCapture: record.closureStdoutCapture,
+        },
+        survivalControlPath: join(temporary, 'codex-home', 'survival-control.mjs'),
+        // The registered rescue-interrupt observers ride the SAME synthetic
+        // arming the real fixture records (the §25.3 arming shape): the
+        // pre-host mandatory-observer gate reads the declaration, never a
+        // file. The HANDLE, the EFFECTIVE env and the DECLARATION compose
+        // from ONE synthetic arming source, so every digest agrees by
+        // construction.
+        stdoutCapture: record.stdoutCapture,
+        spawnWitness: { preloadPath: join(temporary, 'capture', 'witness-preload.cjs'), exactReaderEnabled: false },
+        env: { ...env, ...syntheticCaptureEnv(record.stdoutCapture) },
+        dispose: async () => {},
+      };
+    };
+    /** Materialize the fixture's on-disk artifacts the route preflight stats (the declared control, the data root, the capture preload). */
+    const materializeOfflineRouteFixture = async (/** @type {any} */ fixture) => {
+      await mkdir(dirname(fixture.survivalControlPath), { recursive: true, mode: 0o700 });
+      await writeFile(fixture.survivalControlPath, '#!/usr/bin/env node\n', { mode: 0o700 });
+      await mkdir(fixture.env.ZCODE_DATA_ROOT, { recursive: true, mode: 0o700 });
+      await mkdir(fixture.stdoutCapture.captureDirectory, { recursive: true, mode: 0o700 });
+      await writeFile(fixture.stdoutCapture.preloadPath, 'the-executing-preload', { mode: 0o600 });
+      return fixture;
+    };
+
+    /** Run the confirmed-window route through the PUBLIC parser vector + standard entry. */
+    async function runRouteThroughEntry(t, { script = {}, observers = greenObservers(), dutyAdjudication = greenDuties(), dependencies = {}, argv = {} } = {}) {
+      const previousGate = process.env.ZCODE_SHELL_WAIT_E2E;
+      process.env.ZCODE_SHELL_WAIT_E2E = '1';
+      const temporary = await mkdtemp(join(tmpdir(), 'confirmed-window-entry-'));
+      t.after(() => rm(temporary, { recursive: true, force: true }));
+      const output = join(temporary, 'output');
+      await mkdir(output, { mode: 0o700 });
+      try {
+        const host = fakeConfirmedWindowHost({ replies: parentSessionReplies(), ...script });
+        const parsed = parseShellWaitArguments(confirmedWindowArguments({
+          '--output': output,
+          '--codex': process.execPath,
+          '--source-sha': 'a'.repeat(40),
+          ...argv,
+        }));
+        const record = await runShellWaitCase(parsed, {
+          createFixture: async () => materializeOfflineRouteFixture(await offlineRouteFixture(temporary)),
+          confirmedWindowHost: host.factory,
+          confirmedWindowObservers: observers,
+          confirmedWindowDutyAdjudication: dutyAdjudication,
+          // The ONE shared deterministic clock (the choreography, its sleeps
+          // and the host's notification schedule never use two clocks).
+          confirmedWindowNow: host.clock.now,
+          confirmedWindowWallClockNow: host.clock.wallClockNow,
+          confirmedWindowSleep: host.clock.sleep,
+          confirmedWindowWaitUntil: host.clock.waitUntil,
+          ...dependencies,
+        });
+        return { record, host, output };
+      } finally {
+        if (previousGate === undefined) delete process.env.ZCODE_SHELL_WAIT_E2E;
+        else process.env.ZCODE_SHELL_WAIT_E2E = previousGate;
+      }
+    }
+
+    test('confirmed-window standard entry: the public parser vector dispatches the ACTUAL controller, and the persisted record carries the versioned block plus the reload verdict (recomputable offline)', async (t) => {
+      const { record, host, output } = await runRouteThroughEntry(t, {
+        script: {
+          notifications: [
+            ...identityJoinNotifications({ atMs: 100 }),
+            { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+          ],
+        },
+      });
+      assert.equal(record.status, 'executed', `the route case executed (actual ${JSON.stringify(record)})`);
+      assert.equal(record.cleanup.fixtureDisposed, true);
+      const interrupts = host.requestLog.filter((entry) => entry.method === 'turn/interrupt');
+      assert.equal(interrupts.length, 1, 'the entry reached the ACTUAL controller: exactly one native delivery');
+      assert.deepEqual(interrupts[0].params, { threadId: CHILD_THREAD, turnId: CHILD_TURN });
+      // The schema-additive record block (legacy records never carry it).
+      const block = record.confirmedWindow?.block;
+      assert.ok(block, 'the record carries the confirmedWindow block');
+      assert.equal(block.controllerVersion, 1);
+      assert.equal(block.evidenceVersion, 1);
+      assert.equal(block.source, 'same-host-rpc');
+      assert.equal(block.finalState, 'all-duties-adjudicated', 'the green pipeline reaches the final state');
+      // The reload verdict is RECOMPUTABLE offline from the persisted record.
+      const evidence = await import('../tools/shell-wait-probe/native-control-evidence.mjs');
+      const recomputed = evidence.admitConfirmedWindowNativeEvidence(JSON.parse(JSON.stringify(block)), record.confirmedWindow.duties);
+      assert.deepEqual(recomputed, record.confirmedWindow.evidence, 'the persisted verdict equals the offline recomputation over the retained record');
+      assert.equal(recomputed.settlement.settled, true);
+      // The persisted record is bounded/redacted: no fixture-private path.
+      const serialized = JSON.stringify(record);
+      assert.doesNotMatch(serialized, /confirmed-window-entry-/u, 'the private temporary root never enters the record');
+      const written = JSON.parse(await readFile(join(output, 'rescue-interrupt.record.json'), 'utf8'));
+      assert.equal(written.confirmedWindow.block.source, 'same-host-rpc', 'the record persists to the private output directory');
+    });
+
+    test('confirmed-window standard entry: the pre-teardown checkpoint carries the bounded MEASUREMENT SNAPSHOT — identity, request bounds, resolution and duties are recoverable WITHOUT the final record (P2-1, round-20 codex re-review)', async (t) => {
+      // The reviewer's exact finding: the pre-teardown checkpoint preserved
+      // only fixed labels and the case name — no identity, request bounds,
+      // resolution, or duty evidence — yet the controller marked
+      // persistedBeforeDisposal true and the full record was written only
+      // later: a teardown hang or a process exit during cleanup lost the
+      // counted run's only measured facts. The checkpoint now receives the
+      // bounded MEASUREMENT SNAPSHOT (the whitelisted projected evidence
+      // through the SAME bounded projector the record persists) and a row
+      // reads it back WITHOUT the final record.
+      const { record, host, output } = await runRouteThroughEntry(t, {
+        script: {
+          notifications: [
+            ...identityJoinNotifications({ atMs: 100 }),
+            { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+          ],
+        },
+      });
+      assert.equal(record.status, 'executed', `the green entry case executed (actual ${JSON.stringify(record.status)})`);
+      assert.equal(record.confirmedWindow.block.finalState, 'all-duties-adjudicated', `the measured run completed its escalation (actual ${JSON.stringify(record.confirmedWindow?.block?.finalState)})`);
+      // Simulate the teardown casualty the checkpoint exists for: the
+      // final record is WITHHELD from disk — only the checkpoint remains.
+      await rm(join(output, 'rescue-interrupt.record.json'), { force: true });
+      const checkpoint = JSON.parse(await readFile(join(output, 'confirmed-window.checkpoint.json'), 'utf8'));
+      assert.ok(checkpoint.evidence !== null && typeof checkpoint.evidence === 'object', `the checkpoint carries the bounded measurement snapshot (actual keys ${JSON.stringify(Object.keys(checkpoint))})`);
+      // Identity: the measured joined Child, never a fixed label.
+      assert.equal(checkpoint.evidence?.identity?.childThreadId, CHILD_THREAD, `the checkpoint recovers the joined Child identity (actual ${JSON.stringify(checkpoint.evidence?.identity)})`);
+      assert.equal(checkpoint.evidence?.identity?.childTurnId, CHILD_TURN, 'the checkpoint recovers the joined Child turn');
+      // Request bounds: the single delivered interrupt's own stamps.
+      assert.equal(checkpoint.evidence?.nativeRequest?.outcome, 'sent', `the checkpoint recovers the request outcome (actual ${JSON.stringify(checkpoint.evidence?.nativeRequest)})`);
+      assert.equal(checkpoint.evidence?.nativeRequest?.threadId, CHILD_THREAD, 'the checkpoint recovers the request target thread');
+      assert.equal(checkpoint.evidence?.nativeRequest?.attemptCount, 1, 'the checkpoint recovers the single-attempt fact');
+      assert.ok(Number.isSafeInteger(checkpoint.evidence?.nativeRequest?.sentAtMs) && checkpoint.evidence.nativeRequest.sentAtMs >= 100, `the checkpoint recovers the request SEND bound (actual ${JSON.stringify(checkpoint.evidence?.nativeRequest?.sentAtMs)})`);
+      assert.ok(Number.isSafeInteger(checkpoint.evidence?.nativeRequest?.repliedAtMs) && checkpoint.evidence.nativeRequest.repliedAtMs >= checkpoint.evidence.nativeRequest.sentAtMs, 'the checkpoint recovers the request REPLY bound');
+      // Resolution: the Child's interrupted terminal and the observation
+      // resolution the settlement consumes.
+      assert.ok(Number.isSafeInteger(checkpoint.evidence?.receipt?.childResolutionAtMs), `the checkpoint recovers the child resolution bound (actual ${JSON.stringify(checkpoint.evidence?.receipt)})`);
+      assert.equal(checkpoint.evidence?.receipt?.childTerminalStatus, 'interrupted', 'the checkpoint recovers the interrupted terminal status');
+      assert.ok(Number.isSafeInteger(checkpoint.evidence?.receipt?.observationResolvedAtMs), 'the checkpoint recovers the observation resolution bound');
+      // Duties: the whitelisted projected adjudication the settlement
+      // consumes — never a fixed label.
+      assert.equal(checkpoint.duties?.durableSettled, true, `the checkpoint recovers the durable settlement fact (actual ${JSON.stringify(checkpoint.duties)})`);
+      assert.ok(Array.isArray(checkpoint.duties?.names) && checkpoint.duties.names.includes('control-survival'), 'the checkpoint recovers the adjudicated duty names');
+      // The recovered facts are the SAME measured run the record holds:
+      // the checkpoint's bounded projection agrees with the persisted block
+      // on the measured identity and bounds.
+      const block = record.confirmedWindow.block;
+      assert.equal(checkpoint.evidence.identity.childThreadId, block.identity.childThreadId, 'the checkpoint identity matches the record\'s measured identity');
+      assert.equal(checkpoint.evidence.nativeRequest.sentAtMs, block.nativeRequest.sentAtMs, 'the checkpoint request bounds match the record\'s measured bounds');
+      assert.equal(checkpoint.evidence.receipt.childResolutionAtMs, block.receipt.childResolutionAtMs, 'the checkpoint resolution matches the record\'s measured resolution');
+      assert.equal(host.requestLog.filter((entry) => entry.method === 'turn/interrupt').length, 1, 'the single native delivery stands behind the recovered bounds');
+    });
+
+    test('confirmed-window standard entry: the pre-teardown CHECKPOINT preserves the WITNESSED pre-teardown cleanup fence — replay from the checkpoint ALONE recovers the settlement when disposal prevents the final record (P2-6, round-23 codex review)', async (t) => {
+      // The reviewer's exact finding: with no SessionEnd cleanup observed,
+      // the checkpoint was written with `cleanupFenceAtMs: null`; only
+      // AFTERWARD did finalization fill the fence the final record consumes.
+      // Replaying the same successful run from both projections, the final
+      // record settled but the checkpoint alone refused with
+      // `cleanup-fence-unproven` — a disposal casualty between the two
+      // writes lost the settlement although the controller HAD witnessed its
+      // own pre-teardown boundary. The controller's teardown-initiation
+      // witness is now recorded BEFORE the checkpoint write, so the
+      // checkpoint carries the same conservative, witnessed fence the final
+      // record uses and the settlement is recoverable from the retained
+      // checkpoint alone.
+      const evidence = await import('../tools/shell-wait-probe/native-control-evidence.mjs');
+      const { record, output } = await runRouteThroughEntry(t, {
+        script: {
+          notifications: [
+            ...identityJoinNotifications({ atMs: 100 }),
+            { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+          ],
+        },
+        // The reviewer's exact premise: NO SessionEnd cleanup was observed —
+        // the adjudication's fence is UNPROVEN (null, the live composition's
+        // own seeded value) until the controller's own teardown boundary
+        // witnesses it.
+        dutyAdjudication: greenDuties({ cleanupFenceAtMs: null }),
+      });
+      assert.equal(record.status, 'executed', `the green entry case executed (actual ${JSON.stringify(record.status)})`);
+      assert.equal(record.confirmedWindow.block.finalState, 'all-duties-adjudicated', `the successful run settles in the final record (actual ${JSON.stringify(record.confirmedWindow?.block?.finalState)})`);
+      // (a) The success premise: the FINAL record's projection settles.
+      const recordReplay = evidence.admitConfirmedWindowNativeEvidence(JSON.parse(JSON.stringify(record.confirmedWindow.block)), record.confirmedWindow.duties);
+      assert.equal(recordReplay.settlement.settled, true, `the final record's replay settles (actual ${JSON.stringify(recordReplay.settlement)})`);
+      // (b) The disposal casualty: only the checkpoint survives.
+      await rm(join(output, 'rescue-interrupt.record.json'), { force: true });
+      const checkpoint = JSON.parse(await readFile(join(output, 'confirmed-window.checkpoint.json'), 'utf8'));
+      assert.equal(typeof checkpoint.duties?.cleanupFenceAtMs, 'number', `the checkpoint carries the witnessed pre-teardown fence, never null (actual ${JSON.stringify(checkpoint.duties?.cleanupFenceAtMs)})`);
+      assert.equal(checkpoint.duties?.cleanupFenceAtMs, record.confirmedWindow.duties.cleanupFenceAtMs, 'the checkpoint and the record carry the SAME witnessed fence');
+      // (c) The recovery: replay from the checkpoint ALONE settles — the
+      // cleanup-fence-unproven refusal never fires for the witnessed fence.
+      const checkpointReplay = evidence.admitConfirmedWindowNativeEvidence(JSON.parse(JSON.stringify(checkpoint.evidence)), checkpoint.duties);
+      assert.equal(checkpointReplay.settlement.settled, true, `the checkpoint alone recovers the settlement (actual ${JSON.stringify(checkpointReplay.settlement)})`);
+      assert.ok(!checkpointReplay.settlement.reasons.includes('cleanup-fence-unproven'), `no cleanup-fence-unproven refusal rides the checkpoint replay (actual ${JSON.stringify(checkpointReplay.settlement.reasons)})`);
+    });
+
+    test('confirmed-window standard entry: the pre-teardown CHECKPOINT carries the CUTOFF-QUALIFIED duty projection — duties that first settle in the POST-cutoff horizon never overstate the retained evidence, and the checkpoint agrees with the record (P2-3, round-21 codex review)', async (t) => {
+      // The reviewer's exact finding: duties that first settle during the
+      // POST-cutoff horizon updated the live dutyAdjudication, and the
+      // pre-teardown checkpoint wrote THAT projection while the final
+      // verdict correctly used the credited (pre-cutoff) one — if teardown
+      // then prevented the final record, the ONLY retained evidence
+      // OVERSTATED which duties settled on time and omitted the controller's
+      // adjudicated survival result. The checkpoint is now built from the
+      // SAME cutoff-qualified duty projection the final record uses.
+      const unsettledDuties = greenDuties({
+        allObserved: false,
+        durableSettled: false,
+        names: ['invocation', 'broker', 'transport', 'runner', 'job', 'guard', 'integrity'],
+      });
+      const mutatingDutyFacts = async () => {
+        const current = typeof greenObservationClock.now === 'function' ? greenObservationClock.now() : 0;
+        // The POST-CUTOFF horizon read: the live adjudication first settles
+        // HERE — after the measurement cutoff (observedAtMs 50 + 420000 hold
+        // + 10000 cutoff = 430050), where the credited refresh refuses it.
+        if (current >= 430_050) {
+          Object.assign(unsettledDuties, {
+            allObserved: true,
+            durableSettled: true,
+            names: ['invocation', 'broker', 'transport', 'runner', 'job', 'guard', 'integrity', 'control-survival'],
+          });
+        }
+        return { observable: true, duties: ['invocation', 'broker', 'transport', 'runner', 'job', 'guard', 'integrity'], clockDomain: 'controller-monotonic', reason: null };
+      };
+      const { record, output } = await runRouteThroughEntry(t, {
+        script: {
+          notifications: [
+            ...identityJoinNotifications({ atMs: 100 }),
+            { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+          ],
+        },
+        observers: { ...greenObservers(), dutyFacts: mutatingDutyFacts },
+        dutyAdjudication: unsettledDuties,
+      });
+      assert.equal(record.status, 'executed', `the case executed (actual ${JSON.stringify(record.status)})`);
+      // The FINAL record's credited projection stays UNSETTLED — the
+      // post-cutoff horizon settlement never earns credit.
+      assert.equal(record.confirmedWindow.duties.durableSettled, false, `the credited (pre-cutoff) projection never adopts the post-cutoff settlement (actual ${JSON.stringify(record.confirmedWindow.duties)})`);
+      assert.equal(record.confirmedWindow.duties.allObserved, false, `the credited projection keeps its pre-cutoff all-observed verdict (actual ${JSON.stringify(record.confirmedWindow.duties)})`);
+      assert.notEqual(record.confirmedWindow.block.finalState, 'all-duties-adjudicated', `the settlement refuses on the unsettled credited projection (actual ${JSON.stringify(record.confirmedWindow?.block?.finalState)})`);
+      // The CHECKPOINT agrees with the record — the post-cutoff live
+      // mutation never overstates the retained evidence.
+      const checkpoint = JSON.parse(await readFile(join(output, 'confirmed-window.checkpoint.json'), 'utf8'));
+      assert.equal(checkpoint.duties?.durableSettled, false, `the checkpoint carries the cutoff-qualified projection, never the overstated live one (actual ${JSON.stringify(checkpoint.duties)})`);
+      assert.equal(checkpoint.duties?.allObserved, false, `the checkpoint keeps the pre-cutoff all-observed verdict (actual ${JSON.stringify(checkpoint.duties)})`);
+      assert.equal(checkpoint.duties?.durableSettled, record.confirmedWindow.duties.durableSettled, 'the checkpoint and the record agree on the durable settlement');
+      assert.equal(checkpoint.duties?.allObserved, record.confirmedWindow.duties.allObserved, 'the checkpoint and the record agree on the all-observed verdict');
+    });
+
+    test('confirmed-window standard entry: a natural-completion host shape rides the real pipeline to the persisted fail-closed verdict (response-at-unrelated-completion, never settlement)', async (t) => {
+      const { record } = await runRouteThroughEntry(t, {
+        script: {
+          notifications: [
+            ...identityJoinNotifications({ atMs: 100 }),
+            // The child's turn completes NATURALLY: the transport reply rode
+            // the TurnComplete arm — the typed fail-closed fact.
+            { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'completed', items: [] } } },
+          ],
+        },
+      });
+      assert.equal(record.status, 'executed');
+      assert.equal(record.confirmedWindow.block.finalState, 'native-request-sent', 'escalation stops at the natural-completion refusal');
+      assert.match(String(record.confirmedWindow.block.refusal?.reason ?? ''), /unrelated-completion/u, 'the state machine carries the named refusal');
+      const evidence = await import('../tools/shell-wait-probe/native-control-evidence.mjs');
+      const recomputed = evidence.admitConfirmedWindowNativeEvidence(record.confirmedWindow.block, record.confirmedWindow.duties);
+      assert.equal(recomputed.settlement.settled, false, 'a natural completion NEVER settles');
+      assert.ok(recomputed.settlement.reasons.includes('response-at-unrelated-completion'), `the named fail-closed reason rides the pipeline (actual ${JSON.stringify(recomputed.settlement)})`);
+      assert.deepEqual(record.confirmedWindow.evidence.settlement.reasons, recomputed.settlement.reasons, 'the persisted verdict matches the offline recomputation');
+    });
+
+    test('confirmed-window standard entry: the validated exec-default override reaches the composed host arguments (the launched configuration is exactly the recorded config-default experiment, P1-5)', async (t) => {
+      // The executor validated `context.input.execDefaultMs` during preflight
+      // but omitted it from the choreography session: the host composition
+      // received undefined and DROPPED the required
+      // `features.code_mode.default_exec_yield_time_ms` override — the
+      // standard entry would have launched a different configuration from
+      // the selected and recorded config-default experiment.
+      const { record, host } = await runRouteThroughEntry(t, {
+        script: {
+          notifications: [
+            ...identityJoinNotifications({ atMs: 100 }),
+            { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+          ],
+        },
+      });
+      assert.equal(record.status, 'executed');
+      assert.deepEqual(host.launchContext.arguments, ['app-server', '--listen', 'stdio://', '--enable', 'hooks', '-c', 'shell_environment_policy.inherit=all', '-c', 'features.code_mode.default_exec_yield_time_ms=3600000'], `the composed argv carries the exec-default override from the validated case input (actual ${JSON.stringify(host.launchContext.arguments)})`);
+    });
+
+    test('confirmed-window standard entry: the requested model reaches the hosted thread through the protocol-supported per-thread boundary — thread/start carries the model field (P2-1)', async (t) => {
+      // The pinned protocol accepts a per-thread model at the SUPPORTED
+      // `thread/start` boundary (ThreadStartParams.model, string|null;
+      // verified against the pinned 0.163.0 binary's generated schema,
+      // 2026-11-18). The pre-review executor validated `--model` but never
+      // applied it: the experiment would run the fixture's default model
+      // while recording a different requested model.
+      const { record, host } = await runRouteThroughEntry(t, {
+        argv: { '--model': 'gpt-5.1-codex' },
+        script: {
+          notifications: [
+            ...identityJoinNotifications({ atMs: 100 }),
+            { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+          ],
+        },
+      });
+      assert.equal(record.status, 'executed');
+      const threadStart = host.requestLog.find((entry) => entry.method === 'thread/start');
+      assert.ok(threadStart, 'the hosted thread was started');
+      assert.equal(threadStart.params.model, 'gpt-5.1-codex', `the requested model is applied at the thread/start boundary (actual ${JSON.stringify(threadStart.params)})`);
+      assert.ok(typeof threadStart.params.cwd === 'string' && threadStart.params.cwd.length > 0, 'the workspace still rides the thread/start parameters');
+      const execDefaults = host.launchContext.arguments.filter((value) => /default_exec_yield_time_ms/u.test(value));
+      assert.equal(execDefaults.length, 1, 'the exec-default override stays composed alongside the model');
+    });
+
+    test('confirmed-window standard entry: the observer provenance binds the two new executing modules (the construction names them; the record-time reader re-reads them)', async () => {
+      const { observerProvenance, EXECUTING_OBSERVER_PROVENANCE } = await import('../tools/shell-wait-probe/driver.mjs');
+      assert.match(String(EXECUTING_OBSERVER_PROVENANCE.digestInput), /confirmed-window\.mjs/u, 'the module-init construction names the controller');
+      assert.match(String(EXECUTING_OBSERVER_PROVENANCE.digestInput), /native-control-evidence\.mjs/u, 'the module-init construction names the pure consumer');
+      assert.match(String(EXECUTING_OBSERVER_PROVENANCE.digest), /^[0-9a-f]{64}$/u);
+      const recordTime = await observerProvenance();
+      assert.match(String(recordTime.digestInput), /confirmed-window\.mjs/u, 'the record-time reader names the controller');
+      assert.match(String(recordTime.digestInput), /native-control-evidence\.mjs/u, 'the record-time reader names the pure consumer');
+      assert.equal(recordTime.digest, EXECUTING_OBSERVER_PROVENANCE.digest, 'at rest, the record-time digest equals the module-init digest');
+    });
+
+    // --- resource behavior (plan Task 2 bullet 4) ----------------------------
+
+    test('confirmed-window resources: a silent host terminates at the named staging bound with safe disposal — no hang, no delivery', async () => {
+      const { result, host } = await runOfflineChoreography({ script: { notifications: [] } });
+      assert.equal(result.finalState, 'staging-not-ready');
+      assert.match(String(result.refusal?.reason ?? ''), /identity join never held/u, 'the silent host is the named join refusal (the staging window closed with no evidence)');
+      assert.equal(host.requestLog.some((entry) => entry.method === 'turn/interrupt'), false);
+      assert.equal(host.disposed, true, 'the host is disposed even on the bound refusal');
+      assert.equal(host.connectionClosed(), true, 'the one connection closes bounded');
+    });
+
+    test('confirmed-window resources: the shared case deadline bounds the whole session (staging, collection and the fences ride ONE deadline)', async () => {
+      const { result, host } = await runOfflineChoreography({ script: { notifications: [] }, session: { budgetMs: 500 } });
+      assert.equal(result.finalState, 'staging-not-ready');
+      assert.equal(result.fences.caseDeadlineAtMs - result.host.startedAtMs, 500, 'the case deadline is min(budgetMs, the 1200000 ceiling) from the start');
+      assert.equal(result.host.launchCount, 1, 'ONE host instance for the whole bounded session');
+      assert.equal(host.disposed, true);
+    });
+
+    test('confirmed-window clocks (P1-4): finite fractional monotonic stamps survive the projection and a successfully sent request is never misclassified as unsent — integer-only fakes concealed the default-clock failure', async () => {
+      // The DEFAULT clocks return fractional `performance.now()` values while
+      // the safe-stamp gate and the reload projector accepted only safe
+      // integers: every real request/event stamp became null and a
+      // successfully sent interrupt was classified as `unsent-request`. A
+      // fractional monotonic clock (exactly what the default produces) must
+      // survive BOTH the controller's stamps and the persisted projection.
+      const confirmedWindow = await import('../tools/shell-wait-probe/confirmed-window.mjs');
+      const host = fakeConfirmedWindowHost({
+        replies: parentSessionReplies(),
+        notifications: [
+          ...identityJoinNotifications({ atMs: 100 }),
+          { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+        ],
+      });
+      // Fractional monotonic stamps: every clock read carries a fraction.
+      const integerNow = host.clock.now;
+      host.clock.now = () => integerNow() + 0.25;
+      const fakeFixture = {
+        workspace: '/private/tmp/confirmed-window-offline-workspace',
+        codexHome: '/private/tmp/confirmed-window-offline-codex-home',
+        installedRoot: '/private/tmp/confirmed-window-offline-installed',
+        env: { CODEX_HOME: '/private/tmp/confirmed-window-offline-codex-home', HOME: '/private/tmp/confirmed-window-offline-home' },
+        record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
+        dispose: async () => {},
+      };
+      const result = await confirmedWindow.runConfirmedWindowChoreography({
+        case: 'rescue-interrupt',
+        codexBinary: process.execPath,
+        sourceSha: 'a'.repeat(40),
+        output: '/private/tmp/confirmed-window-offline-output',
+        budgetMs: 720_000,
+        workerDurationMs: 420_000,
+        stagingPrompt: 'staging prompt with the control directive',
+        continuationPrompt: 'a CHANGED continuation prompt',
+        fixture: fakeFixture,
+      }, {
+        now: host.clock.now,
+        wallClockNow: host.clock.wallClockNow,
+        sleep: host.clock.sleep,
+        launchConfirmedWindowHost: host.factory,
+        observers: greenObservers(),
+        dutyAdjudication: greenDuties(),
+      });
+      const states = result.states.map((entry) => entry.state);
+      assert.deepEqual(states, ['pending-window-confirmed', 'native-request-sent', 'native-resolution-observed', 'all-duties-adjudicated'], `the green shape escalates over fractional stamps (actual ${JSON.stringify(states)}; refusal ${JSON.stringify(result.refusal)})`);
+      assert.notEqual(result.block.nativeRequest.sentAtMs, null, 'the sent request bounds survive the projection (fractional stamps are finite monotonic stamps)');
+      assert.notEqual(result.block.window.confirmedAtMs, null, 'the confirmed-window stamp survives the projection');
+      assert.notEqual(result.block.fences.caseDeadlineAtMs, null, 'the fence stamps survive the projection');
+      assert.notEqual(result.block.window.controlActiveAtMs, null, 'the control admission stamp survives the projection');
+      assert.equal(result.evidenceVerdict.delivery.status, 'admitted', `the delivery is admitted (actual ${JSON.stringify(result.evidenceVerdict.delivery)})`);
+      assert.equal(result.evidenceVerdict.delivery.reasons.includes('unsent-request'), false, 'a successfully sent request is NEVER classified as unsent because its stamps are fractional');
+      assert.equal(result.evidenceVerdict.settlement.settled, true, 'the fractional-stamp green record settles');
+    });
+
+    test('confirmed-window resources: the host is retained through the registered collection horizon — an early native resolution never truncates the planned independent collection (P2-6, the §39.9 step 9 fence)', async () => {
+      // When the Child resolution AND the original observation resolve early,
+      // the collection used to close and dispose the host immediately even
+      // though the recorded measurement cutoff and the planned observation
+      // teardown remained in the future (offline dispose ~1120 ms against a
+      // 410000-ms cutoff). §39.9 step 9: collection stops at the carried
+      // fences — never at an early resolution.
+      const confirmedWindow = await import('../tools/shell-wait-probe/confirmed-window.mjs');
+      const host = fakeConfirmedWindowHost({
+        replies: parentSessionReplies(),
+        notifications: [
+          ...identityJoinNotifications({ atMs: 100 }),
+          { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+        ],
+      });
+      let disposalObservations = 0;
+      let disposedAtClockMs = null;
+      const wrappedDispose = host.dispose.bind(host);
+      host.dispose = async () => {
+        disposalObservations += 1;
+        disposedAtClockMs = host.clock.now();
+        await wrappedDispose();
+      };
+      const fakeFixture = {
+        workspace: '/private/tmp/confirmed-window-offline-workspace',
+        codexHome: '/private/tmp/confirmed-window-offline-codex-home',
+        installedRoot: '/private/tmp/confirmed-window-offline-installed',
+        env: { CODEX_HOME: '/private/tmp/confirmed-window-offline-codex-home', HOME: '/private/tmp/confirmed-window-offline-home' },
+        record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
+        dispose: async () => {},
+      };
+      const result = await confirmedWindow.runConfirmedWindowChoreography({
+        case: 'rescue-interrupt',
+        codexBinary: process.execPath,
+        sourceSha: 'a'.repeat(40),
+        output: '/private/tmp/confirmed-window-offline-output',
+        budgetMs: 720_000,
+        workerDurationMs: 420_000,
+        stagingPrompt: 'staging prompt with the control directive',
+        continuationPrompt: 'a CHANGED continuation prompt',
+        fixture: fakeFixture,
+      }, {
+        now: host.clock.now,
+        wallClockNow: host.clock.wallClockNow,
+        sleep: host.clock.sleep,
+        launchConfirmedWindowHost: host.factory,
+        observers: greenObservers(),
+        dutyAdjudication: greenDuties(),
+      });
+      assert.equal(result.finalState, 'all-duties-adjudicated', `the early-resolution shape still completes its duties (actual ${result.finalState}: ${JSON.stringify(result.refusal)})`);
+      assert.equal(result.receipt.childResolutionAtMs, 300, 'the Child resolution was observed early');
+      const teardownFence = Math.min(result.window.observationTeardownAtMs ?? Number.MAX_SAFE_INTEGER, result.fences.caseDeadlineAtMs);
+      assert.equal(disposalObservations, 1, 'the host disposal ran exactly once through the deterministic path');
+      assert.ok(disposedAtClockMs >= teardownFence, `the host is disposed no earlier than the planned observation-teardown fence (actual dispose at ${disposedAtClockMs} vs the fence ${teardownFence}) — an early native resolution never truncates the registered horizon`);
+      assert.equal(host.disposed, true, 'the host is disposed after the horizon');
+      assert.equal(host.connectionClosed(), true, 'the connection closes before disposal');
+    });
+
+    test('confirmed-window delivery: the interrupt request is tracked CONCURRENTLY with the gate release and the collection — a Child terminal at 200 ms is never lost to a reply arriving after the measurement cutoff, and the gate still releases at its registered deadline (P1-5, 2026-11-19 codex review)', async (t) => {
+      // The reviewer's exact offline scenario: awaiting the interrupt reply
+      // blocked every gate-release and collection loop — a Child terminal
+      // received at 200 ms was lost entirely when the reply arrived at
+      // 500000 ms, and the worker stayed held past its registered release
+      // time. The request promise now resolves independently: the loops keep
+      // their deadlines, the terminal is consumed on time, the reply is a
+      // TYPED late-reply fact, and the reply's outcome still feeds the
+      // receipt typing.
+      const confirmedWindow = await import('../tools/shell-wait-probe/confirmed-window.mjs');
+      const temporary = await mkdtemp(join(tmpdir(), 'confirmed-window-late-reply-'));
+      t.after(() => rm(temporary, { recursive: true, force: true }));
+      const output = join(temporary, 'c-output');
+      await mkdir(output, { mode: 0o700 });
+      const host = fakeConfirmedWindowHost({
+        replies: parentSessionReplies(),
+        notifications: [
+          ...identityJoinNotifications({ atMs: 100 }),
+          { atMs: 200, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+        ],
+        // ONLY the interrupt reply is delayed (to 620120 ms on the shared
+        // clock — after the 610050 ms measurement cutoff, within the case
+        // deadline); the setup replies stay immediate.
+        requestDelayMsByMethod: { 'turn/interrupt': 620_000 },
+      });
+      // The frozen hold derivation with the registered 600000-ms duration:
+      // observedAtMs 50 -> holdDeadline 600050, cutoff 610050, teardown
+      // 615050 — all inside the 720000-ms case deadline.
+      const pendingObservers = {
+        ...greenObservers(),
+        pendingObservation: async () => {
+          const current = typeof greenObservationClock.now === 'function' ? greenObservationClock.now() : 0;
+          const resolved = current >= 320;
+          return { confirmed: true, observedAtMs: 50, resolved, resolvedAtMs: resolved ? 320 : null, holdDeadlineAtMs: 600_050, clockDomain: 'controller-monotonic', reason: null };
+        },
+      };
+      const result = await confirmedWindow.runConfirmedWindowChoreography({
+        case: 'rescue-interrupt',
+        codexBinary: process.execPath,
+        sourceSha: 'a'.repeat(40),
+        output,
+        budgetMs: 720_000,
+        workerDurationMs: 600_000,
+        stagingPrompt: 'staging prompt with the control directive',
+        continuationPrompt: 'a CHANGED continuation prompt',
+        fixture: holdFixture(output),
+      }, {
+        now: host.clock.now,
+        wallClockNow: host.clock.wallClockNow,
+        sleep: host.clock.sleep,
+        launchConfirmedWindowHost: host.factory,
+        observers: pendingObservers,
+        dutyAdjudication: greenDuties(),
+      });
+      // The terminal was consumed ON TIME (never lost, never stamped past the
+      // cutoff) and the observation resolution stands beside it.
+      assert.equal(result.receipt.childTerminalStatus, 'interrupted', `the buffered terminal is never lost to a late reply (actual ${JSON.stringify(result.receipt)})`);
+      assert.equal(result.receipt.childResolutionAtMs, 200, 'the terminal keeps its own arrival instant');
+      assert.equal(result.receipt.observationResolvedAtMs, 320, 'the observation leg resolved inside the window');
+      assert.equal(result.states.some((entry) => entry.state === 'native-resolution-observed'), true, `both legs stand beside the late reply (actual ${JSON.stringify(result.states)}; refusal ${JSON.stringify(result.refusal)})`);
+      assert.equal(result.refusal, null, 'a late reply never invents a refusal');
+      assert.ok(result.finalState === 'native-resolution-observed' || result.finalState === 'all-duties-adjudicated', `the escalation stands (actual ${result.finalState})`);
+      // The reply's outcome still feeds the receipt typing, TYPED as late.
+      assert.equal(result.nativeRequest.outcome, 'sent', 'the reply outcome feeds the receipt typing');
+      assert.equal(result.nativeRequest.repliedAtMs, 620_120, 'the late reply arrival is recorded');
+      assert.equal(result.nativeRequest.responseWithinBound, false, 'the late reply fails the responsiveness comparison honestly');
+      assert.equal(result.receipt.transportReplyLateAtMs, 620_120, `the typed LATE-REPLY fact rides the receipt (actual ${JSON.stringify(result.receipt)})`);
+      // The gate released at its REGISTERED deadline through the NORMAL path
+      // (the loops kept their deadlines) — never deferred to cleanup.
+      assert.equal(result.hold.armed, true, 'the hold producer armed for this row');
+      assert.equal(result.hold.releaseBasis, 'normal-deadline', `the gate released through the NORMAL deadline path despite the outstanding reply (actual ${String(result.hold.releaseBasis)})`);
+      assert.notEqual(result.hold.gateReleasedAtMs, null);
+      assert.ok(result.hold.gateReleasedAtMs <= 720_000, `the release landed within the case (actual ${String(result.hold.gateReleasedAtMs)})`);
+      assert.equal(host.disposed, true, 'the host is disposed deterministically');
+    });
+
+    test('confirmed-window delivery: the horizon phase stays ALIVE while the reply is outstanding — the deadline-driven gate release, the drain, and the floor-cadence reads continue until the reply arrives or the case deadline expires (P1-3, 2026-11-19 codex re-review)', async () => {
+      // The reviewer's exact offline scenario: with both resolution legs
+      // arrived early, the sleep-only wait for the outstanding interrupt
+      // reply blocked the gate release and every horizon read — a scheduled
+      // post-horizon notification was never drained while the reply pended.
+      // The horizon phase now runs until the reply arrives or the case
+      // deadline expires.
+      const confirmedWindow = await import('../tools/shell-wait-probe/confirmed-window.mjs');
+      const host = fakeConfirmedWindowHost({
+        replies: parentSessionReplies(),
+        notifications: [
+          ...identityJoinNotifications({ atMs: 100 }),
+          { atMs: 200, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+          // A scheduled notification BEYOND the observation-teardown fence
+          // (615050) but BEFORE the late reply (620120): only the alive
+          // horizon phase can ever drain it.
+          { atMs: 615_500, method: 'thread/notification', params: { type: 'late-horizon-marker', threadId: PARENT_THREAD } },
+        ],
+        // The reply lands when the SHARED CLOCK reaches 620120 through the
+        // loops' own advancing (a pure wait — never itself advances).
+        pureReplyAtMsByMethod: { 'turn/interrupt': 620_120 },
+      });
+      // Count every consumed notification so the drain's reach is assertable.
+      const consumed = [];
+      const originalNextNotification = host.connection.nextNotification.bind(host.connection);
+      host.connection.nextNotification = async (/** @type {number} */ deadline) => {
+        const event = await originalNextNotification(deadline);
+        if (event !== null) consumed.push(typeof event.params?.type === 'string' ? event.params.type : event.method);
+        return event;
+      };
+      const pendingObservers = {
+        ...greenObservers(),
+        pendingObservation: async () => {
+          const current = typeof greenObservationClock.now === 'function' ? greenObservationClock.now() : 0;
+          const resolved = current >= 320;
+          return { confirmed: true, observedAtMs: 50, resolved, resolvedAtMs: resolved ? 320 : null, holdDeadlineAtMs: 600_050, clockDomain: 'controller-monotonic', reason: null };
+        },
+      };
+      const result = await confirmedWindow.runConfirmedWindowChoreography({
+        case: 'rescue-interrupt',
+        codexBinary: process.execPath,
+        sourceSha: 'a'.repeat(40),
+        output: '/private/tmp/confirmed-window-offline-output',
+        budgetMs: 720_000,
+        workerDurationMs: 600_000,
+        stagingPrompt: 'staging prompt with the control directive',
+        continuationPrompt: 'a CHANGED continuation prompt',
+        fixture: {
+          workspace: '/private/tmp/confirmed-window-offline-workspace',
+          codexHome: '/private/tmp/confirmed-window-offline-codex-home',
+          installedRoot: '/private/tmp/confirmed-window-offline-installed',
+          env: { CODEX_HOME: '/private/tmp/confirmed-window-offline-codex-home', HOME: '/private/tmp/confirmed-window-offline-home' },
+          record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
+          dispose: async () => {},
+        },
+      }, {
+        now: host.clock.now,
+        wallClockNow: host.clock.wallClockNow,
+        sleep: host.clock.sleep,
+        launchConfirmedWindowHost: host.factory,
+        observers: pendingObservers,
+        dutyAdjudication: greenDuties(),
+      });
+      assert.ok(consumed.includes('late-horizon-marker'), `the alive horizon phase drains the post-fence notification while the reply pends (actual ${JSON.stringify(consumed)})`);
+      // The reply still feeds the receipt typing as the typed LATE-REPLY fact.
+      assert.equal(result.receipt.transportReplyLateAtMs, 620_120, `the late reply is typed (actual ${JSON.stringify(result.receipt)})`);
+      assert.equal(result.receipt.childTerminalStatus, 'interrupted', 'the terminal evidence stands');
+      assert.equal(result.states.some((entry) => entry.state === 'native-resolution-observed'), true, 'the escalation stands beside the late reply');
+    });
+
+    test('confirmed-window survival: a control active at admission that reads INACTIVE on every post-delivery read refuses the settlement — the no-collateral duty is mandatory and merely invoking the collector establishes nothing (P1-4, 2026-11-19 codex review)', async () => {
+      // The reviewer's exact offline reproduction: an active control at
+      // admission and `active: false` on every subsequent read used to reach
+      // all-duties-adjudicated with settled:true — the post-delivery
+      // controlFacts results were discarded and neither the duty adjudication
+      // nor the consumer required a survival result. The §16.4 unrelated
+      // control's survival verdict is now adjudicated from the post-delivery
+      // reads, persisted through the bounded duty adjudication (the
+      // 'control-survival' additional name) and enforced: a dead/inactive
+      // control post-delivery refuses settlement.
+      const confirmedWindow = await import('../tools/shell-wait-probe/confirmed-window.mjs');
+      const host = fakeConfirmedWindowHost({
+        replies: parentSessionReplies(),
+        notifications: [
+          ...identityJoinNotifications({ atMs: 100 }),
+          { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+        ],
+      });
+      let controlReads = 0;
+      const result = await confirmedWindow.runConfirmedWindowChoreography({
+        case: 'rescue-interrupt',
+        codexBinary: process.execPath,
+        sourceSha: 'a'.repeat(40),
+        output: '/private/tmp/confirmed-window-offline-output',
+        budgetMs: 720_000,
+        workerDurationMs: 420_000,
+        stagingPrompt: 'staging prompt with the control directive',
+        continuationPrompt: 'a CHANGED continuation prompt',
+        fixture: {
+          workspace: '/private/tmp/confirmed-window-offline-workspace',
+          codexHome: '/private/tmp/confirmed-window-offline-codex-home',
+          installedRoot: '/private/tmp/confirmed-window-offline-installed',
+          env: { CODEX_HOME: '/private/tmp/confirmed-window-offline-codex-home', HOME: '/private/tmp/confirmed-window-offline-home' },
+          record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
+          dispose: async () => {},
+        },
+      }, {
+        now: host.clock.now,
+        wallClockNow: host.clock.wallClockNow,
+        sleep: host.clock.sleep,
+        launchConfirmedWindowHost: host.factory,
+        observers: {
+          ...greenObservers(),
+          controlFacts: async () => {
+            controlReads += 1;
+            if (controlReads === 1) {
+              return { active: true, freshAtMs: host.clock.now(), declaredLifetimeMs: 120_000, emittedAtControllerMs: host.clock.now(), lineIndex: 45, preDeliveryReadSequence: { floorReachedInEarlierRead: true, separatePostFloorFreshRead: true }, clockDomain: 'controller-monotonic', reason: null };
+            }
+            return { active: false, freshAtMs: null, declaredLifetimeMs: null, clockDomain: 'controller-monotonic', reason: 'the unrelated control read inactive after the delivery' };
+          },
+        },
+        dutyAdjudication: greenDuties(),
+      });
+      assert.equal(result.evidenceVerdict.settlement.settled, false, `a control dead post-delivery never settles (actual ${JSON.stringify(result.evidenceVerdict.settlement)})`);
+      assert.ok(result.evidenceVerdict.settlement.reasons.includes('control-survival-unproven'), `the refusal names the unproven no-collateral duty (actual ${JSON.stringify(result.evidenceVerdict.settlement.reasons)})`);
+      assert.notEqual(result.finalState, 'all-duties-adjudicated', `the settlement state is never reached (actual ${result.finalState})`);
+      assert.equal(result.controlSurvival.attempted, true, 'the post-delivery control reads were consumed by the survival adjudication');
+      assert.equal(result.controlSurvival.established, false, 'merely invoking the collector establishes nothing');
+      assert.match(String(result.controlSurvival.refusedReason ?? ''), /inactive/u, 'the control\'s post-delivery death is named');
+    });
+
+    test('confirmed-window gate: the collector waits WAKE at the hold deadline — a pending-observation read stalling across the registered release time cannot delay the gate release (P2-1, 2026-11-19 codex re-review)', async (t) => {
+      // The reviewer's exact offline reproduction: a pending-observation read
+      // is bounded by the measurement cutoff (430050), not the earlier hold
+      // deadline (420050) — a read that stalls across the deadline (started
+      // at 419110, finishing at 430110) blocked the gate release until it
+      // finished, so the gate released at 430110 instead of its registered
+      // 420050 deadline, still labelled normal-deadline. The collector waits
+      // now wake at the hold deadline: the stalled read yields its slot
+      // (never abandoning its result — the next tick re-reads) and the
+      // release runs at its registered time.
+      const confirmedWindow = await import('../tools/shell-wait-probe/confirmed-window.mjs');
+      const temporary = await mkdtemp(join(tmpdir(), 'confirmed-window-gate-wake-'));
+      t.after(() => rm(temporary, { recursive: true, force: true }));
+      const output = join(temporary, 'c-output');
+      await mkdir(output, { mode: 0o700 });
+      const host = fakeConfirmedWindowHost({
+        replies: parentSessionReplies(),
+        notifications: [
+          ...identityJoinNotifications({ atMs: 100 }),
+          { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+        ],
+      });
+      // A PURE virtual deadline signal: resolves when the shared clock
+      // reaches its target through OTHER advancing work (the loops' waits
+      // and the scripted stall) — never advances the clock itself, exactly
+      // the choreography's waitUntil contract.
+      const virtualWaitUntil = (/** @type {number} */ target) => new Promise((resolve) => {
+        const tick = () => { if (host.clock.now() >= target) resolve(); else setImmediate(tick); };
+        setImmediate(tick);
+      });
+      // The STALLING pending read: once the clock passes 419110 the read
+      // grinds the shared clock forward in 1000-ms steps to 430110 before
+      // answering — across the registered 420050 release deadline.
+      const stalledPending = async () => {
+        if (host.clock.now() >= 419_110) {
+          while (host.clock.now() < 430_110) await host.clock.sleep(1_000);
+        }
+        const current = host.clock.now();
+        const resolved = current >= 431_000;
+        return { confirmed: true, observedAtMs: 50, resolved, resolvedAtMs: resolved ? 431_000 : null, holdDeadlineAtMs: 420_050, clockDomain: 'controller-monotonic', reason: null };
+      };
+      const result = await confirmedWindow.runConfirmedWindowChoreography({
+        case: 'rescue-interrupt',
+        codexBinary: process.execPath,
+        sourceSha: 'a'.repeat(40),
+        output,
+        budgetMs: 720_000,
+        workerDurationMs: 420_000,
+        stagingPrompt: 'staging prompt with the control directive',
+        continuationPrompt: 'a CHANGED continuation prompt',
+        fixture: holdFixture(output),
+      }, {
+        now: host.clock.now,
+        wallClockNow: host.clock.wallClockNow,
+        sleep: host.clock.sleep,
+        waitUntil: virtualWaitUntil,
+        launchConfirmedWindowHost: host.factory,
+        observers: { ...greenObservers(), pendingObservation: stalledPending },
+        dutyAdjudication: greenDuties(),
+      });
+      assert.equal(result.hold.armed, true, 'the hold producer armed for this row');
+      assert.equal(result.hold.releaseBasis, 'normal-deadline', `the release keeps its NORMAL basis (actual ${String(result.hold.releaseBasis)})`);
+      assert.ok(result.hold.gateReleaseInitiatedAtMs !== null && result.hold.gateReleaseInitiatedAtMs <= 421_050, `the release was INITIATED at the registered deadline window despite the stalled read (actual ${String(result.hold.gateReleaseInitiatedAtMs)}, registered 420050) — never deferred behind the stalled collector`);
+      assert.ok(result.hold.gateReleasedAtMs !== null, 'the release completed (its async write may finish after the abandoned collector stops grinding the shared clock — the INITIATION above is the deadline-keeping fact)');
+    });
+
+    test('confirmed-window gate: EVERY blocking collection read is bounded by the pending hold release — a duty read stalling across the registered 420050 deadline cannot delay the gate (P2-2, 2026-11-19 codex re-review)', async (t) => {
+      // The reviewer's exact offline reproduction: a duty read spanning
+      // 419120–421000 ms delayed a hold release scheduled for 420050 ms until
+      // 421000 ms, still labeled normal-deadline — the release wakeup cannot
+      // preempt an awaited collector whose bound is only the collection
+      // horizon. EVERY blocking collection read now carries the hold-aware
+      // bound (the unreleased hold deadline), so the stalled read yields its
+      // slot at the deadline and the release runs at its registered time.
+      const confirmedWindow = await import('../tools/shell-wait-probe/confirmed-window.mjs');
+      const temporary = await mkdtemp(join(tmpdir(), 'confirmed-window-duty-wake-'));
+      t.after(() => rm(temporary, { recursive: true, force: true }));
+      const output = join(temporary, 'c-output');
+      await mkdir(output, { mode: 0o700 });
+      const host = fakeConfirmedWindowHost({
+        replies: parentSessionReplies(),
+        notifications: [
+          ...identityJoinNotifications({ atMs: 100 }),
+          { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+        ],
+      });
+      // A PURE virtual deadline signal (the choreography's waitUntil
+      // contract): resolves when the shared clock reaches its target through
+      // OTHER advancing work — never advances the clock itself.
+      const virtualWaitUntil = (/** @type {number} */ target) => new Promise((resolve) => {
+        const tick = () => { if (host.clock.now() >= target) resolve(); else setImmediate(tick); };
+        setImmediate(tick);
+      });
+      // The STALLING duty read: once the clock passes 419110 the read grinds
+      // the shared clock forward in 1000-ms steps to 421000 before answering
+      // — across the registered 420050 release deadline.
+      const stalledDuty = async () => {
+        if (host.clock.now() >= 419_110) {
+          while (host.clock.now() < 421_000) await host.clock.sleep(1_000);
+        }
+        return { observable: true, duties: ['invocation', 'broker', 'transport', 'runner', 'job', 'guard', 'integrity'], clockDomain: 'controller-monotonic', reason: null };
+      };
+      const result = await confirmedWindow.runConfirmedWindowChoreography({
+        case: 'rescue-interrupt',
+        codexBinary: process.execPath,
+        sourceSha: 'a'.repeat(40),
+        output,
+        budgetMs: 720_000,
+        workerDurationMs: 420_000,
+        stagingPrompt: 'staging prompt with the control directive',
+        continuationPrompt: 'a CHANGED continuation prompt',
+        fixture: holdFixture(output),
+      }, {
+        now: host.clock.now,
+        wallClockNow: host.clock.wallClockNow,
+        sleep: host.clock.sleep,
+        waitUntil: virtualWaitUntil,
+        launchConfirmedWindowHost: host.factory,
+        observers: { ...greenObservers(), dutyFacts: stalledDuty },
+        dutyAdjudication: greenDuties(),
+      });
+      assert.equal(result.hold.armed, true, 'the hold producer armed for this row');
+      assert.equal(result.hold.releaseBasis, 'normal-deadline', `the release keeps its NORMAL basis (actual ${String(result.hold.releaseBasis)})`);
+      assert.ok(result.hold.gateReleaseInitiatedAtMs !== null && result.hold.gateReleaseInitiatedAtMs <= 420_750, `the release was INITIATED at the registered deadline window despite the stalled DUTY read (actual ${String(result.hold.gateReleaseInitiatedAtMs)}, registered 420050) — never at the stall's 421000 finish`);
+      assert.ok(result.hold.gateReleasedAtMs !== null, 'the release completed (its async write may finish while the abandoned collector still grinds the shared clock — the INITIATION above is the deadline-keeping fact)');
+    });
+
+    test('confirmed-window survival: retention of PRE-DELIVERY control evidence never credits survival — the verdict requires causally post-delivery progress with valid freshness and remaining lifetime (P1-4, 2026-11-19 codex re-review)', async () => {
+      // The reviewer's exact offline reproduction: a control collector
+      // retaining its last PRE-INTERRUPT line (freshAtMs: 120 on every read)
+      // credited survival merely because freshness/lifetime were non-null —
+      // the run reached all-duties-adjudicated without ANY post-interrupt
+      // progress. Survival now requires the read to demonstrate freshness AT
+      // the read instant AND the fresh evidence to be causally POST-delivery:
+      // rereading buffered pre-delivery evidence can never establish it.
+      const confirmedWindow = await import('../tools/shell-wait-probe/confirmed-window.mjs');
+      const host = fakeConfirmedWindowHost({
+        replies: parentSessionReplies(),
+        notifications: [
+          ...identityJoinNotifications({ atMs: 100 }),
+          { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+        ],
+      });
+      const staleControlFacts = async () => ({ active: true, freshAtMs: 120, declaredLifetimeMs: 118_000, emittedAtControllerMs: 120, lineIndex: 45, preDeliveryReadSequence: { floorReachedInEarlierRead: true, separatePostFloorFreshRead: true }, clockDomain: 'controller-monotonic', reason: null });
+      const result = await confirmedWindow.runConfirmedWindowChoreography({
+        case: 'rescue-interrupt',
+        codexBinary: process.execPath,
+        sourceSha: 'a'.repeat(40),
+        output: '/private/tmp/confirmed-window-offline-output',
+        budgetMs: 720_000,
+        workerDurationMs: 420_000,
+        stagingPrompt: 'staging prompt with the control directive',
+        continuationPrompt: 'a CHANGED continuation prompt',
+        fixture: {
+          workspace: '/private/tmp/confirmed-window-offline-workspace',
+          codexHome: '/private/tmp/confirmed-window-offline-codex-home',
+          installedRoot: '/private/tmp/confirmed-window-offline-installed',
+          env: { CODEX_HOME: '/private/tmp/confirmed-window-offline-codex-home', HOME: '/private/tmp/confirmed-window-offline-home' },
+          record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
+          dispose: async () => {},
+        },
+      }, {
+        now: host.clock.now,
+        wallClockNow: host.clock.wallClockNow,
+        sleep: host.clock.sleep,
+        launchConfirmedWindowHost: host.factory,
+        observers: { ...greenObservers(), controlFacts: staleControlFacts },
+        dutyAdjudication: greenDuties(),
+      });
+      assert.equal(result.controlSurvival.attempted, true, 'the post-delivery reads were consumed');
+      assert.equal(result.controlSurvival.established, false, `retained pre-delivery evidence never establishes survival (actual ${JSON.stringify(result.controlSurvival)})`);
+      assert.match(String(result.controlSurvival.refusedReason ?? ''), /post-delivery|fresh|stale/u, 'the refusal names the causally stale evidence');
+      assert.equal(result.evidenceVerdict.settlement.settled, false, `the settlement refuses (actual ${JSON.stringify(result.evidenceVerdict.settlement)})`);
+      assert.ok(result.evidenceVerdict.settlement.reasons.includes('control-survival-unproven'), 'the mandatory survival name is unproven');
+      assert.notEqual(result.finalState, 'all-duties-adjudicated', `the settlement state is never reached (actual ${result.finalState})`);
+    });
+
+    test('confirmed-window settlement: the credited duty adjudication is FROZEN at the measurement cutoff — duties first settling between cutoff and teardown receive no settlement credit (P1-5, 2026-11-19 codex re-review)', async () => {
+      // The reviewer's exact offline reproduction: cutoff 430050 ms, duties
+      // first settling at 432120 ms — the horizon reads overwrote the same
+      // mutable adjudication later used for settlement, so the run reached
+      // settled:true. The credited adjudication is now snapshotted at the
+      // measurement cutoff; later reads stay post-cutoff diagnostics only —
+      // a duty layer settling AFTER the measurement window cannot receive
+      // settlement credit.
+      const confirmedWindow = await import('../tools/shell-wait-probe/confirmed-window.mjs');
+      const host = fakeConfirmedWindowHost({
+        replies: parentSessionReplies(),
+        notifications: [
+          ...identityJoinNotifications({ atMs: 100 }),
+          { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+        ],
+      });
+      // The persisted adjudication the choreography projects: INCOMPLETE
+      // through the measurement window, settled only at 432120 ms (post
+      // cutoff, pre teardown) — the live composition's mutable-object shape.
+      const mutableDuties = { allObserved: false, names: ['invocation', 'broker', 'transport', 'runner', 'job', 'guard', 'integrity', 'control-survival'], durableSettled: false, cleanupFenceAtMs: null, collectionIntervalsValid: true, clockDomain: 'controller-monotonic' };
+      let dutyReads = 0;
+      let postCutoffSettlingRead = false;
+      const result = await confirmedWindow.runConfirmedWindowChoreography({
+        case: 'rescue-interrupt',
+        codexBinary: process.execPath,
+        sourceSha: 'a'.repeat(40),
+        output: '/private/tmp/confirmed-window-offline-output',
+        budgetMs: 720_000,
+        workerDurationMs: 420_000,
+        stagingPrompt: 'staging prompt with the control directive',
+        continuationPrompt: 'a CHANGED continuation prompt',
+        fixture: {
+          workspace: '/private/tmp/confirmed-window-offline-workspace',
+          codexHome: '/private/tmp/confirmed-window-offline-codex-home',
+          installedRoot: '/private/tmp/confirmed-window-offline-installed',
+          env: { CODEX_HOME: '/private/tmp/confirmed-window-offline-codex-home', HOME: '/private/tmp/confirmed-window-offline-home' },
+          record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
+          dispose: async () => {},
+        },
+      }, {
+        now: host.clock.now,
+        wallClockNow: host.clock.wallClockNow,
+        sleep: host.clock.sleep,
+        launchConfirmedWindowHost: host.factory,
+        observers: {
+          ...greenObservers(),
+          dutyFacts: async () => {
+            dutyReads += 1;
+            if (host.clock.now() >= 432_120) {
+              Object.assign(mutableDuties, { allObserved: true, durableSettled: true, cleanupFenceAtMs: 432_120 });
+              postCutoffSettlingRead = true;
+            }
+            return { observable: true, duties: ['invocation', 'broker', 'transport', 'runner', 'job', 'guard', 'integrity'], clockDomain: 'controller-monotonic', reason: null };
+          },
+        },
+        dutyAdjudication: mutableDuties,
+      });
+      assert.equal(postCutoffSettlingRead, true, `the scenario exercised a post-cutoff settling read (reads ${String(dutyReads)})`);
+      assert.equal(result.evidenceVerdict.settlement.settled, false, `duties settling after the measurement cutoff receive no credit (actual ${JSON.stringify(result.evidenceVerdict.settlement)})`);
+      assert.ok(result.evidenceVerdict.settlement.reasons.includes('duty-adjudication-incomplete'), `the credited cutoff snapshot stays incomplete (actual ${JSON.stringify(result.evidenceVerdict.settlement.reasons)})`);
+      assert.notEqual(result.finalState, 'all-duties-adjudicated', `the settlement state is never reached (actual ${result.finalState})`);
+    });
+
+    test('confirmed-window collection: control and duty sampling CONTINUE while the observation leg is awaited — an observation pending until the hold expiry still samples the short-lived control and the local duties (P1-3, 2026-11-19 codex re-review)', async () => {
+      // The reviewer's exact offline scenario: the Child terminates before
+      // the next sampling tick but its original observation stays pending
+      // until the 420000-ms hold expires; the observation-leg loop read ONLY
+      // pendingObservation, so the 120000-ms unrelated control naturally
+      // finished before control collection resumed in the horizon phase — an
+      // otherwise successful interruption received control-survival-unproven
+      // and the local duties went unsampled. The wait now continues the
+      // independent control and duty collection at the same floor cadence.
+      const confirmedWindow = await import('../tools/shell-wait-probe/confirmed-window.mjs');
+      const host = fakeConfirmedWindowHost({
+        replies: parentSessionReplies(),
+        notifications: [
+          ...identityJoinNotifications({ atMs: 100 }),
+          { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+        ],
+      });
+      let dutyReads = 0;
+      const result = await confirmedWindow.runConfirmedWindowChoreography({
+        case: 'rescue-interrupt',
+        codexBinary: process.execPath,
+        sourceSha: 'a'.repeat(40),
+        output: '/private/tmp/confirmed-window-offline-output',
+        budgetMs: 720_000,
+        workerDurationMs: 420_000,
+        stagingPrompt: 'staging prompt with the control directive',
+        continuationPrompt: 'a CHANGED continuation prompt',
+        fixture: {
+          workspace: '/private/tmp/confirmed-window-offline-workspace',
+          codexHome: '/private/tmp/confirmed-window-offline-codex-home',
+          installedRoot: '/private/tmp/confirmed-window-offline-installed',
+          env: { CODEX_HOME: '/private/tmp/confirmed-window-offline-codex-home', HOME: '/private/tmp/confirmed-window-offline-home' },
+          record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
+          dispose: async () => {},
+        },
+      }, {
+        now: host.clock.now,
+        wallClockNow: host.clock.wallClockNow,
+        sleep: host.clock.sleep,
+        launchConfirmedWindowHost: host.factory,
+        observers: {
+          ...greenObservers(),
+          // The original observation stays pending until the registered hold
+          // expiry (observedAtMs 50 + 420000 = 420050).
+          pendingObservation: async () => {
+            const current = typeof greenObservationClock.now === 'function' ? greenObservationClock.now() : 0;
+            const resolved = current >= 420_050;
+            return { confirmed: true, observedAtMs: 50, resolved, resolvedAtMs: resolved ? 420_050 : null, holdDeadlineAtMs: 420_050, clockDomain: 'controller-monotonic', reason: null };
+          },
+          // The unrelated control's designed 120000-ms lifetime: alive with
+          // fresh post-delivery evidence only while the clock is under it;
+          // its end at 120000 is the DESIGNED natural completion (the
+          // structured end discriminator — never a premature exit).
+          controlFacts: async () => {
+            const current = typeof greenObservationClock.now === 'function' ? greenObservationClock.now() : 0;
+            if (current <= 120_000) {
+              return { active: true, freshAtMs: current, declaredLifetimeMs: 120_000, emittedAtControllerMs: current, lineIndex: 45, preDeliveryReadSequence: { floorReachedInEarlierRead: true, separatePostFloorFreshRead: true }, clockDomain: 'controller-monotonic', reason: null };
+            }
+            return { active: false, freshAtMs: null, declaredLifetimeMs: null, ended: 'designed-end', clockDomain: 'controller-monotonic', reason: 'the survival control reached its designed end' };
+          },
+          dutyFacts: async () => {
+            dutyReads += 1;
+            return { observable: true, duties: ['invocation', 'broker', 'transport', 'runner', 'job', 'guard', 'integrity'], clockDomain: 'controller-monotonic', reason: null };
+          },
+        },
+        dutyAdjudication: greenDuties(),
+      });
+      assert.equal(result.receipt.childTerminalStatus, 'interrupted', 'the Child terminated early');
+      assert.equal(result.receipt.observationResolvedAtMs, 420_050, 'the observation resolved at the hold expiry');
+      assert.ok(result.states.some((entry) => entry.state === 'native-resolution-observed'), `both legs stand (actual ${JSON.stringify(result.states)})`);
+      // (P1-1, round-22 codex review — SUPERSEDES this row's round-19
+      // survival-credit claim) the survival emission gate now anchors on the
+      // SETTLED-DELIVERY bound — the LATER of BOTH resolution legs — so this
+      // scenario (the control's 120000-ms designed life ends long before the
+      // observation's 420050 resolution) can no longer earn control-survival
+      // credit from an emission that merely postdated the dispatch: the
+      // control WAS still sampled while alive (the round-19 sampling claim
+      // stands, dutyReads below), but the no-collateral name stays unproven
+      // and the otherwise successful interruption refuses on it.
+      assert.equal(result.controlSurvival.attempted, true, `the control was still sampled while it was alive (actual ${JSON.stringify(result.controlSurvival)})`);
+      assert.equal(result.controlSurvival.established, false, `the control's emission predates the settled-delivery bound — the observation leg resolves at 420050, long after the control's designed end (actual ${JSON.stringify(result.controlSurvival)})`);
+      assert.match(String(result.controlSurvival.refusedReason ?? ''), /settled|resolution/u, `the refusal names the settled-delivery premise (actual ${JSON.stringify(result.controlSurvival.refusedReason)})`);
+      assert.ok(dutyReads > 0, 'the local duties were sampled during the observation wait');
+      assert.equal(result.evidenceVerdict.settlement.settled, false, `the otherwise successful interruption refuses on the unproven no-collateral duty (actual ${JSON.stringify(result.evidenceVerdict.settlement)})`);
+      assert.ok(result.evidenceVerdict.settlement.reasons.includes('control-survival-unproven'), `the mandatory survival name is unproven (actual ${JSON.stringify(result.evidenceVerdict.settlement.reasons)})`);
+      assert.notEqual(result.finalState, 'all-duties-adjudicated', `the settlement state is never reached (actual ${result.finalState})`);
+    });
+
+    test('confirmed-window settlement: a duty read STRADDLING the cutoff never credits its post-cutoff result — the credited adjudication is the last COMPLETED pre-cutoff projection (P1-4, 2026-11-19 codex re-review)', async () => {
+      // The reviewer's exact offline reproduction: a dutyFacts read that
+      // STARTS before the cutoff but COMPLETES after it mutates the shared
+      // adjudication before the snapshot next runs — cutoff 430050, duties
+      // first settling at 431110 still reached all-duties-adjudicated. The
+      // credited adjudication is now REFRESHED after every read that
+      // completes BEFORE the cutoff (the last completed pre-cutoff
+      // projection) and post-cutoff completions are rejected from it.
+      const confirmedWindow = await import('../tools/shell-wait-probe/confirmed-window.mjs');
+      const host = fakeConfirmedWindowHost({
+        replies: parentSessionReplies(),
+        notifications: [
+          ...identityJoinNotifications({ atMs: 100 }),
+          { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+        ],
+      });
+      const mutableDuties = { allObserved: false, names: ['invocation', 'broker', 'transport', 'runner', 'job', 'guard', 'integrity', 'control-survival'], durableSettled: false, cleanupFenceAtMs: null, collectionIntervalsValid: true, clockDomain: 'controller-monotonic' };
+      let straddlingReadRan = false;
+      const result = await confirmedWindow.runConfirmedWindowChoreography({
+        case: 'rescue-interrupt',
+        codexBinary: process.execPath,
+        sourceSha: 'a'.repeat(40),
+        output: '/private/tmp/confirmed-window-offline-output',
+        budgetMs: 720_000,
+        workerDurationMs: 420_000,
+        stagingPrompt: 'staging prompt with the control directive',
+        continuationPrompt: 'a CHANGED continuation prompt',
+        fixture: {
+          workspace: '/private/tmp/confirmed-window-offline-workspace',
+          codexHome: '/private/tmp/confirmed-window-offline-codex-home',
+          installedRoot: '/private/tmp/confirmed-window-offline-installed',
+          env: { CODEX_HOME: '/private/tmp/confirmed-window-offline-codex-home', HOME: '/private/tmp/confirmed-window-offline-home' },
+          record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
+          dispose: async () => {},
+        },
+      }, {
+        now: host.clock.now,
+        wallClockNow: host.clock.wallClockNow,
+        sleep: host.clock.sleep,
+        launchConfirmedWindowHost: host.factory,
+        observers: {
+          ...greenObservers(),
+          dutyFacts: async () => {
+            // The straddling read: STARTED at ~429110 (pre-cutoff), the
+            // collector advances the shared clock past the cutoff to 431110
+            // and ONLY THEN settles the shared adjudication — the read
+            // completes post-cutoff with a post-cutoff mutation.
+            if (host.clock.now() >= 429_000 && host.clock.now() < 430_050) {
+              host.clock.advanceTo(431_110);
+              Object.assign(mutableDuties, { allObserved: true, durableSettled: true, cleanupFenceAtMs: 431_110 });
+              straddlingReadRan = true;
+            }
+            return { observable: true, duties: ['invocation', 'broker', 'transport', 'runner', 'job', 'guard', 'integrity'], clockDomain: 'controller-monotonic', reason: null };
+          },
+        },
+        dutyAdjudication: mutableDuties,
+      });
+      assert.equal(straddlingReadRan, true, 'the scenario exercised the straddling read');
+      assert.equal(result.evidenceVerdict.settlement.settled, false, `a straddling read's post-cutoff result never credits settlement (actual ${JSON.stringify(result.evidenceVerdict.settlement)})`);
+      assert.ok(result.evidenceVerdict.settlement.reasons.includes('duty-adjudication-incomplete'), `the credited last-completed pre-cutoff projection stays incomplete (actual ${JSON.stringify(result.evidenceVerdict.settlement.reasons)})`);
+      assert.notEqual(result.finalState, 'all-duties-adjudicated', `the settlement state is never reached (actual ${result.finalState})`);
+    });
+
+    test('confirmed-window settlement: a FOREIGN clock domain on the duty adjudication refuses the settlement IN THE RETAINED EVIDENCE — replaying the persisted inputs can never upgrade the refusal to acceptance (P2-2, 2026-11-19 codex re-review)', async () => {
+      // The reviewer's exact offline reproduction: the duty adjudication
+      // carrying a foreign clock domain is rejected only in the computed
+      // verdict — the duty projection drops the clock tag and neither the
+      // retained block nor the projected adjudication preserves the refusal,
+      // so replaying the persisted inputs through
+      // admitConfirmedWindowNativeEvidence returned settled:true where the
+      // controller returned clock-domain-mismatch. The refusal now rides
+      // the projected adjudication's bounded name list as the additional
+      // refusal name `clock-domain-mismatch` (the same additive-name
+      // mechanism the §41.5.2 projection rule allows for `control-survival`)
+      // and the consumer refuses on it — replay cannot upgrade it.
+      const { result } = await runOfflineChoreography({
+        script: {
+          notifications: [
+            ...identityJoinNotifications({ atMs: 100 }),
+            { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+          ],
+        },
+        dependencies: { dutyAdjudication: greenDuties({ clockDomain: 'rollout-epoch' }) },
+      });
+      assert.equal(result.evidenceVerdict.settlement.settled, false, `the controller refuses the foreign-domain adjudication (actual ${JSON.stringify(result.evidenceVerdict.settlement)})`);
+      assert.ok(result.evidenceVerdict.settlement.reasons.includes('clock-domain-mismatch'), 'the controller names the clock-domain refusal');
+      assert.notEqual(result.finalState, 'all-duties-adjudicated');
+      // The RETAINED evidence encodes the refusal: the projected adjudication
+      // that persists carries the refusal name.
+      assert.ok(Array.isArray(result.adjudicatedDuties.names) && result.adjudicatedDuties.names.includes('clock-domain-mismatch'), `the projected adjudication carries the refusal name (actual ${JSON.stringify(result.adjudicatedDuties)})`);
+      // The OFFLINE REPLAY over the persisted representation reproduces the
+      // refusal — never an upgrade to acceptance.
+      const evidence = await import('../tools/shell-wait-probe/native-control-evidence.mjs');
+      const replayed = evidence.admitConfirmedWindowNativeEvidence(JSON.parse(JSON.stringify(result.block)), result.adjudicatedDuties);
+      assert.equal(replayed.settlement.settled, false, `the replay refuses identically (actual ${JSON.stringify(replayed.settlement)})`);
+      assert.ok(replayed.settlement.reasons.includes('clock-domain-mismatch'), 'the replay names the same clock-domain refusal');
+    });
+
+    test('confirmed-window settlement: the credited snapshot is SEEDED from the pre-cutoff adjudication before any post-delivery collection — a horizon read spanning the cutoff can never feed the fallback snapshot post-cutoff facts (P1-1, 2026-11-19 codex re-review)', async () => {
+      // The reviewer's exact offline reproduction: a horizon
+      // pending-observation read spanning 429120–430100 ms lets the first
+      // duty read settle after the 430050 ms cutoff; the fallback snapshot
+      // (taken at the next post-cutoff observation) nevertheless captured
+      // the already-mutated facts and produced all-duties-adjudicated. The
+      // credited snapshot is now SEEDED from the pre-delivery adjudication
+      // (pre-cutoff by construction) and is only ever refreshed by reads
+      // that COMPLETE before the cutoff — no fallback ever populates it from
+      // mutable evidence after the cutoff.
+      const confirmedWindow = await import('../tools/shell-wait-probe/confirmed-window.mjs');
+      const host = fakeConfirmedWindowHost({
+        replies: parentSessionReplies(),
+        notifications: [
+          ...identityJoinNotifications({ atMs: 100 }),
+          { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+        ],
+      });
+      const mutableDuties = { allObserved: false, names: ['invocation', 'broker', 'transport', 'runner', 'job', 'guard', 'integrity', 'control-survival'], durableSettled: false, cleanupFenceAtMs: null, collectionIntervalsValid: true, clockDomain: 'controller-monotonic' };
+      let postCutoffSettlingRead = false;
+      const result = await confirmedWindow.runConfirmedWindowChoreography({
+        case: 'rescue-interrupt',
+        codexBinary: process.execPath,
+        sourceSha: 'a'.repeat(40),
+        output: '/private/tmp/confirmed-window-offline-output',
+        budgetMs: 720_000,
+        workerDurationMs: 420_000,
+        stagingPrompt: 'staging prompt with the control directive',
+        continuationPrompt: 'a CHANGED continuation prompt',
+        fixture: {
+          workspace: '/private/tmp/confirmed-window-offline-workspace',
+          codexHome: '/private/tmp/confirmed-window-offline-codex-home',
+          installedRoot: '/private/tmp/confirmed-window-offline-installed',
+          env: { CODEX_HOME: '/private/tmp/confirmed-window-offline-codex-home', HOME: '/private/tmp/confirmed-window-offline-home' },
+          record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
+          dispose: async () => {},
+        },
+      }, {
+        now: host.clock.now,
+        wallClockNow: host.clock.wallClockNow,
+        sleep: host.clock.sleep,
+        launchConfirmedWindowHost: host.factory,
+        observers: {
+          ...greenObservers(),
+          // EVERY post-delivery duty read SPANS the cutoff: started at the
+          // first post-delivery tick (~1120, pre-cutoff), it grinds the
+          // shared clock stepwise to 430100 (across the 430050 cutoff) and
+          // only THEN settles the shared adjudication — so NO duty read ever
+          // completes pre-cutoff and the fallback snapshot is the only
+          // populator left.
+          dutyFacts: async () => {
+            if (host.clock.now() >= 300) {
+              while (host.clock.now() < 430_100) await host.clock.sleep(1_000);
+              Object.assign(mutableDuties, { allObserved: true, durableSettled: true, cleanupFenceAtMs: 430_100 });
+              postCutoffSettlingRead = true;
+            }
+            return { observable: true, duties: ['invocation', 'broker', 'transport', 'runner', 'job', 'guard', 'integrity'], clockDomain: 'controller-monotonic', reason: null };
+          },
+        },
+        dutyAdjudication: mutableDuties,
+      });
+      assert.equal(postCutoffSettlingRead, true, 'the scenario exercised the cutoff-spanning settling duty read');
+      assert.equal(result.evidenceVerdict.settlement.settled, false, `the seeded pre-cutoff snapshot never credits post-cutoff mutation (actual ${JSON.stringify(result.evidenceVerdict.settlement)})`);
+      assert.ok(result.evidenceVerdict.settlement.reasons.includes('duty-adjudication-incomplete'), `the credited snapshot stays the pre-collection state (actual ${JSON.stringify(result.evidenceVerdict.settlement.reasons)})`);
+      assert.notEqual(result.finalState, 'all-duties-adjudicated', `the settlement state is never reached (actual ${result.finalState})`);
+    });
+
+    test('confirmed-window settlement: control-survival credit is FROZEN at the measurement cutoff — a survival first established AFTER the cutoff stays diagnostic-only and the settlement refuses (P1-2, 2026-11-19 codex re-review)', async () => {
+      // The reviewer's deterministic run: no establishing pre-cutoff control
+      // read still returned settled:true when survival was first observed at
+      // 11120 ms against a 11050 ms cutoff — the horizon reads established
+      // control survival after the measurement cutoff and finalizeSession
+      // then added control-survival to the credited snapshot. Late reads are
+      // now diagnostic-only: the survival name applies only when the
+      // establishing read completed BEFORE the cutoff.
+      const confirmedWindow = await import('../tools/shell-wait-probe/confirmed-window.mjs');
+      const host = fakeConfirmedWindowHost({
+        replies: parentSessionReplies(),
+        notifications: [
+          ...identityJoinNotifications({ atMs: 100 }),
+          { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+        ],
+      });
+      const result = await confirmedWindow.runConfirmedWindowChoreography({
+        case: 'rescue-interrupt',
+        codexBinary: process.execPath,
+        sourceSha: 'a'.repeat(40),
+        output: '/private/tmp/confirmed-window-offline-output',
+        budgetMs: 720_000,
+        // holdDeadline = observedAtMs 50 + 1000 = 1050; cutoff = 11550 — hmm,
+        // the reviewer's numbers: cutoff 11050 → hold 1050 → duration 1000.
+        workerDurationMs: 1_000,
+        stagingPrompt: 'staging prompt with the control directive',
+        continuationPrompt: 'a CHANGED continuation prompt',
+        fixture: {
+          workspace: '/private/tmp/confirmed-window-offline-workspace',
+          codexHome: '/private/tmp/confirmed-window-offline-codex-home',
+          installedRoot: '/private/tmp/confirmed-window-offline-installed',
+          env: { CODEX_HOME: '/private/tmp/confirmed-window-offline-codex-home', HOME: '/private/tmp/confirmed-window-offline-home' },
+          record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
+          dispose: async () => {},
+        },
+      }, {
+        now: host.clock.now,
+        wallClockNow: host.clock.wallClockNow,
+        sleep: host.clock.sleep,
+        launchConfirmedWindowHost: host.factory,
+        observers: {
+          ...greenObservers(),
+          // The observation resolves early on the 1000-ms hold (1050).
+          pendingObservation: async () => {
+            const current = typeof greenObservationClock.now === 'function' ? greenObservationClock.now() : 0;
+            const resolved = current >= 1_050;
+            return { confirmed: true, observedAtMs: 50, resolved, resolvedAtMs: resolved ? 1_050 : null, holdDeadlineAtMs: 1_050, clockDomain: 'controller-monotonic', reason: null };
+          },
+          // The control reads INACTIVE (its designed life ends before the
+          // cutoff at 11050) and only turns active+fresh AFTER the cutoff —
+          // the first establishing read lands at 11120.
+          controlFacts: async () => {
+            const current = typeof greenObservationClock.now === 'function' ? greenObservationClock.now() : 0;
+            if (current <= 200 || current >= 11_120) {
+              return { active: true, freshAtMs: current, declaredLifetimeMs: 120_000, emittedAtControllerMs: current, lineIndex: 45, preDeliveryReadSequence: { floorReachedInEarlierRead: true, separatePostFloorFreshRead: true }, clockDomain: 'controller-monotonic', reason: null };
+            }
+            return { active: false, freshAtMs: null, declaredLifetimeMs: null, clockDomain: 'controller-monotonic', reason: 'the survival control reached its designed end' };
+          },
+        },
+        dutyAdjudication: greenDuties(),
+      });
+      assert.equal(result.controlSurvival.attempted, true, 'the post-delivery control reads ran');
+      assert.equal(result.controlSurvival.established, true, `the late read still records the establishment as a diagnostic (actual ${JSON.stringify(result.controlSurvival)})`);
+      assert.ok(result.controlSurvival.readAtMs !== null && result.controlSurvival.readAtMs >= 11_120, `the establishment landed after the cutoff (actual ${String(result.controlSurvival.readAtMs)})`);
+      assert.equal(result.evidenceVerdict.settlement.settled, false, `a post-cutoff survival establishment never credits settlement (actual ${JSON.stringify(result.evidenceVerdict.settlement)})`);
+      assert.ok(result.evidenceVerdict.settlement.reasons.includes('control-survival-unproven'), `the mandatory survival name is unproven (actual ${JSON.stringify(result.evidenceVerdict.settlement.reasons)})`);
+      assert.notEqual(result.finalState, 'all-duties-adjudicated', `the settlement state is never reached (actual ${result.finalState})`);
+    });
+
+    test('confirmed-window collection: buffered pre-cutoff terminal notifications are ADJUDICATED BY THEIR RETAINED ARRIVAL TIMESTAMPS — a Child terminal queued behind a cutoff-crossing collector read counts as observed pre-cutoff (P2-2, 2026-11-19 codex re-review)', async () => {
+      // The reviewer's exact offline reproduction: a pending collector read
+      // crosses the measurement cutoff while a Child terminal notification
+      // is queued; the resolution loop exits based on now() before consuming
+      // it, and the horizon drain subsequently consumes it WITHOUT
+      // interpreting it — childResolutionAtMs stays null and the record
+      // reports the resolution was never observed even though the
+      // notification's receivedAtMs (429500) precedes the cutoff (430050).
+      // The buffered lifecycle evidence is now drained and adjudicated using
+      // its RETAINED arrival timestamps before the missing-resolution
+      // verdict.
+      const confirmedWindow = await import('../tools/shell-wait-probe/confirmed-window.mjs');
+      const host = fakeConfirmedWindowHost({
+        replies: parentSessionReplies(),
+        notifications: [
+          ...identityJoinNotifications({ atMs: 100 }),
+          // The Child terminal, DELIVERED at 429500 — before the 430050
+          // cutoff — but queued behind the cutoff-crossing collector read.
+          { atMs: 429_500, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+        ],
+      });
+      const result = await confirmedWindow.runConfirmedWindowChoreography({
+        case: 'rescue-interrupt',
+        codexBinary: process.execPath,
+        sourceSha: 'a'.repeat(40),
+        output: '/private/tmp/confirmed-window-offline-output',
+        budgetMs: 720_000,
+        workerDurationMs: 420_000,
+        stagingPrompt: 'staging prompt with the control directive',
+        continuationPrompt: 'a CHANGED continuation prompt',
+        fixture: {
+          workspace: '/private/tmp/confirmed-window-offline-workspace',
+          codexHome: '/private/tmp/confirmed-window-offline-codex-home',
+          installedRoot: '/private/tmp/confirmed-window-offline-installed',
+          env: { CODEX_HOME: '/private/tmp/confirmed-window-offline-codex-home', HOME: '/private/tmp/confirmed-window-offline-home' },
+          record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
+          dispose: async () => {},
+        },
+      }, {
+        now: host.clock.now,
+        wallClockNow: host.clock.wallClockNow,
+        sleep: host.clock.sleep,
+        launchConfirmedWindowHost: host.factory,
+        observers: {
+          ...greenObservers(),
+          // The observation stays pending; the collector read that starts at
+          // ~429120 grinds the shared clock across the cutoff to 430110
+          // before answering — the resolution loop exits on now() with the
+          // Child terminal still queued.
+          pendingObservation: async () => {
+            const current = typeof greenObservationClock.now === 'function' ? greenObservationClock.now() : 0;
+            if (current >= 429_120 && current < 430_110) {
+              while (host.clock.now() < 430_110) await host.clock.sleep(1_000);
+            }
+            const resolved = host.clock.now() >= 431_000;
+            return { confirmed: true, observedAtMs: 50, resolved, resolvedAtMs: resolved ? 431_000 : null, holdDeadlineAtMs: 420_050, clockDomain: 'controller-monotonic', reason: null };
+          },
+        },
+        dutyAdjudication: greenDuties(),
+      });
+      assert.equal(result.receipt.childResolutionAtMs, 429_500, `the buffered terminal counts as observed at its RETAINED arrival instant (actual ${JSON.stringify(result.receipt)})`);
+      assert.equal(result.receipt.childTerminalStatus, 'interrupted', 'the terminal is adjudicated as the Child resolution');
+      assert.equal(result.receipt.childResolutionBasis, 'child-terminal-event', 'the basis rides the retained arrival');
+      assert.equal(result.receipt.completedTurnId, CHILD_TURN, 'the terminal event binds to the interrupted turn own id');
+      assert.ok(result.receipt.childResolutionAtMs < 430_050, 'the retained arrival precedes the cutoff — pre-cutoff credit');
+    });
+
+    test('confirmed-window collection: the buffered lifecycle drain CYCLES past the 64-event batch cap — a Child terminal queued behind MORE than 64 buffered notifications is still adjudicated at its retained arrival (P2, 2026-11-19 codex re-review)', async () => {
+      // The reviewer's exact offline reproduction: a collector crosses the
+      // cutoff while more than the 64-event drain cap of output
+      // notifications precede the queued Child terminal — the single
+      // bounded batch stopped before the terminal and the horizon loop
+      // discarded it, changing a settled result into
+      // childResolutionAtMs: null. The drain now processes REMAINING
+      // bounded batches (cycling until the queue is empty or the case
+      // deadline): each batch keeps the same 64-event bound, and the
+      // queued lifecycle evidence behind the cap is adjudicated to the
+      // end of the queue.
+      const confirmedWindow = await import('../tools/shell-wait-probe/confirmed-window.mjs');
+      // 65 buffered output notifications arrive between the last
+      // pre-cutoff poll (~429120) and the Child terminal (429500) — all
+      // queued behind the cutoff-crossing collector read, all BEFORE the
+      // terminal in the delivery order.
+      const bufferedOutputNotifications = Array.from({ length: 65 }, (/** @type {any} */ _, /** @type {number} */ index) => ({
+        atMs: 429_121 + index,
+        method: 'thread/notification',
+        params: { type: 'item/completed', threadId: CHILD_THREAD, item: { type: 'agentMessage', text: `buffered output ${String(index)}` } },
+      }));
+      const host = fakeConfirmedWindowHost({
+        replies: parentSessionReplies(),
+        notifications: [
+          ...identityJoinNotifications({ atMs: 100 }),
+          ...bufferedOutputNotifications,
+          // The Child terminal, DELIVERED at 429500 — before the 430050
+          // cutoff — queued behind the 65 buffered outputs.
+          { atMs: 429_500, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+        ],
+      });
+      const result = await confirmedWindow.runConfirmedWindowChoreography({
+        case: 'rescue-interrupt',
+        codexBinary: process.execPath,
+        sourceSha: 'a'.repeat(40),
+        output: '/private/tmp/confirmed-window-offline-output',
+        budgetMs: 720_000,
+        workerDurationMs: 420_000,
+        stagingPrompt: 'staging prompt with the control directive',
+        continuationPrompt: 'a CHANGED continuation prompt',
+        fixture: {
+          workspace: '/private/tmp/confirmed-window-offline-workspace',
+          codexHome: '/private/tmp/confirmed-window-offline-codex-home',
+          installedRoot: '/private/tmp/confirmed-window-offline-installed',
+          env: { CODEX_HOME: '/private/tmp/confirmed-window-offline-codex-home', HOME: '/private/tmp/confirmed-window-offline-home' },
+          record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
+          dispose: async () => {},
+        },
+      }, {
+        now: host.clock.now,
+        wallClockNow: host.clock.wallClockNow,
+        sleep: host.clock.sleep,
+        launchConfirmedWindowHost: host.factory,
+        observers: {
+          ...greenObservers(),
+          // The observation stays pending; the collector read that starts at
+          // ~429120 grinds the shared clock across the cutoff to 430110
+          // before answering — the resolution loop exits on now() with the
+          // buffered outputs and the Child terminal all still queued.
+          pendingObservation: async () => {
+            const current = typeof greenObservationClock.now === 'function' ? greenObservationClock.now() : 0;
+            if (current >= 429_120 && current < 430_110) {
+              while (host.clock.now() < 430_110) await host.clock.sleep(1_000);
+            }
+            const resolved = host.clock.now() >= 431_000;
+            return { confirmed: true, observedAtMs: 50, resolved, resolvedAtMs: resolved ? 431_000 : null, holdDeadlineAtMs: 420_050, clockDomain: 'controller-monotonic', reason: null };
+          },
+        },
+        dutyAdjudication: greenDuties(),
+      });
+      assert.equal(result.receipt.childResolutionAtMs, 429_500, `the terminal behind MORE than 64 buffered notifications is still adjudicated at its RETAINED arrival instant (actual ${JSON.stringify(result.receipt)})`);
+      assert.equal(result.receipt.childTerminalStatus, 'interrupted', 'the terminal is adjudicated as the Child resolution');
+      assert.equal(result.receipt.childResolutionBasis, 'child-terminal-event', 'the basis rides the retained arrival');
+      assert.equal(result.receipt.completedTurnId, CHILD_TURN, 'the terminal event binds to the interrupted turn own id');
+      assert.ok(result.receipt.childResolutionAtMs < 430_050, 'the retained arrival precedes the cutoff — pre-cutoff credit');
+    });
+
+    test('confirmed-window survival: the verdict is established from the control EMISSION instant, never the collection read — a line emitted before the interrupt and collected after it never credits survival (P1-1, 2026-11-19 codex re-review)', async () => {
+      // The reviewer's exact offline reproduction: a previously unseen
+      // control line emitted BEFORE the interruption can receive a
+      // post-interruption freshAtMs because the live collector stamps
+      // COLLECTION time — emission at 2000, interruption at 2100,
+      // collection at 2500 reached all-duties-adjudicated with settled:true
+      // despite NO post-interruption emission. The live collector now
+      // exposes the line's EMISSION instant on the controller clock
+      // (emittedAtControllerMs = the collection instant minus the
+      // launch-epoch-anchored age), and the survival gate requires an
+      // emission STRICTLY after the delivery initiation — a collection read
+      // after the interrupt proves nothing about when the line was emitted.
+      const confirmedWindow = await import('../tools/shell-wait-probe/confirmed-window.mjs');
+      const makeHost = () => fakeConfirmedWindowHost({
+        replies: parentSessionReplies(),
+        notifications: [
+          ...identityJoinNotifications({ atMs: 100 }),
+          { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+        ],
+      });
+      const runCase = async (controlFacts) => {
+        const host = makeHost();
+        return confirmedWindow.runConfirmedWindowChoreography({
+        case: 'rescue-interrupt',
+        codexBinary: process.execPath,
+        sourceSha: 'a'.repeat(40),
+        output: '/private/tmp/confirmed-window-offline-output',
+        budgetMs: 720_000,
+        workerDurationMs: 420_000,
+        stagingPrompt: 'staging prompt with the control directive',
+        continuationPrompt: 'a CHANGED continuation prompt',
+        fixture: {
+          workspace: '/private/tmp/confirmed-window-offline-workspace',
+          codexHome: '/private/tmp/confirmed-window-offline-codex-home',
+          installedRoot: '/private/tmp/confirmed-window-offline-installed',
+          env: { CODEX_HOME: '/private/tmp/confirmed-window-offline-codex-home', HOME: '/private/tmp/confirmed-window-offline-home' },
+          record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
+          dispose: async () => {},
+        },
+      }, {
+        now: host.clock.now,
+        wallClockNow: host.clock.wallClockNow,
+        sleep: host.clock.sleep,
+        launchConfirmedWindowHost: host.factory,
+        observers: { ...greenObservers(), controlFacts },
+        dutyAdjudication: greenDuties(),
+      });
+      }
+      // (1) The reviewer's shape: the control line was EMITTED before the
+      // delivery (emittedAtControllerMs 100 against the delivery at ~130)
+      // and COLLECTED long after it (freshAtMs 2500) — the collection-stamp
+      // gate credited survival; the emission gate refuses.
+      const preEmission = async () => {
+        const readAt = greenObservationClock.now !== null && typeof greenObservationClock.now === 'function' ? greenObservationClock.now() : 1_000;
+        return { active: true, freshAtMs: readAt, declaredLifetimeMs: 120_000, emittedAtControllerMs: 100, lineIndex: 45, preDeliveryReadSequence: { floorReachedInEarlierRead: true, separatePostFloorFreshRead: true }, clockDomain: 'controller-monotonic', reason: null };
+      };
+      const preEmissionResult = await runCase(preEmission);
+      assert.equal(preEmissionResult.controlSurvival.attempted, true, 'the post-delivery control reads ran');
+      assert.equal(preEmissionResult.controlSurvival.established, false, `a line EMITTED before the interrupt never establishes survival (actual ${JSON.stringify(preEmissionResult.controlSurvival)})`);
+      assert.match(String(preEmissionResult.controlSurvival.refusedReason ?? ''), /emitted|emission|predates/u, 'the refusal names the pre-delivery emission');
+      assert.equal(preEmissionResult.evidenceVerdict.settlement.settled, false, `the settlement refuses (actual ${JSON.stringify(preEmissionResult.evidenceVerdict.settlement)})`);
+      assert.ok(preEmissionResult.evidenceVerdict.settlement.reasons.includes('control-survival-unproven'), 'the mandatory survival name is unproven');
+      assert.notEqual(preEmissionResult.finalState, 'all-duties-adjudicated', `the settlement state is never reached (actual ${preEmissionResult.finalState})`);
+      // (2) The post-interruption EMISSION positive: the same collection
+      // cadence with the line emitted AFTER the delivery establishes
+      // survival and settles.
+      const postEmission = async () => {
+        const readAt = greenObservationClock.now !== null && typeof greenObservationClock.now === 'function' ? greenObservationClock.now() : 1_000;
+        return { active: true, freshAtMs: readAt, declaredLifetimeMs: 120_000, emittedAtControllerMs: readAt, lineIndex: 45, preDeliveryReadSequence: { floorReachedInEarlierRead: true, separatePostFloorFreshRead: true }, clockDomain: 'controller-monotonic', reason: null };
+      };
+      const postEmissionResult = await runCase(postEmission);
+      assert.equal(postEmissionResult.controlSurvival.established, true, `a line emitted after the interrupt establishes survival (actual ${JSON.stringify(postEmissionResult.controlSurvival)})`);
+      assert.equal(postEmissionResult.evidenceVerdict.settlement.settled, true, `the settlement stands (actual ${JSON.stringify(postEmissionResult.evidenceVerdict.settlement)})`);
+      assert.equal(postEmissionResult.finalState, 'all-duties-adjudicated', `the settlement state is reached (actual ${postEmissionResult.finalState})`);
+    });
+
+    test('confirmed-window survival: a PREMATURE post-interrupt exit REVOKES the no-collateral credit — one fresh post-interrupt line followed by an abnormal exit never settles (P1-1, 2026-11-19 codex re-review)', async () => {
+      // The reviewer's exact offline reproduction: if the control emits one
+      // fresh post-interrupt line and subsequently exits prematurely,
+      // `established` stays true and the guard ignores every later inactive
+      // read — an early exit-code-1 observation still reached
+      // all-duties-adjudicated with settled:true. Survival credit is a
+      // CONJUNCTION over the whole post-delivery window: a post-
+      // establishment premature/abnormal-exit read revokes the verdict,
+      // while the control's DESIGNED natural completion (line 60) ends the
+      // lifecycle without revoking.
+      const confirmedWindow = await import('../tools/shell-wait-probe/confirmed-window.mjs');
+      const host = fakeConfirmedWindowHost({
+        replies: parentSessionReplies(),
+        notifications: [
+          ...identityJoinNotifications({ atMs: 100 }),
+          { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+        ],
+      });
+      // The control emits ONE fresh post-interrupt line on the first
+      // post-delivery read, then every later read observes the premature
+      // exit (an abnormal exit-code-1 end, never the designed line-60
+      // completion).
+      let controlReads = 0;
+      const result = await confirmedWindow.runConfirmedWindowChoreography({
+        case: 'rescue-interrupt',
+        codexBinary: process.execPath,
+        sourceSha: 'a'.repeat(40),
+        output: '/private/tmp/confirmed-window-offline-output',
+        budgetMs: 720_000,
+        workerDurationMs: 420_000,
+        stagingPrompt: 'staging prompt with the control directive',
+        continuationPrompt: 'a CHANGED continuation prompt',
+        fixture: {
+          workspace: '/private/tmp/confirmed-window-offline-workspace',
+          codexHome: '/private/tmp/confirmed-window-offline-codex-home',
+          installedRoot: '/private/tmp/confirmed-window-offline-installed',
+          env: { CODEX_HOME: '/private/tmp/confirmed-window-offline-codex-home', HOME: '/private/tmp/confirmed-window-offline-home' },
+          record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
+          dispose: async () => {},
+        },
+      }, {
+        now: host.clock.now,
+        wallClockNow: host.clock.wallClockNow,
+        sleep: host.clock.sleep,
+        launchConfirmedWindowHost: host.factory,
+        observers: {
+          ...greenObservers(),
+          controlFacts: async () => {
+            controlReads += 1;
+            const current = typeof greenObservationClock.now === 'function' ? greenObservationClock.now() : 0;
+            // Read 1 = the admission barrier (pre-delivery); read 2 = the
+            // FIRST post-delivery read — the one fresh post-interrupt line;
+            // reads 3+ = the premature exit observations.
+            if (controlReads <= 2) {
+              return { active: true, freshAtMs: current, declaredLifetimeMs: 120_000, emittedAtControllerMs: current, lineIndex: 45, preDeliveryReadSequence: { floorReachedInEarlierRead: true, separatePostFloorFreshRead: true }, clockDomain: 'controller-monotonic', reason: null };
+            }
+            return { active: false, freshAtMs: null, declaredLifetimeMs: null, emittedAtControllerMs: null, ended: 'premature-exit', clockDomain: 'controller-monotonic', reason: 'the survival control\'s exec completed with exit code 1 before its designed end' };
+          },
+        },
+        dutyAdjudication: greenDuties(),
+      });
+      assert.ok(controlReads > 1, `the scenario exercised the post-establishment exit reads (reads ${String(controlReads)})`);
+      assert.equal(result.controlSurvival.established, false, `a premature post-interrupt exit REVOKES the survival verdict (actual ${JSON.stringify(result.controlSurvival)})`);
+      assert.match(String(result.controlSurvival.refusedReason ?? ''), /exit code 1|premature|revok/u, 'the refusal names the premature exit and the revocation');
+      assert.equal(result.evidenceVerdict.settlement.settled, false, `the settlement refuses (actual ${JSON.stringify(result.evidenceVerdict.settlement)})`);
+      assert.ok(result.evidenceVerdict.settlement.reasons.includes('control-survival-unproven'), 'the mandatory survival name is unproven after the revocation');
+      assert.notEqual(result.finalState, 'all-duties-adjudicated', `the settlement state is never reached (actual ${result.finalState})`);
+    });
+
+    test('confirmed-window survival: the post-delivery control read is validated on the controller clock BEFORE any credit — a foreign clock domain or a stamp that exceeds the read instant never establishes survival (P2, 2026-11-19 codex re-review)', async () => {
+      // The reviewer's exact offline reproduction: post-delivery control
+      // reads bypassed the clock-domain validation the admission barrier
+      // applies and accepted FUTURE freshness stamps — returning
+      // `clockDomain: 'epoch'` with both stamps set to 1700000000000
+      // reproduced all-duties-adjudicated with settled: true. The survival
+      // gate now validates the read BEFORE crediting: the domain tag must be
+      // `controller-monotonic` (the same §41.5.2 admission rule — a foreign
+      // domain is refused before any stamp arithmetic), and the freshness
+      // and emission stamps must NOT exceed the read instant (a future
+      // stamp is a clock-bounds violation, never fresh evidence).
+      const confirmedWindow = await import('../tools/shell-wait-probe/confirmed-window.mjs');
+      const makeHost = () => fakeConfirmedWindowHost({
+        replies: parentSessionReplies(),
+        notifications: [
+          ...identityJoinNotifications({ atMs: 100 }),
+          { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+        ],
+      });
+      const runCase = async (controlFacts) => {
+        const host = makeHost();
+        return confirmedWindow.runConfirmedWindowChoreography({
+        case: 'rescue-interrupt',
+        codexBinary: process.execPath,
+        sourceSha: 'a'.repeat(40),
+        output: '/private/tmp/confirmed-window-offline-output',
+        budgetMs: 720_000,
+        workerDurationMs: 420_000,
+        stagingPrompt: 'staging prompt with the control directive',
+        continuationPrompt: 'a CHANGED continuation prompt',
+        fixture: {
+          workspace: '/private/tmp/confirmed-window-offline-workspace',
+          codexHome: '/private/tmp/confirmed-window-offline-codex-home',
+          installedRoot: '/private/tmp/confirmed-window-offline-installed',
+          env: { CODEX_HOME: '/private/tmp/confirmed-window-offline-codex-home', HOME: '/private/tmp/confirmed-window-offline-home' },
+          record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
+          dispose: async () => {},
+        },
+      }, {
+        now: host.clock.now,
+        wallClockNow: host.clock.wallClockNow,
+        sleep: host.clock.sleep,
+        launchConfirmedWindowHost: host.factory,
+        observers: { ...greenObservers(), controlFacts },
+        dutyAdjudication: greenDuties(),
+      });
+      };
+      // (1) The reviewer's exact shape: the barrier-time read is VALID (the
+      // admission passes), and the POST-DELIVERY reads return a FOREIGN
+      // clock domain with both stamps far in the future — the barrier's own
+      // domain validation is bypassed by exactly these later reads, and the
+      // credit must never form on them.
+      let foreignDomainReads = 0;
+      const foreignDomain = async () => {
+        foreignDomainReads += 1;
+        if (foreignDomainReads <= 1) {
+          const current = typeof greenObservationClock.now === 'function' ? greenObservationClock.now() : 0;
+          return { active: true, freshAtMs: current, declaredLifetimeMs: 120_000, emittedAtControllerMs: current, lineIndex: 45, preDeliveryReadSequence: { floorReachedInEarlierRead: true, separatePostFloorFreshRead: true }, clockDomain: 'controller-monotonic', reason: null };
+        }
+        return { active: true, freshAtMs: 1_700_000_000_000, declaredLifetimeMs: 120_000, emittedAtControllerMs: 1_700_000_000_000, clockDomain: 'epoch', reason: null };
+      };
+      const foreignDomainResult = await runCase(foreignDomain);
+      assert.ok(foreignDomainReads > 1, `the scenario exercised the post-delivery control reads (reads ${String(foreignDomainReads)})`);
+      assert.equal(foreignDomainResult.controlSurvival.attempted, true, 'the post-delivery control reads ran');
+      assert.equal(foreignDomainResult.controlSurvival.established, false, `a foreign clock domain never establishes survival (actual ${JSON.stringify(foreignDomainResult.controlSurvival)})`);
+      assert.match(String(foreignDomainResult.controlSurvival.refusedReason ?? ''), /clock-domain-mismatch|foreign clock domain/u, 'the refusal names the foreign clock domain');
+      assert.equal(foreignDomainResult.evidenceVerdict.settlement.settled, false, `the settlement refuses (actual ${JSON.stringify(foreignDomainResult.evidenceVerdict.settlement)})`);
+      assert.ok(foreignDomainResult.evidenceVerdict.settlement.reasons.includes('control-survival-unproven'), 'the mandatory survival name is unproven');
+      assert.notEqual(foreignDomainResult.finalState, 'all-duties-adjudicated', `the settlement state is never reached (actual ${foreignDomainResult.finalState})`);
+      // (2) The correct domain with FUTURE stamps on the post-delivery
+      // reads: a freshAtMs or an emission stamp beyond the read instant is a
+      // clock-bounds violation — the future stamp never masquerades as fresh
+      // post-delivery evidence.
+      let futureStampsReads = 0;
+      const futureStamps = async () => {
+        futureStampsReads += 1;
+        if (futureStampsReads <= 1) {
+          const current = typeof greenObservationClock.now === 'function' ? greenObservationClock.now() : 0;
+          return { active: true, freshAtMs: current, declaredLifetimeMs: 120_000, emittedAtControllerMs: current, lineIndex: 45, preDeliveryReadSequence: { floorReachedInEarlierRead: true, separatePostFloorFreshRead: true }, clockDomain: 'controller-monotonic', reason: null };
+        }
+        return { active: true, freshAtMs: 1_700_000_000_000, declaredLifetimeMs: 120_000, emittedAtControllerMs: 1_700_000_000_000, clockDomain: 'controller-monotonic', reason: null };
+      };
+      const futureStampsResult = await runCase(futureStamps);
+      assert.ok(futureStampsReads > 1, `the scenario exercised the post-delivery control reads (reads ${String(futureStampsReads)})`);
+      assert.equal(futureStampsResult.controlSurvival.established, false, `a stamp beyond the read instant never establishes survival (actual ${JSON.stringify(futureStampsResult.controlSurvival)})`);
+      assert.match(String(futureStampsResult.controlSurvival.refusedReason ?? ''), /clock-bounds-violation|future/u, 'the refusal names the future-stamp bounds violation');
+      assert.equal(futureStampsResult.evidenceVerdict.settlement.settled, false, `the settlement refuses (actual ${JSON.stringify(futureStampsResult.evidenceVerdict.settlement)})`);
+      assert.notEqual(futureStampsResult.finalState, 'all-duties-adjudicated', `the settlement state is never reached (actual ${futureStampsResult.finalState})`);
+    });
+
+    test('confirmed-window collection: a pendingObservation RESOLUTION fact is validated before it is recorded — a foreign clock domain, a timestamp beyond the read instant, or a missing timestamp never resolves the observation leg (P2, 2026-11-19 codex re-review)', async () => {
+      // The reviewer's exact offline reproduction: both post-delivery
+      // collection loops accepted resolution facts without validating their
+      // clock domain or timestamp bounds, and substituted now() for a
+      // MISSING timestamp — a valid admission followed by a foreign-domain
+      // resolution timestamp 10000 ms AHEAD of the read reached
+      // all-duties-adjudicated with settled: true. The resolution facts are
+      // now validated with the SAME discipline the control reads carry
+      // (round 9): the domain tag must be controller-monotonic, a present
+      // resolvedAtMs must not exceed the read instant, and missing or
+      // invalid resolution evidence leaves the leg UNESTABLISHED (never
+      // now()-substituted).
+      const confirmedWindow = await import('../tools/shell-wait-probe/confirmed-window.mjs');
+      const makeHost = () => fakeConfirmedWindowHost({
+        replies: parentSessionReplies(),
+        notifications: [
+          ...identityJoinNotifications({ atMs: 100 }),
+          { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+        ],
+      });
+      const runCase = async (pendingObservation) => {
+        const host = makeHost();
+        return confirmedWindow.runConfirmedWindowChoreography({
+        case: 'rescue-interrupt',
+        codexBinary: process.execPath,
+        sourceSha: 'a'.repeat(40),
+        output: '/private/tmp/confirmed-window-offline-output',
+        budgetMs: 720_000,
+        workerDurationMs: 420_000,
+        stagingPrompt: 'staging prompt with the control directive',
+        continuationPrompt: 'a CHANGED continuation prompt',
+        fixture: {
+          workspace: '/private/tmp/confirmed-window-offline-workspace',
+          codexHome: '/private/tmp/confirmed-window-offline-codex-home',
+          installedRoot: '/private/tmp/confirmed-window-offline-installed',
+          env: { CODEX_HOME: '/private/tmp/confirmed-window-offline-codex-home', HOME: '/private/tmp/confirmed-window-offline-home' },
+          record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
+          dispose: async () => {},
+        },
+      }, {
+        now: host.clock.now,
+        wallClockNow: host.clock.wallClockNow,
+        sleep: host.clock.sleep,
+        launchConfirmedWindowHost: host.factory,
+        observers: { ...greenObservers(), pendingObservation },
+        dutyAdjudication: greenDuties(),
+      });
+      };
+      const currentClock = () => (typeof greenObservationClock.now === 'function' ? greenObservationClock.now() : 0);
+      // (1) The reviewer's exact shape: the barrier reads are VALID (the
+      // admission passes), and every POST-DELIVERY resolution read carries a
+      // FOREIGN clock domain with the resolvedAtMs 10000 ms AHEAD of the
+      // read instant — the resolution leg must never establish.
+      const foreignFuture = async () => {
+        const current = currentClock();
+        if (current < 500) {
+          return { confirmed: true, observedAtMs: 50, resolved: false, resolvedAtMs: null, holdDeadlineAtMs: 420_050, clockDomain: 'controller-monotonic', reason: null };
+        }
+        return { confirmed: true, observedAtMs: 50, resolved: true, resolvedAtMs: current + 10_000, holdDeadlineAtMs: 420_050, clockDomain: 'epoch', reason: null };
+      };
+      const foreignFutureResult = await runCase(foreignFuture);
+      assert.equal(foreignFutureResult.receipt.observationResolvedAtMs, null, `a foreign-domain future resolution timestamp never resolves the observation leg (actual ${JSON.stringify(foreignFutureResult.receipt)})`);
+      assert.notEqual(foreignFutureResult.finalState, 'all-duties-adjudicated', `the settlement state is never reached (actual ${foreignFutureResult.finalState})`);
+      assert.equal(foreignFutureResult.evidenceVerdict.settlement.settled, false, `the settlement refuses (actual ${JSON.stringify(foreignFutureResult.evidenceVerdict.settlement)})`);
+      // (2) The correct domain with a resolvedAtMs AHEAD of the read —
+      // the bounds violation alone leaves the leg unestablished.
+      const futureStamp = async () => {
+        const current = currentClock();
+        if (current < 500) {
+          return { confirmed: true, observedAtMs: 50, resolved: false, resolvedAtMs: null, holdDeadlineAtMs: 420_050, clockDomain: 'controller-monotonic', reason: null };
+        }
+        return { confirmed: true, observedAtMs: 50, resolved: true, resolvedAtMs: current + 10_000, holdDeadlineAtMs: 420_050, clockDomain: 'controller-monotonic', reason: null };
+      };
+      const futureStampResult = await runCase(futureStamp);
+      assert.equal(futureStampResult.receipt.observationResolvedAtMs, null, `a resolution timestamp beyond the read instant never resolves the observation leg (actual ${JSON.stringify(futureStampResult.receipt)})`);
+      assert.notEqual(futureStampResult.finalState, 'all-duties-adjudicated', `the settlement state is never reached (actual ${futureStampResult.finalState})`);
+      // (3) A MISSING resolvedAtMs on a resolved claim: the timestamp is
+      // never substituted with now() — the leg stays unestablished.
+      const missingStamp = async () => {
+        const current = currentClock();
+        if (current < 500) {
+          return { confirmed: true, observedAtMs: 50, resolved: false, resolvedAtMs: null, holdDeadlineAtMs: 420_050, clockDomain: 'controller-monotonic', reason: null };
+        }
+        return { confirmed: true, observedAtMs: 50, resolved: true, resolvedAtMs: null, holdDeadlineAtMs: 420_050, clockDomain: 'controller-monotonic', reason: null };
+      };
+      const missingStampResult = await runCase(missingStamp);
+      assert.equal(missingStampResult.receipt.observationResolvedAtMs, null, `a missing resolution timestamp is missing evidence, never now() (actual ${JSON.stringify(missingStampResult.receipt)})`);
+      assert.notEqual(missingStampResult.finalState, 'all-duties-adjudicated', `the settlement state is never reached (actual ${missingStampResult.finalState})`);
+    });
+
+    test('confirmed-window staging: the no-spawn correction continuation is authorized ONLY when NO Child has been observed — a known childThreadId never receives a second directed spawn (P2, 2026-11-20 codex re-review)', async () => {
+      // The reviewer's exact offline reproduction: the parent's started
+      // activity arrives before its completion, but the Child's own
+      // turn/started arrives afterward — the join is incomplete when the
+      // parent completes, and the continuation branch submitted the directed
+      // continuation DESPITE already having childThreadId. The composed
+      // continuation says the spawn has not happened and requests ANOTHER
+      // spawn — potentially creating a second Child and making the identity
+      // ambiguous. The correction continuation is now authorized only when
+      // NO Child has been observed: with a known childThreadId the branch
+      // drains the queued lifecycle evidence and, if the join completes,
+      // runs the final positive-barrier evaluation — otherwise staging
+      // keeps waiting within its deadline — never another spawn.
+      const confirmedWindow = await import('../tools/shell-wait-probe/confirmed-window.mjs');
+      const host = fakeConfirmedWindowHost({
+        replies: parentSessionReplies(),
+        notifications: [
+          { atMs: 100, method: 'thread/started', params: { threadId: PARENT_THREAD } },
+          // The parent's spawn activity arrives FIRST (childThreadId becomes known).
+          { atMs: 110, method: 'thread/notification', params: { type: 'SubAgentActivity', threadId: PARENT_THREAD, item: { type: 'SubAgentActivity', id: 'activity-1', kind: 'started', agentThreadId: CHILD_THREAD, model: 'gpt-5.1', reasoningEffort: 'high' } } },
+          // The parent completes BEFORE the Child's own turn/started arrives.
+          { atMs: 200, method: 'thread/notification', params: { type: 'turn/completed', threadId: PARENT_THREAD, turn: { id: 'root-turn-1', status: 'completed', items: [] } } },
+          // The Child's own turn/started arrives AFTERWARD (queued behind the completion).
+          { atMs: 300, method: 'thread/notification', params: { type: 'turn/started', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'inProgress', items: [] } } },
+        ],
+      });
+      const result = await confirmedWindow.runConfirmedWindowChoreography({
+        case: 'rescue-interrupt',
+        codexBinary: process.execPath,
+        sourceSha: 'a'.repeat(40),
+        output: '/private/tmp/confirmed-window-offline-output',
+        budgetMs: 720_000,
+        workerDurationMs: 420_000,
+        stagingPrompt: 'staging prompt with the control directive',
+        continuationPrompt: 'a CHANGED continuation prompt',
+        fixture: {
+          workspace: '/private/tmp/confirmed-window-offline-workspace',
+          codexHome: '/private/tmp/confirmed-window-offline-codex-home',
+          installedRoot: '/private/tmp/confirmed-window-offline-installed',
+          env: { CODEX_HOME: '/private/tmp/confirmed-window-offline-codex-home', HOME: '/private/tmp/confirmed-window-offline-home' },
+          record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
+          dispose: async () => {},
+        },
+      }, {
+        now: host.clock.now,
+        wallClockNow: host.clock.wallClockNow,
+        sleep: host.clock.sleep,
+        launchConfirmedWindowHost: host.factory,
+        observers: greenObservers(),
+        dutyAdjudication: greenDuties(),
+      });
+      const turnStartSends = host.requestLog.filter((entry) => entry.method === 'turn/start').length;
+      assert.equal(turnStartSends, 1, `the staging turn start is the ONLY turn/start — a known Child never receives a second directed spawn (actual ${JSON.stringify(host.requestLog.map((entry) => entry.method))})`);
+      assert.ok(result.states.some((entry) => entry.state === 'pending-window-confirmed'), `the known Child's own lifecycle evidence completes the join and the window confirms without a second spawn (actual ${JSON.stringify(result.states)})`);
+    });
+
+    test('confirmed-window collection: duty sampling CONTINUES at the registered cadence while the Child terminal is awaited — pre-cutoff duty evidence is not deferred behind the terminal (P2-1, 2026-11-19 codex re-review)', async () => {
+      // The reviewer's exact offline shape: while `childResolution` remains
+      // null, the collection loop sampled pending-observation and control
+      // facts but never called `dutyFacts` or refreshed the credited
+      // adjudication — duty sampling resumed only AFTER the Child terminal,
+      // potentially after the measurement cutoff. A Child terminal arriving
+      // at 429900 (a hair before the 430050 cutoff) with the duty
+      // adjudication settling at 150000 lost the pre-cutoff refresh: the
+      // first post-terminal duty read landed past the cutoff and the
+      // credited snapshot kept its seeded (pre-delivery) state — the run
+      // refused a settlement it had already earned. The step-8 loop now
+      // samples duties at the same floor cadence.
+      const confirmedWindow = await import('../tools/shell-wait-probe/confirmed-window.mjs');
+      const host = fakeConfirmedWindowHost({
+        replies: parentSessionReplies(),
+        notifications: [
+          ...identityJoinNotifications({ atMs: 100 }),
+          // The Child terminal arrives at 429900 — just before the cutoff.
+          { atMs: 429_900, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+        ],
+      });
+      const mutableDuties = { allObserved: false, names: ['invocation', 'broker', 'transport', 'runner', 'job', 'guard', 'integrity', 'control-survival'], durableSettled: false, cleanupFenceAtMs: null, collectionIntervalsValid: true, clockDomain: 'controller-monotonic' };
+      const result = await confirmedWindow.runConfirmedWindowChoreography({
+        case: 'rescue-interrupt',
+        codexBinary: process.execPath,
+        sourceSha: 'a'.repeat(40),
+        output: '/private/tmp/confirmed-window-offline-output',
+        budgetMs: 720_000,
+        workerDurationMs: 420_000,
+        stagingPrompt: 'staging prompt with the control directive',
+        continuationPrompt: 'a CHANGED continuation prompt',
+        fixture: {
+          workspace: '/private/tmp/confirmed-window-offline-workspace',
+          codexHome: '/private/tmp/confirmed-window-offline-codex-home',
+          installedRoot: '/private/tmp/confirmed-window-offline-installed',
+          env: { CODEX_HOME: '/private/tmp/confirmed-window-offline-codex-home', HOME: '/private/tmp/confirmed-window-offline-home' },
+          record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
+          dispose: async () => {},
+        },
+      }, {
+        now: host.clock.now,
+        wallClockNow: host.clock.wallClockNow,
+        sleep: host.clock.sleep,
+        launchConfirmedWindowHost: host.factory,
+        observers: {
+          ...greenObservers(),
+          // The shared adjudication settles once the clock reaches 150000 —
+          // LONG before the Child terminal at 429900.
+          dutyFacts: async () => {
+            // The shared adjudication settles at 150000; the cleanup fence
+            // stamps at the first read at/after 429950 — AFTER the Child
+            // terminal (429900) and still BEFORE the cutoff (430050), the
+            // consumer's pre-fence ordering.
+            if (host.clock.now() >= 150_000 && mutableDuties.allObserved !== true) {
+              Object.assign(mutableDuties, { allObserved: true, durableSettled: true });
+            }
+            if (host.clock.now() >= 429_950 && mutableDuties.cleanupFenceAtMs === null) {
+              Object.assign(mutableDuties, { cleanupFenceAtMs: 429_950 });
+            }
+            return { observable: true, duties: ['invocation', 'broker', 'transport', 'runner', 'job', 'guard', 'integrity'], clockDomain: 'controller-monotonic', reason: null };
+          },
+        },
+        dutyAdjudication: mutableDuties,
+      });
+      assert.equal(result.receipt.childResolutionAtMs, 429_900, 'the Child terminal arrived just before the cutoff');
+      assert.equal(result.receipt.observationResolvedAtMs, 320, 'the observation leg resolved early');
+      // The precise fix claim: the pre-cutoff duty refresh is NOT deferred
+      // behind the terminal — the CREDITED snapshot captures the settlement
+      // the window had already earned (the seeded pre-delivery state used to
+      // survive: no duty read ever completed before the cutoff, so the first
+      // post-terminal read landed past the fence and the refresh rejected
+      // it). The cleanup fence itself still stamps only at a post-terminal
+      // read (the consumer's pre-fence ordering requires fence AFTER the
+      // resolution) — with the terminal a hair before the cutoff that stamp
+      // lands past the cutoff and the settlement refuses on the FENCE fact
+      // alone, never on the deferred duty evidence.
+      assert.equal(result.adjudicatedDuties.allObserved, true, `the credited snapshot captured the pre-cutoff settlement (actual ${JSON.stringify(result.adjudicatedDuties)})`);
+      assert.equal(result.adjudicatedDuties.durableSettled, true, 'the durable layer is credited from the pre-cutoff read');
+      const settlementReasons = result.evidenceVerdict.settlement.reasons;
+      assert.equal(settlementReasons.includes('duty-adjudication-incomplete'), false, `the deferred-sampling refusal is gone (actual ${JSON.stringify(settlementReasons)})`);
+      assert.equal(settlementReasons.includes('durable-settlement-unresolved'), false, 'the durable settlement is credited');
+      assert.ok(result.controlSurvival.established === true, 'the survival verdict stands from the pre-cutoff control reads');
+    });
+
+    test('confirmed-window resources: a protocol failure during staging is typed, redacted, and still disposes (the refusal never carries a private path)', async () => {
+      const privatePath = '/private/tmp/confirmed-window-offline-codex-home';
+      const { result, host } = await runOfflineChoreography({
+        script: {
+          refuseMethods: { initialize: `initialize failed against ${privatePath} (cwd leak)` },
+        },
+        dependencies: {
+          redact: (error) => String(error instanceof Error ? error.message : error).split(privatePath).join('<redacted>'),
+        },
+      });
+      assert.equal(result.finalState, 'staging-not-ready');
+      assert.match(String(result.refusal?.reason ?? ''), /redacted/u, 'the redaction seam rode the failure text');
+      assert.doesNotMatch(String(result.refusal?.reason ?? ''), /confirmed-window-offline-codex-home/u, 'the private path never enters the refusal');
+      assert.equal(host.disposed, true);
+    });
+
+    test('confirmed-window resources: ONE host, exactly the permitted requests, and never a settlement-manufacturing control (no active cancel, no reconcile, no session-end, no duplicate poll)', async () => {
+      const { result, host } = await runOfflineChoreography({
+        script: {
+          notifications: [
+            ...identityJoinNotifications({ atMs: 100 }),
+            { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+          ],
+        },
+      });
+      const methods = host.requestLog.map((entry) => entry.method);
+      assert.deepEqual(methods, ['initialize', 'thread/start', 'turn/start', 'turn/interrupt'], `exactly the staged request sequence (actual ${JSON.stringify(methods)})`);
+      assert.equal(host.launchCount, 1, 'exactly ONE host instance');
+      for (const forbidden of ['session/end', 'turn/cancel', 'reconcile', 'thread/archive']) {
+        assert.equal(methods.includes(forbidden), false, `${forbidden} is never sent: settlement is never manufactured by an active control`);
+      }
+      assert.equal(result.disposal.teardownLabel, 'planned-observation-teardown', 'teardown is labelled for what it is');
+      assert.equal(result.disposal.settlementManufactured, false);
+    });
+
+    test('confirmed-window resources: a host exit during the post-resolution horizon drain never overwrites the recorded escalation (round-5 P3-1)', async () => {
+      // (a) BOTH legs observed and the verdict settled: a mid-drain host exit
+      // used to escape the drain and overwrite the record with the false
+      // "the choreography failed before escalation completed" refusal beside
+      // all-duties-adjudicated.
+      const settled = await runOfflineChoreography({
+        script: {
+          notifications: [
+            ...identityJoinNotifications({ atMs: 100 }),
+            { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+          ],
+          rejectNotificationsAtClock: 5000,
+          rejectNotificationsError: 'the owned host exited mid-drain (simulated)',
+        },
+        dependencies: { dutyAdjudication: greenDuties() },
+      });
+      assert.equal(settled.result.finalState, 'all-duties-adjudicated', `the settled verdict stands (actual ${settled.result.finalState})`);
+      assert.equal(settled.result.refusal, null, `a settled record carries NO refusal (actual ${JSON.stringify(settled.result.refusal)})`);
+      assert.ok(settled.result.inconclusive !== null, 'the drain failure is recorded as inconclusive');
+      assert.match(String(settled.result.inconclusive.reason ?? ''), /horizon drain/u, `the drain failure is named (actual ${String(settled.result.inconclusive.reason ?? '')})`);
+      assert.doesNotMatch(String(settled.result.inconclusive.reason ?? ''), /before escalation completed/u);
+      // (b) the child-terminal-only path: the typed BOTH-LEGS refusal
+      // survives the mid-drain exit (it is never replaced by the false
+      // before-escalation claim).
+      const terminalOnly = await runOfflineChoreography({
+        script: {
+          notifications: [
+            ...identityJoinNotifications({ atMs: 100 }),
+            { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+          ],
+          rejectNotificationsAtClock: 5000,
+          rejectNotificationsError: 'the owned host exited mid-drain (simulated)',
+        },
+        observers: {
+          ...greenObservers(),
+          pendingObservation: async () => ({ confirmed: true, observedAtMs: 50, resolved: false, resolvedAtMs: null, holdDeadlineAtMs: 420_050, clockDomain: 'controller-monotonic', reason: null }),
+        },
+      });
+      assert.equal(terminalOnly.result.finalState, 'native-request-sent');
+      assert.match(String(terminalOnly.result.refusal?.reason ?? ''), /never resolved inside the measurement window/u, `the typed both-legs refusal survives (actual ${String(terminalOnly.result.refusal?.reason ?? '')})`);
+      assert.doesNotMatch(String(terminalOnly.result.refusal?.reason ?? ''), /before escalation completed/u);
+      assert.ok(terminalOnly.result.inconclusive !== null, 'the drain failure is recorded as inconclusive');
+      assert.match(String(terminalOnly.result.inconclusive.reason ?? ''), /horizon drain/u);
+      assert.equal(terminalOnly.host.disposed, true, 'the host is still disposed deterministically');
+    });
+
+    test('confirmed-window collection: terminal evidence survives an independent collector failure — the failure is inconclusive, never an erasure (round-4 P2)', async () => {
+      // The Child terminal was consumed; a LATER pendingObservation read
+      // rejected: the outer catch used to finalize BEFORE the local
+      // resolution facts were copied into the receipt — the retained record
+      // had the completed turn id but NULL resolution time/status/basis.
+      const privatePath = '/private/tmp/confirmed-window-offline-codex-home';
+      const { result } = await runOfflineChoreography({
+        script: {
+          notifications: [
+            ...identityJoinNotifications({ atMs: 100 }),
+            { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+          ],
+        },
+        observers: {
+          ...greenObservers(),
+          pendingObservation: async () => {
+            const current = greenObservationClock.now?.() ?? 0;
+            if (current >= 1000) throw new Error(`the collection instrument failed against ${privatePath}`);
+            return { confirmed: true, observedAtMs: 50, resolved: false, resolvedAtMs: null, holdDeadlineAtMs: 420_050, clockDomain: 'controller-monotonic', reason: null };
+          },
+        },
+        dependencies: { redact: (error) => String(error instanceof Error ? error.message : error).split(privatePath).join('<redacted>') },
+      });
+      assert.equal(result.receipt.childResolutionAtMs, 300, `the terminal resolution time survives the collector failure (actual ${String(result.receipt.childResolutionAtMs)})`);
+      assert.equal(result.receipt.childTerminalStatus, 'interrupted', 'the terminal status survives');
+      assert.equal(result.receipt.childResolutionBasis, 'child-terminal-event', 'the terminal basis survives');
+      assert.ok(result.inconclusive !== null, 'the independent collector failure is recorded as inconclusive');
+      assert.match(String(result.inconclusive.reason ?? ''), /<redacted>/u, 'the failure text rides the redaction boundary');
+      assert.doesNotMatch(String(result.inconclusive.reason ?? ''), /confirmed-window-offline-codex-home/u);
+    });
+
+    test('confirmed-window collection: the instrument\'s ACTUAL observation-resolution timestamp is retained — never the later polling time (round-4 P2)', async () => {
+      // The collector reported the resolution at 200 ms; the next passive
+      // read only happened at ~1110 ms: the record used to place the
+      // resolution at the READ time, which would reject a genuine 500 ms
+      // cleanup fence. The validated resolution timestamp is preserved when
+      // first reported.
+      const { result } = await runOfflineChoreography({
+        script: {
+          notifications: [
+            ...identityJoinNotifications({ atMs: 10 }),
+            { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+          ],
+        },
+        observers: {
+          ...greenObservers(),
+          pendingObservation: async () => {
+            const current = greenObservationClock.now?.() ?? 0;
+            // observedAtMs 10 precedes the send (the window-ordering
+            // conjunct); the scripted RESOLUTION instant is 200 ms.
+            return { confirmed: true, observedAtMs: 10, resolved: current >= 200, resolvedAtMs: current >= 200 ? 200 : null, holdDeadlineAtMs: 420_010, clockDomain: 'controller-monotonic', reason: null };
+          },
+        },
+        dependencies: { dutyAdjudication: greenDuties({ cleanupFenceAtMs: 500 }) },
+      });
+      assert.equal(result.receipt.observationResolvedAtMs, 200, `the collector's resolution timestamp rides the record (actual ${String(result.receipt.observationResolvedAtMs)})`);
+      assert.equal(result.evidenceVerdict.settlement.settled, true, `a genuine 500 ms cleanup fence stays proven (actual ${JSON.stringify(result.evidenceVerdict?.settlement)})`);
+    });
+
+    test('confirmed-window collection: an ordinary parent completion is NOT cancellation — the pinned protocol exposes the terminal cause on the turn/completed status, and an absent cause stays named-unestablished (P2-5)', async () => {
+      // The pinned protocol's parent terminal evidence (verified 2026-11-18
+      // against the generated schema + the source pin): the v2
+      // `turn/completed` params carry `turn.status`
+      // (completed|interrupted|failed|inProgress) and there is NO
+      // `turn/aborted` notification on this protocol. An ordinary
+      // `completed` parent terminal is NOT cancellation: classifying it as
+      // one would reject an exact-Child interruption after a normal Root
+      // completion. The cause of the Child's non-resolution stays
+      // named-unestablished.
+      const { result, host } = await runOfflineChoreography({
+        script: {
+          notifications: [
+            ...identityJoinNotifications({ atMs: 100 }),
+            // The PARENT's turn completes NORMALLY while the Child stays
+            // unresolved: the terminal cause is recorded as observed-but-not-
+            // cancellation, never as the parent-only cancellation fact.
+            { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: PARENT_THREAD, turn: { id: 'root-turn-1', status: 'completed', items: [] } } },
+          ],
+        },
+        dependencies: { dutyAdjudication: greenDuties() },
+      });
+      const interrupts = host.requestLog.filter((entry) => entry.method === 'turn/interrupt');
+      assert.equal(interrupts.length, 1, 'the native request keeps its exactly-one authority');
+      assert.equal(result.receipt.parentCancellationAtMs, null, 'an ordinary parent completion never sets the cancellation fact (actual ' + JSON.stringify(result.receipt) + ')');
+      assert.equal(result.evidenceVerdict.settlement.settled, false, 'the Child never resolved, so the settlement still refuses');
+      assert.equal(result.evidenceVerdict.settlement.reasons.includes('parent-only-cancellation'), false, `the ordinary completion is never classified as cancellation (actual ${JSON.stringify(result.evidenceVerdict.settlement.reasons)})`);
+      assert.equal(result.finalState, 'native-request-sent', 'escalation stops honestly at the sent request');
+      assert.match(String(result.refusal?.reason ?? ''), /unestablished|status completed/u, 'the refusal names the unestablished cause instead of presuming cancellation');
+      assert.equal(result.disposal.teardownLabel, 'planned-observation-teardown');
+    });
+
+    test('confirmed-window collection: an INTERRUPTED parent terminal is the affirmative cancellation fact (parent-only cancellation is typed from the pinned status evidence, never presumed)', async () => {
+      const { result, host } = await runOfflineChoreography({
+        script: {
+          notifications: [
+            ...identityJoinNotifications({ atMs: 100 }),
+            // The PARENT's turn reaches an INTERRUPTED terminal while the
+            // Child stays unresolved: the affirmative parent-cancellation
+            // fact (turn.status === 'interrupted' is the only cancellation
+            // evidence the pinned protocol exposes for the parent).
+            { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: PARENT_THREAD, turn: { id: 'root-turn-1', status: 'interrupted', items: [] } } },
+          ],
+        },
+        dependencies: { dutyAdjudication: greenDuties() },
+      });
+      assert.equal(host.requestLog.filter((entry) => entry.method === 'turn/interrupt').length, 1);
+      assert.equal(result.receipt.parentCancellationAtMs, 300, 'the interrupted parent terminal sets the parent-only cancellation fact');
+      assert.equal(result.evidenceVerdict.settlement.settled, false);
+      assert.ok(result.evidenceVerdict.settlement.reasons.includes('parent-only-cancellation'), `the named reason rides the verdict (actual ${JSON.stringify(result.evidenceVerdict.settlement)})`);
+      assert.equal(result.finalState, 'native-request-sent', 'escalation stops honestly at the sent request');
+    });
+
+    test('confirmed-window resources: the default real launcher bounds its reads, types disconnection, and disposes deterministically over fake streams', async () => {
+      const confirmedWindow = await import('../tools/shell-wait-probe/confirmed-window.mjs');
+      /** A minimal fake child process with event semantics and a written-frame log. */
+      const fakeSpawnChild = () => {
+        /** @type {Map<string, ((...args: any[]) => void)[]>} */
+        const listeners = new Map();
+        const emit = (/** @type {string} */ event, ...args) => {
+          for (const cb of listeners.get(event) ?? []) cb(...args);
+        };
+        const on = (/** @type {string} */ event, cb) => {
+          if (!listeners.has(event)) listeners.set(event, []);
+          listeners.get(event).push(cb);
+          return undefined;
+        };
+        const written = [];
+        const child = {
+          pid: 4321,
+          stdout: { on, once: on, setEncoding: () => {}, off: () => {} },
+          stderr: { on, once: on, off: () => {} },
+          stdin: { writable: true, write: (frame) => { written.push(frame); return true; }, end: () => {}, once: on, on, off: () => {} },
+          on, once: on, off: () => {},
+          kill: (/** @type {string} */ signal) => { child.exitCode = 0; child.signalCode = null; emit('exit', 0, signal); return true; },
+          exitCode: null,
+          signalCode: null,
+          __written: written,
+          __emit: emit,
+        };
+        return child;
+      };
+      // (a) An oversized frame fails the pending request typed and marks the
+      // connection closed.
+      {
+        const child = fakeSpawnChild();
+        const host = await confirmedWindow.launchCodexAppServerHost(
+          { codexBinary: 'codex', codexHome: '/h', workspace: '/w', env: {}, arguments: ['app-server'], caseDeadlineAtMs: 1e9, launchedAtMs: 0 },
+          { spawn: () => child, maxLineBytes: 1024, maxOutputBytes: 4096, killGraceMs: 5, now: () => 0, waitUntil: () => new Promise(() => {}) },
+        );
+        const pending = host.connection.request('initialize', {});
+        child.__emit('data', Buffer.from('x'.repeat(2048)));
+        await assert.rejects(pending, /oversized frame/u, 'the bounded read refuses the oversized frame by name');
+        assert.equal(host.connection.closed(), true, 'the disconnection is typed on the connection');
+        await host.dispose();
+      }
+      // (b) A mid-flight disconnection rejects the pending request typed, and
+      // a late notification wait resolves null (bounded).
+      {
+        const child = fakeSpawnChild();
+        const host = await confirmedWindow.launchCodexAppServerHost(
+          { codexBinary: 'codex', codexHome: '/h', workspace: '/w', env: {}, arguments: ['app-server'], caseDeadlineAtMs: 1e9, launchedAtMs: 0 },
+          { spawn: () => child, killGraceMs: 5, now: () => 0, waitUntil: () => new Promise(() => {}) },
+        );
+        const pending = host.connection.request('thread/start', {});
+        child.__emit('exit', 0, null);
+        // (round-3 P2-5) the attributable initiation stamp rides the error
+        // path: the consumer can preserve the real send stamp instead of
+        // fabricating one from the failure time (now() is pinned to 0 here).
+        const rejectionCause = await pending.then(() => null, (error) => error);
+        assert.match(String(rejectionCause?.message ?? ''), /disconnected before replying/u, 'the mid-flight disconnection is typed');
+        assert.equal(rejectionCause?.initiatedAtMs, 0, `the initiation stamp is attributable through the error path (actual ${String(rejectionCause?.initiatedAtMs)})`);
+        // (round-2 P2) after the fatal error the notification wait PROPAGATES
+        // the typed disconnection instead of resolving an ambiguous null —
+        // the choreography treats null as a timeout, so a resolved-null loop
+        // after a fatal error used to busy-spin until the deadline.
+        await assert.rejects(host.connection.nextNotification(1), /exited before the choreography completed/u, 'the disconnection propagates from the notification wait');
+        await host.dispose();
+      }
+      // (d) (round-4 P2) a PROTOCOL ERROR reply attaches the attributable
+      // initiation and rejection bounds — consistent with the disconnection
+      // and write-failure paths — so a real server rejection keeps its send
+      // stamp instead of erasing it.
+      {
+        const child = fakeSpawnChild();
+        const host = await confirmedWindow.launchCodexAppServerHost(
+          { codexBinary: 'codex', codexHome: '/h', workspace: '/w', env: {}, arguments: ['app-server'], caseDeadlineAtMs: 1e9, launchedAtMs: 0 },
+          { spawn: () => child, killGraceMs: 5, now: () => 750, waitUntil: () => new Promise(() => {}) },
+        );
+        const pending = host.connection.request('turn/interrupt', { threadId: 'c', turnId: 't' });
+        child.__emit('data', Buffer.from('{"id":1,"error":{"code":-1,"message":"expected active turn id t but found t0"}}\n'));
+        const rejectionCause = await pending.then(() => null, (error) => error);
+        assert.match(String(rejectionCause?.message ?? ''), /expected active turn id/u, 'the protocol rejection is typed');
+        assert.equal(rejectionCause?.initiatedAtMs, 750, `the initiation stamp rides the protocol rejection (actual ${String(rejectionCause?.initiatedAtMs)})`);
+        assert.equal(rejectionCause?.repliedAtMs, 750, `the rejection arrival stamp rides the protocol rejection (actual ${String(rejectionCause?.repliedAtMs)})`);
+        await host.dispose();
+      }
+      // (c) The request frame is written exactly once; the notification
+      // channel routes frames that carry a method beside the pending reply.
+      {
+        const child = fakeSpawnChild();
+        const host = await confirmedWindow.launchCodexAppServerHost(
+          { codexBinary: 'codex', codexHome: '/h', workspace: '/w', env: {}, arguments: ['app-server'], caseDeadlineAtMs: 1e9, launchedAtMs: 0 },
+          { spawn: () => child, killGraceMs: 5, now: () => 0, waitUntil: () => new Promise(() => {}) },
+        );
+        const pending = host.connection.request('turn/start', {});
+        child.stdout.on('data', () => {}); // no-op registration keeps the emitter shape honest
+        child.__emit('data', Buffer.from('{"method":"thread/started","params":{"threadId":"p"}}\n'));
+        assert.equal(child.__written.length, 1, 'the request frame was written exactly once');
+        await host.dispose();
+        await assert.rejects(pending, /disconnected|terminated|failed/u, 'the dispose path never fabricates a reply for the pending request');
+      }
+      // (P1-6, 2026-11-18 codex gate round) the shared case deadline bounds an
+      // OUTSTANDING REQUEST: a host that stays alive without replying to
+      // initialize/turn/start/turn/interrupt can never hold the choreography
+      // past the ONE deadline (previously the request promise never settled —
+      // the deadline checks and the disposal were unreachable while awaiting
+      // it; an offline request already past its case deadline stayed pending
+      // forever). The deadline fires a named rejection AND types the
+      // disconnection so every waiter wakes (the choreography's deterministic
+      // disposal then reaps the process).
+      {
+        // A child that NEVER replies and never exits (the silent-host shape
+        // the deadline must bound).
+        const child = (() => {
+          const on = () => undefined;
+          return {
+            pid: 4321,
+            stdout: { on, once: on, off: () => {} },
+            stderr: { on, once: on, off: () => {} },
+            stdin: { writable: true, write: () => true, end: () => {}, once: on, on, off: () => {} },
+            on, once: on, off: () => {},
+            kill: () => false,
+            exitCode: null,
+            signalCode: null,
+          };
+        })();
+        const host = await confirmedWindow.launchCodexAppServerHost(
+          { codexBinary: 'codex', codexHome: '/h', workspace: '/w', env: {}, arguments: ['app-server'], caseDeadlineAtMs: 1000, launchedAtMs: 0 },
+          { spawn: () => child, killGraceMs: 5, now: () => 1000, waitUntil: () => Promise.resolve() },
+        );
+        const pending = host.connection.request('initialize', {});
+        const outcome = await Promise.race([
+          pending.then(() => ({ resolved: true }), (error) => ({ resolved: false, error })),
+          new Promise((resolve) => { const timer = setTimeout(() => resolve('still-pending'), 250); timer.unref?.(); }),
+        ]);
+        assert.notEqual(outcome, 'still-pending', 'an outstanding request past the shared case deadline must NOT remain pending forever');
+        assert.equal(outcome.resolved, false, 'the deadline failure is a rejection, never a fabricated reply');
+        assert.match(String(outcome.error?.message ?? ''), /shared case deadline/u, `the rejection names the shared deadline (actual ${String(outcome.error?.message ?? '')})`);
+        assert.equal(host.connection.closed(), true, 'the deadline failure types the disconnection so every waiter wakes (host cleanup)');
+        // (round-2 P2) the deadline failure is a TYPED disconnection: the
+        // notification wait propagates it (the choreography's cleanup starts
+        // promptly) instead of degrading to an ambiguous null.
+        await assert.rejects(host.connection.nextNotification(1e9), /shared case deadline/u, 'the notification wait propagates the typed deadline failure');
+        // (P2-1, round-19) the failed kill and the never-exiting silent
+        // host are a NAMED disposal failure — dispose rejects on an
+        // unconfirmed exit instead of silently reporting success.
+        await assert.rejects(host.dispose(), /did not confirm its exit/u, 'the silent host that ignores both signals is a named disposal failure');
+      }
+      // (round-2 P2) the owned host's STDERR pipe is CONSUMED with bounded
+      // retention: a host whose diagnostics fill the OS pipe buffer used to
+      // block before producing its protocol response (a real child writing
+      // 1 MiB synchronously to stderr never delivered its reply; the same
+      // child replies once stderr is drained). The tail is bounded in-memory
+      // diagnostics, never projected into a record.
+      {
+        const chattyScript = [
+          "'use strict';",
+          'const { writeSync } = require(\'node:fs\');',
+          'const chunk = Buffer.alloc(65536, 0x78);',
+          'let written = 0;',
+          'while (written < 1048576) { written += writeSync(2, chunk); }',
+          'process.stdout.write(JSON.stringify({ id: 1, result: { ok: true } }) + \'\\n\');',
+          'setTimeout(() => process.exit(0), 200);',
+        ].join('\n');
+        const perfNow = () => Math.floor(performance.now());
+        // A REAL workspace directory: the spawn's cwd must exist (a missing
+        // cwd is itself an ENOENT, which would mask the stderr behavior).
+        const chattyWorkspace = await mkdtemp(join(tmpdir(), 'confirmed-window-stderr-'));
+        const chattyHost = await confirmedWindow.launchCodexAppServerHost(
+          { codexBinary: process.execPath, codexHome: '/h', workspace: chattyWorkspace, env: { ...process.env }, arguments: ['-e', chattyScript], caseDeadlineAtMs: perfNow() + 4000, launchedAtMs: 0 },
+          {},
+        );
+        try {
+          const reply = await chattyHost.connection.request('initialize', {});
+          assert.equal(reply.result?.ok, true, `the chatty-stderr host still delivers its protocol reply (stderr is drained; actual ${JSON.stringify(reply.result)})`);
+          const diagnostics = chattyHost.stderrDiagnostics();
+          assert.ok(diagnostics.totalBytes >= 1_000_000, `the diagnostics prove the stderr volume was consumed (actual ${String(diagnostics.totalBytes)})`);
+          assert.equal(diagnostics.truncated, true, 'the retention is bounded (the tail was truncated)');
+          assert.ok(diagnostics.tailBytes <= 8192, `the retained tail stays within its bound (actual ${String(diagnostics.tailBytes)})`);
+        } finally {
+          await chattyHost.dispose();
+          rmSync(chattyWorkspace, { recursive: true, force: true });
+        }
+      }
+    });
+
+    test('confirmed-window resources: the default real launcher treats a SERVER-INITIATED REQUEST as its own frame class — a colliding server request id never resolves the outstanding client call, and only a response carrying EXACTLY ONE of result or error clears it (P2-2, round-23 codex review)', async () => {
+      // The reviewer's exact offline reproduction: a matching numeric id
+      // alone does not identify a JSON-RPC response — the SERVER can send
+      // its own REQUEST with the same id. The transport matched any frame
+      // with the pending id first, so such a frame resolved `turn/interrupt`
+      // "successfully" with `result: null` and the real rejection that
+      // followed was ignored. The transport now separates the frame classes:
+      // a server-initiated request (method + id) is handled separately
+      // (bounded diagnostics, never the notification queue) and NEVER
+      // clears `pending`; a response must carry EXACTLY ONE of result/error
+      // (a frame with both or neither is malformed and leaves the call
+      // outstanding for its real reply or its typed deadline failure).
+      const confirmedWindow = await import('../tools/shell-wait-probe/confirmed-window.mjs');
+      /** A minimal fake child process with event semantics and a written-frame log. */
+      const fakeSpawnChild = () => {
+        /** @type {Map<string, ((...args: any[]) => void)[]>} */
+        const listeners = new Map();
+        const emit = (/** @type {string} */ event, ...args) => {
+          for (const cb of listeners.get(event) ?? []) cb(...args);
+        };
+        const on = (/** @type {string} */ event, cb) => {
+          if (!listeners.has(event)) listeners.set(event, []);
+          listeners.get(event).push(cb);
+          return undefined;
+        };
+        const written = [];
+        const child = {
+          pid: 4321,
+          stdout: { on, once: on, setEncoding: () => {}, off: () => {} },
+          stderr: { on, once: on, off: () => {} },
+          stdin: { writable: true, write: (frame) => { written.push(frame); return true; }, end: () => {}, once: on, on, off: () => {} },
+          on, once: on, off: () => {},
+          kill: (/** @type {string} */ signal) => { child.exitCode = 0; child.signalCode = null; emit('exit', 0, signal); return true; },
+          exitCode: null,
+          signalCode: null,
+          __written: written,
+          __emit: emit,
+        };
+        return child;
+      };
+      const child = fakeSpawnChild();
+      const host = await confirmedWindow.launchCodexAppServerHost(
+        { codexBinary: 'codex', codexHome: '/h', workspace: '/w', env: {}, arguments: ['app-server'], caseDeadlineAtMs: 1e9, launchedAtMs: 0 },
+        // The request-deadline signal (target 1e9) never fires; the
+        // notification-deadline signals (bounded targets) resolve at once.
+        { spawn: () => child, killGraceMs: 5, now: () => 500, waitUntil: (/** @type {number} */ targetAbsMs) => (targetAbsMs >= 1e9 ? new Promise(() => {}) : Promise.resolve()) },
+      );
+      const pending = host.connection.request('turn/interrupt', { threadId: 'c', turnId: 't' });
+      // The SERVER's own REQUEST frame with a numerically COLLIDING id.
+      child.__emit('data', Buffer.from('{"id":1,"method":"turn/started","params":{"threadId":"x"}}\n'));
+      const observedNotifications = [];
+      const drain = host.connection.nextNotification(600).then((event) => { observedNotifications.push(event); });
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+      let state = 'pending';
+      pending.then(() => { state = 'resolved'; }, () => { state = 'rejected'; });
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(state, 'pending', `the server request never resolves the outstanding client call (actual ${String(state)})`);
+      assert.deepEqual(host.protocolDiagnostics().serverRequests, [{ method: 'turn/started', receivedAtMs: 500 }], `the server-initiated request is handled separately with its own bounded diagnostics (actual ${JSON.stringify(host.protocolDiagnostics().serverRequests)})`);
+      await drain;
+      assert.equal(observedNotifications[0], null, 'the server-initiated request never enters the notification queue');
+      // The REAL response (exactly the result member) resolves the call.
+      child.__emit('data', Buffer.from('{"id":1,"result":{"ok":true}}\n'));
+      const reply = await pending;
+      assert.deepEqual(reply.result, { ok: true }, 'the genuine response still resolves the client call');
+      // Malformed responses — BOTH members, then NEITHER — never clear the
+      // pending call either; the real reply still lands afterwards.
+      const pending2 = host.connection.request('thread/start', {});
+      child.__emit('data', Buffer.from('{"id":2,"result":{},"error":{"code":-1,"message":"ambiguous"}}\n'));
+      child.__emit('data', Buffer.from('{"id":2}\n'));
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+      let state2 = 'pending';
+      pending2.then(() => { state2 = 'resolved'; }, () => { state2 = 'rejected'; });
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(state2, 'pending', `a frame with both or neither of result/error is never a response (actual ${String(state2)})`);
+      assert.equal(host.protocolDiagnostics().malformedResponses, 2, `the malformed frames are counted separately (actual ${JSON.stringify(host.protocolDiagnostics())})`);
+      child.__emit('data', Buffer.from('{"id":2,"result":{"thread":{"id":"x"}}}\n'));
+      const reply2 = await pending2;
+      assert.equal(reply2.result?.thread?.id, 'x', 'the well-formed reply still resolves after malformed frames were refused');
+      await host.dispose();
+    });
+
+    test('confirmed-window standard entry: a host-launch failure still persists the refused block (partially written evidence is never erased) and the failure text is redacted', async (t) => {
+      const previousGate = process.env.ZCODE_SHELL_WAIT_E2E;
+      process.env.ZCODE_SHELL_WAIT_E2E = '1';
+      const temporary = await mkdtemp(join(tmpdir(), 'confirmed-window-launchfail-'));
+      t.after(() => rm(temporary, { recursive: true, force: true }));
+      const output = join(temporary, 'output');
+      await mkdir(output, { mode: 0o700 });
+      try {
+        const parsed = parseShellWaitArguments(confirmedWindowArguments({ '--output': output }));
+        const record = await runShellWaitCase(parsed, {
+          createFixture: async () => materializeOfflineRouteFixture(await offlineRouteFixture(temporary)),
+          // The route's REQUIRED instrumentation (P1-7: a hosted case never
+          // runs without the staged collectors and the duty adjudication).
+          confirmedWindowObservers: greenObservers(),
+          confirmedWindowDutyAdjudication: greenDuties(),
+          confirmedWindowHost: async () => {
+            throw new Error(`the owned host launch failed against ${join(temporary, 'codex-home')} (binary missing)`);
+          },
+        });
+        assert.equal(record.status, 'executed', 'a refused staging is a COMPLETED observation, not an erased failure');
+        assert.equal(record.confirmedWindow.block.finalState, 'staging-not-ready');
+        assert.match(String(record.confirmedWindow.block.refusal?.reason ?? ''), /owned host launch failed/u);
+        const serialized = JSON.stringify(record);
+        assert.doesNotMatch(serialized, /confirmed-window-launchfail-/u, 'the private path never enters the persisted record');
+        const written = JSON.parse(await readFile(join(output, 'rescue-interrupt.record.json'), 'utf8'));
+        assert.equal(written.confirmedWindow.block.finalState, 'staging-not-ready', 'the refused block persists to the output directory');
+      } finally {
+        if (previousGate === undefined) delete process.env.ZCODE_SHELL_WAIT_E2E;
+        else process.env.ZCODE_SHELL_WAIT_E2E = previousGate;
+      }
+    });
+
+    // --- offline readiness (plan Task 2 bullet 5) ----------------------------
+
+    test('confirmed-window readiness: the route preflight verifies the composed host configuration and the declared control BEFORE any launch, and never predicts the model\'s future action (readiness is never a guaranteed spawn)', async (t) => {
+      const driver = await import('../tools/shell-wait-probe/driver.mjs');
+      const temporary = await mkdtemp(join(tmpdir(), 'confirmed-window-preflight-'));
+      t.after(() => rm(temporary, { recursive: true, force: true }));
+      const fixture = await materializeOfflineRouteFixture(await offlineRouteFixture(temporary));
+      const preflight = await driver.evaluateLiveLaunchPreflight({
+        case: 'rescue-interrupt',
+        interruptRouteSelector: 'confirmed-window',
+        survivalControlSelector: null,
+        execDefaultMs: 3_600_000,
+        fixture,
+      });
+      assert.deepEqual(Object.keys(preflight).sort(), ['ok', 'reason'], 'the preflight carries ONLY the pass/refusal pair — no model-action or spawn prediction');
+      assert.equal(preflight.ok, true, `the composed route configuration verifies offline (actual ${JSON.stringify(preflight)})`);
+      // The known-absent control: a named pre-launch refusal.
+      await rm(fixture.survivalControlPath, { force: true });
+      const missingControl = await driver.evaluateLiveLaunchPreflight({
+        case: 'rescue-interrupt', interruptRouteSelector: 'confirmed-window', survivalControlSelector: null, execDefaultMs: 3_600_000, fixture,
+      });
+      assert.equal(missingControl.ok, false);
+      assert.match(String(missingControl.reason), /survival-control|control script/i, 'the known-absent control refuses by name');
+      // A known-invalid composition refuses before any launch would happen.
+      const invalid = await driver.evaluateLiveLaunchPreflight({
+        case: 'rescue-interrupt', interruptRouteSelector: 'confirmed-window', survivalControlSelector: null, execDefaultMs: 0, fixture,
+      });
+      assert.equal(invalid.ok, false);
+      assert.match(String(invalid.reason), /composition is invalid/i);
+    });
+
+    test('confirmed-window readiness: a NON-NULL observer object without the four CALLABLE collectors is refused pre-launch — missing instrumentation is never discovered by the staging barrier after a hosted launch (round-3 P2-6)', async (t) => {
+      const previousGate = process.env.ZCODE_SHELL_WAIT_E2E;
+      process.env.ZCODE_SHELL_WAIT_E2E = '1';
+      const temporary = await mkdtemp(join(tmpdir(), 'confirmed-window-noncallable-'));
+      t.after(() => rm(temporary, { recursive: true, force: true }));
+      const output = join(temporary, 'output');
+      await mkdir(output, { mode: 0o700 });
+      try {
+        const parsed = parseShellWaitArguments(confirmedWindowArguments({ '--output': output, '--codex': process.execPath, '--source-sha': 'a'.repeat(40) }));
+        // (a) an EMPTY observer object passes the old null-only check. The
+        // fake clock seams ride every scenario so a bug that reaches the
+        // choreography fails FAST on the virtual clock instead of spinning
+        // the silent-host staging loop on the real clock.
+        const hostA = fakeConfirmedWindowHost({ replies: parentSessionReplies() });
+        let hostLaunched = 0;
+        await assert.rejects(
+          runShellWaitCase(parsed, {
+            createFixture: async () => materializeOfflineRouteFixture(await offlineRouteFixture(temporary)),
+            confirmedWindowHost: async (launch) => { hostLaunched += 1; return hostA.factory(launch); },
+            confirmedWindowObservers: {},
+            confirmedWindowDutyAdjudication: greenDuties(),
+            confirmedWindowNow: hostA.clock.now,
+            confirmedWindowWallClockNow: hostA.clock.wallClockNow,
+            confirmedWindowSleep: hostA.clock.sleep,
+          }),
+          /confirmed-window route preflight rejected the case before launch.*not callable|missing/u,
+          'a non-callable/missing collector set is refused at the preflight',
+        );
+        assert.equal(hostLaunched, 0, 'no host launch while the collectors are not callable');
+        // (b) partially armed observers (three of four) are equally refused.
+        const hostB = fakeConfirmedWindowHost({ replies: parentSessionReplies() });
+        let hostLaunchedSecond = 0;
+        await assert.rejects(
+          runShellWaitCase(parsed, {
+            createFixture: async () => materializeOfflineRouteFixture(await offlineRouteFixture(temporary)),
+            confirmedWindowHost: async (launch) => { hostLaunchedSecond += 1; return hostB.factory(launch); },
+            confirmedWindowObservers: { pendingObservation: greenObservers().pendingObservation, ancestryBaseline: greenObservers().ancestryBaseline, dutyFacts: greenObservers().dutyFacts },
+            confirmedWindowDutyAdjudication: greenDuties(),
+            confirmedWindowNow: hostB.clock.now,
+            confirmedWindowWallClockNow: hostB.clock.wallClockNow,
+            confirmedWindowSleep: hostB.clock.sleep,
+          }),
+          /instrumentation is not armed/u,
+          'the missing controlFacts collector is named',
+        );
+        assert.equal(hostLaunchedSecond, 0, 'no host launch with a partially armed collector set');
+      } finally {
+        if (previousGate === undefined) delete process.env.ZCODE_SHELL_WAIT_E2E;
+        else process.env.ZCODE_SHELL_WAIT_E2E = previousGate;
+      }
+    });
+
+    test('confirmed-window readiness: a normal entry invocation without the staged collectors is refused by the route preflight BEFORE any hosted case — no host launch, no model turn, no consumed fixture work (P1-7)', async (t) => {
+      // A normal CLI invocation supplies none of the confirmedWindow*
+      // dependency seams: the executor used to receive null observers and
+      // null duty adjudication yet STILL launched the real host and started
+      // the model turn — discovering every barrier collector unarmed only at
+      // the staging bound, after the hosted case was consumed. The staged
+      // collectors and the persisted duty adjudication are the route's
+      // REQUIRED instrumentation: a known-absent mechanism is a named
+      // pre-launch refusal, never a runtime discovery.
+      const previousGate = process.env.ZCODE_SHELL_WAIT_E2E;
+      process.env.ZCODE_SHELL_WAIT_E2E = '1';
+      const temporary = await mkdtemp(join(tmpdir(), 'confirmed-window-unarmed-'));
+      t.after(() => rm(temporary, { recursive: true, force: true }));
+      const output = join(temporary, 'output');
+      await mkdir(output, { mode: 0o700 });
+      try {
+        let hostLaunched = 0;
+        const parsed = parseShellWaitArguments(confirmedWindowArguments({ '--output': output, '--codex': process.execPath, '--source-sha': 'a'.repeat(40) }));
+        // (a) Neither the observers nor the duty adjudication injected: the
+        // route WIRES the live composition from its own provider chain (the
+        // round-18 P1-1 fix) and dispatches — the offline-unbindable duties
+        // premise refuses BY NAME at the staging bound, and the injected
+        // FAKE host is the only stand-in ever launched (the real host
+        // launcher is never reached).
+        const wiredRecord = await runShellWaitCase(parsed, {
+          createFixture: async () => materializeOfflineRouteFixture(await offlineRouteFixture(temporary)),
+          confirmedWindowHost: async (launch) => { hostLaunched += 1; return fakeConfirmedWindowHost({ replies: parentSessionReplies() }).factory(launch); },
+        });
+        assert.equal(wiredRecord.confirmedWindow.block.finalState, 'staging-not-ready', `the wired case completes with the named staging refusal (actual ${JSON.stringify(wiredRecord.confirmedWindow?.block?.finalState)})`);
+        assert.match(String(wiredRecord.confirmedWindow.block.refusal?.reason ?? ''), /applicable duties were never observable|positive barrier was never evaluated|identity join never held|staging readiness bound expired/u, `the offline-unbindable duties premise refuses BY NAME (actual ${JSON.stringify(wiredRecord.confirmedWindow?.block?.refusal)})`);
+        assert.equal(hostLaunched, 1, 'the fake host stand-in launched exactly once (the real host launcher is never reached)');
+        // (b) Observers armed but the persisted duty adjudication missing:
+        // still refused before any launch.
+        let hostLaunchedSecond = 0;
+        await assert.rejects(
+          runShellWaitCase(parsed, {
+            createFixture: async () => materializeOfflineRouteFixture(await offlineRouteFixture(temporary)),
+            confirmedWindowHost: async (launch) => { hostLaunchedSecond += 1; return fakeConfirmedWindowHost({ replies: parentSessionReplies() }).factory(launch); },
+            confirmedWindowObservers: greenObservers(),
+          }),
+          /instrumentation is not armed/u,
+          'the missing persisted duty adjudication is part of the known instrumentation gap',
+        );
+        assert.equal(hostLaunchedSecond, 0, 'no host launch on the missing duty adjudication either');
+        // (c) With the instrumentation armed the route proceeds (the green
+        // entry row pins the full escalation).
+      } finally {
+        if (previousGate === undefined) delete process.env.ZCODE_SHELL_WAIT_E2E;
+        else process.env.ZCODE_SHELL_WAIT_E2E = previousGate;
+      }
+    });
+
+    /** A synthetic v3 spawn-ancestry witness record for one boundary role. */
+    const spawnWitnessRecord = (/** @type {string} */ role, /** @type {string} */ nonce, /** @type {boolean} */ exact) => ({
+      version: 3,
+      class: 'spawn-ancestry-witness',
+      role,
+      nonce,
+      startIdentityExact: exact,
+      writerPid: 100,
+      writerStartIdentity: exact ? 'kinfo:1000000:1000' : '100',
+      childPid: 200,
+      childPpid: 100,
+      childStartIdentity: exact ? 'kinfo:2000000:2000' : '200',
+      childNonce: 'c'.repeat(64),
+      boundaryEpochMs: 2_000_000_100,
+      firstWriteEpochMs: 2_000_000_150,
+      startOriginMs: null,
+      firstWritePreciseMs: null,
+      childOsStartInstantMs: exact ? 2_000_000_002 : null,
+    });
+
+    /**
+     * The REAL-collector ancestry observer: both boundary hops are admitted
+     * through the actual `admitSpawnAncestryWitness` premises over the
+     * fixture's capture directory — never a second divergent interpretation.
+     */
+    const realAncestryObserver = (fixtureRef) => async () => {
+      const { admitSpawnAncestryWitness } = await import('../tools/shell-wait-probe/local-process-observation.mjs');
+      const capture = fixtureRef.current?.stdoutCapture;
+      if (!capture || typeof capture.captureDirectory !== 'string') {
+        return { established: false, digest: null, hops: { launcherToBroker: false, brokerToTransport: false }, reason: 'the fixture capture seam is not armed' };
+      }
+      const invocation = await admitSpawnAncestryWitness({ captureDirectory: capture.captureDirectory, nonce: capture.nonce, role: 'invocation' });
+      const broker = await admitSpawnAncestryWitness({ captureDirectory: capture.captureDirectory, nonce: capture.nonce, role: 'broker-daemon' });
+      const established = invocation.status === 'established' && broker.status === 'established';
+      const hops = {
+        launcherToBroker: invocation.identity?.startIdentityExact === true,
+        brokerToTransport: broker.identity?.startIdentityExact === true,
+      };
+      return {
+        established,
+        digest: established
+          ? createHash('sha256').update(`${JSON.stringify(invocation.identity)}\u0000${JSON.stringify(broker.identity)}`).digest('hex')
+          : null,
+        hops,
+        clockDomain: 'controller-monotonic',
+        reason: established ? null : `the ancestry witness admission refused: ${invocation.reason ?? 'unknown'}/${broker.reason ?? 'unknown'}`,
+      };
+    };
+
+    /** Write the synthetic witness records for both hops into the capture directory. */
+    async function writeSpawnWitnesses(capture, nonce, exact) {
+      await mkdir(capture, { recursive: true, mode: 0o700 });
+      const { SPAWN_ANCESTRY_WITNESS_SUFFIXES } = await import('../tools/shell-wait-probe/local-process-observation.mjs');
+      for (const role of ['invocation', 'broker-daemon']) {
+        await writeFile(join(capture, `${nonce}${SPAWN_ANCESTRY_WITNESS_SUFFIXES[role]}`), `${JSON.stringify(spawnWitnessRecord(role, nonce, exact))}\n`, { mode: 0o600 });
+      }
+    }
+
+    test('confirmed-window readiness: through the ACTUAL entry and the REAL fixture composition, both ancestry hops establish exact evidence and the staged choreography completes all duties offline', async (t) => {
+      const { createShellWaitFixture } = await import('../tools/shell-wait-probe/fixture.mjs');
+      const previousGate = process.env.ZCODE_SHELL_WAIT_E2E;
+      process.env.ZCODE_SHELL_WAIT_E2E = '1';
+      const temporary = await mkdtemp(join(tmpdir(), 'confirmed-window-realfx-'));
+      t.after(() => rm(temporary, { recursive: true, force: true }));
+      const output = join(temporary, 'output');
+      await mkdir(output, { mode: 0o700 });
+      const repositorySha = spawnSync('git', ['rev-parse', 'HEAD'], { env: isolatedBaseEnv(), encoding: 'utf8' }).stdout.trim();
+      const fixtureRef = { current: null };
+      try {
+        const host = fakeConfirmedWindowHost({
+          replies: parentSessionReplies(),
+          notifications: [
+            ...identityJoinNotifications({ atMs: 100 }),
+            { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+          ],
+        });
+        const parsed = parseShellWaitArguments(confirmedWindowArguments({ '--output': output }));
+        const record = await runShellWaitCase(parsed, {
+          // The REAL fixture composition (the fast installer seams materialize
+          // the installed plugin the way production does — no host launch).
+          createFixture: async () => {
+            const fixture = await createShellWaitFixture({
+              sourceRoot: repositoryRoot,
+              sourceSha: repositorySha,
+              codexBinary: process.execPath,
+              output,
+              variant: 'candidate',
+              capMs: null,
+              pollMs: 3_600_000,
+              waitPolicy: 'config-default',
+              survivalControl: true,
+              stdoutCapture: true,
+              spawnWitness: true,
+            }, {
+              buildSnapshot: async ({ output: snapshotOutput, sourceSha }) => {
+                await mkdir(join(snapshotOutput, '.agents', 'plugins'), { recursive: true });
+                await writeFile(join(snapshotOutput, '.agents', 'plugins', 'provenance.json'), `${JSON.stringify({ sourceSha })}\n`, 'utf8');
+              },
+              installPlugin: async ({ codexHome, cleanSource }) => {
+                const installedRoot = join(codexHome, 'plugins', 'cache', 'vitry', 'zcode', '0.1.0');
+                await mkdir(join(installedRoot, 'agents'), { recursive: true });
+                await cp(join(cleanSource, 'agents', 'zcode-rescue.toml.template'), join(installedRoot, 'agents', 'zcode-rescue.toml.template'));
+                for (const skill of ['rescue', 'review', 'adversarial-review', 'status']) {
+                  await mkdir(join(installedRoot, 'skills', skill), { recursive: true });
+                  await cp(join(cleanSource, 'skills', skill, 'SKILL.md'), join(installedRoot, 'skills', skill, 'SKILL.md'));
+                }
+                // The REAL entry bytes the capture/witness composer realpaths
+                // (the §19.3/§33.10 pattern): the launcher entry and the
+                // production scripts tree, byte-identical from clean source.
+                await mkdir(join(installedRoot, 'skills', 'rescue'), { recursive: true });
+                await cp(join(cleanSource, 'skills', 'rescue', 'launcher.mjs'), join(installedRoot, 'skills', 'rescue', 'launcher.mjs'));
+                await cp(join(cleanSource, 'scripts'), join(installedRoot, 'scripts'), { recursive: true });
+                await writeFile(join(codexHome, 'config.toml'), '[marketplaces.vitry]\nsource_type = "local"\n\n[plugins."zcode@vitry"]\nenabled = true\n', { encoding: 'utf8' });
+                return { pluginVersion: '0.1.0' };
+              },
+              runSetup: async () => ({ sessionEstablished: true, launcherDescriptorPublished: true, setupAttempts: 1, roleStatus: 'ready', capVerified: null }),
+            });
+            fixtureRef.current = fixture;
+            await writeSpawnWitnesses(fixture.stdoutCapture.captureDirectory, fixture.stdoutCapture.nonce, true);
+            return fixture;
+          },
+          confirmedWindowHost: host.factory,
+          confirmedWindowObservers: {
+            pendingObservation: greenObservers().pendingObservation,
+            dutyFacts: greenObservers().dutyFacts,
+            controlFacts: greenObservers().controlFacts,
+            ancestryBaseline: realAncestryObserver(fixtureRef),
+          },
+          confirmedWindowDutyAdjudication: greenDuties(),
+          confirmedWindowNow: host.clock.now,
+          confirmedWindowWallClockNow: host.clock.wallClockNow,
+          confirmedWindowSleep: host.clock.sleep,
+          confirmedWindowWaitUntil: host.clock.waitUntil,
+        });
+        assert.equal(record.status, 'executed', `the real-fixture readiness run executes (actual ${JSON.stringify(record.inconclusive ?? record)})`);
+        const block = record.confirmedWindow.block;
+        assert.equal(block.finalState, 'all-duties-adjudicated', `the staged choreography completes offline (actual ${block.finalState}: ${JSON.stringify(block.refusal)})`);
+        assert.equal(block.window.ancestryHops.launcherToBroker, true, 'hop 1 (launcher to broker) established EXACT');
+        assert.equal(block.window.ancestryHops.brokerToTransport, true, 'hop 2 (broker to transport) established EXACT');
+        assert.match(String(block.window.ancestryBaselineDigest ?? ''), /^[0-9a-f]{64}$/u, 'the ancestry baseline digest rides the record');
+        assert.equal(host.requestLog.filter((entry) => entry.method === 'turn/interrupt').length, 1, 'exactly one native delivery through the real composition');
+        assert.equal(record.cleanup.fixtureDisposed, true, 'the REAL fixture is disposed by the entry');
+      } finally {
+        if (previousGate === undefined) delete process.env.ZCODE_SHELL_WAIT_E2E;
+        else process.env.ZCODE_SHELL_WAIT_E2E = previousGate;
+      }
+    });
+
+    test('confirmed-window readiness: the degraded platform shape records COARSE ancestry hops honestly (never exact claims), and a missing mandatory witness block refuses staging by name before any native delivery', async (t) => {
+      const { createShellWaitFixture } = await import('../tools/shell-wait-probe/fixture.mjs');
+      const previousGate = process.env.ZCODE_SHELL_WAIT_E2E;
+      process.env.ZCODE_SHELL_WAIT_E2E = '1';
+      const temporary = await mkdtemp(join(tmpdir(), 'confirmed-window-degraded-'));
+      t.after(() => rm(temporary, { recursive: true, force: true }));
+      const repositorySha = spawnSync('git', ['rev-parse', 'HEAD'], { env: isolatedBaseEnv(), encoding: 'utf8' }).stdout.trim();
+      const runReadiness = async (/** @type {boolean | null} */ exact) => {
+        // Every fixture creation requires a PRIVATE EMPTY output directory.
+        const output = join(temporary, `output-${exact === null ? 'missing' : exact === true ? 'exact' : 'coarse'}`);
+        await mkdir(output, { mode: 0o700 });
+        const fixtureRef = { current: null };
+        const host = fakeConfirmedWindowHost({
+          replies: parentSessionReplies(),
+          notifications: [
+            ...identityJoinNotifications({ atMs: 100 }),
+            // The missing-witness shape keeps the Child turn ACTIVE: the
+            // staging bound then closes with the ancestry miss NAMED (the
+            // terminal-child refusal must not mask the mandatory-baseline
+            // reason when the baseline is the missing conjunct).
+            ...(exact === null ? [] : [
+              { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+            ]),
+          ],
+        });
+        const parsed = parseShellWaitArguments(confirmedWindowArguments({ '--output': output }));
+        return runShellWaitCase(parsed, {
+          createFixture: async () => {
+            const fixture = await createShellWaitFixture({
+              sourceRoot: repositoryRoot, sourceSha: repositorySha, codexBinary: process.execPath, output,
+              variant: 'candidate', capMs: null, pollMs: 3_600_000, waitPolicy: 'config-default',
+              survivalControl: true, stdoutCapture: true, spawnWitness: true,
+            }, {
+              buildSnapshot: async ({ output: snapshotOutput, sourceSha }) => {
+                await mkdir(join(snapshotOutput, '.agents', 'plugins'), { recursive: true });
+                await writeFile(join(snapshotOutput, '.agents', 'plugins', 'provenance.json'), `${JSON.stringify({ sourceSha })}\n`, 'utf8');
+              },
+              installPlugin: async ({ codexHome, cleanSource }) => {
+                const installedRoot = join(codexHome, 'plugins', 'cache', 'vitry', 'zcode', '0.1.0');
+                await mkdir(join(installedRoot, 'agents'), { recursive: true });
+                await cp(join(cleanSource, 'agents', 'zcode-rescue.toml.template'), join(installedRoot, 'agents', 'zcode-rescue.toml.template'));
+                for (const skill of ['rescue', 'review', 'adversarial-review', 'status']) {
+                  await mkdir(join(installedRoot, 'skills', skill), { recursive: true });
+                  await cp(join(cleanSource, 'skills', skill, 'SKILL.md'), join(installedRoot, 'skills', skill, 'SKILL.md'));
+                }
+                // The REAL entry bytes the capture/witness composer realpaths
+                // (the §19.3/§33.10 pattern): the launcher entry and the
+                // production scripts tree, byte-identical from clean source.
+                await mkdir(join(installedRoot, 'skills', 'rescue'), { recursive: true });
+                await cp(join(cleanSource, 'skills', 'rescue', 'launcher.mjs'), join(installedRoot, 'skills', 'rescue', 'launcher.mjs'));
+                await cp(join(cleanSource, 'scripts'), join(installedRoot, 'scripts'), { recursive: true });
+                await writeFile(join(codexHome, 'config.toml'), '[marketplaces.vitry]\nsource_type = "local"\n\n[plugins."zcode@vitry"]\nenabled = true\n', { encoding: 'utf8' });
+                return { pluginVersion: '0.1.0' };
+              },
+              runSetup: async () => ({ sessionEstablished: true, launcherDescriptorPublished: true, setupAttempts: 1, roleStatus: 'ready', capVerified: null }),
+            });
+            fixtureRef.current = fixture;
+            if (exact !== null) {
+              await writeSpawnWitnesses(fixture.stdoutCapture.captureDirectory, fixture.stdoutCapture.nonce, exact);
+            }
+            return fixture;
+          },
+          confirmedWindowHost: host.factory,
+          confirmedWindowObservers: {
+            pendingObservation: greenObservers().pendingObservation,
+            dutyFacts: greenObservers().dutyFacts,
+            controlFacts: greenObservers().controlFacts,
+            ancestryBaseline: realAncestryObserver(fixtureRef),
+          },
+          confirmedWindowDutyAdjudication: greenDuties(),
+          confirmedWindowNow: host.clock.now,
+          confirmedWindowWallClockNow: host.clock.wallClockNow,
+          confirmedWindowSleep: host.clock.sleep,
+          confirmedWindowWaitUntil: host.clock.waitUntil,
+        });
+      };
+      try {
+        const degraded = await runReadiness(false);
+        assert.equal(degraded.status, 'executed');
+        assert.equal(degraded.confirmedWindow.block.window.ancestryHops.launcherToBroker, false, 'the coarse hop is recorded as coarse');
+        assert.equal(degraded.confirmedWindow.block.window.ancestryHops.brokerToTransport, false, 'the coarse hop is recorded as coarse');
+        assert.match(String(degraded.confirmedWindow.block.window.ancestryBaselineDigest ?? ''), /^[0-9a-f]{64}$/u, 'the coarse evidence still binds a digest — honest, never exact-claimed');
+        const missing = await runReadiness(null);
+        assert.equal(missing.status, 'executed');
+        assert.equal(missing.confirmedWindow.block.finalState, 'staging-not-ready', 'the missing mandatory witness block refuses staging');
+        assert.match(String(missing.confirmedWindow.block.refusal?.reason ?? ''), /ancestry|witness/i, 'the refusal names the ancestry witness');
+        assert.equal(missing.confirmedWindow.block.nativeRequest.sentAtMs, null, 'no native delivery without the mandatory baseline');
+      } finally {
+        if (previousGate === undefined) delete process.env.ZCODE_SHELL_WAIT_E2E;
+        else process.env.ZCODE_SHELL_WAIT_E2E = previousGate;
+      }
+    });
+
+    // -----------------------------------------------------------------------
+    // Pre-launch readiness (report §41.5/§41.6/§41.7; confirmed-window plan
+    // Task 2's "resolve known missing mechanisms/configuration before
+    // launching"). Every row stays offline: fake protocol streams and the
+    // REAL fixed-fixture composition only.
+    // -----------------------------------------------------------------------
+
+    test('confirmed-window route prompts: the staging and continuation compositions carry ZERO interrupt-tool instructions — the controller owns the ONE native delivery, the continuation is the ONE registered CHANGED prompt, and the legacy rescue-interrupt prompt stays byte-identical (blocker #2)', async (t) => {
+      // The initial staging turn spawns nothing, so the ONE directed
+      // continuation is issued on the SAME parent; both composed prompts are
+      // observed through the ACTUAL entry (parser + runShellWaitCase).
+      const { record, host } = await runRouteThroughEntry(t, {
+        script: {
+          notifications: [
+            { atMs: 100, method: 'thread/notification', params: { type: 'turn/completed', threadId: PARENT_THREAD, turn: { id: 'root-turn-1', status: 'completed', items: [] } } },
+            { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: PARENT_THREAD, turn: { id: 'root-turn-2', status: 'completed', items: [] } } },
+          ],
+        },
+      });
+      assert.equal(record.status, 'executed', `the entry executed the route (actual ${JSON.stringify(record.inconclusive ?? record)})`);
+      const turnStarts = host.requestLog.filter((entry) => entry.method === 'turn/start');
+      assert.equal(turnStarts.length, 2, `exactly the initial staging and the ONE directed continuation (actual ${JSON.stringify(host.requestLog.map((entry) => entry.method))})`);
+      const stagingText = turnStarts[0].params.input[0].text;
+      const continuationText = turnStarts[1].params.input[0].text;
+      /** @param {string} text */
+      const interruptToolOccurrences = (text) => (text.match(/interrupt_agent/gu) ?? []).length;
+      assert.equal(interruptToolOccurrences(stagingText), 0, `the confirmed-window staging prompt never instructs the model to deliver the model-tool interrupt (actual ${interruptToolOccurrences(stagingText)} occurrences): the controller sends the ONE turn/interrupt after the positive barrier`);
+      assert.equal(interruptToolOccurrences(continuationText), 0, `the confirmed-window continuation never instructs the model to deliver the model-tool interrupt (actual ${interruptToolOccurrences(continuationText)} occurrences)`);
+      assert.match(stagingText, /spawn the Rescue agent/iu, 'the route-specific staging prompt still instructs the standard managed spawn');
+      assert.match(stagingText, /hold/iu, 'the route-specific staging prompt instructs the wait/hold');
+      assert.match(stagingText, /do not interrupt/iu, 'the route-specific staging prompt forbids the model-side interruption');
+      assert.match(continuationText, /DIRECTED CONTINUATION/u, 'the continuation is the explicitly authorized changed staging step');
+      assert.notEqual(continuationText, stagingText, 'the continuation is a CHANGED prompt, never an unchanged retry');
+      const block = record.confirmedWindow.block;
+      assert.equal(block.staging.continuationUsed, true, 'the ONE continuation was spent');
+      assert.equal(block.finalState, 'staging-not-ready', 'the no-spawn shape stays a staging refusal (this row pins the composed instruction bytes)');
+      // The legacy rescue-interrupt prompt bytes are byte-untouched: its
+      // historical model-tool clause remains, and the legacy control
+      // directive still carries the second clause (the §41.3 observed
+      // composed count of 2 across the legacy prompt + directive).
+      const legacyPrompt = driver.shellWaitCasePrompt('rescue-interrupt');
+      assert.equal((legacyPrompt.match(/interrupt_agent/gu) ?? []).length, 1, 'the legacy rescue-interrupt prompt bytes are unchanged (its documented clause remains)');
+      assert.match(legacyPrompt, /deliver exactly one interrupt_agent call to the exact agent id the spawn acknowledgement returned/u);
+      const legacyDirective = (await import('../tools/shell-wait-probe/fixture.mjs')).survivalControlPromptDirective('/private/tmp/legacy-control.mjs');
+      assert.equal((legacyDirective.match(/interrupt_agent/gu) ?? []).length, 1, 'the legacy §16.4 directive still carries its own model-tool clause (the legacy composed count stays 2)');
+    });
+
+    // --- §41.5.2 clock-domain and fence bounds (blocker #3 part 2) ---------
+
+    test('confirmed-window clocks: a foreign clock-domain tag fed to the ACTUAL controller refuses at admission with clock-domain-mismatch and sends NOTHING (the controller is the tag enforcement point)', async () => {
+      const { result, host } = await runOfflineChoreography({
+        script: { notifications: [...identityJoinNotifications({ atMs: 100 })] },
+        observers: {
+          ...greenObservers(),
+          // All-green numeric values, but the control stamp is declared on the
+          // control process's OWN clock: the tags are closed, so the fact is
+          // refused BEFORE any stamp arithmetic.
+          controlFacts: async () => ({ active: true, freshAtMs: 60, declaredLifetimeMs: 120_000, clockDomain: 'control-process-monotonic', reason: null }),
+        },
+      });
+      assert.equal(result.finalState, 'staging-not-ready', `the foreign tag refuses admission (actual ${result.finalState})`);
+      assert.match(String(result.refusal?.reason ?? ''), /clock-domain-mismatch/u, `the refusal names the frozen tag reason (actual ${String(result.refusal?.reason ?? '')})`);
+      assert.equal(host.requestLog.some((entry) => entry.method === 'turn/interrupt'), false, 'no native delivery is ever sent on a foreign clock base');
+    });
+
+    test('confirmed-window clocks: future/epoch stamps carrying the CORRECT tag still refuse at admission with clock-bounds-violation and send NOTHING (the numeric bounds reject what the tag cannot)', async () => {
+      const epochNow = Date.now();
+      const scenarios = [
+        {
+          name: 'epoch-observed-at',
+          observers: {
+            ...greenObservers(),
+            pendingObservation: async () => ({ confirmed: true, observedAtMs: epochNow, resolved: false, resolvedAtMs: null, holdDeadlineAtMs: epochNow + 420_000, clockDomain: 'controller-monotonic', reason: null }),
+          },
+          pattern: /clock-bounds-violation/u,
+        },
+        {
+          name: 'epoch-control-fresh',
+          observers: {
+            ...greenObservers(),
+            controlFacts: async () => ({ active: true, freshAtMs: epochNow, declaredLifetimeMs: 420_000, lineIndex: 45, preDeliveryReadSequence: { floorReachedInEarlierRead: true, separatePostFloorFreshRead: true }, clockDomain: 'controller-monotonic', reason: null }),
+          },
+          pattern: /clock-bounds-violation/u,
+        },
+      ];
+      for (const scenario of scenarios) {
+        const { result, host } = await runOfflineChoreography({
+          script: { notifications: [...identityJoinNotifications({ atMs: 100 })] },
+          observers: scenario.observers,
+        });
+        assert.equal(result.finalState, 'staging-not-ready', `${scenario.name}: the epoch stamp refuses admission (actual ${result.finalState})`);
+        assert.match(String(result.refusal?.reason ?? ''), scenario.pattern, `${scenario.name}: the refusal names the frozen arithmetic reason (actual ${String(result.refusal?.reason ?? '')})`);
+        assert.equal(host.requestLog.some((entry) => entry.method === 'turn/interrupt'), false, `${scenario.name}: no native delivery is ever sent on a foreign clock base`);
+      }
+    });
+
+    test('confirmed-window clocks: an epoch cleanupFenceAtMs with the correct tag, and a foreign duty-domain tag, each refuse SETTLEMENT credit (f is a settlement-stage gate)', async () => {
+      const script = {
+        notifications: [
+          ...identityJoinNotifications({ atMs: 100 }),
+          { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+        ],
+      };
+      // (a) correct tag, epoch fence: the consumer would compare `resolution >=
+      // fence` and never fire; the controller's bound (f) refuses the credit.
+      const epochFence = await runOfflineChoreography({
+        script,
+        dependencies: { dutyAdjudication: greenDuties({ cleanupFenceAtMs: Date.now() }) },
+      });
+      assert.notEqual(epochFence.result.finalState, 'all-duties-adjudicated', `an epoch fence never reaches the final state (actual ${epochFence.result.finalState})`);
+      assert.equal(epochFence.result.evidenceVerdict.settlement.settled, false, 'the epoch fence refuses settlement credit');
+      assert.ok(epochFence.result.evidenceVerdict.settlement.reasons.includes('clock-bounds-violation'), `the frozen arithmetic reason rides the verdict (actual ${JSON.stringify(epochFence.result.evidenceVerdict.settlement.reasons)})`);
+      assert.equal(epochFence.result.disposal.settlementManufactured, false, 'no settlement is manufactured by the refusal');
+      // (b) a foreign duty-domain tag: refused by name, credit denied.
+      const foreignDutyTag = await runOfflineChoreography({
+        script,
+        dependencies: { dutyAdjudication: greenDuties({ clockDomain: 'rollout-epoch' }) },
+      });
+      assert.equal(foreignDutyTag.result.evidenceVerdict.settlement.settled, false, 'the foreign duty tag refuses settlement credit');
+      assert.ok(foreignDutyTag.result.evidenceVerdict.settlement.reasons.includes('clock-domain-mismatch'), `the frozen tag reason rides the verdict (actual ${JSON.stringify(foreignDutyTag.result.evidenceVerdict.settlement.reasons)})`);
+      assert.notEqual(foreignDutyTag.result.finalState, 'all-duties-adjudicated');
+    });
+
+    test('confirmed-window clocks: a wrong holdDeadlineAtMs (violating the frozen observedAtMs + 420000 derivation) refuses admission — the hold producer\'s derivation is enforced, not just documented', async () => {
+      const { result, host } = await runOfflineChoreography({
+        script: { notifications: [...identityJoinNotifications({ atMs: 100 })] },
+        observers: {
+          ...greenObservers(),
+          pendingObservation: async () => ({ confirmed: true, observedAtMs: 50, resolved: false, resolvedAtMs: null, holdDeadlineAtMs: 400_000, clockDomain: 'controller-monotonic', reason: null }),
+        },
+      });
+      assert.equal(result.finalState, 'staging-not-ready', `the violated derivation refuses admission (actual ${result.finalState})`);
+      assert.match(String(result.refusal?.reason ?? ''), /clock-bounds-violation/u, `the refusal names the frozen arithmetic reason (actual ${String(result.refusal?.reason ?? '')})`);
+      assert.equal(host.requestLog.some((entry) => entry.method === 'turn/interrupt'), false, 'the single interrupt attempt is never consumed against a mis-derived hold deadline');
+    });
+
+    // --- the live collector composition (blocker #4) -----------------------
+
+    /**
+     * Create the REAL isolated fixture with the fast installer seams (the
+     * same composition the route arms) for the live-collector rows: no host
+     * is launched and no model turn occurs.
+     */
+    const createFastRealFixture = async (/** @type {any} */ t, /** @type {string} */ prefix) => {
+      const { createShellWaitFixture } = await import('../tools/shell-wait-probe/fixture.mjs');
+      const temporary = await mkdtemp(join(tmpdir(), prefix));
+      t.after(() => rm(temporary, { recursive: true, force: true }));
+      const output = join(temporary, 'output');
+      await mkdir(output, { mode: 0o700 });
+      const repositorySha = spawnSync('git', ['rev-parse', 'HEAD'], { env: isolatedBaseEnv(), encoding: 'utf8' }).stdout.trim();
+      const fixture = await createShellWaitFixture({
+        sourceRoot: repositoryRoot,
+        sourceSha: repositorySha,
+        codexBinary: process.execPath,
+        output,
+        variant: 'candidate',
+        capMs: null,
+        pollMs: 3_600_000,
+        waitPolicy: 'config-default',
+        survivalControl: true,
+        stdoutCapture: true,
+        spawnWitness: true,
+      }, {
+        buildSnapshot: async ({ output: snapshotOutput, sourceSha }) => {
+          await mkdir(join(snapshotOutput, '.agents', 'plugins'), { recursive: true });
+          await writeFile(join(snapshotOutput, '.agents', 'plugins', 'provenance.json'), `${JSON.stringify({ sourceSha })}\n`, 'utf8');
+        },
+        installPlugin: async ({ codexHome, cleanSource }) => {
+          const installedRoot = join(codexHome, 'plugins', 'cache', 'vitry', 'zcode', '0.1.0');
+          await mkdir(join(installedRoot, 'agents'), { recursive: true });
+          await cp(join(cleanSource, 'agents', 'zcode-rescue.toml.template'), join(installedRoot, 'agents', 'zcode-rescue.toml.template'));
+          for (const skill of ['rescue', 'review', 'adversarial-review', 'status']) {
+            await mkdir(join(installedRoot, 'skills', skill), { recursive: true });
+            await cp(join(cleanSource, 'skills', skill, 'SKILL.md'), join(installedRoot, 'skills', skill, 'SKILL.md'));
+          }
+          await mkdir(join(installedRoot, 'skills', 'rescue'), { recursive: true });
+          await cp(join(cleanSource, 'skills', 'rescue', 'launcher.mjs'), join(installedRoot, 'skills', 'rescue', 'launcher.mjs'));
+          await cp(join(cleanSource, 'scripts'), join(installedRoot, 'scripts'), { recursive: true });
+          await writeFile(join(codexHome, 'config.toml'), '[marketplaces.vitry]\nsource_type = "local"\n\n[plugins."zcode@vitry"]\nenabled = true\n', { encoding: 'utf8' });
+          return { pluginVersion: '0.1.0' };
+        },
+        runSetup: async () => ({ sessionEstablished: true, launcherDescriptorPublished: true, setupAttempts: 1, roleStatus: 'ready', capVerified: null }),
+      });
+      t.after(async () => { await fixture.dispose().catch(() => {}); });
+      return { fixture, output, temporary };
+    };
+
+    test('confirmed-window live composition: the in-process collectors read the REAL fixture artifacts and return the §41.5.2 frozen shapes (pending job/output state, two-hop witness ancestry, survival-control lines, durable duty facts) with the controller-monotonic tag', async (t) => {
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      assert.equal(typeof driverModule.createConfirmedWindowLiveComposition, 'function', 'the live composition factory is exported from the research entry');
+      const { fixture, temporary } = await createFastRealFixture(t, 'confirmed-window-live-collectors-');
+      let current = 1_000;
+      const now = () => current;
+      // The §41.5.1 completion-gate producer's owned on-disk shape: the gate
+      // file starts at `hold` and the fake CLI's completion-blocked sentinel
+      // is pre-created EMPTY (the fake CLI writes `blocked` ONCE when the
+      // completion is first scheduled, before the deliver retries).
+      const gateDirectory = join(temporary, 'collector-hold-gate');
+      await mkdir(gateDirectory, { recursive: true, mode: 0o700 });
+      const gatePath = join(gateDirectory, 'completion.gate');
+      const gateReachedPath = join(gateDirectory, 'completion.reached');
+      await writeFile(gatePath, 'hold', { mode: 0o600 });
+      await writeFile(gateReachedPath, '', { mode: 0o600 });
+      // The fixture's fake Companion record holds the fake engine's INBOUND
+      // JSON-RPC REQUESTS (the sole writer is the fake CLI's inbound-line
+      // recorder — `send()`/`sendBatch()` never record): a REAL record carries
+      // the Companion call's request frames. Notification shapes are never
+      // recorded and can never ground the pending observation (report §41.6:
+      // the unchanged instrument premises and the §41.5.1 gate/`_REACHED`
+      // sentinel are the frozen sources).
+      const recordPath = /** @type {string} */ (fixture.env.FAKE_ZCODE_RECORD);
+      await writeFile(recordPath, [
+        JSON.stringify({ id: 4, method: 'session/create', params: { workspace: { workspacePath: '/repo' } } }),
+        JSON.stringify({ id: 5, method: 'session/send', params: { sessionId: 'fake-session-1', content: 'the staged rescue objective' } }),
+      ].join('\n') + '\n', 'utf8');
+      // The pending observation is NOT confirmable before the completion has
+      // been scheduled-and-held (the sentinel is still unwritten).
+      const preScheduleComposition = driverModule.createConfirmedWindowLiveComposition({
+        fixture, now, workerDurationMs: 420_000,
+        completionGatePath: gatePath, completionGateReachedPath: gateReachedPath,
+      });
+      const preSchedule = await preScheduleComposition.observers.pendingObservation();
+      assert.equal(preSchedule.confirmed, false, `an unscheduled completion is not yet the pending observation (actual ${JSON.stringify(preSchedule)})`);
+      assert.match(String(preSchedule.reason ?? ''), /scheduled-and-held/u, 'the unconfirmed reason names the frozen scheduled-and-held sentinel source');
+      // The fake CLI schedules the held completion: the sentinel flips to
+      // `blocked` (completion scheduled-and-held = pending, §41.5.1).
+      await writeFile(gateReachedPath, 'blocked', { mode: 0o600 });
+      // Both spawn-witness hops through the REAL witness machinery.
+      await writeSpawnWitnesses(fixture.stdoutCapture.captureDirectory, fixture.stdoutCapture.nonce, true);
+      // The survival control's emitted lines as REAL rollout artifacts under
+      // the fixture's isolated CODEX_HOME, in the exec-route rollout grammar
+      // the existing extractSurvivalControlFacts collector attributes: the
+      // ONE exec_command launch of the control script, its grounded session
+      // handle, and the empty-input write_stdin polls whose completed output
+      // envelopes carry the accumulated progress lines.
+      const rolloutDirectory = join(fixture.codexHome, 'sessions', '2026', '11', '17');
+      await mkdir(rolloutDirectory, { recursive: true, mode: 0o700 });
+      const CONTROL_HANDLE = 4100;
+      const controlRolloutPath = join(rolloutDirectory, 'rollout-live-collectors.jsonl');
+      const controlCallStatement = (/** @type {string} */ kind, /** @type {any} */ value) => `const r = await tools.${kind}(${JSON.stringify(value)}); text(JSON.stringify(r))\n`;
+      const controlCompletedOutput = (/** @type {any} */ result) => [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify(result) }];
+      // (P1-3, 2026-11-19 codex re-review) the control rollout carries EPOCH
+      // timestamps: the launch event stamps the control's birth (the
+      // attributable launch-time bound) and each poll's OUTPUT event stamps
+      // when its newest line was READ — the emission-to-read delay rides the
+      // one epoch domain.
+      // (P1-1, 2026-11-19 codex re-review) the launch epoch is REAL-epoch and
+      // Date.now()-relative per phase: the collector's own read instant is
+      // the age bound's other endpoint.
+      let LAUNCH_EPOCH_MS = Date.now() - 140_021;
+      const controlPollEvents = (/** @type {{ callId: string, output: string, exitCode: number | null, readEpochMs?: number }} */ poll) => {
+        const readEpochMs = typeof poll.readEpochMs === 'number' ? poll.readEpochMs : LAUNCH_EPOCH_MS + 10;
+        return [
+          { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: poll.callId, input: controlCallStatement('write_stdin', { session_id: CONTROL_HANDLE, chars: '', yield_time_ms: 60_000 }) }, timestamp: readEpochMs },
+          { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: poll.callId, output: controlCompletedOutput({ output: poll.output, ...(poll.exitCode === null ? {} : { exit_code: poll.exitCode }), session_id: CONTROL_HANDLE }) }, timestamp: readEpochMs },
+        ];
+      };
+      const writeControlRollout = async (/** @type {{ callId: string, output: string, exitCode: number | null, readEpochMs?: number }[]} */ polls) => {
+        const events = [
+          { type: 'session_meta', payload: { id: 'root-live-collectors-session' }, timestamp: LAUNCH_EPOCH_MS },
+          { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'control-launch-1', input: controlCallStatement('exec_command', { cmd: fixture.survivalControlPath }) }, timestamp: LAUNCH_EPOCH_MS },
+          { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'control-launch-1', output: controlCompletedOutput({ output: '', session_id: CONTROL_HANDLE }) }, timestamp: LAUNCH_EPOCH_MS + 5 },
+          ...polls.flatMap(controlPollEvents),
+        ];
+        await writeFile(controlRolloutPath, events.map((event) => JSON.stringify(event)).join('\n') + '\n', { mode: 0o600 });
+      };
+      await writeControlRollout([{ callId: 'control-poll-1', output: 'zcode-survival-control 40 80021\nzcode-survival-control 41 82022\n', exitCode: null }]);
+      // (P1-2/P1-1, 2026-11-19 codex reviews) the pending observation's
+      // OBSERVATION legs ride the Child's OWN tool stream (the §41.6
+      // unchanged instrument), BOUND to the joined Child session: a REAL
+      // second rollout file carries the Child's session_meta identity and its
+      // original-handle write_stdin poll — pending, later completed.
+      const childRolloutPath = join(rolloutDirectory, 'rollout-live-collectors-child.jsonl');
+      const CHILD_ROLLOUT_SESSION = 'child-live-collectors-session';
+      const childPollEvents = (/** @type {string} */ callId, /** @type {any} */ output) => [
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: callId, input: 'const r = await tools.write_stdin({"session_id": 500, "chars": "", "yield_time_ms": 3600000}); text(JSON.stringify(r))\n' } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: callId, output } },
+      ];
+      // (P1-2) the Rescue launcher acknowledgement grounds handle 500.
+      const launcherExecEvents = [
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'join-child-launcher-1', input: 'const r = await tools.exec_command({"cmd":"node \\"/installed-plugin/skills/rescue/launcher.mjs\\" invoke-prepared rescue"}); text(JSON.stringify(r))\n' } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'join-child-launcher-1', output: [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify({ output: '', session_id: 500 }) }] } },
+      ];
+      const CHILD_PENDING_OUTPUT = [{ type: 'input_text', text: 'Script running with cell ID cell-child-1\n' }];
+      const CHILD_COMPLETED_OUTPUT = [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify({ output: 'the rescue objective result', session_id: 500 }) }];
+      const writeChildRollout = async (/** @type {any[]} */ extraEvents = []) => {
+        await writeFile(childRolloutPath, [{ type: 'session_meta', payload: { id: CHILD_ROLLOUT_SESSION, parent_thread_id: 'root-live-collectors-session' } }, ...launcherExecEvents, ...childPollEvents('child-observation-1', CHILD_PENDING_OUTPUT), ...extraEvents].map((event) => JSON.stringify(event)).join('\n') + '\n', { mode: 0o600 });
+      };
+      await writeChildRollout();
+      const composition = driverModule.createConfirmedWindowLiveComposition({
+        fixture,
+        now,
+        workerDurationMs: 420_000,
+        ownerSessionId: 'owner-session-1',
+        caseDeadlineAtMs: () => 1_200_000,
+        completionGatePath: gatePath,
+        completionGateReachedPath: gateReachedPath,
+        childObservationThreadId: CHILD_ROLLOUT_SESSION,
+      });
+      assert.equal(typeof composition.observers.pendingObservation, 'function');
+      assert.equal(typeof composition.observers.ancestryBaseline, 'function');
+      assert.equal(typeof composition.observers.dutyFacts, 'function');
+      assert.equal(typeof composition.observers.controlFacts, 'function');
+      assert.equal(composition.dutyAdjudication.clockDomain, 'controller-monotonic');
+      // (1) pendingObservation: the request frame in the record plus the
+      // scheduled-and-held sentinel confirm the observation on the FIRST
+      // read, stamped on the controller clock; holdDeadline =
+      // observedAt + 420000 (§41.6/§41.5.1/§41.5.2).
+      const pendingFirst = await composition.observers.pendingObservation();
+      assert.equal(pendingFirst.confirmed, true, `the Companion request frame plus the scheduled-and-held sentinel confirm the observation (actual ${JSON.stringify(pendingFirst)})`);
+      assert.equal(pendingFirst.observedAtMs, 1_000, 'the first confirmation is stamped at the controller-clock read instant');
+      assert.equal(pendingFirst.holdDeadlineAtMs, 1_000 + 420_000, 'the frozen observedAtMs + 420000 derivation');
+      assert.equal(pendingFirst.resolved, false, 'the unreleased gate keeps the observation pending');
+      assert.equal(pendingFirst.clockDomain, 'controller-monotonic');
+      // The NORMAL-path release lands (the gate reads `release`): the gate is
+      // ONLY the worker-hold mechanism (P1-2, 2026-11-19 codex review) — the
+      // released gate alone NEVER resolves the observation; the resolution
+      // comes from the Child's own completed tool-stream output, stamped at
+      // the controller-clock read instant, never converted from a foreign
+      // clock and never read from a notification.
+      current = 2_000;
+      await writeFile(gatePath, 'release', { mode: 0o600 });
+      const pendingSecond = await composition.observers.pendingObservation();
+      assert.equal(pendingSecond.confirmed, true, 'the confirmation stays historical');
+      assert.equal(pendingSecond.observedAtMs, 1_000, 'the FIRST confirmation instant is retained');
+      assert.equal(pendingSecond.resolved, false, `the released gate alone never resolves the observation (actual ${JSON.stringify(pendingSecond)})`);
+      // The instrument's resolution premise: the SAME call's completed output
+      // resolves the observation at the controller-clock read instant.
+      await writeChildRollout([{ type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'child-observation-1', output: CHILD_COMPLETED_OUTPUT } }]);
+      const pendingResolved = await composition.observers.pendingObservation();
+      assert.equal(pendingResolved.resolved, true, `the Child's own completed output resolves the observation (actual ${JSON.stringify(pendingResolved)})`);
+      assert.equal(pendingResolved.resolvedAtMs, 2_000, 'the resolution is stamped at the controller-clock read instant');
+      assert.equal(pendingResolved.clockDomain, 'controller-monotonic');
+      // An ALREADY-FINISHED observation never confirms as still-pending: a
+      // fresh collector whose first read finds the finished artifacts carries
+      // confirmed AND resolved in the SAME read — the barrier's
+      // confirmed-AND-NOT-resolved semantics refuse it, so admission can
+      // never fire on a finished observation.
+      const finishedComposition = driverModule.createConfirmedWindowLiveComposition({
+        fixture, now, workerDurationMs: 420_000,
+        completionGatePath: gatePath, completionGateReachedPath: gateReachedPath,
+        childObservationThreadId: CHILD_ROLLOUT_SESSION,
+      });
+      const finished = await finishedComposition.observers.pendingObservation();
+      assert.equal(finished.confirmed, true, `the request frame, the sentinel and the Child's tool stream are still on disk (actual ${JSON.stringify(finished)})`);
+      assert.equal(finished.resolved, true, 'the instrument shows the finished observation resolved');
+      assert.equal(finished.resolvedAtMs, finished.observedAtMs, 'the finished observation resolves at its first (and only) read');
+      // Without the Companion request frame the record alone is never the
+      // observation (a bare session/create request requests nothing).
+      await writeFile(recordPath, `${JSON.stringify({ id: 4, method: 'session/create', params: { workspace: { workspacePath: '/repo' } } })}\n`, 'utf8');
+      const noSendComposition = driverModule.createConfirmedWindowLiveComposition({
+        fixture, now, workerDurationMs: 420_000,
+        completionGatePath: gatePath, completionGateReachedPath: gateReachedPath,
+        childObservationThreadId: CHILD_ROLLOUT_SESSION,
+      });
+      const noSend = await noSendComposition.observers.pendingObservation();
+      assert.equal(noSend.confirmed, false, `no session/send request frame means no observation (actual ${JSON.stringify(noSend)})`);
+      assert.match(String(noSend.reason ?? ''), /session\/send/u, 'the refusal names the missing Companion request frame');
+      // The unarmed-gate refusal stays named: without the §41.5.1 producer's
+      // gate/sentinel (no premises and no env composition) the pending
+      // observation is never derivable from the request record alone.
+      const unarmedGateComposition = driverModule.createConfirmedWindowLiveComposition({ fixture, now, workerDurationMs: 420_000 });
+      const unarmedGate = await unarmedGateComposition.observers.pendingObservation();
+      assert.equal(unarmedGate.confirmed, false, 'an unarmed completion gate refuses confirmation');
+      assert.match(String(unarmedGate.reason ?? ''), /gate is not armed/u, 'the refusal names the unarmed §41.5.1 producer');
+      // (2) ancestryBaseline: (P2-1, 2026-11-19 codex re-review) the conjunct
+      // is the RUNTIME ANCESTRY JOIN over the OBSERVED GENERATIONS — witness
+      // files alone (individually valid, hand-written, with no observed
+      // processes and no marker in this scope) never attribute the chain:
+      // the join refuses by name and both hops stay unestablished.
+      const ancestry = await composition.observers.ancestryBaseline();
+      assert.equal(ancestry.established, false, `witness files without observed generations never establish the chain (actual ${JSON.stringify(ancestry)})`);
+      assert.match(String(ancestry.reason ?? ''), /runtime ancestry join did not attribute/u, 'the refusal names the join');
+      assert.deepEqual(ancestry.hops, { launcherToBroker: false, brokerToTransport: false }, 'both hops stay unestablished without the observed chain');
+      assert.equal(ancestry.clockDomain, 'controller-monotonic');
+      // (3) controlFacts: the control's OWN call-scoped exec facts (the
+      // existing extractSurvivalControlFacts collector's launch/handle/read
+      // attribution — never a whole-rollout string scan); the latest line is
+      // read on the controller clock. (P2-1 + P1-3, 2026-11-19 codex
+      // reviews) the emission-to-read delay rides the control's OWN LAUNCH
+      // ENVELOPE (the launch event's epoch timestamp) and the newest line's
+      // CARRYING READ EVENT: a long-buffered line credits NOTHING; a line
+      // whose carrying read sits within one cadence of its emission credits
+      // the frozen conservative lower bound from the 1-based line index
+      // (line 42 -> 34000 ms).
+      current = 3_000;
+      LAUNCH_EPOCH_MS = Date.now() - 140_021;
+      current = 3_000;
+      LAUNCH_EPOCH_MS = Date.now() - 140_021;
+      await writeControlRollout([{ callId: 'control-poll-1a', output: 'zcode-survival-control 1 21\n', exitCode: null, readEpochMs: LAUNCH_EPOCH_MS + 140_021 }]);
+      const bufferedFirst = await composition.observers.controlFacts();
+      assert.equal(bufferedFirst.active, true, `the survival control is alive in the artifacts (actual ${JSON.stringify(bufferedFirst)})`);
+      assert.equal(bufferedFirst.freshAtMs, null, 'a long-buffered line never stamps freshness (P2-1/P1-3)');
+      assert.equal(bufferedFirst.declaredLifetimeMs, null, 'a long-buffered line credits no remaining life without the demonstrated emission-to-read delay');
+      // The control launched 85000 ms ago; line 42 (tag 84023) is 977 ms
+      // old at the collector's own read.
+      LAUNCH_EPOCH_MS = Date.now() - 85_000;
+      await writeControlRollout([{ callId: 'control-poll-1b', output: 'zcode-survival-control 1 21\nzcode-survival-control 42 84023\n', exitCode: null, readEpochMs: LAUNCH_EPOCH_MS + 85_023 }]);
+      current = 88_000;
+      const demonstratedControl = await composition.observers.controlFacts();
+      assert.equal(demonstratedControl.active, true);
+      assert.equal(demonstratedControl.freshAtMs, 88_000, 'the demonstrated fresh line stamps at the controller-clock read instant');
+      assert.equal(demonstratedControl.declaredLifetimeMs, 34_000, 'max(0, (60 - 42 - 1) * 2000) — a conservative lower bound');
+      assert.ok(demonstratedControl.freshAtMs + demonstratedControl.declaredLifetimeMs <= demonstratedControl.freshAtMs + (60 - 42) * 2_000, 'the computed end is EARLY — never later than the control script\'s actual designed end');
+      assert.equal(demonstratedControl.clockDomain, 'controller-monotonic');
+      // (remaining-life boundary, §41.5.2) line 59 is active but carries ZERO
+      // credited remaining life (the extra cadence absorbs the read delay);
+      // line 60 is the designed completion and is inactive. The line-59
+      // carrying read sits one cadence past its emission — demonstrated,
+      // zero credit.
+      const line59Composition = driverModule.createConfirmedWindowLiveComposition({ fixture, now, workerDurationMs: 420_000, caseDeadlineAtMs: () => 1_200_000, childObservationThreadId: CHILD_ROLLOUT_SESSION });
+      // The control launched 119022 ms ago; line 59 (tag 118022) is 1000
+      // ms old at the collector's own read.
+      LAUNCH_EPOCH_MS = Date.now() - 119_022;
+      await writeControlRollout([{ callId: 'control-poll-2b', output: 'zcode-survival-control 1 21\nzcode-survival-control 59 118022\n', exitCode: null, readEpochMs: LAUNCH_EPOCH_MS + 119_022 }]);
+      current = 123_000;
+      const line59 = await line59Composition.observers.controlFacts();
+      assert.equal(line59.active, true, 'line 59 is still active on the demonstrated read');
+      assert.equal(line59.freshAtMs, 123_000, 'the demonstrated line stamps at the read instant');
+      assert.equal(line59.declaredLifetimeMs, 0, 'line 59 carries ZERO credited remaining life under the conservative derivation');
+      await writeControlRollout([{ callId: 'control-poll-3', output: 'zcode-survival-control 60 120023\n', exitCode: 0 }]);
+      current = 5_000;
+      const line60 = await line59Composition.observers.controlFacts();
+      assert.equal(line60.active, false, 'the completed line-60 control is inactive');
+      assert.equal(line60.declaredLifetimeMs, 0, 'the completed control carries zero remaining life');
+      assert.match(String(line60.reason ?? ''), /completion line 60/u, 'the inactive reason names the designed completion');
+      // (§41.5.2 "no completion/exit observed") a control whose exec
+      // COMPLETED before its designed end (a crash) is INACTIVE with zero
+      // credited life — the exit rides the control's own read envelope, never
+      // a whole-rollout scan and never a foreign field.
+      await writeControlRollout([
+        { callId: 'control-poll-4', output: 'zcode-survival-control 1 2001\nzcode-survival-control 30 60030\n', exitCode: null },
+        { callId: 'control-poll-5', output: 'zcode-survival-control 1 2001\nzcode-survival-control 30 60030\n', exitCode: 1 },
+      ]);
+      current = 6_000;
+      const crashComposition = driverModule.createConfirmedWindowLiveComposition({ fixture, now, workerDurationMs: 420_000, caseDeadlineAtMs: () => 1_200_000, childObservationThreadId: CHILD_ROLLOUT_SESSION });
+      const crash = await crashComposition.observers.controlFacts();
+      assert.equal(crash.active, false, `a crashed control is never active with credited remaining life (actual ${JSON.stringify(crash)})`);
+      assert.equal(crash.declaredLifetimeMs, 0, 'the crashed control carries zero credited life');
+      assert.equal(crash.freshAtMs, null, 'a crashed control never stamps a fresh read');
+      assert.match(String(crash.reason ?? ''), /exit code 1/u, 'the inactive reason names the observed exec completion');
+      // The prefix inside a FOREIGN rollout string field (the Child's own
+      // prose, never the control's exec output) fabricates nothing: without
+      // the control's own launch/read attribution the control is simply not
+      // observed, named and inactive.
+      await writeFile(controlRolloutPath, `${JSON.stringify({ type: 'session_meta', payload: { id: 'rollout-foreign-session-1' } })}\n${JSON.stringify({ type: 'event_msg', payload: { type: 'agent_message', message: 'the Child echoed zcode-survival-control 59 999999 inside unrelated prose' } })}\n`, { mode: 0o600 });
+      current = 7_000;
+      const foreignComposition = driverModule.createConfirmedWindowLiveComposition({ fixture, now, workerDurationMs: 420_000, caseDeadlineAtMs: () => 1_200_000, childObservationThreadId: CHILD_ROLLOUT_SESSION });
+      const foreign = await foreignComposition.observers.controlFacts();
+      assert.equal(foreign.active, false, `a foreign-field prefix match never fabricates control activity (actual ${JSON.stringify(foreign)})`);
+      assert.equal(foreign.freshAtMs, null, 'no fresh stamp rides a foreign-field match');
+      assert.match(String(foreign.reason ?? ''), /launch|grounded/u, 'the inactive reason names the unobserved control launch');
+      // Restore the live control for the duty/control assertions below.
+      await writeControlRollout([{ callId: 'control-poll-6', output: 'zcode-survival-control 42 84023\n', exitCode: null }]);
+      // (4) dutyFacts: the durable/local sources are honest about what the
+      // fixture artifacts do and do not establish; the shape is frozen. The
+      // two-hop witness identities make the local duties observable, while
+      // the absent durable job store keeps the durable layer unestablished.
+      const dutyFacts = await composition.observers.dutyFacts();
+      assert.equal(typeof dutyFacts.observable, 'boolean', 'observable is a boolean');
+      assert.equal(dutyFacts.clockDomain, 'controller-monotonic');
+      assert.equal(typeof dutyFacts.collectionIntervalsValid, 'boolean');
+      // The composition's duty names come ONLY from the consumers it actually
+      // runs (§24.7/§41.6): the local §24.7 consumer
+      // (observeLocalProcess/adjudicateLocalDuties with os-live-observation
+      // verdicts and exit adjudication) is NOT composed by this factory, so
+      // the two-hop ancestry witness admission — an IDENTITY fact — never
+      // names invocation/broker/transport; and the absent durable job store
+      // keeps every durable slot unnamed. An ancestry-establishing fixture
+      // alone is observable=NONE (never 3/7 manufactured slots).
+      assert.deepEqual(dutyFacts.duties, [], `no composed consumer has adjudicated a duty (actual ${JSON.stringify(dutyFacts.duties)})`);
+      assert.equal(dutyFacts.observable, false, 'duty observability is never manufactured from the ancestry witness alone');
+      assert.equal(dutyFacts.durableSettled, false, 'no readable durable job store means the durable layer is not settled');
+      assert.equal(composition.dutyAdjudication.clockDomain, 'controller-monotonic', 'the persisted adjudication object carries the closed tag');
+      assert.equal(composition.dutyAdjudication.allObserved, false, 'the duty slots stay unadjudicated — never fabricated');
+      // (P1-1, round-21 codex review) the adjudication also carries the latched
+      // CLEANUP CAUSE (null until a SessionEnd discharge is observed) — the
+      // bounded 'session-end' name the credited projection persists.
+      assert.deepEqual(Object.keys(composition.dutyAdjudication).sort(), ['allObserved', 'cleanupCause', 'cleanupFenceAtMs', 'clockDomain', 'collectionIntervalsValid', 'durableSettled', 'names'].sort(), 'the adjudication carries exactly the frozen whitelisted fields plus the tag');
+      // (5) The SAME collector maps a readable durable job/guard/integrity/
+      // runner record through the existing closure consumer's PER-LAYER
+      // verdicts (§24.7): job from the exact-record presence, runner/guard
+      // from RESOLVED runnerCleanupDuty/writableGuard verdicts (an
+      // applicable:false claim carries its demonstrated production-path
+      // reason), integrity from the proven passive snapshot equality. The
+      // injected reader here only stands in for the on-disk store (the
+      // production factory calls the REAL readDurableObligationSnapshot).
+      const settledReads = [];
+      const positive = driverModule.createConfirmedWindowLiveComposition({
+        fixture,
+        now,
+        workerDurationMs: 420_000,
+        ownerSessionId: 'owner-session-1',
+        caseDeadlineAtMs: () => 1_200_000,
+        readDurableSnapshot: async (input) => {
+          settledReads.push(input);
+          return {
+            aggregate: 'settled',
+            // (P2-2, round-18) the verified executor linkage: the job is the
+            // joined Child's own — the owned settlement duties credit it.
+            executorLinkage: 'verified',
+            job: { presence: 'found' },
+            layers: {
+              winner: { state: 'terminal' },
+              runnerCleanupDuty: { applicable: false, outstanding: null, reason: 'not-applicable: the record carries no marked runner claim' },
+              writableGuard: { applicable: false, retained: false, reason: 'not-applicable' },
+            },
+            passive: { snapshotEqual: true },
+          };
+        },
+      });
+      const positiveDutyAncestry = await positive.observers.ancestryBaseline();
+      // (P2-1) the same join semantics: witness files without observed
+      // generations refuse — the ancestry conjunct never rides the
+      // per-record admission statuses alone.
+      assert.equal(positiveDutyAncestry.established, false, 'the positive composition reads the same real witness artifacts under the same join semantics');
+      const positiveDutyReadAtMs = current;
+      const positiveDuty = await positive.observers.dutyFacts();
+      // (P2-2, 2026-11-19 codex review) observable is the MANDATORY baseline:
+      // the durable quartet alone is incomplete instrumentation — the frozen
+      // seven-slot set must ALL be present (the local layer's unadjudicated
+      // slots carry the reason here).
+      assert.equal(positiveDuty.observable, false, 'positively adjudicated durable layers alone are never the observable baseline (all seven slots are mandatory)');
+      assert.match(String(positiveDuty.reason ?? ''), /not adjudicated every local slot/u, 'the reason names the incomplete local layer');
+      assert.deepEqual(positiveDuty.duties, ['runner', 'job', 'guard', 'integrity'], `the resolved per-layer verdicts name exactly their slots (actual ${JSON.stringify(positiveDuty.duties)})`);
+      assert.equal(positiveDuty.durableSettled, true, 'the durable aggregate settles the durable layer');
+      // (P2-1, round-18) a terminal-winner snapshot read is NOT a cleanup
+      // cause — the fence stays unproven from a snapshot read alone.
+      assert.equal(positiveDuty.cleanupFenceAtMs, null, 'the cleanup fence stays UNPROVEN from a terminal-winner snapshot read (never a cleanup)');
+      void positiveDutyReadAtMs;
+      assert.equal(positiveDuty.collectionIntervalsValid, true);
+      assert.equal(positive.dutyAdjudication.allObserved, false, 'allObserved stays false while the §24.7 local consumer has not adjudicated the local trio');
+      assert.equal(positive.dutyAdjudication.durableSettled, true);
+      // A bare applicable:false WITHOUT its demonstrated production-path
+      // reason names NOTHING (the §24.7 never-substitute rule: not-applicable
+      // is claimed only with its demonstrated reason on the record), and an
+      // unequal passive snapshot never proves integrity.
+      const bareVerdicts = driverModule.createConfirmedWindowLiveComposition({
+        fixture,
+        now,
+        workerDurationMs: 420_000,
+        ownerSessionId: 'owner-session-1',
+        caseDeadlineAtMs: () => 1_200_000,
+        readDurableSnapshot: async () => ({
+          aggregate: 'unestablished',
+          executorLinkage: 'verified',
+          job: { presence: 'found' },
+          layers: { winner: { state: 'terminal' }, runnerCleanupDuty: { applicable: false }, writableGuard: { applicable: false } },
+          passive: { snapshotEqual: false },
+        }),
+      });
+      const bareDuty = await bareVerdicts.observers.dutyFacts();
+      assert.deepEqual(bareDuty.duties, ['job'], `an undemonstrated not-applicable claim and an unequal passivity name nothing (actual ${JSON.stringify(bareDuty.duties)})`);
+      assert.equal(bareDuty.durableSettled, false, 'the unestablished aggregate never reads settled');
+      // The applicable:true branches name their slots from the OBSERVED
+      // outstanding duty facts (retained guard, outstanding runner claim).
+      const retainedVerdicts = driverModule.createConfirmedWindowLiveComposition({
+        fixture,
+        now,
+        workerDurationMs: 420_000,
+        ownerSessionId: 'owner-session-1',
+        caseDeadlineAtMs: () => 1_200_000,
+        readDurableSnapshot: async () => ({
+          aggregate: 'unresolved',
+          executorLinkage: 'verified',
+          job: { presence: 'found' },
+          layers: {
+            winner: { state: 'nonterminal' },
+            runnerCleanupDuty: { applicable: true, outstanding: true, reason: 'terminal-or-active record still carries the marked runner claim' },
+            writableGuard: { applicable: true, retained: true, reason: 'the nonterminal writable rescue job holds the workspace writable guard' },
+          },
+          passive: { snapshotEqual: true },
+        }),
+      });
+      const retainedDuty = await retainedVerdicts.observers.dutyFacts();
+      assert.deepEqual(retainedDuty.duties, ['runner', 'job', 'guard', 'integrity'], `the observed outstanding duties are named (actual ${JSON.stringify(retainedDuty.duties)})`);
+      assert.equal(retainedDuty.durableSettled, false, 'a retained-guard/unresolved aggregate is safe-unresolved, never settled');
+      assert.equal(settledReads.length, 1, 'the production reader contract is the input shape the old route used');
+      assert.equal(settledReads[0].resolveJobFromOwnerIndex, true, 'the owner-index join resolves the exact job (never a guessed id)');
+    });
+
+    test('confirmed-window live composition: a SESSION-END stop cause on the LINKED job\'s settled snapshot is a CLEANUP CAUSE with its own earliest observed boundary — the genuine cleanup fence rides the credited duty snapshot, never the later teardown substitution (P1-2, round-20 codex re-review)', async (t) => {
+      // The reviewer's exact finding: genuine SessionEnd cleanup settles the
+      // linked job after the RPC but before controller teardown, and
+      // `snapshot.aggregate === 'settled'` credited it without inspecting
+      // `snapshot.job.stopCause`/`stopIntent` — the live collector supplied
+      // NO earlier cleanup fence, so finalization substituted its own LATER
+      // teardown time and replay could accept duties that SessionEnd
+      // discharged as pre-cleanup native settlement. A SessionEnd stop cause
+      // is a CLEANUP CAUSE with its OWN boundary: the fence latches at the
+      // earliest OBSERVED boundary on the controller clock (the read that
+      // first observed the cause — its start instant; the stop intent's
+      // wall-clock requestedAt is a FOREIGN clock domain and can never
+      // enter the controller-monotonic fence), the earliest boundary wins
+      // (a later read never moves it), and the credited duty snapshot
+      // carries it so the teardown-time substitution never applies.
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      const { fixture } = await createFastRealFixture(t, 'confirmed-window-session-end-fence-');
+      let current = 1_000;
+      const now = () => current;
+      // The settled linked job whose CANCELLATION PROVENANCE is the genuine
+      // SessionEnd cleanup: the stop cause and the stop intent both name
+      // 'session-end' (the bounded production STOP_CAUSES member), the stop
+      // intent carrying its own canonical wall-clock requestedAt.
+      const sessionEndSnapshot = () => ({
+        aggregate: 'settled',
+        executorLinkage: 'verified',
+        job: {
+          presence: 'found',
+          projection: {
+            status: 'cancelled',
+            stopCause: 'session-end',
+            stopIntent: { version: 1, cause: 'session-end', requestedAt: '2026-11-20T00:00:00.000Z' },
+          },
+        },
+        layers: {
+          winner: { state: 'terminal' },
+          runnerCleanupDuty: { applicable: false, outstanding: null, reason: 'not-applicable: the record carries no marked runner claim' },
+          writableGuard: { applicable: false, retained: false, reason: 'not-applicable' },
+        },
+        passive: { snapshotEqual: true },
+      });
+      const sessionEndComposition = driverModule.createConfirmedWindowLiveComposition({
+        fixture, now, workerDurationMs: 420_000,
+        ownerSessionId: 'owner-session-1',
+        caseDeadlineAtMs: () => 1_200_000,
+        readDurableSnapshot: sessionEndSnapshot,
+      });
+      current = 5_000;
+      const sessionEndFirst = await sessionEndComposition.observers.dutyFacts();
+      // (P1-1, round-21 codex review — SUPERSEDES this row's round-20
+      // durable-credit claim) a SessionEnd-discharged durable settlement is
+      // a CLEANUP OUTCOME: the fence still latches at the earliest observed
+      // boundary, but the durable slot's native-settlement credit is refused
+      // by name (a pre-fence Child terminal and poll resolution never
+      // certify all-duty native settlement for an obligation the SessionEnd
+      // cleanup discharged).
+      assert.equal(sessionEndFirst.durableSettled, false, `a SessionEnd-discharged durable settlement never credits native durable settlement (actual ${JSON.stringify(sessionEndFirst)})`);
+      assert.equal(sessionEndFirst.settledDuties.includes('job'), false, `the durable slot's native-settlement credit is refused by name (actual ${JSON.stringify(sessionEndFirst.settledDuties)})`);
+      assert.equal(sessionEndFirst.cleanupFenceAtMs, 5_000, `the SessionEnd cleanup cause latches the EARLIEST OBSERVED boundary — the first observing read's start on the controller clock, never the teardown substitution's later instant (actual ${JSON.stringify(sessionEndFirst)})`);
+      assert.equal(sessionEndComposition.dutyAdjudication.cleanupFenceAtMs, 5_000, 'the credited duty snapshot carries the genuine cleanup fence');
+      assert.equal(sessionEndComposition.dutyAdjudication.cleanupCause, 'session-end', 'the credited duty snapshot carries the cleanup cause');
+      // The earliest observed boundary wins: a LATER read that still shows
+      // the cause never moves the fence, and the wall-clock requestedAt
+      // (a foreign clock domain) never enters the controller fence.
+      current = 6_000;
+      const sessionEndSecond = await sessionEndComposition.observers.dutyFacts();
+      assert.equal(sessionEndSecond.cleanupFenceAtMs, 5_000, `a later read never moves the earliest genuine cleanup fence (actual ${JSON.stringify(sessionEndSecond)})`);
+      // The contrast: a settled linked job whose stop cause is NOT the
+      // SessionEnd cleanup ('user', the operator's own stop) is not a
+      // controller cleanup cause — the fence stays UNPROVEN and the
+      // teardown-time substitution keeps its role.
+      // (P1-3, round-22 codex review — SUPERSEDES this row's round-20
+      // user-stop durable-credit claim) an explicit USER stop is an
+      // INDEPENDENT stop authority — the same external-authority class as
+      // the SessionEnd cleanup — so the settled aggregate NO LONGER
+      // credits the durable layer for it: the cause latches as 'user',
+      // the durable slot's credit is withheld by name, and the fence
+      // stays the SessionEnd-cleanup boundary alone (null here).
+      const userStopComposition = driverModule.createConfirmedWindowLiveComposition({
+        fixture, now, workerDurationMs: 420_000,
+        ownerSessionId: 'owner-session-1',
+        caseDeadlineAtMs: () => 1_200_000,
+        readDurableSnapshot: async () => ({
+          aggregate: 'settled',
+          executorLinkage: 'verified',
+          job: {
+            presence: 'found',
+            projection: {
+              status: 'cancelled',
+              stopCause: 'user',
+              stopIntent: { version: 1, cause: 'user', requestedAt: '2026-11-20T00:00:00.000Z' },
+            },
+          },
+          layers: {
+            winner: { state: 'terminal' },
+            runnerCleanupDuty: { applicable: false, outstanding: null, reason: 'not-applicable: the record carries no marked runner claim' },
+            writableGuard: { applicable: false, retained: false, reason: 'not-applicable' },
+          },
+          passive: { snapshotEqual: true },
+        }),
+      });
+      const userStopDuty = await userStopComposition.observers.dutyFacts();
+      assert.equal(userStopDuty.durableSettled, false, `a USER-stopped durable settlement never credits the durable layer (actual ${JSON.stringify(userStopDuty)})`);
+      assert.equal(userStopDuty.cleanupCause, 'user', `the independent user stop cause is PRESERVED (actual ${JSON.stringify(userStopDuty)})`);
+      assert.equal(userStopDuty.cleanupFenceAtMs, null, `a user stop is not the SessionEnd cleanup — the fence stays UNPROVEN (actual ${JSON.stringify(userStopDuty)})`);
+    });
+
+    test('confirmed-window live composition: a SESSION-END-DISCHARGED durable settlement is a CLEANUP OUTCOME — the durable slot\'s native-settlement credit is refused by name, the cause rides the credited adjudication, and replay never certifies all-duty native settlement for it (P1-1, round-21 codex review)', async (t) => {
+      // The reviewer's exact finding: with the Child terminal and the poll
+      // resolution observed BEFORE SessionEnd settles the linked job, the
+      // later duty read still set durableSettled from
+      // `snapshot.aggregate === 'settled'` without inspecting the discharge
+      // provenance, and replay compared only those two EARLIER resolutions
+      // against the cleanup fence — certifying all-duty native settlement
+      // for a durable obligation the SessionEnd cleanup discharged. A
+      // SessionEnd-discharged duty is a CLEANUP OUTCOME: the round-20 P1-2
+      // fence latch stands (the earliest observed boundary), the durable
+      // slot's native-settlement credit is REFUSED BY NAME, and the cleanup
+      // cause rides the credited adjudication so replay can never credit
+      // the cleanup discharge as native settlement.
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      const evidenceModule = await import('../tools/shell-wait-probe/native-control-evidence.mjs');
+      const { fixture } = await createFastRealFixture(t, 'confirmed-window-session-end-refusal-');
+      let current = 1_000;
+      const now = () => current;
+      const sessionEndSnapshot = () => ({
+        aggregate: 'settled',
+        executorLinkage: 'verified',
+        job: {
+          presence: 'found',
+          projection: {
+            status: 'cancelled',
+            stopCause: 'session-end',
+            stopIntent: { version: 1, cause: 'session-end', requestedAt: '2026-11-20T00:00:00.000Z' },
+          },
+        },
+        layers: {
+          winner: { state: 'terminal' },
+          runnerCleanupDuty: { applicable: false, outstanding: null, reason: 'not-applicable: the record carries no marked runner claim' },
+          writableGuard: { applicable: false, retained: false, reason: 'not-applicable' },
+        },
+        passive: { snapshotEqual: true },
+      });
+      const sessionEndComposition = driverModule.createConfirmedWindowLiveComposition({
+        fixture, now, workerDurationMs: 420_000,
+        ownerSessionId: 'owner-session-1',
+        caseDeadlineAtMs: () => 1_200_000,
+        readDurableSnapshot: sessionEndSnapshot,
+      });
+      current = 5_000;
+      const sessionEndFirst = await sessionEndComposition.observers.dutyFacts();
+      assert.equal(sessionEndFirst.cleanupFenceAtMs, 5_000, `the round-20 fence latch stands — the earliest observed SessionEnd boundary (actual ${JSON.stringify(sessionEndFirst)})`);
+      assert.equal(sessionEndFirst.cleanupCause, 'session-end', `the cleanup cause is PRESERVED in the adjudication (actual ${JSON.stringify(sessionEndFirst)})`);
+      assert.equal(sessionEndFirst.durableSettled, false, `a SessionEnd-discharged durable settlement is a CLEANUP OUTCOME — never native durable-settlement credit (actual ${JSON.stringify(sessionEndFirst)})`);
+      assert.equal(sessionEndFirst.settledDuties.includes('job'), false, `the durable slot's native-settlement credit is refused BY NAME (actual ${JSON.stringify(sessionEndFirst.settledDuties)})`);
+      assert.equal(sessionEndComposition.dutyAdjudication.cleanupCause, 'session-end', 'the cleanup cause rides the credited adjudication');
+      // The latched cause is durable across later reads: a snapshot whose
+      // projection later drops the stop fields never re-credits the slot.
+      current = 6_000;
+      const sessionEndSecond = await sessionEndComposition.observers.dutyFacts();
+      assert.equal(sessionEndSecond.cleanupCause, 'session-end', `the latched cause persists across later reads (actual ${JSON.stringify(sessionEndSecond)})`);
+      assert.equal(sessionEndSecond.durableSettled, false, 'the refusal persists across later reads');
+      assert.equal(sessionEndSecond.settledDuties.includes('job'), false, 'the durable slot stays refused by name');
+      // The replay leg: the collector's own projected (refused) adjudication
+      // can never certify all-duty native settlement — the earlier Child
+      // terminal and poll resolution sit pre-fence, but the durable
+      // obligation was discharged by the cleanup, not the native interrupt.
+      const projected = evidenceModule.projectConfirmedWindowDutyAdjudication(sessionEndComposition.dutyAdjudication);
+      assert.equal(projected.cleanupCause, 'session-end', 'the persisted duty projection carries the cleanup cause');
+      const block = JSON.parse(JSON.stringify(evidenceModule.projectConfirmedWindowBlock(greenRuntimeSession())));
+      const verdict = evidenceModule.admitConfirmedWindowNativeEvidence(block, projected);
+      assert.equal(verdict.settlement.settled, false, `a SessionEnd-discharged durable slot never settles all duties (actual ${JSON.stringify(verdict.settlement)})`);
+      assert.ok(verdict.settlement.reasons.includes('durable-settlement-unresolved'), `the durable credit refusal is named at replay (actual ${JSON.stringify(verdict.settlement.reasons)})`);
+      assert.ok(verdict.settlement.reasons.includes('required-duty-slot-unproven'), `the refused durable slot is named (actual ${JSON.stringify(verdict.settlement.reasons)})`);
+      // The second-line replay check: a STALE or tampered record that
+      // claims BOTH the session-end cause AND durable settlement credit is
+      // contradictory and refuses by name — the persisted cause is
+      // load-bearing, never decorative.
+      const contradicted = evidenceModule.admitConfirmedWindowNativeEvidence(block, evidenceModule.projectConfirmedWindowDutyAdjudication({
+        allObserved: true,
+        names: ['invocation', 'broker', 'transport', 'runner', 'job', 'guard', 'integrity', 'control-survival'],
+        durableSettled: true,
+        cleanupFenceAtMs: 500_000,
+        collectionIntervalsValid: true,
+        cleanupCause: 'session-end',
+      }));
+      assert.equal(contradicted.settlement.settled, false, `a record claiming the session-end cause AND durable credit refuses (actual ${JSON.stringify(contradicted.settlement)})`);
+      assert.ok(contradicted.settlement.reasons.includes('session-end-cleanup-discharge-contradicts-durable-credit'), `the contradiction is named at replay (actual ${JSON.stringify(contradicted.settlement.reasons)})`);
+      // The contrast: a NON-SessionEnd stop ('user') keeps its durable
+      // credit and latches NO cleanup cause.
+      // (P1-3, round-22 codex review — SUPERSEDES this row's round-21
+      // user-stop contrast) an explicit USER stop is an INDEPENDENT stop
+      // authority, never native settlement: the durable credit is
+      // withheld by name and the preserved cause rides the adjudication.
+      const userStopComposition = driverModule.createConfirmedWindowLiveComposition({
+        fixture, now, workerDurationMs: 420_000,
+        ownerSessionId: 'owner-session-1',
+        caseDeadlineAtMs: () => 1_200_000,
+        readDurableSnapshot: async () => ({
+          aggregate: 'settled',
+          executorLinkage: 'verified',
+          job: {
+            presence: 'found',
+            projection: {
+              status: 'cancelled',
+              stopCause: 'user',
+              stopIntent: { version: 1, cause: 'user', requestedAt: '2026-11-20T00:00:00.000Z' },
+            },
+          },
+          layers: {
+            winner: { state: 'terminal' },
+            runnerCleanupDuty: { applicable: false, outstanding: null, reason: 'not-applicable: the record carries no marked runner claim' },
+            writableGuard: { applicable: false, retained: false, reason: 'not-applicable' },
+          },
+          passive: { snapshotEqual: true },
+        }),
+      });
+      const userStopDuty = await userStopComposition.observers.dutyFacts();
+      assert.equal(userStopDuty.durableSettled, false, `a user-stopped durable settlement never credits the durable layer (actual ${JSON.stringify(userStopDuty)})`);
+      assert.equal(userStopDuty.cleanupCause, 'user', `the independent user stop cause is PRESERVED on the adjudication (actual ${JSON.stringify(userStopDuty)})`);
+    });
+
+    test('confirmed-window admission: the registered PRE-DELIVERY CONTROL READS gate the send — a fresh control still BELOW the readiness floor never spends the only turn/interrupt attempt, and the floor-reaching read plus the SEPARATE fresh post-floor read admit (P1-2, round-21 codex review)', async (t) => {
+      // The reviewer's exact finding: with the Child poll and the duty
+      // baselines ready while the control is still BELOW line 40, a fresh
+      // early line satisfied the barrier and spent the only turn/interrupt
+      // attempt — the controller never verified the frozen §41 schedule's
+      // TWO-READ sequence (a read REACHING LINE 40, then a SEPARATE FRESH
+      // read before delivery) that the prompt tells the Root to perform.
+      // The controller now verifies BOTH ordered reads from the control's
+      // OWN read events: an EARLIER read returned a line at/above the
+      // readiness floor, and the LATEST read is a SEPARATE later read with
+      // a fresh advancing post-floor line still below the designed end.
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      const confirmedWindow = await import('../tools/shell-wait-probe/confirmed-window.mjs');
+      const { fixture } = await createFastRealFixture(t, 'confirmed-window-pre-delivery-read-');
+      const rolloutDirectory = join(fixture.codexHome, 'sessions', '2026', '11', '17');
+      await mkdir(rolloutDirectory, { recursive: true, mode: 0o700 });
+      const ROOT_SESSION = 'root-pre-delivery-session';
+      const CHILD_SESSION = 'child-pre-delivery-session';
+      const CONTROL_HANDLE = 4100;
+      const controlCallStatement = (/** @type {string} */ kind, /** @type {any} */ value) => `const r = await tools.${kind}(${JSON.stringify(value)}); text(JSON.stringify(r))\n`;
+      const controlCompletedOutput = (/** @type {any} */ result) => [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify(result) }];
+      // The Child rollout grounds ONLY the ownership premise (its parent
+      // binding resolves the owning Root whose rollout hosts the control).
+      const childRolloutPath = join(rolloutDirectory, 'rollout-pre-delivery-child.jsonl');
+      await writeFile(childRolloutPath, [
+        { type: 'session_meta', payload: { id: CHILD_SESSION, parent_thread_id: ROOT_SESSION } },
+      ].map((event) => JSON.stringify(event)).join('\n') + '\n', { mode: 0o600 });
+      const controlRolloutPath = join(rolloutDirectory, 'rollout-pre-delivery-control.jsonl');
+      /** Writes the Root-owned control rollout: the ONE launch, then the given read events. */
+      const writeControlRollout = async (/** @type {{ callId: string, output: string, readEpochMs: number }[]} */ polls, launchEpochMs) => {
+        const events = [
+          { type: 'session_meta', payload: { id: ROOT_SESSION }, timestamp: launchEpochMs },
+          { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'control-launch-1', input: controlCallStatement('exec_command', { cmd: fixture.survivalControlPath }) }, timestamp: launchEpochMs },
+          { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'control-launch-1', output: controlCompletedOutput({ output: '', session_id: CONTROL_HANDLE }) }, timestamp: launchEpochMs + 5 },
+          ...polls.flatMap((poll) => [
+            { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: poll.callId, input: controlCallStatement('write_stdin', { session_id: CONTROL_HANDLE, chars: '', yield_time_ms: 60_000 }) }, timestamp: poll.readEpochMs },
+            { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: poll.callId, output: controlCompletedOutput({ output: poll.output, session_id: CONTROL_HANDLE }) }, timestamp: poll.readEpochMs },
+          ]),
+        ];
+        await writeFile(controlRolloutPath, events.map((event) => JSON.stringify(event)).join('\n') + '\n', { mode: 0o600 });
+      };
+      const offlineSession = () => ({
+        case: 'rescue-interrupt',
+        codexBinary: process.execPath,
+        sourceSha: 'a'.repeat(40),
+        output: '/private/tmp/confirmed-window-offline-output',
+        budgetMs: 720_000,
+        workerDurationMs: 420_000,
+        stagingPrompt: 'staging prompt with the control directive',
+        continuationPrompt: 'a CHANGED continuation prompt',
+        fixture,
+      });
+      // (1) The BELOW-FLOOR shape: the control is fresh, active and mid-run,
+      // but its reads never reached line 40 — the registered readiness
+      // floor was never observed, and the barrier must refuse to spend the
+      // only interrupt attempt. The COLLECTOR leg proves the extractor's
+      // facts; the CHOREOGRAPHY leg drives the controller's own gate with
+      // the same below-floor facts (freshness moving with the run clock, so
+      // the sequence conjunct is the ONLY failing one and the named miss is
+      // deterministic).
+      let launchEpochMs = Date.now() - 40_500;
+      await writeControlRollout([
+        { callId: 'control-poll-below-1', output: 'zcode-survival-control 1 21\nzcode-survival-control 20 40021\n', readEpochMs: launchEpochMs + 40_500 },
+      ], launchEpochMs);
+      const belowFloorHost = fakeConfirmedWindowHost({ replies: parentSessionReplies(), notifications: [...identityJoinNotifications({ atMs: 100 })] });
+      const belowFloorComposition = driverModule.createConfirmedWindowLiveComposition({
+        fixture, now: belowFloorHost.clock.now, workerDurationMs: 420_000,
+        caseDeadlineAtMs: () => 1_200_000,
+        childObservationThreadId: CHILD_SESSION,
+      });
+      const belowFloorControl = await belowFloorComposition.observers.controlFacts();
+      assert.equal(belowFloorControl.active, true, `the below-floor control is alive with fresh evidence — the refusal is the SEQUENCE, not the freshness (actual ${JSON.stringify(belowFloorControl)})`);
+      assert.deepEqual(belowFloorControl.preDeliveryReadSequence, { floorReachedInEarlierRead: false, separatePostFloorFreshRead: false }, `no read ever reached the readiness floor (actual ${JSON.stringify(belowFloorControl)})`);
+      const belowFloorResult = await confirmedWindow.runConfirmedWindowChoreography(offlineSession(), {
+        now: belowFloorHost.clock.now,
+        wallClockNow: belowFloorHost.clock.wallClockNow,
+        sleep: belowFloorHost.clock.sleep,
+        launchConfirmedWindowHost: belowFloorHost.factory,
+        observers: {
+          ...greenObservers(),
+          controlFacts: async () => ({
+            .../** @type {any} */ (await greenObservers().controlFacts()),
+            lineIndex: 20,
+            preDeliveryReadSequence: { floorReachedInEarlierRead: false, separatePostFloorFreshRead: false },
+          }),
+        },
+      });
+      assert.equal(belowFloorResult.finalState, 'staging-not-ready', `the below-floor control never admits (actual ${JSON.stringify(belowFloorResult.finalState)})`);
+      assert.match(String(belowFloorResult.refusal?.reason ?? ''), /pre-delivery control reads were never observed/u, `the refusal names the unobserved registered sequence (actual ${JSON.stringify(belowFloorResult.refusal)})`);
+      assert.equal(belowFloorHost.requestLog.filter((entry) => entry.method === 'turn/interrupt').length, 0, 'the only turn/interrupt attempt was NEVER spent on a below-floor control');
+      // (2) The registered TWO-READ shape: an earlier read reached line 40
+      // (the readiness floor, STEP 3) and the LATEST read is a SEPARATE
+      // later read with a fresh advancing post-floor line (STEP 4) — the
+      // barrier opens and the ONE delivery is sent.
+      launchEpochMs = Date.now() - 85_000;
+      await writeControlRollout([
+        { callId: 'control-poll-floor-1', output: 'zcode-survival-control 1 21\nzcode-survival-control 40 80021\n', readEpochMs: launchEpochMs + 80_500 },
+        { callId: 'control-poll-fresh-1', output: 'zcode-survival-control 1 21\nzcode-survival-control 40 80021\nzcode-survival-control 42 84023\n', readEpochMs: launchEpochMs + 85_023 },
+      ], launchEpochMs);
+      const twoReadHost = fakeConfirmedWindowHost({
+        replies: parentSessionReplies(),
+        notifications: [
+          ...identityJoinNotifications({ atMs: 100 }),
+          { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+        ],
+      });
+      const twoReadComposition = driverModule.createConfirmedWindowLiveComposition({
+        fixture, now: twoReadHost.clock.now, workerDurationMs: 420_000,
+        caseDeadlineAtMs: () => 1_200_000,
+        childObservationThreadId: CHILD_SESSION,
+      });
+      const twoReadControl = await twoReadComposition.observers.controlFacts();
+      assert.equal(twoReadControl.active, true, `the two-read control is alive (actual ${JSON.stringify(twoReadControl)})`);
+      assert.equal(twoReadControl.lineIndex, 42, `the newest read's line index rides the collector facts (actual ${JSON.stringify(twoReadControl)})`);
+      assert.deepEqual(twoReadControl.preDeliveryReadSequence, { floorReachedInEarlierRead: true, separatePostFloorFreshRead: true }, `the floor read and the SEPARATE fresh post-floor read are both observed (actual ${JSON.stringify(twoReadControl)})`);
+      const twoReadResult = await confirmedWindow.runConfirmedWindowChoreography(offlineSession(), {
+        now: twoReadHost.clock.now,
+        wallClockNow: twoReadHost.clock.wallClockNow,
+        sleep: twoReadHost.clock.sleep,
+        launchConfirmedWindowHost: twoReadHost.factory,
+        observers: { ...greenObservers(), controlFacts: twoReadComposition.observers.controlFacts },
+      });
+      assert.equal(twoReadResult.finalState, 'native-resolution-observed', `the registered two-read sequence admits and the escalation proceeds (actual ${JSON.stringify(twoReadResult.finalState)})`);
+      assert.equal(twoReadHost.requestLog.filter((entry) => entry.method === 'turn/interrupt').length, 1, 'the ONE native delivery is sent exactly once the registered sequence is observed');
+      // (3) The ONE-READ-AT-THE-FLOOR shape: the ONLY read reached line 40 —
+      // the floor read exists but the SEPARATE fresh pre-delivery read does
+      // not, and the barrier still refuses.
+      launchEpochMs = Date.now() - 82_000;
+      await writeControlRollout([
+        { callId: 'control-poll-floor-only-1', output: 'zcode-survival-control 1 21\nzcode-survival-control 40 80021\n', readEpochMs: launchEpochMs + 82_000 },
+      ], launchEpochMs);
+      const floorOnlyComposition = driverModule.createConfirmedWindowLiveComposition({
+        fixture, now: twoReadHost.clock.now, workerDurationMs: 420_000,
+        caseDeadlineAtMs: () => 1_200_000,
+        childObservationThreadId: CHILD_SESSION,
+      });
+      const floorOnlyControl = await floorOnlyComposition.observers.controlFacts();
+      assert.equal(floorOnlyControl.active, true, `the single floor read keeps the control alive (actual ${JSON.stringify(floorOnlyControl)})`);
+      assert.deepEqual(floorOnlyControl.preDeliveryReadSequence, { floorReachedInEarlierRead: false, separatePostFloorFreshRead: true }, `the floor read without the SEPARATE fresh pre-delivery read never satisfies the registered sequence (actual ${JSON.stringify(floorOnlyControl)})`);
+    });
+
+    test('confirmed-window live composition: an OVERLAPPING SAME-TARGET model-tool interrupt makes the Child\'s interrupted terminal event AMBIGUOUS — the collector reports the competing delivery, the receipt latches it, and the replay never credits same-host-rpc settlement for it (P1-3, round-21 codex review)', async (t) => {
+      // The reviewer's exact finding: if the Root calls interrupt_agent on
+      // the same Child while the controller's RPC is outstanding, the
+      // Child's interrupted terminal event can satisfy the RPC's receipt
+      // checks even though the model-tool call caused it — the live
+      // collector scanned for model-tool interruption but used the result
+      // only for control extraction, never ruling out the competing
+      // delivery. The collector now reports the SAME-TARGET (or an
+      // unprovable-target) interrupt-shaped call that was not affirmatively
+      // rejected, the receipt records the overlap, and the replay names the
+      // ambiguity — same-host-rpc settlement is never silently credited.
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      const evidenceModule = await import('../tools/shell-wait-probe/native-control-evidence.mjs');
+      const { fixture } = await createFastRealFixture(t, 'confirmed-window-model-tool-overlap-');
+      const rolloutDirectory = join(fixture.codexHome, 'sessions', '2026', '11', '17');
+      await mkdir(rolloutDirectory, { recursive: true, mode: 0o700 });
+      const ROOT_SESSION = '5f5b3a1e-aaaa-4bbb-8ccc-1234567890ab';
+      const CHILD_SESSION = '1a2b3c4d-1111-4222-8333-444455556666';
+      const OTHER_AGENT = '9f8e7d6c-9999-4aaa-8bbb-ccccddddeeee';
+      const CONTROL_HANDLE = 4100;
+      const controlCallStatement = (/** @type {string} */ kind, /** @type {any} */ value) => `const r = await tools.${kind}(${JSON.stringify(value)}); text(JSON.stringify(r))\n`;
+      const controlCompletedOutput = (/** @type {any} */ result) => [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify(result) }];
+      const childRolloutPath = join(rolloutDirectory, 'rollout-overlap-child.jsonl');
+      await writeFile(childRolloutPath, [
+        { type: 'session_meta', payload: { id: CHILD_SESSION, parent_thread_id: ROOT_SESSION } },
+      ].map((event) => JSON.stringify(event)).join('\n') + '\n', { mode: 0o600 });
+      const controlRolloutPath = join(rolloutDirectory, 'rollout-overlap-control.jsonl');
+      /** Writes the Root-owned control rollout plus an optional interrupt-shaped model-tool call pair. */
+      const writeControlRollout = async (/** @type {{ callId: string, output: string, readEpochMs: number }[]} */ polls, launchEpochMs, interruptCall = null) => {
+        const events = [
+          { type: 'session_meta', payload: { id: ROOT_SESSION }, timestamp: launchEpochMs },
+          { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'control-launch-1', input: controlCallStatement('exec_command', { cmd: fixture.survivalControlPath }) }, timestamp: launchEpochMs },
+          { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'control-launch-1', output: controlCompletedOutput({ output: '', session_id: CONTROL_HANDLE }) }, timestamp: launchEpochMs + 5 },
+          ...polls.flatMap((poll) => [
+            { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: poll.callId, input: controlCallStatement('write_stdin', { session_id: CONTROL_HANDLE, chars: '', yield_time_ms: 60_000 }) }, timestamp: poll.readEpochMs },
+            { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: poll.callId, output: controlCompletedOutput({ output: poll.output, session_id: CONTROL_HANDLE }) }, timestamp: poll.readEpochMs },
+          ]),
+          ...(interruptCall === null ? [] : [
+            { type: 'response_item', payload: { type: 'function_call', name: 'interrupt_agent', call_id: 'root-model-tool-interrupt-1', arguments: JSON.stringify({ target: interruptCall.target }) } },
+            { type: 'response_item', payload: { type: 'function_call_output', call_id: 'root-model-tool-interrupt-1', output: interruptCall.output } },
+          ]),
+        ];
+        await writeFile(controlRolloutPath, events.map((event) => JSON.stringify(event)).join('\n') + '\n', { mode: 0o600 });
+      };
+      const makeComposition = async () => driverModule.createConfirmedWindowLiveComposition({
+        fixture, now: () => 1_000, workerDurationMs: 420_000,
+        caseDeadlineAtMs: () => 1_200_000,
+        childObservationThreadId: CHILD_SESSION,
+      });
+      const registeredTwoReadPolls = (launchEpochMs) => [
+        { callId: 'control-poll-floor-1', output: 'zcode-survival-control 1 21\nzcode-survival-control 40 80021\n', readEpochMs: launchEpochMs + 80_500 },
+        { callId: 'control-poll-fresh-1', output: 'zcode-survival-control 1 21\nzcode-survival-control 40 80021\nzcode-survival-control 42 84023\n', readEpochMs: launchEpochMs + 85_023 },
+      ];
+      // (1) The SAME-TARGET delivered call: the Root's model-tool interrupt
+      // targeted the joined Child and was accepted — the competing delivery
+      // is reported.
+      let launchEpochMs = Date.now() - 85_000;
+      await writeControlRollout(registeredTwoReadPolls(launchEpochMs), launchEpochMs, {
+        target: CHILD_SESSION,
+        output: JSON.stringify({ previous_status: 'running' }),
+      });
+      const sameTargetControl = await (await makeComposition()).observers.controlFacts();
+      assert.equal(sameTargetControl.sameTargetModelToolInterrupt, true, `a DELIVERED interrupt-shaped call on the SAME Child is reported (actual ${JSON.stringify(sameTargetControl)})`);
+      // (2) A DIFFERENT well-formed agent id: provably not the joined Child —
+      // no ambiguity fact.
+      await writeControlRollout(registeredTwoReadPolls(launchEpochMs), launchEpochMs, {
+        target: OTHER_AGENT,
+        output: JSON.stringify({ previous_status: 'running' }),
+      });
+      const otherTargetControl = await (await makeComposition()).observers.controlFacts();
+      assert.equal(otherTargetControl.sameTargetModelToolInterrupt, false, `a provably DIFFERENT target never reports a competing delivery on the joined Child (actual ${JSON.stringify(otherTargetControl)})`);
+      // (3) An affirmatively REJECTED call never delivered anything — no
+      // competing delivery.
+      await writeControlRollout(registeredTwoReadPolls(launchEpochMs), launchEpochMs, {
+        target: CHILD_SESSION,
+        output: JSON.stringify({ error: 'invalid_request: thread not found' }),
+      });
+      const rejectedControl = await (await makeComposition()).observers.controlFacts();
+      assert.equal(rejectedControl.sameTargetModelToolInterrupt, false, `an affirmatively rejected model-tool call never competes for the terminal event (actual ${JSON.stringify(rejectedControl)})`);
+      // (4) The replay leg: a persisted receipt that carries the overlap
+      // fact refuses same-host-rpc settlement BY NAME — the delivery may be
+      // attributable, but the terminal event is not attributable to the RPC
+      // ALONE.
+      const block = JSON.parse(JSON.stringify(evidenceModule.projectConfirmedWindowBlock(greenRuntimeSession({
+        receipt: { ...greenRuntimeSession().receipt, sameTargetModelToolInterrupt: true },
+      }))));
+      assert.equal(block.receipt.sameTargetModelToolInterrupt, true, `the bounded receipt projection carries the overlap fact (actual ${JSON.stringify(block.receipt)})`);
+      const verdict = evidenceModule.admitConfirmedWindowNativeEvidence(block, greenDuties());
+      assert.equal(verdict.delivery.status, 'admitted', `the RPC's own bounds stay attributable (actual ${JSON.stringify(verdict.delivery)})`);
+      assert.equal(verdict.settlement.settled, false, `an overlapping same-target model-tool interrupt never settles (actual ${JSON.stringify(verdict.settlement)})`);
+      assert.ok(verdict.settlement.reasons.includes('model-tool-delivery-attribution-ambiguous'), `the ambiguity is NAMED at replay (actual ${JSON.stringify(verdict.settlement.reasons)})`);
+    });
+
+    test('confirmed-window choreography: the controller LATCHES the overlapping same-target model-tool interrupt from its own post-delivery control reads — the receipt names the competing delivery and the in-memory verdict refuses settlement (P1-3, round-21 codex review)', async () => {
+      // The end-to-end leg: the controller's own receipt records the
+      // collector's overlap fact, and the settlement verdict computed over
+      // the projected block refuses with the named ambiguity.
+      const { result } = await runOfflineChoreography({
+        script: {
+          notifications: [
+            ...identityJoinNotifications({ atMs: 100 }),
+            { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+          ],
+        },
+        observers: {
+          ...greenObservers(),
+          controlFacts: async () => ({
+            .../** @type {any} */ (await greenObservers().controlFacts()),
+            sameTargetModelToolInterrupt: true,
+          }),
+        },
+        dependencies: { dutyAdjudication: greenDuties() },
+      });
+      assert.equal(result.receipt?.sameTargetModelToolInterrupt, true, `the receipt latches the overlapping same-target model-tool interrupt (actual ${JSON.stringify(result.receipt)})`);
+      assert.equal(result.evidenceVerdict.settlement.settled, false, `the settlement refuses on the named ambiguity (actual ${JSON.stringify(result.evidenceVerdict.settlement)})`);
+      assert.ok(result.evidenceVerdict.settlement.reasons.includes('model-tool-delivery-attribution-ambiguous'), `the in-memory verdict names the ambiguity (actual ${JSON.stringify(result.evidenceVerdict.settlement.reasons)})`);
+    });
+
+    test('confirmed-window native evidence: native responsiveness requires the EXACT INTERRUPTED receipt — a MISSING Child terminal or a turn-unbound terminal keeps the comparison UNSET (transport timing only, never native responsiveness) (P2-2, round-21 codex review)', async () => {
+      // The reviewer's exact finding: if the RPC reply arrives but the exact
+      // Child terminal notification is MISSING, replay still reported
+      // nativeLatencyMs and nativeResponseWithinBound — a null terminal
+      // status is not classified as unrelated completion, and the same reply
+      // can accompany a natural completion. The comparison now stays UNSET
+      // until the Child terminal event is POSITIVELY bound to the requested
+      // turn: an interrupted status on the child-terminal-event basis with
+      // the terminal's own completed turn id equal to the requested Child
+      // turn. A missing/turn-unbound terminal is transport timing ONLY.
+      const evidence = await import('../tools/shell-wait-probe/native-control-evidence.mjs');
+      // (1) The MISSING terminal: the RPC reply and the observation
+      // resolution exist, but no Child terminal notification was ever
+      // observed — not an unrelated completion, yet never native
+      // responsiveness.
+      const missingTerminal = persistedBlock(evidence, greenRuntimeSession({
+        receipt: { transportReplyAtMs: 212, childResolutionAtMs: null, childTerminalStatus: null, childResolutionBasis: null, observationResolvedAtMs: 310, unrelatedCompletionReply: false, parentCancellationAtMs: null, completedTurnId: null },
+      }));
+      const missingTerminalVerdict = evidence.admitConfirmedWindowNativeEvidence(missingTerminal, greenDuties());
+      assert.equal(missingTerminalVerdict.delivery.status, 'admitted', `the delivery stays attributable — the refusal is the responsiveness credit, never the delivery (actual ${JSON.stringify(missingTerminalVerdict.delivery)})`);
+      assert.equal(missingTerminalVerdict.settlement.settled, false, 'the settlement already refuses on the missing terminal');
+      assert.ok(missingTerminalVerdict.settlement.reasons.includes('missing-child-resolution'), `the missing terminal is named at settlement (actual ${JSON.stringify(missingTerminalVerdict.settlement.reasons)})`);
+      assert.equal(missingTerminalVerdict.nativeLatencyMs, null, `a MISSING Child terminal keeps the native latency UNSET — the reply is transport timing only (actual ${JSON.stringify(missingTerminalVerdict.nativeLatencyMs)})`);
+      assert.equal(missingTerminalVerdict.nativeResponseWithinBound, null, `a MISSING Child terminal keeps the native responsiveness comparison UNSET (actual ${JSON.stringify(missingTerminalVerdict.nativeResponseWithinBound)})`);
+      // (2) The TURN-UNBOUND terminal: an interrupted terminal event whose
+      // own completed turn id is ABSENT — the delivery's wrong-target check
+      // has nothing to compare, and the terminal is not positively bound to
+      // the requested turn.
+      const turnUnbound = persistedBlock(evidence, greenRuntimeSession({
+        receipt: { transportReplyAtMs: 212, childResolutionAtMs: 300, childTerminalStatus: 'interrupted', childResolutionBasis: 'child-terminal-event', observationResolvedAtMs: 310, unrelatedCompletionReply: false, parentCancellationAtMs: null, completedTurnId: null },
+      }));
+      const turnUnboundVerdict = evidence.admitConfirmedWindowNativeEvidence(turnUnbound, greenDuties());
+      assert.equal(turnUnboundVerdict.delivery.status, 'admitted', `the delivery stays attributable (actual ${JSON.stringify(turnUnboundVerdict.delivery)})`);
+      assert.ok(turnUnboundVerdict.settlement.reasons.includes('child-terminal-authority-unproven'), `the unbound terminal is named at settlement (actual ${JSON.stringify(turnUnboundVerdict.settlement.reasons)})`);
+      assert.equal(turnUnboundVerdict.nativeLatencyMs, null, `a turn-UNBOUND terminal keeps the native latency UNSET (actual ${JSON.stringify(turnUnboundVerdict.nativeLatencyMs)})`);
+      assert.equal(turnUnboundVerdict.nativeResponseWithinBound, null, `a turn-UNBOUND terminal keeps the native responsiveness comparison UNSET (actual ${JSON.stringify(turnUnboundVerdict.nativeResponseWithinBound)})`);
+      // (3) The positive contrast: the EXACT interrupted receipt, bound to
+      // the requested turn, keeps the native responsiveness comparison.
+      const exactReceipt = persistedBlock(evidence, greenRuntimeSession());
+      const exactVerdict = evidence.admitConfirmedWindowNativeEvidence(exactReceipt, greenDuties());
+      assert.equal(exactVerdict.nativeLatencyMs, 2, `the exact interrupted receipt bound to the requested turn keeps the native latency (actual ${JSON.stringify(exactVerdict.nativeLatencyMs)})`);
+      assert.equal(exactVerdict.nativeResponseWithinBound, true, `the exact interrupted receipt keeps the responsiveness comparison (actual ${JSON.stringify(exactVerdict.nativeResponseWithinBound)})`);
+    });
+
+    test('confirmed-window survival: the control emission must postdate the SETTLED delivery — a line emitted after the dispatch but before EITHER resolution leg never earns survival credit, while the send timestamp keeps its pending-window role (P1-1, round-22 codex review)', async () => {
+      // The reviewer's exact finding: a control line emitted AFTER the RPC
+      // was sent but BEFORE the Child and its original observation resolved
+      // could earn control-survival credit — the emission gate compared
+      // against the DISPATCH instant alone, so an all-duty pass with NO
+      // emission after either resolution still reached
+      // all-duties-adjudicated with settled:true. The registered control
+      // contract requires the emission to postdate the SETTLED-DELIVERY
+      // bound — the LATER of the Child's resolution and the original
+      // observation's resolution (both legs) — while the send timestamp
+      // keeps its own role for the pending-window admission.
+      const confirmedWindow = await import('../tools/shell-wait-probe/confirmed-window.mjs');
+      const makeHost = () => fakeConfirmedWindowHost({
+        replies: parentSessionReplies(),
+        notifications: [
+          ...identityJoinNotifications({ atMs: 100 }),
+          { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+        ],
+      });
+      const runCase = async (emittedAtControllerMs) => {
+        const host = makeHost();
+        const result = await confirmedWindow.runConfirmedWindowChoreography({
+          case: 'rescue-interrupt',
+          codexBinary: process.execPath,
+          sourceSha: 'a'.repeat(40),
+          output: '/private/tmp/confirmed-window-offline-output',
+          budgetMs: 720_000,
+          workerDurationMs: 420_000,
+          stagingPrompt: 'staging prompt with the control directive',
+          continuationPrompt: 'a CHANGED continuation prompt',
+          fixture: {
+            workspace: '/private/tmp/confirmed-window-offline-workspace',
+            codexHome: '/private/tmp/confirmed-window-offline-codex-home',
+            installedRoot: '/private/tmp/confirmed-window-offline-installed',
+            env: { CODEX_HOME: '/private/tmp/confirmed-window-offline-codex-home', HOME: '/private/tmp/confirmed-window-offline-home' },
+            record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
+            dispose: async () => {},
+          },
+        }, {
+          now: host.clock.now,
+          wallClockNow: host.clock.wallClockNow,
+          sleep: host.clock.sleep,
+          launchConfirmedWindowHost: host.factory,
+          observers: {
+            ...greenObservers(),
+            controlFacts: async () => {
+              const readAt = greenObservationClock.now !== null && typeof greenObservationClock.now === 'function' ? greenObservationClock.now() : 1_000;
+              return {
+                active: true, freshAtMs: readAt, declaredLifetimeMs: 120_000,
+                // The emission instant under test: fixed stamps place the
+                // line before/after the resolution legs (Child terminal 300,
+                // observation resolution 320); `readAt` places it after BOTH.
+                emittedAtControllerMs: typeof emittedAtControllerMs === 'function' ? emittedAtControllerMs() : emittedAtControllerMs,
+                lineIndex: 45,
+                preDeliveryReadSequence: { floorReachedInEarlierRead: true, separatePostFloorFreshRead: true },
+                clockDomain: 'controller-monotonic', reason: null,
+              };
+            },
+          },
+          dutyAdjudication: greenDuties(),
+        });
+        return { result, host };
+      };
+      // (1) The reviewer's reproduction: the line was emitted at 200 — AFTER
+      // the ~130 dispatch but BEFORE the Child's terminal (300) and the
+      // observation's resolution (320). NO emission after either resolution
+      // ever happened, yet the dispatch-anchored gate credited survival.
+      const beforeBothLegs = await runCase(200);
+      assert.equal(beforeBothLegs.result.controlSurvival.attempted, true, `the post-delivery control reads ran (actual ${JSON.stringify(beforeBothLegs.result.controlSurvival)})`);
+      assert.equal(beforeBothLegs.result.controlSurvival.established, false, `a line emitted before BOTH resolution legs never establishes survival (actual ${JSON.stringify(beforeBothLegs.result.controlSurvival)})`);
+      assert.match(String(beforeBothLegs.result.controlSurvival.refusedReason ?? ''), /settled|resolution/u, `the refusal names the settled-delivery premise (actual ${JSON.stringify(beforeBothLegs.result.controlSurvival.refusedReason)})`);
+      assert.equal(beforeBothLegs.result.evidenceVerdict.settlement.settled, false, `an all-duty pass with NO emission after either resolution never settles (actual ${JSON.stringify(beforeBothLegs.result.evidenceVerdict.settlement)})`);
+      assert.ok(beforeBothLegs.result.evidenceVerdict.settlement.reasons.includes('control-survival-unproven'), `the mandatory survival name is unproven (actual ${JSON.stringify(beforeBothLegs.result.evidenceVerdict.settlement.reasons)})`);
+      assert.notEqual(beforeBothLegs.result.finalState, 'all-duties-adjudicated', `the settlement state is never reached (actual ${beforeBothLegs.result.finalState})`);
+      // (2) The BETWEEN-LEGS arm: the emission at 310 postdates the Child's
+      // terminal (300) but not the observation's resolution (320) — the
+      // bound is the LATER leg, so this still never establishes.
+      const beforeObservationLeg = await runCase(310);
+      assert.equal(beforeObservationLeg.result.controlSurvival.established, false, `an emission after the Child terminal but BEFORE the observation's resolution never establishes survival (actual ${JSON.stringify(beforeObservationLeg.result.controlSurvival)})`);
+      assert.equal(beforeObservationLeg.result.evidenceVerdict.settlement.settled, false, `the between-legs emission never settles (actual ${JSON.stringify(beforeObservationLeg.result.evidenceVerdict.settlement)})`);
+      // (3) The positive contrast: the emission postdates BOTH legs (it is
+      // stamped at the read, and every post-delivery read lands after the
+      // 320 observation resolution) — survival establishes and settles.
+      const afterBothLegs = await runCase(() => (greenObservationClock.now !== null && typeof greenObservationClock.now === 'function' ? greenObservationClock.now() : 1_000));
+      assert.equal(afterBothLegs.result.controlSurvival.established, true, `a line emitted after BOTH resolution legs establishes survival (actual ${JSON.stringify(afterBothLegs.result.controlSurvival)})`);
+      assert.equal(afterBothLegs.result.evidenceVerdict.settlement.settled, true, `the registered post-settlement emission settles (actual ${JSON.stringify(afterBothLegs.result.evidenceVerdict.settlement)})`);
+      assert.equal(afterBothLegs.result.finalState, 'all-duties-adjudicated', `the settlement state is reached (actual ${afterBothLegs.result.finalState})`);
+      // (4) The send timestamp KEEPS its pending-window role: the dispatch
+      // bounds still ride the record and exactly ONE interrupt was spent.
+      assert.equal(afterBothLegs.host.requestLog.filter((entry) => entry.method === 'turn/interrupt').length, 1, 'the single native delivery still spends exactly one attempt');
+      assert.ok(afterBothLegs.result.nativeRequest.sentAtMs !== null, 'the request bounds still bind to the send instant');
+    });
+
+    test('confirmed-window live composition: EVERY potentially competing model-tool interrupt is checked — a LATER different-target or later-rejected call never clears an EARLIER same-target competing attempt, and the historical last-call summary stays unchanged (P1-2, round-22 codex review)', async (t) => {
+      // The reviewer's exact finding: the competing-delivery check consumed
+      // only the LAST interrupt-shaped call's target and outcome — if a
+      // model-tool call interrupted the joined Child and a later call
+      // targeted a DIFFERENT agent (or was rejected before the next
+      // collector read), `sameTargetModelToolInterrupt` became false and the
+      // receipt lost the ambiguity. The extractor now reports a bounded
+      // per-call list (its own sanitized target and delivery outcome per
+      // call) while the historical last-call summary stays byte-identical,
+      // and the collector's ambiguity fact is the DISJUNCTION over ALL
+      // potentially competing attempts: any call whose target is the joined
+      // Child (or unprovable) and that was not affirmatively rejected.
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      const { fixture } = await createFastRealFixture(t, 'confirmed-window-model-tool-multi-');
+      const rolloutDirectory = join(fixture.codexHome, 'sessions', '2026', '11', '17');
+      await mkdir(rolloutDirectory, { recursive: true, mode: 0o700 });
+      const ROOT_SESSION = '5f5b3a1e-aaaa-4bbb-8ccc-1234567890ab';
+      const CHILD_SESSION = '1a2b3c4d-1111-4222-8333-444455556666';
+      const OTHER_AGENT = '9f8e7d6c-9999-4aaa-8bbb-ccccddddeeee';
+      const CONTROL_HANDLE = 4100;
+      const controlCallStatement = (/** @type {string} */ kind, /** @type {any} */ value) => `const r = await tools.${kind}(${JSON.stringify(value)}); text(JSON.stringify(r))\n`;
+      const controlCompletedOutput = (/** @type {any} */ result) => [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify(result) }];
+      const childRolloutPath = join(rolloutDirectory, 'rollout-multi-overlap-child.jsonl');
+      await writeFile(childRolloutPath, [
+        { type: 'session_meta', payload: { id: CHILD_SESSION, parent_thread_id: ROOT_SESSION } },
+      ].map((event) => JSON.stringify(event)).join('\n') + '\n', { mode: 0o600 });
+      const controlRolloutPath = join(rolloutDirectory, 'rollout-multi-overlap-control.jsonl');
+      /** Writes the Root-owned control rollout (the registered two-read sequence) plus the given interrupt-shaped call pairs, in order. */
+      const writeControlRollout = async (/** @type {{ callId: string, target: string, output: string }[]} */ interruptCalls) => {
+        const launchEpochMs = Date.now() - 85_000;
+        const polls = [
+          { callId: 'control-poll-floor-1', output: 'zcode-survival-control 1 21\nzcode-survival-control 40 80021\n', readEpochMs: launchEpochMs + 80_500 },
+          { callId: 'control-poll-fresh-1', output: 'zcode-survival-control 1 21\nzcode-survival-control 40 80021\nzcode-survival-control 42 84023\n', readEpochMs: launchEpochMs + 85_023 },
+        ];
+        const events = [
+          { type: 'session_meta', payload: { id: ROOT_SESSION }, timestamp: launchEpochMs },
+          { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'control-launch-1', input: controlCallStatement('exec_command', { cmd: fixture.survivalControlPath }) }, timestamp: launchEpochMs },
+          { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'control-launch-1', output: controlCompletedOutput({ output: '', session_id: CONTROL_HANDLE }) }, timestamp: launchEpochMs + 5 },
+          ...polls.flatMap((poll) => [
+            { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: poll.callId, input: controlCallStatement('write_stdin', { session_id: CONTROL_HANDLE, chars: '', yield_time_ms: 60_000 }) }, timestamp: poll.readEpochMs },
+            { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: poll.callId, output: controlCompletedOutput({ output: poll.output, session_id: CONTROL_HANDLE }) }, timestamp: poll.readEpochMs },
+          ]),
+          ...interruptCalls.flatMap((call) => [
+            { type: 'response_item', payload: { type: 'function_call', name: 'interrupt_agent', call_id: call.callId, arguments: JSON.stringify({ target: call.target }) } },
+            { type: 'response_item', payload: { type: 'function_call_output', call_id: call.callId, output: call.output } },
+          ]),
+        ];
+        await writeFile(controlRolloutPath, events.map((event) => JSON.stringify(event)).join('\n') + '\n', { mode: 0o600 });
+      };
+      const collectControl = async () => {
+        const composition = driverModule.createConfirmedWindowLiveComposition({
+          fixture, now: () => 1_000, workerDurationMs: 420_000,
+          caseDeadlineAtMs: () => 1_200_000,
+          childObservationThreadId: CHILD_SESSION,
+        });
+        return composition.observers.controlFacts();
+      };
+      // (1) The reviewer's reproduced shape: the FIRST call interrupted the
+      // joined Child and was DELIVERED, and a LATER call targeted a
+      // DIFFERENT agent — the last-call summary alone reported no
+      // ambiguity.
+      await writeControlRollout([
+        { callId: 'root-model-tool-interrupt-1', target: CHILD_SESSION, output: JSON.stringify({ previous_status: 'running' }) },
+        { callId: 'root-model-tool-interrupt-2', target: OTHER_AGENT, output: JSON.stringify({ previous_status: 'running' }) },
+      ]);
+      const laterDifferentTarget = await collectControl();
+      assert.equal(laterDifferentTarget.sameTargetModelToolInterrupt, true, `the EARLIER same-target delivered call keeps the ambiguity fact — a later different-target call never clears it (actual ${JSON.stringify(laterDifferentTarget)})`);
+      // (2) The later-REJECTED arm: the later SAME-target call was
+      // affirmatively rejected before the next collector read — the last
+      // call's delivered:false used to clear the earlier competing attempt.
+      await writeControlRollout([
+        { callId: 'root-model-tool-interrupt-1', target: CHILD_SESSION, output: JSON.stringify({ previous_status: 'running' }) },
+        { callId: 'root-model-tool-interrupt-2', target: CHILD_SESSION, output: JSON.stringify({ error: 'invalid_request: thread not found' }) },
+      ]);
+      const laterRejected = await collectControl();
+      assert.equal(laterRejected.sameTargetModelToolInterrupt, true, `the earlier delivered same-target call still competes — a later rejection never clears it (actual ${JSON.stringify(laterRejected)})`);
+      // (3) The HISTORICAL last-call summary stays unchanged: the second
+      // (different-target) call is still the extractor's reported target
+      // and delivered outcome — the bound derivation consumes the same
+      // summary it always did.
+      await writeControlRollout([
+        { callId: 'root-model-tool-interrupt-1', target: CHILD_SESSION, output: JSON.stringify({ previous_status: 'running' }) },
+        { callId: 'root-model-tool-interrupt-2', target: OTHER_AGENT, output: JSON.stringify({ previous_status: 'running' }) },
+      ]);
+      const { extractInterruptInteraction } = await import('../tools/shell-wait-probe/evidence.mjs');
+      const summary = extractInterruptInteraction(await driverModule.loadShellWaitRollouts(fixture.codexHome));
+      assert.equal(summary.callCount, 2, `the call count keeps its historical meaning (actual ${JSON.stringify(summary.callCount)})`);
+      assert.equal(summary.target?.value, OTHER_AGENT, `the last-call TARGET summary is unchanged (actual ${JSON.stringify(summary.target)})`);
+      assert.equal(summary.delivered, true, `the last-call DELIVERY summary is unchanged (actual ${JSON.stringify(summary.delivered)})`);
+      assert.equal(Array.isArray(summary.calls) && summary.calls.length, 2, `the extractor reports the bounded per-call list (actual ${JSON.stringify(summary.calls?.length)})`);
+      assert.equal(summary.calls?.[0]?.target?.value, CHILD_SESSION, `the FIRST call's own target rides the per-call list (actual ${JSON.stringify(summary.calls?.[0])})`);
+      assert.equal(summary.calls?.[0]?.delivered, true, `the FIRST call's own delivery outcome rides the per-call list (actual ${JSON.stringify(summary.calls?.[0])})`);
+      assert.equal(summary.calls?.[1]?.target?.value, OTHER_AGENT, `the SECOND call's own target rides the per-call list (actual ${JSON.stringify(summary.calls?.[1])})`);
+      // (4) The contrasts stay: a single provably-different target and a
+      // single affirmatively rejected same-target call never compete.
+      await writeControlRollout([
+        { callId: 'root-model-tool-interrupt-2', target: OTHER_AGENT, output: JSON.stringify({ previous_status: 'running' }) },
+      ]);
+      const singleDifferent = await collectControl();
+      assert.equal(singleDifferent.sameTargetModelToolInterrupt, false, `a lone provably-different target still never competes (actual ${JSON.stringify(singleDifferent)})`);
+      await writeControlRollout([
+        { callId: 'root-model-tool-interrupt-2', target: CHILD_SESSION, output: JSON.stringify({ error: 'invalid_request: thread not found' }) },
+      ]);
+      const singleRejected = await collectControl();
+      assert.equal(singleRejected.sameTargetModelToolInterrupt, false, `a lone affirmatively rejected same-target call still never competes (actual ${JSON.stringify(singleRejected)})`);
+    });
+
+    test('confirmed-window live composition: the competing-interrupt target comparison normalizes UUID SPELLING — a COMPACT or UPPERCASE spelling of the joined Child\'s id is the SAME target, never a provably different agent (P1, round-23 codex review)', async (t) => {
+      // The reviewer's exact finding: the pinned host parses ThreadId targets
+      // with `Uuid::parse_str` — CASE-INSENSITIVE across the hyphenated,
+      // simple/unhyphenated, URN and braced forms (protocol/src/thread_id.rs
+      // `ThreadId::from_string`; `Display` re-emits the canonical
+      // lowercase-hyphenated form) — so Codex resolves a compact or
+      // uppercase spelling to the SAME joined Child thread. The per-call
+      // ambiguity list's raw string comparison treated that spelling as a
+      // DIFFERENT agent and reported `sameTargetModelToolInterrupt: false`,
+      // leaving the RPC eligible for responsiveness and settlement credit
+      // although the model-tool call could have caused the terminal event.
+      // The comparison normalizes both sides with the SAME canonical-hex
+      // normalization the historical attribution code uses before ruling a
+      // call out.
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      const { fixture } = await createFastRealFixture(t, 'confirmed-window-uuid-spelling-');
+      const rolloutDirectory = join(fixture.codexHome, 'sessions', '2026', '11', '17');
+      await mkdir(rolloutDirectory, { recursive: true, mode: 0o700 });
+      const ROOT_SESSION = '5f5b3a1e-aaaa-4bbb-8ccc-1234567890ab';
+      const CHILD_SESSION = '1a2b3c4d-1111-4222-8333-444455556666';
+      const CHILD_COMPACT = '1a2b3c4d111142228333444455556666';
+      const CHILD_UPPERCASE = '1A2B3C4D-1111-4222-8333-444455556666';
+      const CONTROL_HANDLE = 4100;
+      const controlCallStatement = (/** @type {string} */ kind, /** @type {any} */ value) => `const r = await tools.${kind}(${JSON.stringify(value)}); text(JSON.stringify(r))\n`;
+      const controlCompletedOutput = (/** @type {any} */ result) => [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify(result) }];
+      const childRolloutPath = join(rolloutDirectory, 'rollout-uuid-spelling-child.jsonl');
+      await writeFile(childRolloutPath, [
+        { type: 'session_meta', payload: { id: CHILD_SESSION, parent_thread_id: ROOT_SESSION } },
+      ].map((event) => JSON.stringify(event)).join('\n') + '\n', { mode: 0o600 });
+      const controlRolloutPath = join(rolloutDirectory, 'rollout-uuid-spelling-control.jsonl');
+      /** Writes the Root-owned control rollout (the registered two-read sequence) plus the given interrupt-shaped call pairs, in order. */
+      const writeControlRollout = async (/** @type {{ callId: string, target: string, output: string }[]} */ interruptCalls) => {
+        const launchEpochMs = Date.now() - 85_000;
+        const polls = [
+          { callId: 'control-poll-floor-1', output: 'zcode-survival-control 1 21\nzcode-survival-control 40 80021\n', readEpochMs: launchEpochMs + 80_500 },
+          { callId: 'control-poll-fresh-1', output: 'zcode-survival-control 1 21\nzcode-survival-control 40 80021\nzcode-survival-control 42 84023\n', readEpochMs: launchEpochMs + 85_023 },
+        ];
+        const events = [
+          { type: 'session_meta', payload: { id: ROOT_SESSION }, timestamp: launchEpochMs },
+          { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'control-launch-1', input: controlCallStatement('exec_command', { cmd: fixture.survivalControlPath }) }, timestamp: launchEpochMs },
+          { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'control-launch-1', output: controlCompletedOutput({ output: '', session_id: CONTROL_HANDLE }) }, timestamp: launchEpochMs + 5 },
+          ...polls.flatMap((poll) => [
+            { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: poll.callId, input: controlCallStatement('write_stdin', { session_id: CONTROL_HANDLE, chars: '', yield_time_ms: 60_000 }) }, timestamp: poll.readEpochMs },
+            { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: poll.callId, output: controlCompletedOutput({ output: poll.output, session_id: CONTROL_HANDLE }) }, timestamp: poll.readEpochMs },
+          ]),
+          ...interruptCalls.flatMap((call) => [
+            { type: 'response_item', payload: { type: 'function_call', name: 'interrupt_agent', call_id: call.callId, arguments: JSON.stringify({ target: call.target }) } },
+            { type: 'response_item', payload: { type: 'function_call_output', call_id: call.callId, output: call.output } },
+          ]),
+        ];
+        await writeFile(controlRolloutPath, events.map((event) => JSON.stringify(event)).join('\n') + '\n', { mode: 0o600 });
+      };
+      const collectControl = async () => {
+        const composition = driverModule.createConfirmedWindowLiveComposition({
+          fixture, now: () => 1_000, workerDurationMs: 420_000,
+          caseDeadlineAtMs: () => 1_200_000,
+          childObservationThreadId: CHILD_SESSION,
+        });
+        return composition.observers.controlFacts();
+      };
+      // (1) The COMPACT spelling of the joined Child's own id: the pinned
+      // host resolves it to the SAME thread — a DELIVERED call on it is the
+      // competing delivery, never a provably different agent.
+      await writeControlRollout([
+        { callId: 'root-model-tool-interrupt-1', target: CHILD_COMPACT, output: JSON.stringify({ previous_status: 'running' }) },
+      ]);
+      const compactTarget = await collectControl();
+      assert.equal(compactTarget.sameTargetModelToolInterrupt, true, `a COMPACT spelling of the joined Child's id is the SAME target — the call competes (actual ${JSON.stringify(compactTarget)})`);
+      // (2) The UPPERCASE hyphenated spelling: the parse is case-insensitive
+      // — the same target.
+      await writeControlRollout([
+        { callId: 'root-model-tool-interrupt-1', target: CHILD_UPPERCASE, output: JSON.stringify({ previous_status: 'running' }) },
+      ]);
+      const uppercaseTarget = await collectControl();
+      assert.equal(uppercaseTarget.sameTargetModelToolInterrupt, true, `an UPPERCASE spelling of the joined Child's id is the SAME target — the call competes (actual ${JSON.stringify(uppercaseTarget)})`);
+      // (3) The contrast stays: a GENUINELY different uuid keeps proving the
+      // call different — the ambiguity fact never widens into a tautology.
+      await writeControlRollout([
+        { callId: 'root-model-tool-interrupt-1', target: '9f8e7d6c-9999-4aaa-8bbb-ccccddddeeee', output: JSON.stringify({ previous_status: 'running' }) },
+      ]);
+      const differentTarget = await collectControl();
+      assert.equal(differentTarget.sameTargetModelToolInterrupt, false, `a genuinely different uuid stays provably different (actual ${JSON.stringify(differentTarget)})`);
+    });
+
+    test('confirmed-window live composition: the competing-interrupt scan FAILS CLOSED when its bounded per-call list overflows — 64 different-target calls followed by an accepted SAME-TARGET call carry the explicit overflow fact and the ambiguity can never be false (P2-1, round-23 codex review)', async (t) => {
+      // The reviewer's exact finding: the extractor drops every call after
+      // the first 64, but the confirmed-window collector treats the retained
+      // list as EXHAUSTIVE. With 64 calls to other agents followed by an
+      // accepted call to the joined Child, the collector reported
+      // `callCount: 65` with `sameTargetModelToolInterrupt: false` — the
+      // 65th (same-target, delivered) call was silently truncated out of
+      // the list and the RPC stayed eligible for responsiveness and
+      // settlement credit although a competing model-tool call could have
+      // caused the terminal event. The scan now carries an explicit OVERFLOW
+      // fact: a truncated scan is never a clean scan — the ambiguity fact
+      // is true when overflow occurred (fail closed), and the bounded
+      // diagnostic list stays capped.
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      const { fixture } = await createFastRealFixture(t, 'confirmed-window-call-overflow-');
+      const rolloutDirectory = join(fixture.codexHome, 'sessions', '2026', '11', '17');
+      await mkdir(rolloutDirectory, { recursive: true, mode: 0o700 });
+      const ROOT_SESSION = '5f5b3a1e-aaaa-4bbb-8ccc-1234567890ab';
+      const CHILD_SESSION = '1a2b3c4d-1111-4222-8333-444455556666';
+      const OTHER_AGENT = '9f8e7d6c-9999-4aaa-8bbb-ccccddddeeee';
+      const CONTROL_HANDLE = 4100;
+      const controlCallStatement = (/** @type {string} */ kind, /** @type {any} */ value) => `const r = await tools.${kind}(${JSON.stringify(value)}); text(JSON.stringify(r))\n`;
+      const controlCompletedOutput = (/** @type {any} */ result) => [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify(result) }];
+      const childRolloutPath = join(rolloutDirectory, 'rollout-call-overflow-child.jsonl');
+      await writeFile(childRolloutPath, [
+        { type: 'session_meta', payload: { id: CHILD_SESSION, parent_thread_id: ROOT_SESSION } },
+      ].map((event) => JSON.stringify(event)).join('\n') + '\n', { mode: 0o600 });
+      const controlRolloutPath = join(rolloutDirectory, 'rollout-call-overflow-control.jsonl');
+      /** Writes the Root-owned control rollout (the registered two-read sequence) plus the given interrupt-shaped call pairs, in order. */
+      const writeControlRollout = async (/** @type {{ callId: string, target: string, output: string }[]} */ interruptCalls) => {
+        const launchEpochMs = Date.now() - 85_000;
+        const polls = [
+          { callId: 'control-poll-floor-1', output: 'zcode-survival-control 1 21\nzcode-survival-control 40 80021\n', readEpochMs: launchEpochMs + 80_500 },
+          { callId: 'control-poll-fresh-1', output: 'zcode-survival-control 1 21\nzcode-survival-control 40 80021\nzcode-survival-control 42 84023\n', readEpochMs: launchEpochMs + 85_023 },
+        ];
+        const events = [
+          { type: 'session_meta', payload: { id: ROOT_SESSION }, timestamp: launchEpochMs },
+          { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'control-launch-1', input: controlCallStatement('exec_command', { cmd: fixture.survivalControlPath }) }, timestamp: launchEpochMs },
+          { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'control-launch-1', output: controlCompletedOutput({ output: '', session_id: CONTROL_HANDLE }) }, timestamp: launchEpochMs + 5 },
+          ...polls.flatMap((poll) => [
+            { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: poll.callId, input: controlCallStatement('write_stdin', { session_id: CONTROL_HANDLE, chars: '', yield_time_ms: 60_000 }) }, timestamp: poll.readEpochMs },
+            { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: poll.callId, output: controlCompletedOutput({ output: poll.output, session_id: CONTROL_HANDLE }) }, timestamp: poll.readEpochMs },
+          ]),
+          ...interruptCalls.flatMap((call) => [
+            { type: 'response_item', payload: { type: 'function_call', name: 'interrupt_agent', call_id: call.callId, arguments: JSON.stringify({ target: call.target }) } },
+            { type: 'response_item', payload: { type: 'function_call_output', call_id: call.callId, output: call.output } },
+          ]),
+        ];
+        await writeFile(controlRolloutPath, events.map((event) => JSON.stringify(event)).join('\n') + '\n', { mode: 0o600 });
+      };
+      const collectControl = async () => {
+        const composition = driverModule.createConfirmedWindowLiveComposition({
+          fixture, now: () => 1_000, workerDurationMs: 420_000,
+          caseDeadlineAtMs: () => 1_200_000,
+          childObservationThreadId: CHILD_SESSION,
+        });
+        return composition.observers.controlFacts();
+      };
+      // The reviewer's reproduced shape: the first 64 calls target other
+      // agents and are each DELIVERED; the 65th targets the joined Child and
+      // is DELIVERED too — and is the call the bounded list drops.
+      const interruptCalls = Array.from({ length: 64 }, (_, index) => ({
+        callId: `root-model-tool-interrupt-other-${index + 1}`,
+        target: OTHER_AGENT,
+        output: JSON.stringify({ previous_status: 'running' }),
+      }));
+      interruptCalls.push({ callId: 'root-model-tool-interrupt-child-65', target: CHILD_SESSION, output: JSON.stringify({ previous_status: 'running' }) });
+      await writeControlRollout(interruptCalls);
+      // The extractor's OWN overflow fact, asserted on the direct import.
+      const { extractInterruptInteraction } = await import('../tools/shell-wait-probe/evidence.mjs');
+      const summary = extractInterruptInteraction(await driverModule.loadShellWaitRollouts(fixture.codexHome));
+      assert.equal(summary.callCount, 65, `the scan saw every interrupt-shaped call (actual ${JSON.stringify(summary.callCount)})`);
+      assert.equal(Array.isArray(summary.calls) && summary.calls.length, 64, 'the per-call diagnostic list stays bounded at its cap');
+      assert.equal(summary.callsTruncated, true, `the truncated scan carries the explicit OVERFLOW fact (actual ${JSON.stringify(summary.callsTruncated)})`);
+      const overflowControl = await collectControl();
+      assert.equal(overflowControl.sameTargetModelToolInterrupt, true, `a truncated scan is never a clean scan — the ambiguity fact cannot be false when calls were dropped (actual ${JSON.stringify(overflowControl)})`);
+    });
+
+    test('confirmed-window live composition: an explicit USER stop on the linked job is an INDEPENDENT stop authority — the durable slot\'s native-settlement credit is withheld by name, the cause rides the credited adjudication, and a natural terminal winner still settles (P1-3, round-22 codex review)', async (t) => {
+      // The reviewer's exact finding: production uses the stop cause `user`
+      // for EXPLICIT cancellation — a separate stop authority outside the
+      // native delivery — yet a settled snapshot with `stopCause: 'user'`
+      // still granted `durableSettled` (only SessionEnd was excluded), so
+      // the other passing duties could turn that separate cancellation into
+      // an all-duty RPC pass. Both SessionEnd and a user stop are
+      // cleanup/external authorities, never native settlement: the
+      // independent stop cause is PRESERVED on the credited adjudication,
+      // the durable slot's credit is WITHHELD by name, and a NATURAL
+      // terminal winner (no stop cause) still settles.
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      const evidenceModule = await import('../tools/shell-wait-probe/native-control-evidence.mjs');
+      const { fixture } = await createFastRealFixture(t, 'confirmed-window-user-stop-discharge-');
+      let current = 1_000;
+      const now = () => current;
+      const baseLayers = () => ({
+        winner: { state: 'terminal' },
+        runnerCleanupDuty: { applicable: false, outstanding: null, reason: 'not-applicable: the record carries no marked runner claim' },
+        writableGuard: { applicable: false, retained: false, reason: 'not-applicable' },
+      });
+      // (1) The reviewer's reproduction: the linked job settled with the
+      // USER stop cause — the settled aggregate still credited durable
+      // settlement.
+      const userStopComposition = driverModule.createConfirmedWindowLiveComposition({
+        fixture, now, workerDurationMs: 420_000,
+        ownerSessionId: 'owner-session-1',
+        caseDeadlineAtMs: () => 1_200_000,
+        readDurableSnapshot: async () => ({
+          aggregate: 'settled',
+          executorLinkage: 'verified',
+          job: {
+            presence: 'found',
+            projection: {
+              status: 'cancelled',
+              stopCause: 'user',
+              stopIntent: { version: 1, cause: 'user', requestedAt: '2026-11-20T00:00:00.000Z' },
+            },
+          },
+          layers: baseLayers(),
+          passive: { snapshotEqual: true },
+        }),
+      });
+      current = 5_000;
+      const userStopFirst = await userStopComposition.observers.dutyFacts();
+      assert.equal(userStopFirst.durableSettled, false, `a USER-stopped durable settlement never credits native durable settlement (actual ${JSON.stringify(userStopFirst)})`);
+      assert.equal(userStopFirst.settledDuties.includes('job'), false, `the durable slot's native-settlement credit is withheld by name (actual ${JSON.stringify(userStopFirst.settledDuties)})`);
+      assert.equal(userStopFirst.cleanupCause, 'user', `the INDEPENDENT stop cause is preserved on the adjudication (actual ${JSON.stringify(userStopFirst)})`);
+      assert.match(String(userStopFirst.reason ?? ''), /user/u, `the named durable reason carries the user Stop (actual ${JSON.stringify(userStopFirst.reason)})`);
+      assert.equal(userStopComposition.dutyAdjudication.cleanupCause, 'user', 'the credited duty snapshot carries the preserved stop cause');
+      // The latched cause is durable across later reads: a snapshot whose
+      // projection later drops the stop fields never re-credits the slot.
+      current = 6_000;
+      const userStopSecond = await userStopComposition.observers.dutyFacts();
+      assert.equal(userStopSecond.durableSettled, false, 'the refusal persists across later reads');
+      assert.equal(userStopSecond.cleanupCause, 'user', `the preserved cause persists across later reads (actual ${JSON.stringify(userStopSecond)})`);
+      // (2) The replay leg: the collector's own projected (refused)
+      // adjudication can never certify all-duty native settlement, and a
+      // STALE or tampered record claiming BOTH the user cause AND durable
+      // settlement credit is contradictory and refuses by name.
+      const projected = evidenceModule.projectConfirmedWindowDutyAdjudication(userStopComposition.dutyAdjudication);
+      assert.equal(projected.cleanupCause, 'user', 'the persisted duty projection carries the preserved stop cause');
+      const block = JSON.parse(JSON.stringify(evidenceModule.projectConfirmedWindowBlock(greenRuntimeSession())));
+      const verdict = evidenceModule.admitConfirmedWindowNativeEvidence(block, projected);
+      assert.equal(verdict.settlement.settled, false, `a user-stopped durable slot never settles all duties (actual ${JSON.stringify(verdict.settlement)})`);
+      assert.ok(verdict.settlement.reasons.includes('durable-settlement-unresolved'), `the durable credit refusal is named at replay (actual ${JSON.stringify(verdict.settlement.reasons)})`);
+      assert.ok(verdict.settlement.reasons.includes('required-duty-slot-unproven'), `the withheld durable slot is named (actual ${JSON.stringify(verdict.settlement.reasons)})`);
+      const contradicted = evidenceModule.admitConfirmedWindowNativeEvidence(block, evidenceModule.projectConfirmedWindowDutyAdjudication({
+        allObserved: true,
+        names: ['invocation', 'broker', 'transport', 'runner', 'job', 'guard', 'integrity', 'control-survival'],
+        durableSettled: true,
+        cleanupFenceAtMs: 500_000,
+        collectionIntervalsValid: true,
+        cleanupCause: 'user',
+      }));
+      assert.equal(contradicted.settlement.settled, false, `a record claiming the user stop cause AND durable credit refuses (actual ${JSON.stringify(contradicted.settlement)})`);
+      assert.ok(contradicted.settlement.reasons.includes('user-stop-discharge-contradicts-durable-credit'), `the contradiction is named at replay (actual ${JSON.stringify(contradicted.settlement.reasons)})`);
+      // (3) The NATURAL TERMINAL WINNER contrast: the same settled
+      // aggregate with NO stop cause (a natural terminal winner) keeps its
+      // durable credit and latches no cause.
+      const naturalWinnerComposition = driverModule.createConfirmedWindowLiveComposition({
+        fixture, now, workerDurationMs: 420_000,
+        ownerSessionId: 'owner-session-1',
+        caseDeadlineAtMs: () => 1_200_000,
+        readDurableSnapshot: async () => ({
+          aggregate: 'settled',
+          executorLinkage: 'verified',
+          job: { presence: 'found', projection: { status: 'completed' } },
+          layers: baseLayers(),
+          passive: { snapshotEqual: true },
+        }),
+      });
+      const naturalWinner = await naturalWinnerComposition.observers.dutyFacts();
+      assert.equal(naturalWinner.durableSettled, true, `a natural terminal winner still settles (actual ${JSON.stringify(naturalWinner)})`);
+      assert.equal(naturalWinner.settledDuties.includes('job'), true, 'the natural winner keeps the durable slot credit');
+      assert.equal(naturalWinner.cleanupCause ?? null, null, 'a natural terminal winner latches no stop cause');
+    });
+
+    test('confirmed-window native evidence: an AMBIGUOUS receipt keeps the raw RPC timing but leaves the native comparison UNESTABLISHED — the exact turn ID identifies which turn ended, never WHICH interrupt ended it (P2-1, round-22 codex review)', async () => {
+      // The reviewer's exact finding: a retained receipt with
+      // `sameTargetModelToolInterrupt: true` correctly refuses settlement,
+      // but the native responsiveness comparison still reported
+      // `nativeLatencyMs` and could report `nativeResponseWithinBound: true`
+      // — the exact turn ID identifies WHICH TURN ended, not WHICH interrupt
+      // ended it, so the recorded receipt cannot be attributed to the
+      // controller's RPC. The raw RPC timing stays in the transport block
+      // for diagnosis; the native comparison itself stays UNESTABLISHED.
+      const evidence = await import('../tools/shell-wait-probe/native-control-evidence.mjs');
+      const ambiguous = persistedBlock(evidence, greenRuntimeSession({
+        receipt: { ...greenRuntimeSession().receipt, sameTargetModelToolInterrupt: true },
+      }));
+      const ambiguousVerdict = evidence.admitConfirmedWindowNativeEvidence(ambiguous, greenDuties());
+      assert.equal(ambiguousVerdict.delivery.status, 'admitted', `the RPC's own bounds stay attributable (actual ${JSON.stringify(ambiguousVerdict.delivery)})`);
+      assert.equal(ambiguousVerdict.transportReply.observedAtMs, 212, `the RAW RPC timing stays for diagnosis (actual ${JSON.stringify(ambiguousVerdict.transportReply)})`);
+      assert.equal(ambiguousVerdict.settlement.settled, false, `the settlement refuses on the named ambiguity (actual ${JSON.stringify(ambiguousVerdict.settlement)})`);
+      assert.ok(ambiguousVerdict.settlement.reasons.includes('model-tool-delivery-attribution-ambiguous'), `the ambiguity is NAMED at replay (actual ${JSON.stringify(ambiguousVerdict.settlement.reasons)})`);
+      assert.equal(ambiguousVerdict.nativeLatencyMs, null, `an ambiguous receipt keeps the native latency UNESTABLISHED — the receipt cannot be attributed to the RPC (actual ${JSON.stringify(ambiguousVerdict.nativeLatencyMs)})`);
+      assert.equal(ambiguousVerdict.nativeResponseWithinBound, null, `an ambiguous receipt keeps the native responsiveness comparison UNESTABLISHED (actual ${JSON.stringify(ambiguousVerdict.nativeResponseWithinBound)})`);
+      // The contrast: the unambiguous exact receipt keeps the comparison.
+      const exactVerdict = evidence.admitConfirmedWindowNativeEvidence(persistedBlock(evidence, greenRuntimeSession()), greenDuties());
+      assert.equal(exactVerdict.nativeLatencyMs, 2, `the unambiguous exact receipt keeps its latency credit (actual ${JSON.stringify(exactVerdict.nativeLatencyMs)})`);
+      assert.equal(exactVerdict.nativeResponseWithinBound, true, `the unambiguous exact receipt keeps its responsiveness comparison (actual ${JSON.stringify(exactVerdict.nativeResponseWithinBound)})`);
+    });
+
+    test('confirmed-window admission: the registered TWO-READ sequence requires SEPARATELY ATTRIBUTABLE reads — ONE write_stdin call with TWO completed output rows never satisfies the schedule, and two distinct call ids admit (P2-2, round-22 codex review)', async (t) => {
+      // The reviewer's exact finding: the sequence check distinguished
+      // response rows by ARRAY POSITION, not by read-call identity — a
+      // rollout with ONE `write_stdin` call and TWO completed output rows
+      // for its call ID (one reaching line 40, one advancing to line 42)
+      // produced both readiness flags even though no second read was
+      // observed. The two-read schedule is TWO ACTUAL READS: the
+      // floor-reaching read and the latest fresh read must carry DISTINCT
+      // call ids, never one call's two output rows.
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      const confirmedWindow = await import('../tools/shell-wait-probe/confirmed-window.mjs');
+      const { fixture } = await createFastRealFixture(t, 'confirmed-window-two-read-distinct-');
+      const rolloutDirectory = join(fixture.codexHome, 'sessions', '2026', '11', '17');
+      await mkdir(rolloutDirectory, { recursive: true, mode: 0o700 });
+      const ROOT_SESSION = 'root-two-read-distinct-session';
+      const CHILD_SESSION = 'child-two-read-distinct-session';
+      const CONTROL_HANDLE = 4100;
+      const controlCallStatement = (/** @type {string} */ kind, /** @type {any} */ value) => `const r = await tools.${kind}(${JSON.stringify(value)}); text(JSON.stringify(r))\n`;
+      const controlCompletedOutput = (/** @type {any} */ result) => [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify(result) }];
+      const childRolloutPath = join(rolloutDirectory, 'rollout-two-read-distinct-child.jsonl');
+      await writeFile(childRolloutPath, [
+        { type: 'session_meta', payload: { id: CHILD_SESSION, parent_thread_id: ROOT_SESSION } },
+      ].map((event) => JSON.stringify(event)).join('\n') + '\n', { mode: 0o600 });
+      const controlRolloutPath = join(rolloutDirectory, 'rollout-two-read-distinct-control.jsonl');
+      /**
+       * Writes the Root-owned control rollout. `singleCallTwoRows` emits ONE
+       * write_stdin call whose call id carries TWO completed output rows
+       * (the floor row then the advancing row); otherwise each poll is its
+       * own call id with its own single output row.
+       */
+      const writeControlRollout = async (/** @type {{ callId: string, output: string, readEpochMs: number }[]} */ polls, singleCallTwoRows = false) => {
+        // The launch is backdated by EXACTLY the newest line's emission age
+        // (84023) so the collector's own emission-to-read demonstration
+        // holds across the whole 1000-ms cadence window, never a 23-ms
+        // sliver: the freshness state latches at the first collector call
+        // and the choreography's barrier consumes the persisted stamp.
+        const launchEpochMs = Date.now() - 84_023;
+        const pollEvents = polls.flatMap((poll, pollIndex) => {
+          const callEvents = singleCallTwoRows && pollIndex === 0
+            ? []
+            : [{ type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: poll.callId, input: controlCallStatement('write_stdin', { session_id: CONTROL_HANDLE, chars: '', yield_time_ms: 60_000 }) }, timestamp: poll.readEpochMs }];
+          return [...callEvents,
+            { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: poll.callId, output: controlCompletedOutput({ output: poll.output, session_id: CONTROL_HANDLE }) }, timestamp: poll.readEpochMs },
+          ];
+        });
+        const events = [
+          { type: 'session_meta', payload: { id: ROOT_SESSION }, timestamp: launchEpochMs },
+          { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'control-launch-1', input: controlCallStatement('exec_command', { cmd: fixture.survivalControlPath }) }, timestamp: launchEpochMs },
+          { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'control-launch-1', output: controlCompletedOutput({ output: '', session_id: CONTROL_HANDLE }) }, timestamp: launchEpochMs + 5 },
+          ...pollEvents,
+        ];
+        await writeFile(controlRolloutPath, events.map((event) => JSON.stringify(event)).join('\n') + '\n', { mode: 0o600 });
+      };
+      const offlineSession = () => ({
+        case: 'rescue-interrupt',
+        codexBinary: process.execPath,
+        sourceSha: 'a'.repeat(40),
+        output: '/private/tmp/confirmed-window-offline-output',
+        budgetMs: 720_000,
+        workerDurationMs: 420_000,
+        stagingPrompt: 'staging prompt with the control directive',
+        continuationPrompt: 'a CHANGED continuation prompt',
+        fixture,
+      });
+      const floorOutput = 'zcode-survival-control 1 21\nzcode-survival-control 40 80021\n';
+      const advancingOutput = 'zcode-survival-control 1 21\nzcode-survival-control 40 80021\nzcode-survival-control 42 84023\n';
+      // (1) The reviewer's reproduced shape: ONE write_stdin call id with
+      // TWO completed output rows — the first row reaching line 40, the
+      // second advancing to line 42. Array position alone produced both
+      // readiness flags; the distinct-call requirement refuses them.
+      let launchEpochMs = Date.now() - 85_000;
+      await writeControlRollout([
+        { callId: 'control-poll-single-call', output: floorOutput, readEpochMs: launchEpochMs + 80_500 },
+        { callId: 'control-poll-single-call', output: advancingOutput, readEpochMs: launchEpochMs + 85_023 },
+      ], true);
+      const singleCallComposition = driverModule.createConfirmedWindowLiveComposition({
+        fixture, now: () => 1_000, workerDurationMs: 420_000,
+        caseDeadlineAtMs: () => 1_200_000,
+        childObservationThreadId: CHILD_SESSION,
+      });
+      const singleCallControl = await singleCallComposition.observers.controlFacts();
+      assert.equal(singleCallControl.active, true, `the single-call control is alive (actual ${JSON.stringify(singleCallControl)})`);
+      assert.deepEqual(singleCallControl.preDeliveryReadSequence, { floorReachedInEarlierRead: false, separatePostFloorFreshRead: true }, `one call's two output rows are never the registered two-read schedule (actual ${JSON.stringify(singleCallControl)})`);
+      const singleCallHost = fakeConfirmedWindowHost({ replies: parentSessionReplies(), notifications: [...identityJoinNotifications({ atMs: 100 })] });
+      const singleCallResult = await confirmedWindow.runConfirmedWindowChoreography(offlineSession(), {
+        now: singleCallHost.clock.now,
+        wallClockNow: singleCallHost.clock.wallClockNow,
+        sleep: singleCallHost.clock.sleep,
+        launchConfirmedWindowHost: singleCallHost.factory,
+        // The choreography leg drives the controller's own gate with the
+        // SAME single-call sequence facts the collector leg proved (the
+        // round-21 admission-row pattern: freshness moves with the run
+        // clock, so the sequence conjunct is the ONLY failing one and the
+        // named miss is deterministic).
+        observers: {
+          ...greenObservers(),
+          controlFacts: async () => ({
+            .../** @type {any} */ (await greenObservers().controlFacts()),
+            preDeliveryReadSequence: { floorReachedInEarlierRead: false, separatePostFloorFreshRead: true },
+          }),
+        },
+      });
+      assert.equal(singleCallResult.finalState, 'staging-not-ready', `the single-call two-row shape never admits (actual ${JSON.stringify(singleCallResult.finalState)})`);
+      assert.match(String(singleCallResult.refusal?.reason ?? ''), /pre-delivery control reads were never observed/u, `the refusal names the unobserved registered sequence (actual ${JSON.stringify(singleCallResult.refusal)})`);
+      assert.equal(singleCallHost.requestLog.filter((entry) => entry.method === 'turn/interrupt').length, 0, 'the only turn/interrupt attempt was NEVER spent on one call\'s two output rows');
+      // (2) The registered TWO-CALL shape: the floor read and the separate
+      // fresh post-floor read carry DISTINCT call ids — both flags hold and
+      // the barrier admits with exactly ONE delivery (the round-21 P1-2
+      // row's registered sequence, restated for the distinct-call rule).
+      launchEpochMs = Date.now() - 85_000;
+      await writeControlRollout([
+        { callId: 'control-poll-floor-distinct-1', output: floorOutput, readEpochMs: launchEpochMs + 80_500 },
+        { callId: 'control-poll-fresh-distinct-1', output: advancingOutput, readEpochMs: launchEpochMs + 85_023 },
+      ], false);
+      const twoCallComposition = driverModule.createConfirmedWindowLiveComposition({
+        fixture, now: () => 1_000, workerDurationMs: 420_000,
+        caseDeadlineAtMs: () => 1_200_000,
+        childObservationThreadId: CHILD_SESSION,
+      });
+      const twoCallControl = await twoCallComposition.observers.controlFacts();
+      assert.deepEqual(twoCallControl.preDeliveryReadSequence, { floorReachedInEarlierRead: true, separatePostFloorFreshRead: true }, `two distinct call ids satisfy the registered schedule (actual ${JSON.stringify(twoCallControl)})`);
+    });
+
+    test('confirmed-window admission: the registered TWO-READ sequence requires the fresh read to START after the floor-reaching read completed — OVERLAPPING reads never satisfy the schedule, and the ordered sequence still admits (P2-3, round-23 codex review)', async (t) => {
+      // The reviewer's exact finding: two distinct control reads can
+      // OVERLAP — the second can START before the first returns line 40 and
+      // still produce its output LATER. The distinct-call check used output
+      // order alone, so both readiness flags became true and the controller
+      // could spend the single interrupt attempt without the registered
+      // sequential reads. The floor row now also requires INVOCATION
+      // timestamp ordering: the floor-reaching read's own response must have
+      // completed BEFORE the fresh read was invoked (the existing invocation
+      // and response bounds, never output order alone). An unstampable read
+      // fails closed (the sequence stays unproven).
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      const { fixture } = await createFastRealFixture(t, 'confirmed-window-two-read-overlap-');
+      const rolloutDirectory = join(fixture.codexHome, 'sessions', '2026', '11', '17');
+      await mkdir(rolloutDirectory, { recursive: true, mode: 0o700 });
+      const ROOT_SESSION = 'root-two-read-overlap-session';
+      const CHILD_SESSION = 'child-two-read-overlap-session';
+      const CONTROL_HANDLE = 4100;
+      const controlCallStatement = (/** @type {string} */ kind, /** @type {any} */ value) => `const r = await tools.${kind}(${JSON.stringify(value)}); text(JSON.stringify(r))\n`;
+      const controlCompletedOutput = (/** @type {any} */ result) => [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify(result) }];
+      const childRolloutPath = join(rolloutDirectory, 'rollout-two-read-overlap-child.jsonl');
+      await writeFile(childRolloutPath, [
+        { type: 'session_meta', payload: { id: CHILD_SESSION, parent_thread_id: ROOT_SESSION } },
+      ].map((event) => JSON.stringify(event)).join('\n') + '\n', { mode: 0o600 });
+      const controlRolloutPath = join(rolloutDirectory, 'rollout-two-read-overlap-control.jsonl');
+      /**
+       * Writes the Root-owned control rollout with EXPLICIT per-event
+       * timestamps (relative to the launch epoch) for the two reads, so the
+       * overlap shape is expressible: the fresh read's invocation can be
+       * stamped BEFORE the floor read's response.
+       */
+      const writeControlRollout = async (/** @type {{ floorCallAt: number, freshCallAt: number, floorOutputAt: number, freshOutputAt: number }} */ stamps) => {
+        const launchEpochMs = Date.now() - 85_000;
+        const floorOutput = 'zcode-survival-control 1 21\nzcode-survival-control 40 80021\n';
+        const advancingOutput = 'zcode-survival-control 1 21\nzcode-survival-control 40 80021\nzcode-survival-control 42 84023\n';
+        const events = [
+          { type: 'session_meta', payload: { id: ROOT_SESSION }, timestamp: launchEpochMs },
+          { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'control-launch-1', input: controlCallStatement('exec_command', { cmd: fixture.survivalControlPath }) }, timestamp: launchEpochMs },
+          { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'control-launch-1', output: controlCompletedOutput({ output: '', session_id: CONTROL_HANDLE }) }, timestamp: launchEpochMs + 5 },
+          { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'control-poll-floor', input: controlCallStatement('write_stdin', { session_id: CONTROL_HANDLE, chars: '', yield_time_ms: 60_000 }) }, timestamp: launchEpochMs + stamps.floorCallAt },
+          { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'control-poll-fresh', input: controlCallStatement('write_stdin', { session_id: CONTROL_HANDLE, chars: '', yield_time_ms: 60_000 }) }, timestamp: launchEpochMs + stamps.freshCallAt },
+          { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'control-poll-floor', output: controlCompletedOutput({ output: floorOutput, session_id: CONTROL_HANDLE }) }, timestamp: launchEpochMs + stamps.floorOutputAt },
+          { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'control-poll-fresh', output: controlCompletedOutput({ output: advancingOutput, session_id: CONTROL_HANDLE }) }, timestamp: launchEpochMs + stamps.freshOutputAt },
+        ];
+        await writeFile(controlRolloutPath, events.map((event) => JSON.stringify(event)).join('\n') + '\n', { mode: 0o600 });
+      };
+      const collectControl = async () => {
+        const composition = driverModule.createConfirmedWindowLiveComposition({
+          fixture, now: () => 1_000, workerDurationMs: 420_000,
+          caseDeadlineAtMs: () => 1_200_000,
+          childObservationThreadId: CHILD_SESSION,
+        });
+        return composition.observers.controlFacts();
+      };
+      // (1) The reviewer's reproduced OVERLAP: the fresh read was invoked at
+      // +80100 — BEFORE the floor read's response completed at +80500 — and
+      // only its OUTPUT landed later. Output order alone admitted this
+      // shape; the invocation ordering refuses it.
+      await writeControlRollout({ floorCallAt: 80_000, freshCallAt: 80_100, floorOutputAt: 80_500, freshOutputAt: 85_023 });
+      const overlapControl = await collectControl();
+      assert.deepEqual(overlapControl.preDeliveryReadSequence, { floorReachedInEarlierRead: false, separatePostFloorFreshRead: true }, `overlapping reads (the fresh read started before the floor response completed) never satisfy the registered sequence (actual ${JSON.stringify(overlapControl.preDeliveryReadSequence)})`);
+      // (2) The contrast stays: the ORDERED sequence — the fresh read
+      // invoked only after the floor read's response completed — still
+      // satisfies both flags, so the fix never refuses the registered shape.
+      await writeControlRollout({ floorCallAt: 80_000, freshCallAt: 80_600, floorOutputAt: 80_500, freshOutputAt: 85_023 });
+      const orderedControl = await collectControl();
+      assert.deepEqual(orderedControl.preDeliveryReadSequence, { floorReachedInEarlierRead: true, separatePostFloorFreshRead: true }, `the ordered sequence (the fresh read started after the floor response completed) still satisfies the registered schedule (actual ${JSON.stringify(orderedControl.preDeliveryReadSequence)})`);
+    });
+
+    test('confirmed-window standard entry: the pre-teardown CHECKPOINT carries the controller\'s ADJUDICATED control-survival result — the measured no-collateral verdict stays recoverable even if teardown prevents the final record (P2-3, round-22 codex review)', async (t) => {
+      // The reviewer's exact finding: the checkpoint projects the RAW duty
+      // snapshot, but `control-survival` is added only later in
+      // finalization — if teardown prevented the final record, the
+      // checkpoint lost the control-survival result even when the controller
+      // had established it before the cutoff. The checkpoint now shares
+      // the SAME pre-teardown duty projection the final record uses: the
+      // adjudicated survival name (added when the establishing read
+      // completed pre-cutoff, stripped when unestablished) rides the
+      // checkpoint, and the retained evidence agrees with the record.
+      const noSurvivalNameDuties = greenDuties({
+        names: ['invocation', 'broker', 'transport', 'runner', 'job', 'guard', 'integrity'],
+      });
+      const { record, output } = await runRouteThroughEntry(t, {
+        script: {
+          notifications: [
+            ...identityJoinNotifications({ atMs: 100 }),
+            { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+          ],
+        },
+        dutyAdjudication: noSurvivalNameDuties,
+      });
+      assert.equal(record.status, 'executed', `the case executed (actual ${JSON.stringify(record.status)})`);
+      // The controller ADJUDICATED the survival before the cutoff: the
+      // final record's credited projection carries the added name (the
+      // runtime survival facts are non-persisted by design — the
+      // adjudicated verdict rides the projected names).
+      assert.equal(record.confirmedWindow.duties.names.includes('control-survival'), true, `the final record carries the adjudicated survival name (actual ${JSON.stringify(record.confirmedWindow.duties)})`);
+      // The CHECKPOINT carries the SAME adjudicated projection — the
+      // measured no-collateral result stays recoverable without the final
+      // record, and the two retained shapes agree.
+      const checkpoint = JSON.parse(await readFile(join(output, 'confirmed-window.checkpoint.json'), 'utf8'));
+      assert.equal(checkpoint.duties?.names?.includes('control-survival'), true, `the checkpoint carries the adjudicated survival name (actual ${JSON.stringify(checkpoint.duties)})`);
+      assert.deepEqual(checkpoint.duties?.names, record.confirmedWindow.duties.names, `the checkpoint's duty projection agrees with the record's (actual checkpoint ${JSON.stringify(checkpoint.duties?.names)} vs record ${JSON.stringify(record.confirmedWindow.duties.names)})`);
+      assert.equal(checkpoint.duties?.durableSettled, record.confirmedWindow.duties.durableSettled, 'the checkpoint and the record agree on the durable settlement');
+    });
+
+    test('confirmed-window horizon: a resolution that first arrives during the teardown horizon is RETAINED as a named LATE diagnostic with its timestamp — the record distinguishes an unresponsive Child from a resolution outside the window, and replay denies cutoff credit (P2-4, round-22 codex review)', async () => {
+      // The reviewer's exact finding: when the exact Child terminal
+      // notification or the original poll's resolution first arrived during
+      // the teardown horizon, the controller read it but DISCARDED it — the
+      // retained record reported a MISSING resolution rather than an observed
+      // LATE one, losing the distinction between an unresponsive Child and
+      // a resolution outside the window. The late facts are now recorded
+      // with their timestamps and replay denies cutoff credit (the round-19
+      // P1-5 freeze stands: late facts never earn credit).
+      const confirmedWindow = await import('../tools/shell-wait-probe/confirmed-window.mjs');
+      const evidence = await import('../tools/shell-wait-probe/native-control-evidence.mjs');
+      // (1) The LATE CHILD TERMINAL: the terminal notification is delivered
+      // at 431000 — after the 430050 measurement cutoff, inside the 435050
+      // teardown horizon — while the observation leg resolves green (320).
+      const lateTerminalHost = fakeConfirmedWindowHost({
+        replies: parentSessionReplies(),
+        notifications: [
+          ...identityJoinNotifications({ atMs: 100 }),
+          { atMs: 431_000, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+        ],
+      });
+      const lateTerminalResult = await confirmedWindow.runConfirmedWindowChoreography({
+        case: 'rescue-interrupt',
+        codexBinary: process.execPath,
+        sourceSha: 'a'.repeat(40),
+        output: '/private/tmp/confirmed-window-offline-output',
+        budgetMs: 720_000,
+        workerDurationMs: 420_000,
+        stagingPrompt: 'staging prompt with the control directive',
+        continuationPrompt: 'a CHANGED continuation prompt',
+        fixture: {
+          workspace: '/private/tmp/confirmed-window-offline-workspace',
+          codexHome: '/private/tmp/confirmed-window-offline-codex-home',
+          installedRoot: '/private/tmp/confirmed-window-offline-installed',
+          env: { CODEX_HOME: '/private/tmp/confirmed-window-offline-codex-home', HOME: '/private/tmp/confirmed-window-offline-home' },
+          record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
+          dispose: async () => {},
+        },
+      }, {
+        now: lateTerminalHost.clock.now,
+        wallClockNow: lateTerminalHost.clock.wallClockNow,
+        sleep: lateTerminalHost.clock.sleep,
+        launchConfirmedWindowHost: lateTerminalHost.factory,
+        observers: greenObservers(),
+        dutyAdjudication: greenDuties(),
+      });
+      assert.equal(lateTerminalResult.receipt.childResolutionAtMs, null, `the late terminal NEVER grants cutoff credit (actual ${JSON.stringify(lateTerminalResult.receipt)})`);
+      assert.equal(lateTerminalResult.receipt.childResolutionLateAtMs, 431_000, `the late Child terminal is RETAINED with its arrival timestamp — the record distinguishes the observed-late fact from an unresponsive Child (actual ${JSON.stringify(lateTerminalResult.receipt)})`);
+      assert.match(String(lateTerminalResult.refusal?.reason ?? ''), /never (observed|resolved) inside the measurement window/u, `the verdict still refuses cutoff credit (actual ${JSON.stringify(lateTerminalResult.refusal)})`);
+      const lateTerminalBlock = JSON.parse(JSON.stringify(evidence.projectConfirmedWindowBlock(lateTerminalResult)));
+      assert.equal(lateTerminalBlock.receipt.childResolutionLateAtMs, 431_000, `the bounded receipt projection carries the late diagnostic (actual ${JSON.stringify(lateTerminalBlock.receipt)})`);
+      const lateTerminalVerdict = evidence.admitConfirmedWindowNativeEvidence(lateTerminalBlock, evidence.projectConfirmedWindowDutyAdjudication(greenDuties()));
+      assert.equal(lateTerminalVerdict.settlement.settled, false, `the late resolution never settles (actual ${JSON.stringify(lateTerminalVerdict.settlement)})`);
+      assert.ok(lateTerminalVerdict.settlement.reasons.includes('missing-child-resolution'), `the credited leg stays refused by its own name (actual ${JSON.stringify(lateTerminalVerdict.settlement.reasons)})`);
+      assert.ok(lateTerminalVerdict.settlement.reasons.includes('late-resolution-no-credit'), `the observed-late fact is NAMED at replay (actual ${JSON.stringify(lateTerminalVerdict.settlement.reasons)})`);
+      // (2) The LATE OBSERVATION RESOLUTION: the Child terminal arrives
+      // green (300) but the original poll's resolution first lands at
+      // 431000 — past the cutoff, inside the horizon.
+      const lateObservationHost = fakeConfirmedWindowHost({
+        replies: parentSessionReplies(),
+        notifications: [
+          ...identityJoinNotifications({ atMs: 100 }),
+          { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+        ],
+      });
+      const lateObservationResult = await confirmedWindow.runConfirmedWindowChoreography({
+        case: 'rescue-interrupt',
+        codexBinary: process.execPath,
+        sourceSha: 'a'.repeat(40),
+        output: '/private/tmp/confirmed-window-offline-output',
+        budgetMs: 720_000,
+        workerDurationMs: 420_000,
+        stagingPrompt: 'staging prompt with the control directive',
+        continuationPrompt: 'a CHANGED continuation prompt',
+        fixture: {
+          workspace: '/private/tmp/confirmed-window-offline-workspace',
+          codexHome: '/private/tmp/confirmed-window-offline-codex-home',
+          installedRoot: '/private/tmp/confirmed-window-offline-installed',
+          env: { CODEX_HOME: '/private/tmp/confirmed-window-offline-codex-home', HOME: '/private/tmp/confirmed-window-offline-home' },
+          record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
+          dispose: async () => {},
+        },
+      }, {
+        now: lateObservationHost.clock.now,
+        wallClockNow: lateObservationHost.clock.wallClockNow,
+        sleep: lateObservationHost.clock.sleep,
+        launchConfirmedWindowHost: lateObservationHost.factory,
+        observers: {
+          ...greenObservers(),
+          pendingObservation: async () => {
+            const current = typeof greenObservationClock.now === 'function' ? greenObservationClock.now() : 0;
+            const resolved = current >= 431_000;
+            return { confirmed: true, observedAtMs: 50, resolved, resolvedAtMs: resolved ? 431_000 : null, holdDeadlineAtMs: 420_050, clockDomain: 'controller-monotonic', reason: null };
+          },
+        },
+        dutyAdjudication: greenDuties(),
+      });
+      assert.equal(lateObservationResult.receipt.observationResolvedAtMs, null, `the late observation resolution NEVER grants cutoff credit (actual ${JSON.stringify(lateObservationResult.receipt)})`);
+      assert.equal(lateObservationResult.receipt.observationResolvedLateAtMs, 431_000, `the late observation resolution is RETAINED with its timestamp (actual ${JSON.stringify(lateObservationResult.receipt)})`);
+      assert.match(String(lateObservationResult.refusal?.reason ?? ''), /never (observed|resolved) inside the measurement window/u, `the verdict still refuses cutoff credit (actual ${JSON.stringify(lateObservationResult.refusal)})`);
+      const lateObservationBlock = JSON.parse(JSON.stringify(evidence.projectConfirmedWindowBlock(lateObservationResult)));
+      assert.equal(lateObservationBlock.receipt.observationResolvedLateAtMs, 431_000, `the bounded receipt projection carries the late diagnostic (actual ${JSON.stringify(lateObservationBlock.receipt)})`);
+      const lateObservationVerdict = evidence.admitConfirmedWindowNativeEvidence(lateObservationBlock, evidence.projectConfirmedWindowDutyAdjudication(greenDuties()));
+      assert.equal(lateObservationVerdict.settlement.settled, false, `the late resolution never settles (actual ${JSON.stringify(lateObservationVerdict.settlement)})`);
+      assert.ok(lateObservationVerdict.settlement.reasons.includes('missing-observation-resolution'), `the credited leg stays refused by its own name (actual ${JSON.stringify(lateObservationVerdict.settlement.reasons)})`);
+      assert.ok(lateObservationVerdict.settlement.reasons.includes('late-resolution-no-credit'), `the observed-late fact is NAMED at replay (actual ${JSON.stringify(lateObservationVerdict.settlement.reasons)})`);
+    });
+
+    test('confirmed-window choreography: a completion for ANOTHER TURN on the joined Child is its OWN diagnostic — the collection loop, the buffered drain and the late drain all keep looking for the REQUESTED turn\'s terminal, and only the matching receipt is the resolution leg (P2-4, round-23 codex review)', async () => {
+      // The reviewer's exact finding: a stale completion for ANOTHER turn on
+      // the same Child arrived before the requested turn's completion, and
+      // the collection loop filled `childResolution` from the stale event
+      // (thread-only matching) and stopped looking for the exact receipt —
+      // a `wrong-turn-target` shape at replay although the matching terminal
+      // arrived next. Every consumption site now matches BOTH the thread id
+      // AND the turn id before setting the terminal leg; a completion for a
+      // different (or unbindable) turn on the joined Child is recorded as
+      // its own diagnostic and never as the childResolution leg.
+      const evidence = await import('../tools/shell-wait-probe/native-control-evidence.mjs');
+      // (1) The IN-LOOP shape: the stale turn's completion arrives at 300,
+      // the requested turn's own interrupted terminal at 400.
+      const staleThenMatch = await runOfflineChoreography({
+        script: {
+          notifications: [
+            ...identityJoinNotifications({ atMs: 100 }),
+            { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: 'child-turn-stale', status: 'interrupted', items: [] } } },
+            { atMs: 400, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+          ],
+        },
+        dependencies: { dutyAdjudication: greenDuties() },
+      });
+      const result = staleThenMatch.result;
+      assert.ok(result.states.some((entry) => entry.state === 'native-resolution-observed'), `the requested turn's own terminal is the resolution leg (actual ${JSON.stringify(result.states)})`);
+      assert.equal(result.finalState, 'all-duties-adjudicated', `the matching receipt escalates to the settled end state (actual ${JSON.stringify(result.finalState)})`);
+      assert.equal(result.receipt.completedTurnId, CHILD_TURN, `the receipt binds the REQUESTED turn id, never the stale event's (actual ${JSON.stringify(result.receipt.completedTurnId)})`);
+      assert.equal(result.receipt.childResolutionAtMs, 400, `the resolution is the matching terminal's arrival, never the stale event (actual ${JSON.stringify(result.receipt.childResolutionAtMs)})`);
+      assert.equal(result.receipt.childForeignTurnCompletionAtMs, 300, `the other-turn completion is recorded as its own diagnostic (actual ${JSON.stringify(result.receipt.childForeignTurnCompletionAtMs)})`);
+      assert.equal(result.receipt.childForeignTurnCompletionTurnId, 'child-turn-stale', 'the diagnostic carries the foreign turn id');
+      const staleBlock = JSON.parse(JSON.stringify(evidence.projectConfirmedWindowBlock(result)));
+      assert.equal(staleBlock.receipt.childForeignTurnCompletionAtMs, 300, 'the bounded receipt projection carries the foreign-turn diagnostic');
+      assert.equal(staleThenMatch.result.evidenceVerdict.settlement.settled, true, `the exact matching receipt settles (actual ${JSON.stringify(staleThenMatch.result.evidenceVerdict.settlement)})`);
+      // (2) The LATE-DRAIN shape: a completion for ANOTHER turn first
+      // arrives during the teardown horizon — it is the foreign diagnostic,
+      // never the late-resolution retention.
+      const foreignLate = await runOfflineChoreography({
+        script: {
+          notifications: [
+            ...identityJoinNotifications({ atMs: 100 }),
+            { atMs: 431_000, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: 'child-turn-stale', status: 'interrupted', items: [] } } },
+          ],
+        },
+        dependencies: { dutyAdjudication: greenDuties() },
+      });
+      const foreignLateBlock = JSON.parse(JSON.stringify(evidence.projectConfirmedWindowBlock(foreignLate.result)));
+      assert.equal(foreignLateBlock.receipt.childResolutionLateAtMs, null, `a foreign-turn completion is never the late Child resolution (actual ${JSON.stringify(foreignLateBlock.receipt.childResolutionLateAtMs)})`);
+      assert.equal(foreignLateBlock.receipt.childForeignTurnCompletionAtMs, 431_000, `the horizon's foreign-turn completion rides its own diagnostic (actual ${JSON.stringify(foreignLateBlock.receipt.childForeignTurnCompletionAtMs)})`);
+      assert.equal(foreignLateBlock.receipt.childForeignTurnCompletionTurnId, 'child-turn-stale', 'the horizon diagnostic carries the foreign turn id');
+      assert.equal(foreignLate.result.finalState, 'native-request-sent', 'the credited leg stays refused');
+    });
+
+    test('confirmed-window choreography: a Child terminal QUEUED behind a cutoff-crossing collector read rides the LATE-resolution fields — the buffered drain classifies it by its RETAINED ARRIVAL STAMP, so the cutoff fence applies regardless of which loop consumes it (P2-5, round-23 codex review)', async () => {
+      // The reviewer's exact finding: when a collector crosses the cutoff
+      // and a Child terminal arrives during that read, the buffered drain
+      // wrote the late event to `childResolutionAtMs` and could advance the
+      // case to `native-resolution-observed` — replay denied the settlement
+      // (a post-cutoff resolution gets no credit) but the record never
+      // populated `childResolutionLateAtMs`. The queued event is now
+      // classified by its RETAINED ARRIVAL STAMP: a post-cutoff-arrival
+      // terminal rides the late-resolution fields, never the credited leg.
+      const confirmedWindow = await import('../tools/shell-wait-probe/confirmed-window.mjs');
+      const evidence = await import('../tools/shell-wait-probe/native-control-evidence.mjs');
+      // The terminal arrives at 430060 — 10 ms after the 430050 measurement
+      // cutoff (observed 50 + the 420000 hold + the registered 10000). A
+      // collector read that lands near the cutoff advances the shared clock
+      // past the terminal's arrival, so the collection loop breaks at the
+      // deadline with the terminal still QUEUED and the buffered drain is
+      // the loop that consumes it.
+      const crossCutoffHost = fakeConfirmedWindowHost({
+        replies: parentSessionReplies(),
+        notifications: [
+          ...identityJoinNotifications({ atMs: 100 }),
+          { atMs: 430_060, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+        ],
+      });
+      const crossCutoffResult = await confirmedWindow.runConfirmedWindowChoreography({
+        case: 'rescue-interrupt',
+        codexBinary: process.execPath,
+        sourceSha: 'a'.repeat(40),
+        output: '/private/tmp/confirmed-window-offline-output',
+        budgetMs: 720_000,
+        workerDurationMs: 420_000,
+        stagingPrompt: 'staging prompt with the control directive',
+        continuationPrompt: 'a CHANGED continuation prompt',
+        fixture: {
+          workspace: '/private/tmp/confirmed-window-offline-workspace',
+          codexHome: '/private/tmp/confirmed-window-offline-codex-home',
+          installedRoot: '/private/tmp/confirmed-window-offline-installed',
+          env: { CODEX_HOME: '/private/tmp/confirmed-window-offline-codex-home', HOME: '/private/tmp/confirmed-window-offline-home' },
+          record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
+          dispose: async () => {},
+        },
+      }, {
+        now: crossCutoffHost.clock.now,
+        wallClockNow: crossCutoffHost.clock.wallClockNow,
+        sleep: crossCutoffHost.clock.sleep,
+        launchConfirmedWindowHost: crossCutoffHost.factory,
+        observers: {
+          ...greenObservers(),
+          pendingObservation: async () => {
+            const current = typeof greenObservationClock.now === 'function' ? greenObservationClock.now() : 0;
+            // The cutoff-crossing read: the last floor-cadence read before
+            // the deadline runs long and jumps the shared clock past the
+            // queued terminal's arrival instant.
+            if (current >= 429_000 && current < 430_100) crossCutoffHost.clock.advanceTo(430_100);
+            const resolvedNow = greenObservationClock.now();
+            const resolved = resolvedNow >= 320;
+            return { confirmed: true, observedAtMs: 50, resolved, resolvedAtMs: resolved ? 320 : null, holdDeadlineAtMs: 420_050, clockDomain: 'controller-monotonic', reason: null };
+          },
+        },
+        dutyAdjudication: greenDuties(),
+      });
+      assert.equal(crossCutoffResult.receipt.childResolutionAtMs, null, `the post-cutoff-arrival terminal NEVER fills childResolutionAtMs (actual ${JSON.stringify(crossCutoffResult.receipt.childResolutionAtMs)})`);
+      assert.equal(crossCutoffResult.receipt.childResolutionLateAtMs, 430_060, `the queued terminal rides the LATE-resolution fields with its retained arrival stamp (actual ${JSON.stringify(crossCutoffResult.receipt.childResolutionLateAtMs)})`);
+      assert.equal(crossCutoffResult.finalState, 'native-request-sent', `the credited leg stays refused — the cutoff fence holds regardless of the consuming loop (actual ${JSON.stringify(crossCutoffResult.finalState)})`);
+      const crossCutoffBlock = JSON.parse(JSON.stringify(evidence.projectConfirmedWindowBlock(crossCutoffResult)));
+      assert.equal(crossCutoffBlock.receipt.childResolutionLateAtMs, 430_060, 'the bounded receipt projection carries the late diagnostic');
+      const crossCutoffVerdict = evidence.admitConfirmedWindowNativeEvidence(crossCutoffBlock, evidence.projectConfirmedWindowDutyAdjudication(greenDuties()));
+      assert.equal(crossCutoffVerdict.settlement.settled, false, `the replay still denies the settlement (actual ${JSON.stringify(crossCutoffVerdict.settlement)})`);
+      assert.ok(crossCutoffVerdict.settlement.reasons.includes('missing-child-resolution'), `the credited leg keeps its own name (actual ${JSON.stringify(crossCutoffVerdict.settlement.reasons)})`);
+      assert.ok(crossCutoffVerdict.settlement.reasons.includes('late-resolution-no-credit'), `the observed-late fact is NAMED at replay (actual ${JSON.stringify(crossCutoffVerdict.settlement.reasons)})`);
+    });
+
+    test('confirmed-window choreography: the case deadline is RECHECKED IMMEDIATELY before the host launch — gate setup that exhausts the remaining budget takes the pre-launch cleanup path, and no host ever launches on an expired clock (P2-7, round-23 codex review)', async (t) => {
+      // The reviewer's exact finding: the controller starts the case clock
+      // before the asynchronous gate creation but does not check it again
+      // before `launchHost` — gate setup that used up the remaining budget
+      // still started the host and consumed the counted case; the expiry was
+      // noticed only before `initialize`. The deadline is now checked at the
+      // launch boundary itself: an expired clock throws into the pre-launch
+      // cleanup path (the armed hold producer's deterministic disposal) and
+      // the ONE host launch never happens.
+      const confirmedWindow = await import('../tools/shell-wait-probe/confirmed-window.mjs');
+      const temporary = await mkdtemp(join(tmpdir(), 'confirmed-window-prelaunch-'));
+      t.after(() => rm(temporary, { recursive: true, force: true }));
+      const output = join(temporary, 'output');
+      await mkdir(output, { mode: 0o700 });
+      // A per-call stepping clock: every controller clock read advances
+      // 700 ms, so the asynchronous gate creation (one read for the case
+      // start, one for the gate's creation stamp) consumes the whole
+      // 1000 ms budget before the launch boundary is reached.
+      let tick = 0;
+      const steppedNow = () => {
+        tick += 1;
+        return tick * 700;
+      };
+      const preLaunchHost = fakeConfirmedWindowHost({ replies: parentSessionReplies(), notifications: [...identityJoinNotifications({ atMs: 100 })] });
+      const result = await confirmedWindow.runConfirmedWindowChoreography({
+        case: 'rescue-interrupt',
+        codexBinary: process.execPath,
+        sourceSha: 'a'.repeat(40),
+        output,
+        budgetMs: 1_000,
+        workerDurationMs: 420_000,
+        stagingPrompt: 'staging prompt with the control directive',
+        continuationPrompt: 'a CHANGED continuation prompt',
+        fixture: {
+          workspace: '/private/tmp/confirmed-window-offline-workspace',
+          codexHome: '/private/tmp/confirmed-window-offline-codex-home',
+          installedRoot: '/private/tmp/confirmed-window-offline-installed',
+          env: { CODEX_HOME: '/private/tmp/confirmed-window-offline-codex-home', HOME: '/private/tmp/confirmed-window-offline-home' },
+          record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
+          dispose: async () => {},
+        },
+      }, {
+        now: steppedNow,
+        wallClockNow: preLaunchHost.clock.wallClockNow,
+        sleep: preLaunchHost.clock.sleep,
+        launchConfirmedWindowHost: preLaunchHost.factory,
+        observers: greenObservers(),
+        dutyAdjudication: greenDuties(),
+      });
+      assert.equal(preLaunchHost.launchCount, 0, `the host is NEVER launched on an expired case clock (actual launch count ${String(preLaunchHost.launchCount)})`);
+      assert.equal(result.host.launchCount, 0, 'the record carries the zero-launch fact');
+      assert.equal(result.finalState, 'staging-not-ready', `the expired case stops before escalation (actual ${JSON.stringify(result.finalState)})`);
+      assert.match(String(result.refusal?.reason ?? ''), /case deadline elapsed before the owned host launch/u, `the refusal names the PRE-LAUNCH deadline expiry (actual ${JSON.stringify(result.refusal)})`);
+      // The pre-launch cleanup path ran: the armed hold producer's
+      // deterministic disposal (release, worker check, directory removal).
+      assert.equal(result.hold.armed, true, 'the hold producer was armed before the launch boundary');
+      assert.equal(result.hold.releaseBasis, 'cleanup', `the pre-launch cleanup released the armed gate (actual ${JSON.stringify(result.hold.releaseBasis)})`);
+      assert.equal(result.hold.gateDirectoryRemoved, true, 'the pre-launch cleanup removed the gate directory');
+      assert.equal(result.nativeRequest.attemptCount, 0, 'the counted case never started protocol work on an expired clock');
+    });
+
+    test('confirmed-window settlement: the controller-encoded clock refusal is APPENDED, never a replacement — a run that also misses a required duty keeps its other refusal reasons, and the stored verdict matches the recomputation from its retained inputs (P3-1, round-22 codex review)', async () => {
+      // The reviewer's exact finding: when replay had already included the
+      // encoded clock refusal, the finalizer REPLACED the entire reason list
+      // with `[clockRefusal]` — a run that also lacked a Child resolution or
+      // a required duty stored a different verdict from the one recomputed
+      // from its retained inputs. The clock reason is now APPENDED only when
+      // missing, and every other failure keeps its own name.
+      const { result } = await runOfflineChoreography({
+        script: {
+          notifications: [
+            ...identityJoinNotifications({ atMs: 100 }),
+            { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+          ],
+        },
+        // (a) the settlement-stage clock gate refuses credit: a FOREIGN
+        // clock-domain tag on the raw adjudication; (b) the 'job' duty slot
+        // is missing from the persisted names — BOTH refusals must ride the
+        // retained verdict.
+        dependencies: {
+          dutyAdjudication: greenDuties({ clockDomain: 'epoch', names: ['invocation', 'broker', 'transport', 'runner', 'guard', 'integrity'] }),
+        },
+      });
+      const reasons = result.evidenceVerdict?.settlement?.reasons ?? [];
+      assert.equal(result.evidenceVerdict.settlement.settled, false, `the clock gate refuses the settlement credit (actual ${JSON.stringify(result.evidenceVerdict.settlement)})`);
+      assert.ok(reasons.includes('clock-domain-mismatch'), `the encoded clock refusal rides the retained verdict (actual ${JSON.stringify(reasons)})`);
+      assert.ok(reasons.includes('required-duty-slot-unproven'), `the OTHER failure keeps its own name — the clock reason never replaces the list (actual ${JSON.stringify(reasons)})`);
+      // The retained verdict equals the recomputation from its retained
+      // inputs (the honest-replay property the replacement broke).
+      const evidence = await import('../tools/shell-wait-probe/native-control-evidence.mjs');
+      const recomputed = evidence.admitConfirmedWindowNativeEvidence(
+        JSON.parse(JSON.stringify(evidence.projectConfirmedWindowBlock(result))),
+        result.adjudicatedDuties,
+      );
+      assert.deepEqual(result.evidenceVerdict.settlement.reasons, recomputed.settlement.reasons, `the stored verdict matches the recomputation from the retained inputs (actual stored ${JSON.stringify(result.evidenceVerdict.settlement.reasons)} vs recomputed ${JSON.stringify(recomputed.settlement.reasons)})`);
+    });
+
+    test('confirmed-window live composition: pending-observation evidence is BOUND to the joined Child and its original-handle poll — a Root-side pending cell never confirms the observation (P1-1, 2026-11-19 codex re-review)', async (t) => {
+      // The reviewer's exact offline reproduction: the scan read EVERY rollout
+      // without checking session identity, the originating tool call, or the
+      // original Companion handle — a record containing only a ROOT pending
+      // output returned `confirmed: true`, allowing interruption before the
+      // Child starts its observation. The evidence is now bound to the joined
+      // Child (the rollout whose session_meta id names the joined Child
+      // session premise) and to its ORIGINAL-HANDLE poll (the first
+      // write_stdin poll's exec session handle — the originating tool call);
+      // any other rollout's or any other handle's pending cell premises
+      // nothing.
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      const { fixture, temporary } = await createFastRealFixture(t, 'confirmed-window-child-binding-');
+      let current = 1_000;
+      const now = () => current;
+      const gateDirectory = join(temporary, 'child-binding-hold-gate');
+      await mkdir(gateDirectory, { recursive: true, mode: 0o700 });
+      const gatePath = join(gateDirectory, 'completion.gate');
+      const gateReachedPath = join(gateDirectory, 'completion.reached');
+      await writeFile(gatePath, 'hold', { mode: 0o600 });
+      await writeFile(gateReachedPath, '', { mode: 0o600 });
+      const recordPath = /** @type {string} */ (fixture.env.FAKE_ZCODE_RECORD);
+      await writeFile(recordPath, [
+        JSON.stringify({ id: 4, method: 'session/create', params: { workspace: { workspacePath: '/repo' } } }),
+        JSON.stringify({ id: 5, method: 'session/send', params: { sessionId: 'fake-session-1', content: 'the staged rescue objective' } }),
+      ].join('\n') + '\n', 'utf8');
+      await writeFile(gateReachedPath, 'blocked', { mode: 0o600 });
+      const writeStdinPollEvents = (/** @type {string} */ callId, /** @type {number} */ sessionId, /** @type {any} */ output) => [
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: callId, input: `const r = await tools.write_stdin(${JSON.stringify({ session_id: sessionId, chars: '', yield_time_ms: 3_600_000 })}); text(JSON.stringify(r))\n` } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: callId, output } },
+      ];
+      // (P1-2, 2026-11-19 codex re-review) the Rescue launcher acknowledgement
+      // grounds the ORIGINAL handle 500 in the Child rollout.
+      const launcherExecEvents = [
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'child-rescue-launcher', input: 'const r = await tools.exec_command({"cmd":"node \\"/installed-plugin/skills/rescue/launcher.mjs\\" invoke-prepared rescue"}); text(JSON.stringify(r))\n' } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'child-rescue-launcher', output: [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify({ output: '', session_id: 500 }) }] } },
+      ];
+      const PENDING_OUTPUT = [{ type: 'input_text', text: 'Script running with cell ID cell-root-1\n' }];
+      const rolloutDirectory = join(fixture.codexHome, 'sessions', '2026', '11', '17');
+      await mkdir(rolloutDirectory, { recursive: true, mode: 0o700 });
+      // (1) The reviewer's exact hole: a ROOT rollout (session identity
+      // 'root-session-1' — never the joined Child) carrying a pending cell,
+      // with NO Child rollout at all, must never confirm.
+      const rootRolloutPath = join(rolloutDirectory, 'rollout-child-binding-root.jsonl');
+      const rootEvents = [
+        { type: 'session_meta', payload: { id: 'root-session-1' } },
+        ...writeStdinPollEvents('root-poll-1', 777, PENDING_OUTPUT),
+      ];
+      await writeFile(rootRolloutPath, rootEvents.map((event) => JSON.stringify(event)).join('\n') + '\n', { mode: 0o600 });
+      const rootOnly = driverModule.createConfirmedWindowLiveComposition({
+        fixture, now, workerDurationMs: 420_000,
+        completionGatePath: gatePath, completionGateReachedPath: gateReachedPath,
+        childObservationThreadId: 'child-session-1',
+        loadRollouts: async () => [rootEvents],
+      });
+      const rootOnlyPending = await rootOnly.observers.pendingObservation();
+      assert.equal(rootOnlyPending.confirmed, false, `a Root-side pending cell never confirms the observation (actual ${JSON.stringify(rootOnlyPending)})`);
+      assert.match(String(rootOnlyPending.reason ?? ''), /Child/u, 'the refusal names the missing joined-Child rollout binding');
+      // (2) A pending cell under a FOREIGN exec handle inside the Child's own
+      // rollout is equally not the original observation: the original-handle
+      // poll is the FIRST write_stdin poll; another handle's pending cell
+      // premises nothing.
+      const foreignHandleEvents = [
+        { type: 'session_meta', payload: { id: 'child-session-1' } },
+        ...launcherExecEvents,
+        ...writeStdinPollEvents('child-poll-1', 500, [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify({ output: 'setup done', session_id: 500 }) }]),
+        ...writeStdinPollEvents('foreign-poll-2', 501, PENDING_OUTPUT),
+      ];
+      const foreignComposition = driverModule.createConfirmedWindowLiveComposition({
+        fixture, now, workerDurationMs: 420_000,
+        completionGatePath: gatePath, completionGateReachedPath: gateReachedPath,
+        childObservationThreadId: 'child-session-1',
+        loadRollouts: async () => [foreignHandleEvents],
+      });
+      const foreignPending = await foreignComposition.observers.pendingObservation();
+      assert.equal(foreignPending.confirmed, false, `a foreign-handle pending cell is never the original observation (actual ${JSON.stringify(foreignPending)})`);
+      assert.match(String(foreignPending.reason ?? ''), /original|handle/u, 'the refusal names the original-handle poll binding');
+      // (3) The bound shape confirms: the joined Child rollout's
+      // ORIGINAL-HANDLE poll outstanding.
+      const childEvents = [
+        { type: 'session_meta', payload: { id: 'child-session-1' } },
+        ...launcherExecEvents,
+        ...writeStdinPollEvents('child-poll-1', 500, [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify({ output: 'setup done', session_id: 500 }) }]),
+        ...writeStdinPollEvents('child-poll-2', 500, PENDING_OUTPUT),
+      ];
+      const bound = driverModule.createConfirmedWindowLiveComposition({
+        fixture, now, workerDurationMs: 420_000,
+        completionGatePath: gatePath, completionGateReachedPath: gateReachedPath,
+        childObservationThreadId: 'child-session-1',
+        loadRollouts: async () => [childEvents],
+      });
+      const boundPending = await bound.observers.pendingObservation();
+      assert.equal(boundPending.confirmed, true, `the joined Child's original-handle pending poll confirms (actual ${JSON.stringify(boundPending)})`);
+      assert.equal(boundPending.observedAtMs, 1_000, 'the first confirmation is stamped at the controller-clock read instant');
+      assert.equal(boundPending.holdDeadlineAtMs, 421_000, 'the frozen observedAtMs + 420000 derivation');
+      // (4) Without the child-session premise the scan is FAIL-CLOSED: the
+      // joined Child is never guessed.
+      const unbound = driverModule.createConfirmedWindowLiveComposition({
+        fixture, now, workerDurationMs: 420_000,
+        completionGatePath: gatePath, completionGateReachedPath: gateReachedPath,
+        loadRollouts: async () => [childEvents],
+      });
+      const unboundPending = await unbound.observers.pendingObservation();
+      assert.equal(unboundPending.confirmed, false, 'a composition without the joined-Child premise never confirms');
+      assert.match(String(unboundPending.reason ?? ''), /Child/u, 'the refusal names the unbound joined-Child premise');
+    });
+
+    test('confirmed-window live composition: a pending cell resolves through its LINKED continuation call — the completion legitimately belongs to a different call id than the poll that yielded the cell (P1-2, 2026-11-19 codex re-review)', async (t) => {
+      // The reviewer's exact offline reproduction: for a normal yielded
+      // observation the pending output belongs to the original poll's call
+      // id, but completion belongs to a subsequent `wait({cell_id})`
+      // continuation with a DIFFERENT call id. Grouping outputs solely by
+      // call id left `returned` false after legitimate completion —
+      // successful runs could never reach settlement. The scan now resolves
+      // a pending ORIGINAL-HANDLE cell through its linked continuation
+      // (the cell-to-continuation linkage) beside the direct same-call
+      // grammar.
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      const { fixture, temporary } = await createFastRealFixture(t, 'confirmed-window-continuation-');
+      let current = 1_000;
+      const now = () => current;
+      const gateDirectory = join(temporary, 'continuation-hold-gate');
+      await mkdir(gateDirectory, { recursive: true, mode: 0o700 });
+      const gatePath = join(gateDirectory, 'completion.gate');
+      const gateReachedPath = join(gateDirectory, 'completion.reached');
+      await writeFile(gatePath, 'hold', { mode: 0o600 });
+      await writeFile(gateReachedPath, '', { mode: 0o600 });
+      const recordPath = /** @type {string} */ (fixture.env.FAKE_ZCODE_RECORD);
+      await writeFile(recordPath, [
+        JSON.stringify({ id: 4, method: 'session/create', params: { workspace: { workspacePath: '/repo' } } }),
+        JSON.stringify({ id: 5, method: 'session/send', params: { sessionId: 'fake-session-1', content: 'the staged rescue objective' } }),
+      ].join('\n') + '\n', 'utf8');
+      await writeFile(gateReachedPath, 'blocked', { mode: 0o600 });
+      const COMPLETED_OUTPUT = [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify({ output: 'the rescue objective result', session_id: 500 }) }];
+      const childPollEvents = (/** @type {string} */ callId, /** @type {number} */ sessionId, /** @type {any} */ output) => [
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: callId, input: `const r = await tools.write_stdin(${JSON.stringify({ session_id: sessionId, chars: '', yield_time_ms: 3_600_000 })}); text(JSON.stringify(r))\n` } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: callId, output } },
+      ];
+      // (P1-2) the Rescue launcher acknowledgement grounds handle 500.
+      const launcherExecEvents = [
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'continuation-launcher-1', input: 'const r = await tools.exec_command({"cmd":"node \\"/installed-plugin/skills/rescue/launcher.mjs\\" invoke-prepared rescue"}); text(JSON.stringify(r))\n' } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'continuation-launcher-1', output: [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify({ output: '', session_id: 500 }) }] } },
+      ];
+      const CHILD_PENDING_OUTPUT = [{ type: 'input_text', text: 'Script running with cell ID cell-child-1\n' }];
+      /** @type {any[]} */
+      let childEvents = [
+        { type: 'session_meta', payload: { id: 'child-session-1' } },
+        ...launcherExecEvents,
+        ...childPollEvents('child-poll-1', 500, CHILD_PENDING_OUTPUT),
+      ];
+      const composition = driverModule.createConfirmedWindowLiveComposition({
+        fixture, now, workerDurationMs: 420_000,
+        completionGatePath: gatePath, completionGateReachedPath: gateReachedPath,
+        childObservationThreadId: 'child-session-1',
+        loadRollouts: async () => [childEvents],
+      });
+      const pendingFirst = await composition.observers.pendingObservation();
+      assert.equal(pendingFirst.confirmed, true, `the original-handle poll confirms (actual ${JSON.stringify(pendingFirst)})`);
+      assert.equal(pendingFirst.resolved, false, 'the outstanding cell stays pending');
+      // The LINKED continuation completes the observation: a `wait` call
+      // naming the pending cell, with a DIFFERENT call id, whose output is
+      // COMPLETED and ordered after the pending one.
+      current = 2_000;
+      childEvents = [
+        { type: 'session_meta', payload: { id: 'child-session-1' } },
+        ...launcherExecEvents,
+        ...childPollEvents('child-poll-1', 500, CHILD_PENDING_OUTPUT),
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'wait-1', input: 'text(await tools.wait({"cell_id": "cell-child-1"}));\n' } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'wait-1', output: COMPLETED_OUTPUT } },
+      ];
+      const resolved = await composition.observers.pendingObservation();
+      assert.equal(resolved.confirmed, true, 'the confirmation stays historical');
+      assert.equal(resolved.resolved, true, `the linked continuation's completed output resolves the observation (actual ${JSON.stringify(resolved)})`);
+      assert.equal(resolved.resolvedAtMs, 2_000, 'the resolution is stamped at the controller-clock read instant');
+      // A continuation whose output has NOT arrived keeps the observation
+      // pending (fail closed in the other direction).
+      childEvents = [
+        { type: 'session_meta', payload: { id: 'child-session-1' } },
+        ...launcherExecEvents,
+        ...childPollEvents('child-poll-1', 500, CHILD_PENDING_OUTPUT),
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'wait-2', input: 'text(await tools.wait({"cell_id": "cell-child-1"}));\n' } },
+      ];
+      const outstandingComposition = driverModule.createConfirmedWindowLiveComposition({
+        fixture, now, workerDurationMs: 420_000,
+        completionGatePath: gatePath, completionGateReachedPath: gateReachedPath,
+        childObservationThreadId: 'child-session-1',
+        loadRollouts: async () => [childEvents],
+      });
+      const outstanding = await outstandingComposition.observers.pendingObservation();
+      assert.equal(outstanding.confirmed, true, 'the poll still confirms');
+      assert.equal(outstanding.resolved, false, `an answered-but-unresolved continuation keeps the observation pending (actual ${JSON.stringify(outstanding)})`);
+    });
+
+    test('confirmed-window live composition: the ORIGINAL HANDLE is grounded in the attributed Rescue launcher acknowledgement — a pending poll of an UNRELATED exec session never confirms the observation (P1-2, 2026-11-19 codex re-review)', async (t) => {
+      // The reviewer's exact offline reproduction: if the Child polls another
+      // exec session BEFORE polling the Rescue launcher, the old scan trusted
+      // the FIRST write_stdin call — a launcher result for handle 500
+      // followed by a pending first poll of handle 999 returned
+      // started:true, allowing the native interrupt before the actual Rescue
+      // observation started. The original handle now derives from the
+      // ATTRIBUTED LAUNCHER ACKNOWLEDGEMENT (the Rescue launcher's own exec
+      // result — the one exec_command whose completed output grounds a
+      // session handle, unambiguous in the Child rollout) and the pending
+      // poll must target THAT handle.
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      const { fixture, temporary } = await createFastRealFixture(t, 'confirmed-window-launcher-handle-');
+      let current = 1_000;
+      const now = () => current;
+      const gateDirectory = join(temporary, 'launcher-handle-hold-gate');
+      await mkdir(gateDirectory, { recursive: true, mode: 0o700 });
+      const gatePath = join(gateDirectory, 'completion.gate');
+      const gateReachedPath = join(gateDirectory, 'completion.reached');
+      await writeFile(gatePath, 'hold', { mode: 0o600 });
+      await writeFile(gateReachedPath, '', { mode: 0o600 });
+      const recordPath = /** @type {string} */ (fixture.env.FAKE_ZCODE_RECORD);
+      await writeFile(recordPath, [
+        JSON.stringify({ id: 4, method: 'session/create', params: { workspace: { workspacePath: '/repo' } } }),
+        JSON.stringify({ id: 5, method: 'session/send', params: { sessionId: 'fake-session-1', content: 'the staged rescue objective' } }),
+      ].join('\n') + '\n', 'utf8');
+      await writeFile(gateReachedPath, 'blocked', { mode: 0o600 });
+      const controlCompletedOutput = (/** @type {any} */ result) => [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify(result) }];
+      const PENDING_OUTPUT = [{ type: 'input_text', text: 'Script running with cell ID cell-child-1\n' }];
+      const launcherExecEvents = (/** @type {string} */ callId, /** @type {number} */ sessionId) => [
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: callId, input: 'const r = await tools.exec_command({"cmd":"node \\"/installed-plugin/skills/rescue/launcher.mjs\\" invoke-prepared rescue"}); text(JSON.stringify(r))\n' } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: callId, output: controlCompletedOutput({ output: '', session_id: sessionId }) } },
+      ];
+      const pollEvents = (/** @type {string} */ callId, /** @type {number} */ sessionId, /** @type {any} */ output) => [
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: callId, input: `const r = await tools.write_stdin(${JSON.stringify({ session_id: sessionId, chars: '', yield_time_ms: 3_600_000 })}); text(JSON.stringify(r))\n` } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: callId, output } },
+      ];
+      const readPending = async (childEvents) => {
+        const composition = driverModule.createConfirmedWindowLiveComposition({
+          fixture, now, workerDurationMs: 420_000,
+          completionGatePath: gatePath, completionGateReachedPath: gateReachedPath,
+          childObservationThreadId: 'child-session-1',
+          loadRollouts: async () => [childEvents],
+        });
+        return composition.observers.pendingObservation();
+      };
+      // (1) The reviewer's exact hole: the Rescue launcher grounds handle
+      // 500, but the Child's FIRST poll targets the unrelated exec session
+      // 999 — never the original Companion handle.
+      const foreignFirst = await readPending([
+        { type: 'session_meta', payload: { id: 'child-session-1' } },
+        ...launcherExecEvents('child-launcher-1', 500),
+        ...pollEvents('foreign-poll-1', 999, PENDING_OUTPUT),
+      ]);
+      assert.equal(foreignFirst.confirmed, false, `a pending poll of an unrelated exec session never confirms the observation (actual ${JSON.stringify(foreignFirst)})`);
+      assert.match(String(foreignFirst.reason ?? ''), /launcher|handle/u, 'the refusal names the launcher-grounded handle requirement');
+      // (2) The bound shape: the pending poll targets the LAUNCHER'S handle.
+      const bound = await readPending([
+        { type: 'session_meta', payload: { id: 'child-session-1' } },
+        ...launcherExecEvents('child-launcher-2', 500),
+        ...pollEvents('child-poll-2', 500, PENDING_OUTPUT),
+      ]);
+      assert.equal(bound.confirmed, true, `the pending poll of the launcher-grounded handle confirms (actual ${JSON.stringify(bound)})`);
+      assert.equal(bound.resolved, false, 'the outstanding cell stays pending');
+      // (3) WITHOUT a launcher acknowledgement there is no attributable
+      // original handle at all — the first write_stdin grounds nothing.
+      const unattributed = await readPending([
+        { type: 'session_meta', payload: { id: 'child-session-1' } },
+        ...pollEvents('child-poll-3', 500, PENDING_OUTPUT),
+      ]);
+      assert.equal(unattributed.confirmed, false, `a write_stdin poll without a launcher acknowledgement grounds nothing (actual ${JSON.stringify(unattributed)})`);
+      assert.match(String(unattributed.reason ?? ''), /launcher/u, 'the refusal names the missing launcher acknowledgement');
+    });
+
+    test('confirmed-window live composition: the pending cell retains its ORIGINATING POLL ownership across repeated wait continuations — TWO waits (one still pending, one completing) resolve the observation exactly like ONE (P1-3, 2026-11-19 codex re-review)', async (t) => {
+      // The reviewer's exact offline reproduction: if a `wait` continuation
+      // returns the SAME pending cell before a later `wait` completes it,
+      // the pending-cell bookkeeping overwrote the original poll's ownership
+      // with the first continuation's call ID — the resolution then rejected
+      // the owner because its kind was `wait`, not `write_stdin`. The same
+      // valid stream resolved with ONE wait but stayed unresolved with TWO,
+      // preventing settlement after a legitimate observation completion.
+      // Ownership is now retained through the continuation chain: the
+      // ORIGINAL-handle write_stdin poll's call ID, never overwritten.
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      const { fixture, temporary } = await createFastRealFixture(t, 'confirmed-window-continuation-ownership-');
+      let current = 1_000;
+      const now = () => current;
+      const gateDirectory = join(temporary, 'continuation-ownership-hold-gate');
+      await mkdir(gateDirectory, { recursive: true, mode: 0o700 });
+      const gatePath = join(gateDirectory, 'completion.gate');
+      const gateReachedPath = join(gateDirectory, 'completion.reached');
+      await writeFile(gatePath, 'hold', { mode: 0o600 });
+      await writeFile(gateReachedPath, '', { mode: 0o600 });
+      const recordPath = /** @type {string} */ (fixture.env.FAKE_ZCODE_RECORD);
+      await writeFile(recordPath, [
+        JSON.stringify({ id: 4, method: 'session/create', params: { workspace: { workspacePath: '/repo' } } }),
+        JSON.stringify({ id: 5, method: 'session/send', params: { sessionId: 'fake-session-1', content: 'the staged rescue objective' } }),
+      ].join('\n') + '\n', 'utf8');
+      await writeFile(gateReachedPath, 'blocked', { mode: 0o600 });
+      const COMPLETED_OUTPUT = [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify({ output: 'the rescue objective result', session_id: 500 }) }];
+      const CHILD_PENDING_OUTPUT = [{ type: 'input_text', text: 'Script running with cell ID cell-child-1\n' }];
+      const RENDERED_RESCUE_LAUNCHER_COMMAND = 'node "/installed-plugin/skills/rescue/launcher.mjs" invoke-prepared rescue';
+      const sessionMetaAndLauncher = () => ([
+        { type: 'session_meta', payload: { id: 'child-session-1' } },
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'ownership-launcher-1', input: `const r = await tools.exec_command(${JSON.stringify({ cmd: RENDERED_RESCUE_LAUNCHER_COMMAND })}); text(JSON.stringify(r))\n` } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'ownership-launcher-1', output: COMPLETED_OUTPUT } },
+      ]);
+      // Phase 1: ONLY the ORIGINAL-HANDLE poll (its yielded cell pending) is
+      // on the stream.
+      let childEvents = [
+        ...sessionMetaAndLauncher(),
+        // The ORIGINAL-HANDLE poll yields the pending cell.
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'ownership-poll-1', input: 'const r = await tools.write_stdin({"session_id": 500, "chars": "", "yield_time_ms": 3600000}); text(JSON.stringify(r))\n' } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'ownership-poll-1', output: CHILD_PENDING_OUTPUT } },
+      ];
+      const composition = driverModule.createConfirmedWindowLiveComposition({
+        fixture, now, workerDurationMs: 420_000,
+        completionGatePath: gatePath, completionGateReachedPath: gateReachedPath,
+        childObservationThreadId: 'child-session-1',
+        loadRollouts: async () => [childEvents],
+      });
+      const pendingFirst = await composition.observers.pendingObservation();
+      assert.equal(pendingFirst.confirmed, true, `the original-handle poll confirms (actual ${JSON.stringify(pendingFirst)})`);
+      assert.equal(pendingFirst.resolved, false, 'the outstanding cell stays pending');
+      // Phase 2: the TWO-wait chain arrives — the first wait returns the
+      // SAME still-pending cell (the old bookkeeping overwrote the poll's
+      // ownership here), the second completes it.
+      current = 2_000;
+      childEvents = [
+        ...sessionMetaAndLauncher(),
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'ownership-poll-1', input: 'const r = await tools.write_stdin({"session_id": 500, "chars": "", "yield_time_ms": 3600000}); text(JSON.stringify(r))\n' } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'ownership-poll-1', output: CHILD_PENDING_OUTPUT } },
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'ownership-wait-1', input: 'text(await tools.wait({"cell_id": "cell-child-1"}));\n' } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'ownership-wait-1', output: CHILD_PENDING_OUTPUT } },
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'ownership-wait-2', input: 'text(await tools.wait({"cell_id": "cell-child-1"}));\n' } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'ownership-wait-2', output: COMPLETED_OUTPUT } },
+      ];
+      const resolved = await composition.observers.pendingObservation();
+      assert.equal(resolved.confirmed, true, 'the confirmation stays historical');
+      assert.equal(resolved.resolved, true, `the SECOND wait's completion resolves the observation with the poll's ownership retained (actual ${JSON.stringify(resolved)})`);
+      assert.equal(resolved.resolvedAtMs, 2_000, 'the resolution is stamped at the controller-clock read instant');
+    });
+
+    test('confirmed-window live composition: the pending observation JOINS the record/gate legs with the unchanged instrument\'s original-handle premises — the observation leg comes from the Child\'s tool stream, never from the gate alone (P1-2, 2026-11-19 codex review)', async (t) => {
+      // The reviewer's exact offline reproduction: the fake CLI writes
+      // `blocked` when SCHEDULING the completion (after `session/send`),
+      // independently of whether the Child has started its long observation —
+      // the record/sentinel legs alone therefore confirmed a pending
+      // observation that did not exist, and a released gate resolved an
+      // observation that never returned. The joined collector requires the
+      // unchanged instrument's original-handle premises (the Child's OWN
+      // tool-stream pending/completed facts, decoded by the instrument's
+      // parseToolOutput) for BOTH confirmation and resolution; the gate leg
+      // stays the §41.5.1 worker hold.
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      const { fixture, temporary } = await createFastRealFixture(t, 'confirmed-window-pending-join-');
+      let current = 1_000;
+      const now = () => current;
+      const gateDirectory = join(temporary, 'pending-join-hold-gate');
+      await mkdir(gateDirectory, { recursive: true, mode: 0o700 });
+      const gatePath = join(gateDirectory, 'completion.gate');
+      const gateReachedPath = join(gateDirectory, 'completion.reached');
+      await writeFile(gatePath, 'hold', { mode: 0o600 });
+      await writeFile(gateReachedPath, '', { mode: 0o600 });
+      const recordPath = /** @type {string} */ (fixture.env.FAKE_ZCODE_RECORD);
+      await writeFile(recordPath, [
+        JSON.stringify({ id: 4, method: 'session/create', params: { workspace: { workspacePath: '/repo' } } }),
+        JSON.stringify({ id: 5, method: 'session/send', params: { sessionId: 'fake-session-1', content: 'the staged rescue objective' } }),
+      ].join('\n') + '\n', 'utf8');
+      await writeFile(gateReachedPath, 'blocked', { mode: 0o600 });
+      // The Child's ORIGINAL observation in its OWN tool stream: ONE long
+      // ORIGINAL-HANDLE write_stdin poll whose yielded-cell output is pending
+      // (the instrument's PENDING_CELL_PREFIX grammar), later completed. The
+      // rollout carries the joined Child's session_meta identity (P1-1,
+      // 2026-11-19 codex re-review) — the bound session premise rides every
+      // composition below.
+      const CHILD_ROLLOUT_SESSION = 'child-session-1';
+      const childPollEvents = (/** @type {string} */ callId, /** @type {any} */ output) => [
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: callId, input: 'const r = await tools.write_stdin({"session_id": 500, "chars": "", "yield_time_ms": 3600000}); text(JSON.stringify(r))\n' } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: callId, output } },
+      ];
+      // (P1-2) the Rescue launcher acknowledgement grounds handle 500.
+      const launcherExecEvents = [
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'join-child-launcher-1', input: 'const r = await tools.exec_command({"cmd":"node \\"/installed-plugin/skills/rescue/launcher.mjs\\" invoke-prepared rescue"}); text(JSON.stringify(r))\n' } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'join-child-launcher-1', output: [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify({ output: '', session_id: 500 }) }] } },
+      ];
+      const PENDING_OUTPUT = [{ type: 'input_text', text: 'Script running with cell ID cell-child-1\n' }];
+      const COMPLETED_OUTPUT = [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify({ output: 'the rescue objective result', session_id: 500 }) }];
+      /** @type {any[]} */
+      let childEvents = [{ type: 'session_meta', payload: { id: CHILD_ROLLOUT_SESSION } }, ...launcherExecEvents, ...childPollEvents('child-observation-1', PENDING_OUTPUT)];
+      // (1) NO Child tool stream: the record + scheduled-and-held sentinel
+      // legs alone NEVER confirm the pending observation.
+      const noStream = driverModule.createConfirmedWindowLiveComposition({
+        fixture, now, workerDurationMs: 420_000,
+        completionGatePath: gatePath, completionGateReachedPath: gateReachedPath,
+        childObservationThreadId: CHILD_ROLLOUT_SESSION,
+        loadRollouts: async () => [],
+      });
+      const noStreamPending = await noStream.observers.pendingObservation();
+      assert.equal(noStreamPending.confirmed, false, `the record/sentinel legs alone never confirm (actual ${JSON.stringify(noStreamPending)})`);
+      assert.match(String(noStreamPending.reason ?? ''), /Child/u, 'the refusal names the unbound joined-Child rollout (no observation premise exists)');
+      // (2) With the Child's tool stream outstanding, the joined legs confirm
+      // on the FIRST read, stamped on the controller clock, with the frozen
+      // holdDeadline derivation.
+      const composition = driverModule.createConfirmedWindowLiveComposition({
+        fixture, now, workerDurationMs: 420_000,
+        completionGatePath: gatePath, completionGateReachedPath: gateReachedPath,
+        childObservationThreadId: CHILD_ROLLOUT_SESSION,
+        loadRollouts: async () => [childEvents],
+      });
+      const pendingFirst = await composition.observers.pendingObservation();
+      assert.equal(pendingFirst.confirmed, true, `the record + sentinel + Child tool stream confirm the observation (actual ${JSON.stringify(pendingFirst)})`);
+      assert.equal(pendingFirst.observedAtMs, 1_000, 'the first confirmation is stamped at the controller-clock read instant');
+      assert.equal(pendingFirst.holdDeadlineAtMs, 421_000, 'the frozen observedAtMs + 420000 derivation');
+      assert.equal(pendingFirst.resolved, false, 'an outstanding observation stays pending');
+      assert.equal(pendingFirst.clockDomain, 'controller-monotonic');
+      // (3) The released gate is ONLY the worker-hold mechanism: releasing it
+      // never resolves the observation — the Child's observation leg is the
+      // instrument's, not the gate's.
+      current = 2_000;
+      await writeFile(gatePath, 'release', { mode: 0o600 });
+      const gateReleased = await composition.observers.pendingObservation();
+      assert.equal(gateReleased.confirmed, true, 'the confirmation stays historical');
+      assert.equal(gateReleased.observedAtMs, 1_000, 'the FIRST confirmation instant is retained');
+      assert.equal(gateReleased.resolved, false, `the released gate alone never resolves the observation (actual ${JSON.stringify(gateReleased)})`);
+      // (4) The instrument's resolution premise: the SAME call's completed
+      // output resolves the observation at the controller-clock read instant.
+      current = 3_000;
+      childEvents = [
+        { type: 'session_meta', payload: { id: CHILD_ROLLOUT_SESSION } },
+        ...launcherExecEvents,
+        ...childPollEvents('child-observation-1', PENDING_OUTPUT),
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'child-observation-1', output: COMPLETED_OUTPUT } },
+      ];
+      const resolvedPending = await composition.observers.pendingObservation();
+      assert.equal(resolvedPending.resolved, true, `the Child's own completed output resolves the observation (actual ${JSON.stringify(resolvedPending)})`);
+      assert.equal(resolvedPending.resolvedAtMs, 3_000, 'the resolution is stamped at the controller-clock read instant of the instrument premise');
+      // (5) A FRESH collector over the finished artifacts: confirmed AND
+      // resolved in the SAME read — the barrier's confirmed-AND-NOT-resolved
+      // semantics refuse it, so admission can never fire on a finished
+      // observation.
+      const finished = driverModule.createConfirmedWindowLiveComposition({
+        fixture, now, workerDurationMs: 420_000,
+        completionGatePath: gatePath, completionGateReachedPath: gateReachedPath,
+        childObservationThreadId: CHILD_ROLLOUT_SESSION,
+        loadRollouts: async () => [childEvents],
+      });
+      const finishedPending = await finished.observers.pendingObservation();
+      assert.equal(finishedPending.confirmed, true, `the observation's started premise is still on disk (actual ${JSON.stringify(finishedPending)})`);
+      assert.equal(finishedPending.resolved, true, 'the instrument shows the observation already returned');
+      // (6) The COMPLETE-scan premise (the inspectCompanion rule): EVERY
+      // recorded entry must match a supported JSON-RPC request shape — one
+      // valid send mixed with a malformed line leaves the peer record
+      // unknown, and a unknown record never confirms.
+      await writeFile(recordPath, [
+        JSON.stringify({ id: 4, method: 'session/create', params: { workspace: { workspacePath: '/repo' } } }),
+        '{not-a-request-frame}',
+        JSON.stringify({ id: 5, method: 'session/send', params: { sessionId: 'fake-session-1', content: 'the staged rescue objective' } }),
+      ].join('\n') + '\n', 'utf8');
+      const tornRecord = driverModule.createConfirmedWindowLiveComposition({
+        fixture, now, workerDurationMs: 420_000,
+        completionGatePath: gatePath, completionGateReachedPath: gateReachedPath,
+        childObservationThreadId: CHILD_ROLLOUT_SESSION,
+        loadRollouts: async () => [childEvents],
+      });
+      const torn = await tornRecord.observers.pendingObservation();
+      assert.equal(torn.confirmed, false, `a malformed record entry keeps the complete scan unknown (actual ${JSON.stringify(torn)})`);
+      assert.match(String(torn.reason ?? ''), /record/u, 'the refusal names the complete-scan record premise');
+    });
+
+    test('confirmed-window live composition: the §24.7 local duty consumer names invocation/broker/transport ONLY from its consumers\' verdicts — allObserved reaches true through honest adjudication, absent verdicts and a refused ancestry admission stay unnamed (blocker #4 wiring)', async (t) => {
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      const { captureEnvironment, writeClosurePreload } = await import('../tools/shell-wait-probe/closure-observation.mjs');
+      const { SPAWN_ANCESTRY_WITNESS_SUFFIXES } = await import('../tools/shell-wait-probe/local-process-observation.mjs');
+      const { writeSpawnWitnessPreload, WITNESS_TRANSPORT_ENTRY_VARIABLE, EXACT_READER_VARIABLE } = await import('../tools/shell-wait-probe/spawn-witness-preload.mjs');
+      const temporary = await mkdtemp(join(tmpdir(), 'confirmed-window-local-duties-'));
+      t.after(() => rm(temporary, { recursive: true, force: true }));
+      const fakeZcodePath = fileURLToPath(new URL('./fixtures/fake-zcode-cli.mjs', import.meta.url));
+      const transportEntryRealpath = await realpath(fakeZcodePath);
+      const markerPath = join(temporary, 'process.json');
+      const markerNonce = randomBytes(32).toString('hex');
+      const brokerConfig = join(temporary, 'broker-config.toml');
+      await writeFile(brokerConfig, '[fixture]\nprobe = true\n', { mode: 0o600 });
+      /** The gated probe entries the preloads' role gates select: the
+       * INVOCATION entry spawns the BROKER entry (the real daemon hop) and
+       * the BROKER entry spawns the DECLARED transport entry (the real
+       * protocol hop) — the same chain the fixture's spawn-witness preload
+       * witnesses. */
+      const brokerEntry = join(temporary, 'probe-broker-entry.mjs');
+      await writeFile(brokerEntry, [
+        "import { spawn } from 'node:child_process';",
+        `spawn(process.execPath, [${JSON.stringify(transportEntryRealpath)}, 'app-server'], { env: process.env, stdio: ['pipe', 'ignore', 'ignore'] });`,
+        'setInterval(() => {}, 20000);',
+        '',
+      ].join('\n'), { mode: 0o700 });
+      const brokerEntryRealpath = await realpath(brokerEntry);
+      const invocationEntry = join(temporary, 'probe-invocation-entry.mjs');
+      await writeFile(invocationEntry, [
+        "import { spawn } from 'node:child_process';",
+        `spawn(process.execPath, [${JSON.stringify(brokerEntryRealpath)}, ${JSON.stringify(brokerConfig)}], { env: process.env, stdio: 'ignore' });`,
+        'setInterval(() => {}, 20000);',
+        '',
+      ].join('\n'), { mode: 0o700 });
+      const invocationEntryRealpath = await realpath(invocationEntry);
+      const preload = await writeClosurePreload(temporary);
+      const observerUrl = pathToFileURL(fileURLToPath(new URL('../tools/shell-wait-probe/local-process-observation.mjs', import.meta.url))).href;
+      const witnessPreload = await writeSpawnWitnessPreload(temporary, { observerUrl });
+      /** The shared scope environment: the capture/witness preloads, the
+       * §41.5.1 marker pair (inherited by the whole chain) and the exact
+       * reader opt-in. */
+      const baseEnv = {
+        HOME: temporary,
+        FAKE_ZCODE_PROCESS_FILE: markerPath,
+        FAKE_ZCODE_PROCESS_NONCE: markerNonce,
+        [WITNESS_TRANSPORT_ENTRY_VARIABLE]: transportEntryRealpath,
+        [EXACT_READER_VARIABLE]: '1',
+      };
+      /** The live process trees the consumers observe; killed at teardown. */
+      const children = [];
+      t.after(() => {
+        for (const child of children) {
+          try { if (typeof child.pid === 'number') process.kill(-child.pid, 'SIGKILL'); } catch { /* already gone */ }
+          try { child.kill('SIGKILL'); } catch { /* already gone */ }
+        }
+      });
+      const waitFor = async (/** @type {string} */ path) => {
+        const deadline = Date.now() + 10_000;
+        for (;;) {
+          if (await stat(path).then(() => true, () => false)) return;
+          if (Date.now() > deadline) throw new Error(`timed out waiting for ${path}`);
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+      };
+      // The GREEN scope: a REAL gated chain whose preload-written startup
+      // records, spawn-ancestry witnesses and os-live observations the
+      // consumers accept — never a fabricated identity.
+      const captureDirectory = join(temporary, 'stdout-capture');
+      await mkdir(captureDirectory, { mode: 0o700 });
+      const scopeNonce = randomBytes(32).toString('hex');
+      const captureEnv = captureEnvironment({
+        captureDirectory, nonce: scopeNonce, entryRealpath: invocationEntryRealpath, brokerEntryRealpath,
+        baseEnv, nodeOptionsFragment: `${preload.nodeOptionsFragment} ${witnessPreload.nodeOptionsFragment}`,
+      });
+      // The §41.5.1 verified process marker under its OWN declared nonce: the
+      // transport slot's observation source on this route (the marker process
+      // IS the route's fake-ZCode worker — the chain's protocol spawn).
+      const invocationChild = spawn(process.execPath, [invocationEntryRealpath, 'invoke-prepared', 'rescue'], { env: captureEnv, stdio: 'ignore', detached: true });
+      children.push(invocationChild);
+      await waitFor(join(captureDirectory, `${scopeNonce}.identity.json`));
+      await waitFor(join(captureDirectory, `${scopeNonce}.identity-broker.json`));
+      await waitFor(markerPath);
+      await waitFor(join(captureDirectory, `${scopeNonce}${SPAWN_ANCESTRY_WITNESS_SUFFIXES.invocation}`));
+      await waitFor(join(captureDirectory, `${scopeNonce}${SPAWN_ANCESTRY_WITNESS_SUFFIXES['broker-daemon']}`));
+      const settledSnapshot = {
+        aggregate: 'settled',
+          executorLinkage: 'verified',
+        job: { presence: 'found' },
+        layers: {
+          winner: { state: 'terminal' },
+          runnerCleanupDuty: { applicable: false, outstanding: null, reason: 'not-applicable: the record carries no marked runner claim' },
+          writableGuard: { applicable: false, retained: false, reason: 'not-applicable' },
+        },
+        passive: { snapshotEqual: true },
+      };
+      const greenFixture = {
+        workspace: join(temporary, 'workspace'),
+        codexHome: join(temporary, 'codex-home'),
+        env: { ZCODE_DATA_ROOT: join(temporary, 'data-root') },
+        stdoutCapture: { captureDirectory, nonce: scopeNonce },
+      };
+      const green = driverModule.createConfirmedWindowLiveComposition({
+        fixture: greenFixture,
+        now: () => 1_000,
+        workerDurationMs: 420_000,
+        ownerSessionId: 'owner-session-1',
+        caseDeadlineAtMs: () => 1_200_000,
+        processMarkerPath: markerPath,
+        processMarkerNonce: markerNonce,
+        readDurableSnapshot: async () => settledSnapshot,
+      });
+      const greenDuties = await green.observers.dutyFacts();
+      assert.deepEqual(greenDuties.duties, ['invocation', 'broker', 'transport', 'runner', 'job', 'guard', 'integrity'], `the consumer verdicts name all seven registered slots (actual ${JSON.stringify(greenDuties.duties)})`);
+      assert.equal(greenDuties.observable, true, 'the honestly adjudicated duties are observable');
+      // (P1-3, 2026-11-19 codex review) the LIVE trio keeps its slots
+      // UNSETTLED: presence baselines never certify the all-duty settlement.
+      assert.deepEqual(greenDuties.settledDuties, ['runner', 'job', 'guard', 'integrity'], `the live local trio is present but unsettled (actual ${JSON.stringify(greenDuties.settledDuties)})`);
+      assert.equal(green.dutyAdjudication.allObserved, false, 'presence alone never certifies the all-duty settlement leg');
+      assert.equal(green.dutyAdjudication.durableSettled, true);
+      // The chain is terminated: the SAME composition's later reads observe
+      // the REAL generation-bound absence of every local slot (the §24.7 exit
+      // adjudication — the transport through the verified marker's
+      // process-exited basis) and each slot settles with its own
+      // `disappeared` verdict, keeping allObserved reachable through honest
+      // consumer adjudication.
+      for (const child of children) {
+        try { if (typeof child.pid === 'number') process.kill(-child.pid, 'SIGKILL'); } catch { /* already gone */ }
+        try { child.kill('SIGKILL'); } catch { /* already gone */ }
+      }
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      const exitedDuties = await green.observers.dutyFacts();
+      assert.deepEqual(exitedDuties.settledDuties, ['invocation', 'broker', 'transport', 'runner', 'job', 'guard', 'integrity'], `the observed generation-bound exits settle the trio (actual ${JSON.stringify(exitedDuties.settledDuties)})`);
+      assert.equal(green.dutyAdjudication.allObserved, true, 'the all-duties settlement leg is reachable through the observed exits');
+      // The consumer's NAMED aggregate ancestry gate: with the two-hop
+      // witness admission REFUSED, the local layer may NEVER settle — the
+      // trio slots stay unnamed and the named refusal surfaces in the
+      // returned reason, even though every per-duty verdict would still
+      // establish (the startup records are on disk and the processes alive).
+      const invocationWitnessPath = join(captureDirectory, `${scopeNonce}${SPAWN_ANCESTRY_WITNESS_SUFFIXES.invocation}`);
+      const brokerWitnessPath = join(captureDirectory, `${scopeNonce}${SPAWN_ANCESTRY_WITNESS_SUFFIXES['broker-daemon']}`);
+      await rm(invocationWitnessPath, { force: true });
+      await rm(brokerWitnessPath, { force: true });
+      const refused = driverModule.createConfirmedWindowLiveComposition({
+        fixture: greenFixture,
+        now: () => 1_000,
+        workerDurationMs: 420_000,
+        ownerSessionId: 'owner-session-1',
+        caseDeadlineAtMs: () => 1_200_000,
+        processMarkerPath: markerPath,
+        processMarkerNonce: markerNonce,
+        readDurableSnapshot: async () => settledSnapshot,
+      });
+      const refusedDuties = await refused.observers.dutyFacts();
+      assert.deepEqual(refusedDuties.duties, ['runner', 'job', 'guard', 'integrity'], `a refused ancestry admission withholds the trio (actual ${JSON.stringify(refusedDuties.duties)})`);
+      assert.match(String(refusedDuties.reason ?? ''), /ancestry-hops-unattributed/u, 'the consumer\'s named aggregate refusal is never silently swallowed');
+      assert.equal(refused.dutyAdjudication.allObserved, false, 'the settlement leg stays unreachable while the ancestry admission is refused');
+      // The fail-closed pin: a scope whose consumers have NO artifacts (no
+      // startup records, no marker premises) keeps every local slot unnamed —
+      // the trio never rides the ancestry witness alone.
+      const bareCapture = join(temporary, 'bare-capture');
+      await mkdir(bareCapture, { mode: 0o700 });
+      const bare = driverModule.createConfirmedWindowLiveComposition({
+        fixture: { ...greenFixture, stdoutCapture: { captureDirectory: bareCapture, nonce: randomBytes(32).toString('hex') } },
+        now: () => 1_000,
+        workerDurationMs: 420_000,
+        ownerSessionId: 'owner-session-1',
+        caseDeadlineAtMs: () => 1_200_000,
+        readDurableSnapshot: async () => settledSnapshot,
+      });
+      const bareDuties = await bare.observers.dutyFacts();
+      assert.deepEqual(bareDuties.duties, ['runner', 'job', 'guard', 'integrity'], `absent consumer verdicts keep the trio unnamed (actual ${JSON.stringify(bareDuties.duties)})`);
+      assert.equal(bare.dutyAdjudication.allObserved, false, 'the settlement leg stays unreachable without the local consumers');
+      // Per-slot honesty under the consumer's OWN aggregate gate: a solo
+      // scope whose ancestry admission cannot attribute has NO adjudicated
+      // local slot — even its established invocation record/ps-verdict pair
+      // is withheld, and the refusal is named.
+      const soloCapture = join(temporary, 'solo-capture');
+      await mkdir(soloCapture, { mode: 0o700 });
+      const soloNonce = randomBytes(32).toString('hex');
+      const soloEnv = captureEnvironment({
+        captureDirectory: soloCapture, nonce: soloNonce, entryRealpath: invocationEntryRealpath,
+        baseEnv, nodeOptionsFragment: preload.nodeOptionsFragment,
+      });
+      const soloChild = spawn(process.execPath, [invocationEntryRealpath, 'invoke-prepared', 'rescue'], { env: soloEnv, stdio: 'ignore' });
+      children.push(soloChild);
+      await waitFor(join(soloCapture, `${soloNonce}.identity.json`));
+      const solo = driverModule.createConfirmedWindowLiveComposition({
+        fixture: { ...greenFixture, stdoutCapture: { captureDirectory: soloCapture, nonce: soloNonce } },
+        now: () => 1_000,
+        workerDurationMs: 420_000,
+        ownerSessionId: 'owner-session-1',
+        caseDeadlineAtMs: () => 1_200_000,
+        readDurableSnapshot: async () => settledSnapshot,
+      });
+      const soloDuties = await solo.observers.dutyFacts();
+      assert.deepEqual(soloDuties.duties, ['runner', 'job', 'guard', 'integrity'], `an unattributed ancestry admission withholds the established local slot (actual ${JSON.stringify(soloDuties.duties)})`);
+      assert.match(String(soloDuties.reason ?? ''), /ancestry-hops-unattributed/u, 'the solo scope names the consumer\'s aggregate refusal');
+      assert.equal(solo.dutyAdjudication.allObserved, false);
+      // (launch-dependency documentation pins) the in-process entry MUST bind
+      // the durable consumer's owner join: without an ownerSessionId and a
+      // ZCODE_DATA_ROOT the durable store is not bound — and with no capture
+      // seam either, NO duty is ever named.
+      const unbound = driverModule.createConfirmedWindowLiveComposition({
+        fixture: { workspace: greenFixture.workspace, codexHome: greenFixture.codexHome, env: {} },
+        now: () => 1_000,
+        workerDurationMs: 420_000,
+        caseDeadlineAtMs: () => 1_200_000,
+      });
+      const unboundDuties = await unbound.observers.dutyFacts();
+      assert.deepEqual(unboundDuties.duties, [], 'no consumer is bound: no duty is ever named');
+      assert.equal(unboundDuties.observable, false);
+      assert.match(String(unboundDuties.reason ?? ''), /not bound/u, 'the reason names the unbound durable store');
+      // ... and the pending-observation collector MUST receive the §41.5.1
+      // gate/sentinel providers (or the fixture env spelling): absent → the
+      // named "gate is not armed" refusal (the collectors row pins the full
+      // refusal; this pins the launch dependency by name).
+      const unarmedGate = driverModule.createConfirmedWindowLiveComposition({
+        fixture: { ...greenFixture, env: { FAKE_ZCODE_RECORD: join(temporary, 'record.jsonl') } },
+        now: () => 1_000,
+        workerDurationMs: 420_000,
+      });
+      const unarmedPending = await unarmedGate.observers.pendingObservation();
+      assert.equal(unarmedPending.confirmed, false);
+      assert.match(String(unarmedPending.reason ?? ''), /gate is not armed/u);
+    });
+
+    test('confirmed-window live composition: a local slot settles ONLY with its observed generation-bound exit verdict — presence alone never certifies settlement and a correctly exited process keeps its slot (P1-3, 2026-11-19 codex review)', async (t) => {
+      // The reviewer's exact offline reproduction: `adjudicateLocalDuties`
+      // establishes process IDENTITIES from live observations; those presence
+      // verdicts fed `allObserved`, so leaked invocation/broker/transport
+      // processes satisfied the final all-duty settlement while correctly
+      // exited processes lost their slots on subsequent reads. The §24.7
+      // exit-adjudication semantics (adjudicateLocalExit) are composed into
+      // the live consumer: the presence baseline latches, every later read
+      // re-adjudicates the generation-bound exit, and a slot's settlement
+      // names only a `disappeared` verdict.
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      const { LOCAL_PROCESS_OBSERVATION_VERSION } = await import('../tools/shell-wait-probe/local-process-observation.mjs');
+      const temporary = await mkdtemp(join(tmpdir(), 'confirmed-window-local-exit-'));
+      t.after(() => rm(temporary, { recursive: true, force: true }));
+      const scopeNonce = randomBytes(32).toString('hex');
+      const markerNonce = randomBytes(32).toString('hex');
+      const INVOCATION_PID = 4201;
+      const BROKER_PID = 4202;
+      const TRANSPORT_PID = 4203;
+      const BASE_INSTANT_MS = 1_700_000_000_000;
+      /** The scripted per-slot observation verdict the injected seam returns
+       * (the deterministic offline boundary for the REAL adjudicators). */
+      const scripted = { invocation: 'live', broker: 'live', transport: 'live', transportGeneration: 0 };
+      // (P2-1, 2026-11-19 codex re-review) the observations carry a
+      // JOIN-COMPATIBLE chain: the broker's ppid links the invocation, the
+      // transport's ppid links the broker, the broker starts >= 1 s after the
+      // invocation (outside the whole-second uncertainty window), and the
+      // read epochs order the endpoints so the runtime ancestry join
+      // attributes the chain from these synthetic generations.
+      const PARENT_OF = { [INVOCATION_PID]: 1, [BROKER_PID]: INVOCATION_PID, [TRANSPORT_PID]: BROKER_PID };
+      const START_OF = { [INVOCATION_PID]: BASE_INSTANT_MS, [BROKER_PID]: BASE_INSTANT_MS + 2_000, [TRANSPORT_PID]: BASE_INSTANT_MS + 2_000 };
+      const establishedVerdict = (/** @type {number} */ pid, /** @type {string} */ nonce, /** @type {string} */ generation, /** @type {number} */ readEpochMs) => ({
+        localProcessObservationVersion: LOCAL_PROCESS_OBSERVATION_VERSION,
+        class: 'os-live-observation',
+        status: 'established',
+        reason: null,
+        observation: { pid, ppid: PARENT_OF[pid] ?? 1, startIdentity: generation, nonce, startInstantEpochMs: START_OF[pid] ?? BASE_INSTANT_MS },
+        queried: { pid, nonce },
+        readStartedEpochMs: readEpochMs - 100,
+        readEpochMs,
+        identityReadEpochMs: readEpochMs - 50,
+        absenceConfirmed: null,
+      });
+      const absentVerdict = (/** @type {number} */ pid, /** @type {string} */ nonce, /** @type {number} */ readEpochMs) => ({
+        localProcessObservationVersion: LOCAL_PROCESS_OBSERVATION_VERSION,
+        class: 'os-live-observation',
+        status: 'absent',
+        reason: 'process-absent',
+        observation: null,
+        queried: { pid, nonce },
+        readStartedEpochMs: readEpochMs - 100,
+        readEpochMs,
+        absenceConfirmed: true,
+      });
+      let readClock = BASE_INSTANT_MS + 5_000;
+      const observeLocalProcess = async (/** @type {any} */ input) => {
+        readClock += 500;
+        // The transport read precedes the broker read in the gather's order;
+        // the synthetic epochs stay join-compatible regardless of call order
+        // because each verdict carries its own fixed identity-read instant
+        // below (the marker epoch derives from the transport's read).
+        const which = input.pid === INVOCATION_PID ? 'invocation' : input.pid === BROKER_PID ? 'broker' : 'transport';
+        if (which === 'transport' && scripted.transport === 'successor') {
+          return establishedVerdict(TRANSPORT_PID, markerNonce, `successor-generation-${String(scripted.transportGeneration)}`, readClock);
+        }
+        if (scripted[which] === 'absent') return absentVerdict(input.pid, input.nonce, readClock);
+        return establishedVerdict(input.pid, input.nonce, 'original-generation', readClock);
+      };
+      // (P2-1) the startup records carry each process's OWN start origin
+      // (the synthetic chain's START_OF instants) so the per-duty generation
+      // binding matches the observations.
+      const startupIdentity = (/** @type {string} */ role, /** @type {number} */ pid, /** @type {string} */ nonce) => ({
+        localProcessObservationVersion: LOCAL_PROCESS_OBSERVATION_VERSION,
+        class: 'startup-identity',
+        status: 'established',
+        reason: null,
+        identity: { role, pid, nonce, entryRealpath: `/fixture/${role}.mjs`, startOriginMs: START_OF[pid] ?? BASE_INSTANT_MS, firstWritePreciseMs: (START_OF[pid] ?? BASE_INSTANT_MS) + 100 },
+        readStartedEpochMs: BASE_INSTANT_MS + 200,
+        readEpochMs: BASE_INSTANT_MS + 300,
+      });
+      const settledSnapshot = {
+        aggregate: 'settled',
+        // (P2-2, round-18) the verified executor linkage for this row's owned job.
+        executorLinkage: 'verified',
+        job: { presence: 'found' },
+        layers: {
+          winner: { state: 'terminal' },
+          runnerCleanupDuty: { applicable: false, outstanding: null, reason: 'not-applicable: the record carries no marked runner claim' },
+          writableGuard: { applicable: false, retained: false, reason: 'not-applicable' },
+        },
+        passive: { snapshotEqual: true },
+      };
+      const composition = driverModule.createConfirmedWindowLiveComposition({
+        fixture: {
+          workspace: join(temporary, 'workspace'),
+          codexHome: join(temporary, 'codex-home'),
+          env: { ZCODE_DATA_ROOT: join(temporary, 'data-root') },
+          stdoutCapture: { captureDirectory: join(temporary, 'capture'), nonce: scopeNonce },
+        },
+        now: () => 1_000,
+        workerDurationMs: 420_000,
+        ownerSessionId: 'owner-session-1',
+        caseDeadlineAtMs: () => 1_200_000,
+        processMarkerPath: join(temporary, 'process.json'),
+        processMarkerNonce: markerNonce,
+        readDurableSnapshot: async () => settledSnapshot,
+        // (P2-1) a WELL-FORMED admitted witness verdict (the runtime join
+        // validates the record shape upfront — a minimal stub makes the
+        // whole join uncomposable): the full v3 record shape the real
+        // admission returns, over this row's synthetic generations.
+        admitSpawnAncestryWitness: async (/** @type {any} */ input) => ({
+          localProcessObservationVersion: LOCAL_PROCESS_OBSERVATION_VERSION,
+          class: 'spawn-ancestry-witness',
+          status: 'established',
+          reason: null,
+          identity: {
+            version: 3,
+            class: 'spawn-ancestry-witness',
+            role: input.role,
+            nonce: scopeNonce,
+            writerPid: input.role === 'invocation' ? INVOCATION_PID : BROKER_PID,
+            writerStartIdentity: 'kinfo:1795000000:1',
+            childPid: input.role === 'invocation' ? BROKER_PID : TRANSPORT_PID,
+            childPpid: input.role === 'invocation' ? INVOCATION_PID : BROKER_PID,
+            childStartIdentity: 'kinfo:1795000000:2',
+            childNonce: input.role === 'invocation' ? scopeNonce : markerNonce,
+            boundaryEpochMs: BASE_INSTANT_MS + 3_000,
+            firstWriteEpochMs: BASE_INSTANT_MS + 3_001,
+            startOriginMs: BASE_INSTANT_MS + 0.5,
+            firstWritePreciseMs: BASE_INSTANT_MS + 3_000.75,
+            childOsStartInstantMs: BASE_INSTANT_MS + 2_000,
+            startIdentityExact: false,
+          },
+          readStartedEpochMs: BASE_INSTANT_MS + 4_000,
+          readEpochMs: BASE_INSTANT_MS + 4_001,
+        }),
+        admitStartupIdentityRecord: async (/** @type {any} */ input) => startupIdentity(input.role, input.role === 'invocation' ? INVOCATION_PID : BROKER_PID, scopeNonce),
+        captureVerifiedProcessIdentity: async () => ({ pid: TRANSPORT_PID, ppid: BROKER_PID, nonce: markerNonce, startIdentity: 'original-generation' }),
+        observeLocalProcess,
+      });
+      // (1) LIVE presence baselines: the trio is present/observable for the
+      // barrier, but its slots are NOT settled — leaked processes never
+      // certify the all-duty settlement by presence.
+      const live = await composition.observers.dutyFacts();
+      assert.deepEqual(live.duties, ['invocation', 'broker', 'transport', 'runner', 'job', 'guard', 'integrity'], `the presence baselines keep the barrier observable (actual ${JSON.stringify(live.duties)})`);
+      assert.deepEqual(live.settledDuties, ['runner', 'job', 'guard', 'integrity'], `the live trio keeps its slots UNSETTLED (actual ${JSON.stringify(live.settledDuties)})`);
+      assert.equal(composition.dutyAdjudication.allObserved, false, `presence alone never certifies all-duty settlement (actual ${JSON.stringify(composition.dutyAdjudication.names)})`);
+      assert.match(String(live.reason ?? ''), /not settled every local slot/u, 'the reason names the unsettled local layer');
+      // (2) The processes exit: the SAME composition's later reads observe
+      // generation-bound absence — each slot settles with its own
+      // `disappeared` verdict and KEEPS its slot on subsequent reads.
+      scripted.invocation = 'absent';
+      scripted.broker = 'absent';
+      scripted.transport = 'absent';
+      const exited = await composition.observers.dutyFacts();
+      assert.deepEqual(exited.settledDuties, ['invocation', 'broker', 'transport', 'runner', 'job', 'guard', 'integrity'], `the exited trio settles with its generation-bound exit verdicts (actual ${JSON.stringify(exited.settledDuties)})`);
+      assert.equal(composition.dutyAdjudication.allObserved, true, 'the all-duty settlement leg is reachable through the observed exits');
+      const reRead = await composition.observers.dutyFacts();
+      assert.deepEqual(reRead.settledDuties, ['invocation', 'broker', 'transport', 'runner', 'job', 'guard', 'integrity'], 'a correctly exited process keeps its settled slot on subsequent reads');
+      assert.equal(composition.dutyAdjudication.allObserved, true);
+      // (3) A successor GENERATION occupying a pid is never the original's
+      // lawful exit: a live successor read reverts the slot to unsettled.
+      scripted.transport = 'successor';
+      scripted.transportGeneration += 1;
+      const successor = await composition.observers.dutyFacts();
+      assert.deepEqual(successor.settledDuties, ['invocation', 'broker', 'runner', 'job', 'guard', 'integrity'], `a successor generation never settles the original slot (actual ${JSON.stringify(successor.settledDuties)})`);
+      assert.equal(composition.dutyAdjudication.allObserved, false, 'the settlement leg stays unreachable while a generation is unproven');
+      // (P2-2) the EXITED invocation/broker slots are no longer present
+      // baselines: observable requires ALL seven mandatory slots, so the
+      // post-exit scope is honestly not observable (admission can never fire
+      // on a scope whose baselines already ended).
+      assert.equal(successor.observable, false, 'post-exit baselines are incomplete: observable requires all seven mandatory slots');
+    });
+
+    test('confirmed-window live composition: a mismatched clock base presented to the ACTUAL controller through the REAL fixture composition refuses at admission (clock-domain-mismatch, nothing sent)', async (t) => {
+      // The composition itself always stamps `controller-monotonic`; the
+      // negative pins the controller's enforcement of a collector that
+      // declares another process's clock (e.g. the control script's own
+      // monotonic elapsed tags) instead.
+      const { fixture } = await createFastRealFixture(t, 'confirmed-window-live-clock-negative-');
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      const composition = driverModule.createConfirmedWindowLiveComposition({ fixture, now: () => 1_000, workerDurationMs: 420_000 });
+      const { result, host } = await runOfflineChoreography({
+        script: { notifications: [...identityJoinNotifications({ atMs: 100 })] },
+        observers: {
+          ...greenObservers(),
+          controlFacts: async () => ({ ...(await greenObservers().controlFacts()), clockDomain: 'control-process-monotonic' }),
+        },
+        session: { fixture },
+      });
+      assert.equal(result.finalState, 'staging-not-ready');
+      assert.match(String(result.refusal?.reason ?? ''), /clock-domain-mismatch/u);
+      assert.equal(host.requestLog.some((entry) => entry.method === 'turn/interrupt'), false);
+      // The composition's own facts carry the closed tag (so they are
+      // accepted by the controller's tag gate).
+      assert.equal((await composition.observers.ancestryBaseline()).clockDomain, 'controller-monotonic');
+    });
+
+    test('confirmed-window live composition: control freshness and remaining-life credit require the DEMONSTRATED emission-to-read delay — a first read of long-buffered lines leaves declaredLifetimeMs null (P2-1, 2026-11-19 codex review)', async (t) => {
+      // The reviewer's exact offline reproduction: the Root stopped reading
+      // after line 40 and a FIRST collector read much later stamped
+      // freshAtMs = the read instant regardless of how long the lines had
+      // been buffered, still reporting an active control with 38000 ms
+      // remaining after its designed lifetime had partly elapsed without an
+      // observed completion envelope. The §41.5.2 frozen rule is enforced in
+      // the live collector: freshness and remaining-life credit require the
+      // demonstrated emission-to-read delay (tag delta versus controller
+      // delta across the collector's OWN reads) — a read that cannot meet
+      // the one-cadence bound leaves declaredLifetimeMs null.
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      const { fixture } = await createFastRealFixture(t, 'confirmed-window-emission-age-');
+      let current = 1_500;
+      // The survival control's emitted lines as REAL rollout artifacts: the
+      // ONE exec_command launch, its grounded session handle, and the polls
+      // whose completed output envelopes carry the accumulated progress
+      // lines (line 41 buffered since the fixture's write — the Root stopped
+      // reading after it).
+      const rolloutDirectory = join(fixture.codexHome, 'sessions', '2026', '11', '17');
+      await mkdir(rolloutDirectory, { recursive: true, mode: 0o700 });
+      // (P1-2, 2026-11-19 codex re-review) the joined CHILD rollout whose parent
+      // binding names the owning Root session: the extractor resolves the
+      // ownership from THIS binding.
+      const owningChildRolloutPath = join(rolloutDirectory, 'rollout-owning-child.jsonl');
+      await writeFile(owningChildRolloutPath, `${JSON.stringify({ type: 'session_meta', payload: { id: 'child-joined-session', parent_thread_id: 'root-owning-session' } })}\n`, { mode: 0o600 });
+      const CONTROL_HANDLE = 4100;
+      const controlRolloutPath = join(rolloutDirectory, 'rollout-emission-age.jsonl');
+      const controlCallStatement = (/** @type {string} */ kind, /** @type {any} */ value) => `const r = await tools.${kind}(${JSON.stringify(value)}); text(JSON.stringify(r))\n`;
+      const controlCompletedOutput = (/** @type {any} */ result) => [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify(result) }];
+      // (P1-3, 2026-11-19 codex re-review) the anchor is the control's OWN
+      // LAUNCH ENVELOPE: the rollout events carry epoch timestamps, the
+      // launch event stamps the birth, and each poll's OUTPUT event stamps
+      // when its newest line was READ — the emission-to-read delay is
+      // (readEpoch − launchEpoch − tag), all in the one epoch domain.
+      // (P1-1, 2026-11-19 codex re-review) the launch epoch is REAL-epoch and
+      // Date.now()-relative per phase: the collector's own read instant is
+      // the age bound's other endpoint.
+      let LAUNCH_EPOCH_MS = Date.now() - 140_021;
+      const writeEpochRollout = async (/** @type {{ output: string, readEpochMs: number }[]} */ polls) => {
+        const events = [
+          { type: 'session_meta', payload: { id: 'root-owning-session' }, timestamp: LAUNCH_EPOCH_MS },
+          { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'emission-launch-1', input: controlCallStatement('exec_command', { cmd: fixture.survivalControlPath }) }, timestamp: LAUNCH_EPOCH_MS },
+          { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'emission-launch-1', output: controlCompletedOutput({ output: '', session_id: CONTROL_HANDLE }) }, timestamp: LAUNCH_EPOCH_MS + 5 },
+          ...polls.flatMap((poll) => [
+            { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: `emission-poll-${String(poll.readEpochMs)}`, input: controlCallStatement('write_stdin', { session_id: CONTROL_HANDLE, chars: '', yield_time_ms: 60_000 }) }, timestamp: poll.readEpochMs },
+            { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: `emission-poll-${String(poll.readEpochMs)}`, output: controlCompletedOutput({ output: poll.output, session_id: CONTROL_HANDLE }) }, timestamp: poll.readEpochMs },
+          ]),
+        ];
+        await writeFile(controlRolloutPath, events.map((event) => JSON.stringify(event)).join('\n') + '\n', { mode: 0o600 });
+      };
+      // (1) A first read of a LONG-BUFFERED line (carried 140000 ms after
+      // the launch): the delay is not demonstrable — no freshness, no
+      // remaining-life credit.
+      LAUNCH_EPOCH_MS = Date.now() - 140_021;
+      await writeEpochRollout([{ output: 'zcode-survival-control 1 21\n', readEpochMs: LAUNCH_EPOCH_MS + 140_021 }]);
+      const composition = driverModule.createConfirmedWindowLiveComposition({
+        fixture, now: () => current, workerDurationMs: 420_000, caseDeadlineAtMs: () => 1_200_000,
+        childObservationThreadId: 'child-joined-session',
+      });
+      const buffered = await composition.observers.controlFacts();
+      assert.equal(buffered.active, true, `the buffered control is alive in the artifacts (actual ${JSON.stringify(buffered)})`);
+      assert.equal(buffered.freshAtMs, null, 'a long-buffered line never stamps freshness');
+      assert.equal(buffered.declaredLifetimeMs, null, `no remaining-life credit without the demonstrated emission-to-read delay (actual ${JSON.stringify(buffered.declaredLifetimeMs)})`);
+      assert.match(String(buffered.reason ?? ''), /emission-to-read|demonstrat/u, 'the reason names the undemonstrated emission-to-read delay');
+      // (2) A NEW line whose carrying read event sits one delay-margin past
+      // its emission (readEpoch − launch − tag = 977 ≤ one cadence): the
+      // delay is demonstrated — freshness stamps at the CONTROLLER-clock
+      // read instant and the frozen conservative lower bound credits the
+      // remaining life.
+      current = 86_000;
+      // The control launched 85000 ms ago; line 42 (tag 84023) is 977 ms
+      // old at the collector's own read.
+      LAUNCH_EPOCH_MS = Date.now() - 85_000;
+      await writeEpochRollout([
+        { output: 'zcode-survival-control 1 21\n', readEpochMs: LAUNCH_EPOCH_MS + 140_021 },
+        { output: 'zcode-survival-control 1 21\nzcode-survival-control 42 84023\n', readEpochMs: LAUNCH_EPOCH_MS + 85_000 },
+      ]);
+      const demonstrated = await composition.observers.controlFacts();
+      assert.equal(demonstrated.active, true);
+      assert.equal(demonstrated.freshAtMs, 86_000, 'the demonstrated fresh line stamps at the controller-clock read instant');
+      assert.equal(demonstrated.declaredLifetimeMs, 34_000, 'max(0, (60 - 42 - 1) * 2000) — the conservative lower bound rides the demonstrated freshness');
+      // (3) A later line whose carrying read event sits FAR past its
+      // emission (delay 140001 ≫ one cadence): the credit drops back to null
+      // (the newest line's freshness is never assumed).
+      current = 300_000;
+      // The control launched 226025 ms ago; line 43 (tag 86024) is 140001
+      // ms old at the collector's own read.
+      LAUNCH_EPOCH_MS = Date.now() - 226_025;
+      await writeEpochRollout([
+        { output: 'zcode-survival-control 42 84023\n', readEpochMs: LAUNCH_EPOCH_MS + 85_000 },
+        { output: 'zcode-survival-control 42 84023\nzcode-survival-control 43 86024\n', readEpochMs: LAUNCH_EPOCH_MS + 226_025 },
+      ]);
+      const staleGap = await composition.observers.controlFacts();
+      assert.equal(staleGap.active, true, 'the control is still alive');
+      assert.equal(staleGap.freshAtMs, 86_000, 'the last DEMONSTRATED freshness is retained');
+      assert.equal(staleGap.declaredLifetimeMs, null, `a carrying read that cannot meet the one-cadence bound leaves the credit null (actual ${JSON.stringify(staleGap.declaredLifetimeMs)})`);
+    });
+
+    test('confirmed-window live composition: matching tag deltas alone never prove freshness — the emission-age BIRTH ANCHOR bounds the absolute delay, and an unanchored late read with perfectly matching deltas credits nothing (P2-1, 2026-11-19 codex re-review)', async (t) => {
+      // The reviewer's exact offline reproduction: reads at 300000/302001 ms
+      // of tags 82022/84023 pass the delta-difference rule (2001 − 2001 = 0)
+      // and granted 34000 ms of remaining life — but the delta rule measures
+      // only the CHANGE in buffering delay, never the line's absolute age.
+      // The collector now latches an emission-age BIRTH ANCHOR (the first
+      // read whose newest tag is within one cadence of the control's birth)
+      // and requires the ABSOLUTE bound `0 ≤ read − anchor − tag ≤ one
+      // cadence` on every credited read; an unanchored read credits nothing.
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      const { fixture } = await createFastRealFixture(t, 'confirmed-window-birth-anchor-');
+      let current = 300_000;
+      const now = () => current;
+      const rolloutDirectory = join(fixture.codexHome, 'sessions', '2026', '11', '17');
+      await mkdir(rolloutDirectory, { recursive: true, mode: 0o700 });
+      // (P1-2, 2026-11-19 codex re-review) the joined CHILD rollout whose parent
+      // binding names the owning Root session: the extractor resolves the
+      // ownership from THIS binding.
+      const owningChildRolloutPath = join(rolloutDirectory, 'rollout-owning-child.jsonl');
+      await writeFile(owningChildRolloutPath, `${JSON.stringify({ type: 'session_meta', payload: { id: 'child-joined-session', parent_thread_id: 'root-owning-session' } })}\n`, { mode: 0o600 });
+      const CONTROL_HANDLE = 4100;
+      const controlRolloutPath = join(rolloutDirectory, 'rollout-birth-anchor.jsonl');
+      const controlCallStatement = (/** @type {string} */ kind, /** @type {any} */ value) => `const r = await tools.${kind}(${JSON.stringify(value)}); text(JSON.stringify(r))\n`;
+      const controlCompletedOutput = (/** @type {any} */ result) => [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify(result) }];
+      // (P1-3, 2026-11-19 codex re-review) the anchor is the control's OWN
+      // LAUNCH ENVELOPE: the rollout events carry epoch timestamps, and the
+      // newest line's delay is (carryingReadEpoch − launchEpoch − tag) in
+      // the one epoch domain — the collector's own read-delta matching is
+      // irrelevant to the absolute age.
+      // (P1-1, 2026-11-19 codex re-review) the launch epoch is REAL-epoch and
+      // Date.now()-relative per phase: the collector's own read instant is
+      // the age bound's other endpoint.
+      let LAUNCH_EPOCH_MS = Date.now() - 300_000;
+      const writeEpochRollout = async (/** @type {{ output: string, readEpochMs: number }[]} */ polls) => {
+        const events = [
+          { type: 'session_meta', payload: { id: 'root-owning-session' }, timestamp: LAUNCH_EPOCH_MS },
+          { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'anchor-launch-1', input: controlCallStatement('exec_command', { cmd: fixture.survivalControlPath }) }, timestamp: LAUNCH_EPOCH_MS },
+          { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'anchor-launch-1', output: controlCompletedOutput({ output: '', session_id: CONTROL_HANDLE }) }, timestamp: LAUNCH_EPOCH_MS + 5 },
+          ...polls.flatMap((poll) => [
+            { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: `anchor-poll-${String(poll.readEpochMs)}`, input: controlCallStatement('write_stdin', { session_id: CONTROL_HANDLE, chars: '', yield_time_ms: 60_000 }) }, timestamp: poll.readEpochMs },
+            { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: `anchor-poll-${String(poll.readEpochMs)}`, output: controlCompletedOutput({ output: poll.output, session_id: CONTROL_HANDLE }) }, timestamp: poll.readEpochMs },
+          ]),
+        ];
+        await writeFile(controlRolloutPath, events.map((event) => JSON.stringify(event)).join('\n') + '\n', { mode: 0o600 });
+      };
+      // Read 1 at controller 300000: the carrying read event itself sat
+      // 300000 ms past the launch — the line is long-stale no matter what
+      // the collector's own read cadence does.
+      LAUNCH_EPOCH_MS = Date.now() - 300_000;
+      await writeEpochRollout([{ output: 'zcode-survival-control 40 80021\nzcode-survival-control 41 82022\n', readEpochMs: LAUNCH_EPOCH_MS + 300_000 }]);
+      const composition = driverModule.createConfirmedWindowLiveComposition({
+        fixture, now, workerDurationMs: 420_000, caseDeadlineAtMs: () => 1_200_000,
+        childObservationThreadId: 'child-joined-session',
+      });
+      const first = await composition.observers.controlFacts();
+      assert.equal(first.active, true);
+      assert.equal(first.declaredLifetimeMs, null, 'a long-stale carrying read credits nothing');
+      // Read 2 at controller 302001 — the collector's read deltas match the
+      // tag deltas PERFECTLY (2001 vs 2001), but the newest line's carrying
+      // read event still sits far past its emission: matching read deltas
+      // never grant freshness or remaining life.
+      current = 302_001;
+      await writeEpochRollout([
+        { output: 'zcode-survival-control 40 80021\nzcode-survival-control 41 82022\n', readEpochMs: LAUNCH_EPOCH_MS + 300_000 },
+        { output: 'zcode-survival-control 40 80021\nzcode-survival-control 41 82022\nzcode-survival-control 42 84023\n', readEpochMs: LAUNCH_EPOCH_MS + 302_001 },
+      ]);
+      const matchingDeltas = await composition.observers.controlFacts();
+      assert.equal(matchingDeltas.active, true);
+      assert.equal(matchingDeltas.declaredLifetimeMs, null, `matching read deltas alone never grant freshness or remaining life (actual ${JSON.stringify(matchingDeltas.declaredLifetimeMs)})`);
+      assert.match(String(matchingDeltas.reason ?? ''), /emission-to-read|demonstrat/u, 'the reason names the undemonstrated emission-to-read delay');
+      // The anchored shape: the newest line's carrying read event sits one
+      // delay-margin past its emission (85423 − 84023 = 1000 ≤ one cadence)
+      // — the launch-anchored bound credits the conservative lower bound.
+      // The anchored positive: the control launched 85023 ms ago; line 42
+      // (tag 84023) is 1000 ms old at the collector's own read.
+      LAUNCH_EPOCH_MS = Date.now() - 85_023;
+      let anchoredCurrent = 86_000;
+      const anchoredComposition = driverModule.createConfirmedWindowLiveComposition({
+        fixture, now: () => anchoredCurrent, workerDurationMs: 420_000, caseDeadlineAtMs: () => 1_200_000,
+        childObservationThreadId: 'child-joined-session',
+      });
+      await writeEpochRollout([{ output: 'zcode-survival-control 1 21\nzcode-survival-control 42 84023\n', readEpochMs: LAUNCH_EPOCH_MS + 85_023 }]);
+      const anchored = await anchoredComposition.observers.controlFacts();
+      assert.equal(anchored.active, true);
+      assert.equal(anchored.freshAtMs, 86_000, 'the anchored demonstrated fresh line stamps at the controller read instant');
+      assert.equal(anchored.declaredLifetimeMs, 34_000, `the launch-anchored bound credits the conservative lower bound (actual ${JSON.stringify(anchored.declaredLifetimeMs)})`);
+    });
+
+    test('confirmed-window live composition: the control emission-age bound rides the CARRYING READ EVENT — an intervening unchanged collector read never disturbs it, so the normal 1000-ms sampling cadence still earns credit (P1-2, 2026-11-19 codex re-review)', async (t) => {
+      // The reviewer's round-3 reproduction: at the controller's normal
+      // 1000-ms sampling cadence, an intervening read WITHOUT a new line
+      // reset the old delta baseline and rejected fresh evidence, so reading
+      // every second never earned credit. With the round-4 launch-envelope
+      // anchor (P1-3) the demonstration rides each line's CARRYING READ
+      // EVENT timestamp — collector read times are not an input at all, and
+      // intervening unchanged reads disturb nothing.
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      const { fixture } = await createFastRealFixture(t, 'confirmed-window-tag-baseline-');
+      let current = 1_500;
+      const now = () => current;
+      const rolloutDirectory = join(fixture.codexHome, 'sessions', '2026', '11', '17');
+      await mkdir(rolloutDirectory, { recursive: true, mode: 0o700 });
+      // (P1-2, 2026-11-19 codex re-review) the joined CHILD rollout whose parent
+      // binding names the owning Root session: the extractor resolves the
+      // ownership from THIS binding.
+      const owningChildRolloutPath = join(rolloutDirectory, 'rollout-owning-child.jsonl');
+      await writeFile(owningChildRolloutPath, `${JSON.stringify({ type: 'session_meta', payload: { id: 'child-joined-session', parent_thread_id: 'root-owning-session' } })}\n`, { mode: 0o600 });
+      const CONTROL_HANDLE = 4100;
+      const controlRolloutPath = join(rolloutDirectory, 'rollout-tag-baseline.jsonl');
+      // (P1-1, 2026-11-19 codex re-review) the launch epoch is REAL-epoch and
+      // Date.now()-relative per phase: the collector's own read instant is
+      // the age bound's other endpoint.
+      let LAUNCH_EPOCH_MS = Date.now() - 83_121;
+      const controlCallStatement = (/** @type {string} */ kind, /** @type {any} */ value) => `const r = await tools.${kind}(${JSON.stringify(value)}); text(JSON.stringify(r))\n`;
+      const controlCompletedOutput = (/** @type {any} */ result) => [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify(result) }];
+      const writeEpochRollout = async (/** @type {{ output: string, readEpochMs: number }[]} */ polls) => {
+        const events = [
+          { type: 'session_meta', payload: { id: 'root-owning-session' }, timestamp: LAUNCH_EPOCH_MS },
+          { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'baseline-launch-1', input: controlCallStatement('exec_command', { cmd: fixture.survivalControlPath }) }, timestamp: LAUNCH_EPOCH_MS },
+          { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'baseline-launch-1', output: controlCompletedOutput({ output: '', session_id: CONTROL_HANDLE }) }, timestamp: LAUNCH_EPOCH_MS + 5 },
+          ...polls.flatMap((poll) => [
+            { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: `baseline-poll-${String(poll.readEpochMs)}`, input: controlCallStatement('write_stdin', { session_id: CONTROL_HANDLE, chars: '', yield_time_ms: 60_000 }) }, timestamp: poll.readEpochMs },
+            { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: `baseline-poll-${String(poll.readEpochMs)}`, output: controlCompletedOutput({ output: poll.output, session_id: CONTROL_HANDLE }) }, timestamp: poll.readEpochMs },
+          ]),
+        ];
+        await writeFile(controlRolloutPath, events.map((event) => JSON.stringify(event)).join('\n') + '\n', { mode: 0o600 });
+      };
+      const composition = driverModule.createConfirmedWindowLiveComposition({
+        fixture, now, workerDurationMs: 420_000, caseDeadlineAtMs: () => 1_200_000,
+        childObservationThreadId: 'child-joined-session',
+      });
+      // Line 41 demonstrated: its carrying read event sits 1000 ms past its
+      // emission (83121 - 82021).
+      LAUNCH_EPOCH_MS = Date.now() - 83_121;
+      await writeEpochRollout([{ output: 'zcode-survival-control 1 21\nzcode-survival-control 41 82021\n', readEpochMs: LAUNCH_EPOCH_MS + 83_121 }]);
+      const line41 = await composition.observers.controlFacts();
+      assert.equal(line41.active, true);
+      assert.equal(line41.freshAtMs, 1_500, 'line 41 is demonstrated fresh at the controller read instant');
+      assert.equal(line41.declaredLifetimeMs, 36_000, 'max(0, (60 - 41 - 1) * 2000)');
+      // The INTERVENING collector read at the normal 1000-ms cadence with NO
+      // new line: it keeps the demonstrated freshness (the carrying-event
+      // bound is untouched by collector read times).
+      current = 2_500;
+      const unchanged = await composition.observers.controlFacts();
+      assert.equal(unchanged.freshAtMs, 1_500, 'the unchanged read keeps the demonstrated freshness');
+      // Line 42 arrives: its carrying read event again sits 1000 ms past its
+      // emission — the normal sampling cadence keeps earning credit.
+      current = 3_500;
+      // The control launched 85121 ms ago; line 42 (tag 84021) is 1100 ms
+      // old at the collector's own read.
+      LAUNCH_EPOCH_MS = Date.now() - 85_121;
+      await writeEpochRollout([
+        { output: 'zcode-survival-control 1 21\nzcode-survival-control 41 82021\n', readEpochMs: LAUNCH_EPOCH_MS + 83_121 },
+        { output: 'zcode-survival-control 1 21\nzcode-survival-control 41 82021\nzcode-survival-control 42 84021\n', readEpochMs: LAUNCH_EPOCH_MS + 85_121 },
+      ]);
+      const line42 = await composition.observers.controlFacts();
+      assert.equal(line42.active, true);
+      assert.equal(line42.freshAtMs, 3_500, `the carrying-event bound keeps the 1000-ms cadence creditable (actual ${JSON.stringify(line42)})`);
+      assert.equal(line42.declaredLifetimeMs, 34_000, 'max(0, (60 - 42 - 1) * 2000) — the normal sampling cadence earns credit');
+    });
+    test('confirmed-window live composition: the emission-age anchor is the control OWN LAUNCH ENVELOPE — reading a buffered old line late never re-births a long-dead control (P1-3, 2026-11-19 codex re-review)', async (t) => {
+      // The reviewer's exact offline reproduction: reading buffered line
+      // `1 21` at 140000 ms latched the birth anchor to the READ instant
+      // (140000); reading buffered line `2 2022` at 142022 ms then granted
+      // freshness and 114000 ms of remaining life — even though the control
+      // launched at epoch zero and had already ended. A small emission tag
+      // proves when a line was emitted RELATIVE TO CONTROL BIRTH, not when
+      // it was read: the anchor is now the control's own LAUNCH READ
+      // ENVELOPE (the launch event's rollout timestamp — the attributable
+      // launch-time bound extractSurvivalControlFacts captures as
+      // launchAtMs), and the newest line's delay is bounded by its CARRYING
+      // READ EVENT's timestamp in the SAME epoch domain.
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      const { fixture } = await createFastRealFixture(t, 'confirmed-window-launch-anchor-');
+      let current = 140_000;
+      const now = () => current;
+      const rolloutDirectory = join(fixture.codexHome, 'sessions', '2026', '11', '17');
+      await mkdir(rolloutDirectory, { recursive: true, mode: 0o700 });
+      // (P1-2, 2026-11-19 codex re-review) the joined CHILD rollout whose parent
+      // binding names the owning Root session: the extractor resolves the
+      // ownership from THIS binding.
+      const owningChildRolloutPath = join(rolloutDirectory, 'rollout-owning-child.jsonl');
+      await writeFile(owningChildRolloutPath, `${JSON.stringify({ type: 'session_meta', payload: { id: 'child-joined-session', parent_thread_id: 'root-owning-session' } })}\n`, { mode: 0o600 });
+      const CONTROL_HANDLE = 4100;
+      const controlRolloutPath = join(rolloutDirectory, 'rollout-launch-anchor.jsonl');
+      // (P1-1, 2026-11-19 codex re-review) the launch epoch is REAL-epoch and
+      // Date.now()-relative per phase: the collector's own read instant
+      // (Date.now()) is the age bound's other endpoint.
+      let LAUNCH_EPOCH_MS = Date.now() - 140_000;
+      const controlCallStatement = (/** @type {string} */ kind, /** @type {any} */ value) => `const r = await tools.${kind}(${JSON.stringify(value)}); text(JSON.stringify(r))\n`;
+      const controlCompletedOutput = (/** @type {any} */ result) => [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify(result) }];
+      const writeControlRollout = async (/** @type {{ output: string, readEpochMs: number }[]} */ polls) => {
+        const events = [
+          { type: 'session_meta', payload: { id: 'root-owning-session' }, timestamp: LAUNCH_EPOCH_MS },
+          { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'launch-anchor-launch-1', input: controlCallStatement('exec_command', { cmd: fixture.survivalControlPath }) }, timestamp: LAUNCH_EPOCH_MS },
+          { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'launch-anchor-launch-1', output: controlCompletedOutput({ output: '', session_id: CONTROL_HANDLE }) }, timestamp: LAUNCH_EPOCH_MS + 5 },
+          ...polls.flatMap((poll) => [
+            { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: `launch-anchor-poll-${String(poll.readEpochMs)}`, input: controlCallStatement('write_stdin', { session_id: CONTROL_HANDLE, chars: '', yield_time_ms: 60_000 }) }, timestamp: poll.readEpochMs },
+            { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: `launch-anchor-poll-${String(poll.readEpochMs)}`, output: controlCompletedOutput({ output: poll.output, session_id: CONTROL_HANDLE }) }, timestamp: poll.readEpochMs },
+          ]),
+        ];
+        await writeFile(controlRolloutPath, events.map((event) => JSON.stringify(event)).join('\n') + '\n', { mode: 0o600 });
+      };
+      // (1) The reviewer's exact hole: buffered line 1 read 140000 ms after
+      // the launch; buffered line 2 read at 142022 — the old rule re-birthed
+      // the control at the line-1 READ instant and granted 114000 ms.
+      LAUNCH_EPOCH_MS = Date.now() - 140_000;
+      await writeControlRollout([
+        { output: 'zcode-survival-control 1 21\n', readEpochMs: LAUNCH_EPOCH_MS + 140_021 },
+      ]);
+      const deadControl = driverModule.createConfirmedWindowLiveComposition({
+        fixture, now, workerDurationMs: 420_000, caseDeadlineAtMs: () => 1_200_000,
+        childObservationThreadId: 'child-joined-session',
+      });
+      const firstRead = await deadControl.observers.controlFacts();
+      assert.equal(firstRead.active, true, 'the buffered control still reads alive (the designed end is not yet in the artifacts)');
+      assert.equal(firstRead.declaredLifetimeMs, null, `a first read credits nothing before the delay is demonstrated (actual ${JSON.stringify(firstRead.declaredLifetimeMs)})`);
+      current = 142_022;
+      await writeControlRollout([
+        { output: 'zcode-survival-control 1 21\n', readEpochMs: LAUNCH_EPOCH_MS + 140_021 },
+        { output: 'zcode-survival-control 1 21\nzcode-survival-control 2 2022\n', readEpochMs: LAUNCH_EPOCH_MS + 142_022 },
+      ]);
+      void LAUNCH_EPOCH_MS;
+      const secondRead = await deadControl.observers.controlFacts();
+      assert.equal(secondRead.active, true);
+      assert.equal(secondRead.declaredLifetimeMs, null, `a line read 140000 ms after the launch is long-stale — the launch envelope anchors birth, never a buffered line's read instant (actual ${JSON.stringify(secondRead.declaredLifetimeMs)})`);
+      assert.equal(secondRead.freshAtMs, null, 'no freshness is granted to the long-buffered line');
+      // (2) The anchored positive: the SAME control read at launch + 3022
+      // (delay 3022 − 2022 = 1000 ≤ one cadence) demonstrates the
+      // emission-to-read delay and credits the conservative lower bound.
+      const anchoredCurrent = 3_022;
+      const anchored = driverModule.createConfirmedWindowLiveComposition({
+        fixture, now: () => anchoredCurrent, workerDurationMs: 420_000, caseDeadlineAtMs: () => 1_200_000,
+        childObservationThreadId: 'child-joined-session',
+      });
+      // The prompt-collection positive: the collector reads ~1000 ms after
+      // the line's emission (the launch 3022 ms ago, tag 2022).
+      LAUNCH_EPOCH_MS = Date.now() - 3_022;
+      await writeControlRollout([
+        { output: 'zcode-survival-control 1 21\n', readEpochMs: LAUNCH_EPOCH_MS + 21 },
+        { output: 'zcode-survival-control 1 21\nzcode-survival-control 2 2022\n', readEpochMs: LAUNCH_EPOCH_MS + 3_022 },
+      ]);
+      const anchoredRead = await anchored.observers.controlFacts();
+      assert.equal(anchoredRead.active, true);
+      assert.equal(anchoredRead.freshAtMs, 3_022, 'the demonstrated fresh line stamps at the controller-clock read instant');
+      assert.equal(anchoredRead.declaredLifetimeMs, 114_000, 'max(0, (60 - 2 - 1) * 2000) — the launch-anchored bound credits the prompt read');
+    });
+
+    test('confirmed-window live composition: a control exit is attributed by its GROUNDED HANDLE — a terminal read with EMPTY output and an exit code still ends the control (P2-3, 2026-11-19 codex re-review)', async (t) => {
+      // The reviewer's exact offline reproduction: when the control exits
+      // after its progress output has already been consumed, its terminal
+      // read can contain an EMPTY output and an exit code — the old
+      // text-prefix scan ignored that completion and the control stayed
+      // `active: true` with fresh evidence and remaining-life credit. The
+      // exit is now joined to the grounded control handle through the
+      // extractor's own read-event attribution (extractSurvivalControlFacts
+      // recognizes any completed numeric-exit read on the control's handle,
+      // regardless of output contents).
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      const { fixture } = await createFastRealFixture(t, 'confirmed-window-handle-exit-');
+      let current = 5_000;
+      const now = () => current;
+      const rolloutDirectory = join(fixture.codexHome, 'sessions', '2026', '11', '17');
+      await mkdir(rolloutDirectory, { recursive: true, mode: 0o700 });
+      // (P1-2, 2026-11-19 codex re-review) the joined CHILD rollout whose parent
+      // binding names the owning Root session: the extractor resolves the
+      // ownership from THIS binding.
+      const owningChildRolloutPath = join(rolloutDirectory, 'rollout-owning-child.jsonl');
+      await writeFile(owningChildRolloutPath, `${JSON.stringify({ type: 'session_meta', payload: { id: 'child-joined-session', parent_thread_id: 'root-owning-session' } })}\n`, { mode: 0o600 });
+      const CONTROL_HANDLE = 4100;
+      const controlRolloutPath = join(rolloutDirectory, 'rollout-handle-exit.jsonl');
+      const LAUNCH_EPOCH_MS = 1_700_000_000_000;
+      const controlCallStatement = (/** @type {string} */ kind, /** @type {any} */ value) => `const r = await tools.${kind}(${JSON.stringify(value)}); text(JSON.stringify(r))\n`;
+      const controlCompletedOutput = (/** @type {any} */ result) => [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify(result) }];
+      const writeControlRollout = async (/** @type {{ output: string, exitCode: number | null, readEpochMs: number }[]} */ polls) => {
+        const events = [
+          { type: 'session_meta', payload: { id: 'root-owning-session' }, timestamp: LAUNCH_EPOCH_MS },
+          { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'handle-exit-launch-1', input: controlCallStatement('exec_command', { cmd: fixture.survivalControlPath }) }, timestamp: LAUNCH_EPOCH_MS },
+          { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'handle-exit-launch-1', output: controlCompletedOutput({ output: '', session_id: CONTROL_HANDLE }) }, timestamp: LAUNCH_EPOCH_MS + 5 },
+          ...polls.flatMap((poll) => [
+            { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: `handle-exit-poll-${String(poll.readEpochMs)}`, input: controlCallStatement('write_stdin', { session_id: CONTROL_HANDLE, chars: '', yield_time_ms: 60_000 }) }, timestamp: poll.readEpochMs },
+            { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: `handle-exit-poll-${String(poll.readEpochMs)}`, output: controlCompletedOutput({ output: poll.output, ...(poll.exitCode === null ? {} : { exit_code: poll.exitCode }), session_id: CONTROL_HANDLE }) }, timestamp: poll.readEpochMs },
+          ]),
+        ];
+        await writeFile(controlRolloutPath, events.map((event) => JSON.stringify(event)).join('\n') + '\n', { mode: 0o600 });
+      };
+      // One progress read (line 5, carried promptly after its emission), then
+      // the TERMINAL read on the SAME handle: EMPTY output, exit code 1.
+      await writeControlRollout([
+        { output: 'zcode-survival-control 5 10021\n', exitCode: null, readEpochMs: LAUNCH_EPOCH_MS + 11_021 },
+        { output: '', exitCode: 1, readEpochMs: LAUNCH_EPOCH_MS + 12_000 },
+      ]);
+      const composition = driverModule.createConfirmedWindowLiveComposition({
+        fixture, now, workerDurationMs: 420_000, caseDeadlineAtMs: () => 1_200_000,
+        childObservationThreadId: 'child-joined-session',
+      });
+      const control = await composition.observers.controlFacts();
+      assert.equal(control.active, false, `an empty-output exit-code terminal read on the control's own handle ENDS the control (actual ${JSON.stringify(control)})`);
+      assert.equal(control.declaredLifetimeMs, 0, 'the exited control carries zero credited life');
+      assert.equal(control.freshAtMs, null, 'the exited control never stamps a fresh read');
+      assert.match(String(control.reason ?? ''), /exit code 1/u, 'the inactive reason names the observed exec completion');
+    });
+
+    test('confirmed-window live composition: control freshness must hold at the COLLECTOR OWN READ — a prompt model read collected long after the control ended never credits freshness or remaining life (P1-1, 2026-11-19 codex re-review)', async (t) => {
+      // The reviewer's exact offline reproduction: control line `2 2022` read
+      // by the MODEL at launch + 3022 ms still produced freshAtMs 140000 and
+      // 114000 ms of remaining life when the COLLECTOR read the rollout at
+      // 140000 ms — the carrying-event bound proves freshness at the MODEL's
+      // read, not at admission. The demonstration now measures the age at
+      // the COLLECTOR'S OWN READ of the rollout (the collector's real read
+      // instant against the launch epoch, one epoch domain): the subsequent
+      // collection delay is accounted before any freshness or remaining-life
+      // credit.
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      const { fixture } = await createFastRealFixture(t, 'confirmed-window-collector-age-');
+      let current = 140_000;
+      const now = () => current;
+      const rolloutDirectory = join(fixture.codexHome, 'sessions', '2026', '11', '17');
+      await mkdir(rolloutDirectory, { recursive: true, mode: 0o700 });
+      // (P1-2, 2026-11-19 codex re-review) the joined CHILD rollout whose parent
+      // binding names the owning Root session: the extractor resolves the
+      // ownership from THIS binding.
+      const owningChildRolloutPath = join(rolloutDirectory, 'rollout-owning-child.jsonl');
+      await writeFile(owningChildRolloutPath, `${JSON.stringify({ type: 'session_meta', payload: { id: 'child-joined-session', parent_thread_id: 'root-owning-session' } })}\n`, { mode: 0o600 });
+      const CONTROL_HANDLE = 4100;
+      const controlRolloutPath = join(rolloutDirectory, 'rollout-collector-age.jsonl');
+      // The control LAUNCHED 140000 ms ago (real epoch); its line 2 was read
+      // by the MODEL promptly (launch + 3022) — but the COLLECTOR reads the
+      // rollout only now, long after the ~120000-ms designed lifetime ended.
+      const LAUNCH_EPOCH_MS = Date.now() - 140_000;
+      const controlCallStatement = (/** @type {string} */ kind, /** @type {any} */ value) => `const r = await tools.${kind}(${JSON.stringify(value)}); text(JSON.stringify(r))\n`;
+      const controlCompletedOutput = (/** @type {any} */ result) => [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify(result) }];
+      const writeControlRollout = async (/** @type {{ output: string, readEpochMs: number }[]} */ polls) => {
+        const events = [
+          { type: 'session_meta', payload: { id: 'root-owning-session' }, timestamp: LAUNCH_EPOCH_MS },
+          { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'collector-age-launch-1', input: controlCallStatement('exec_command', { cmd: fixture.survivalControlPath }) }, timestamp: LAUNCH_EPOCH_MS },
+          { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'collector-age-launch-1', output: controlCompletedOutput({ output: '', session_id: CONTROL_HANDLE }) }, timestamp: LAUNCH_EPOCH_MS + 5 },
+          ...polls.flatMap((poll) => [
+            { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: `collector-age-poll-${String(poll.readEpochMs)}`, input: controlCallStatement('write_stdin', { session_id: CONTROL_HANDLE, chars: '', yield_time_ms: 60_000 }) }, timestamp: poll.readEpochMs },
+            { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: `collector-age-poll-${String(poll.readEpochMs)}`, output: controlCompletedOutput({ output: poll.output, session_id: CONTROL_HANDLE }) }, timestamp: poll.readEpochMs },
+          ]),
+        ];
+        await writeFile(controlRolloutPath, events.map((event) => JSON.stringify(event)).join('\n') + '\n', { mode: 0o600 });
+      };
+      await writeControlRollout([{ output: 'zcode-survival-control 1 21\nzcode-survival-control 2 2022\n', readEpochMs: LAUNCH_EPOCH_MS + 3_022 }]);
+      const composition = driverModule.createConfirmedWindowLiveComposition({
+        fixture, now, workerDurationMs: 420_000, caseDeadlineAtMs: () => 1_200_000,
+        childObservationThreadId: 'child-joined-session',
+      });
+      const control = await composition.observers.controlFacts();
+      assert.equal(control.active, true, 'the control is still alive in the artifacts (its designed end is not yet recorded)');
+      assert.equal(control.freshAtMs, null, `a prompt MODEL read collected 137000 ms later is stale AT THE COLLECTOR (actual ${JSON.stringify(control.freshAtMs)})`);
+      assert.equal(control.declaredLifetimeMs, null, `no remaining-life credit when freshness does not hold at the collector's own read (actual ${JSON.stringify(control.declaredLifetimeMs)})`);
+      assert.match(String(control.reason ?? ''), /emission-to-read|demonstrat/u, 'the reason names the undemonstrated delay');
+      // The prompt-collection positive: the SAME shape collected PROMPTLY
+      // (the collector reads ~1000 ms after the line's emission) credits the
+      // conservative lower bound.
+      const promptLaunchEpochMs = Date.now() - 3_022;
+      const promptRollout = [
+        { type: 'session_meta', payload: { id: 'root-owning-session' }, timestamp: promptLaunchEpochMs },
+        { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'collector-age-launch-2', input: controlCallStatement('exec_command', { cmd: fixture.survivalControlPath }) }, timestamp: promptLaunchEpochMs },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'collector-age-launch-2', output: controlCompletedOutput({ output: '', session_id: CONTROL_HANDLE }) }, timestamp: promptLaunchEpochMs + 5 },
+        { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'collector-age-poll-prompt', input: controlCallStatement('write_stdin', { session_id: CONTROL_HANDLE, chars: '', yield_time_ms: 60_000 }) }, timestamp: promptLaunchEpochMs + 2_022 },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'collector-age-poll-prompt', output: controlCompletedOutput({ output: 'zcode-survival-control 1 21\nzcode-survival-control 2 2022\n', session_id: CONTROL_HANDLE }) }, timestamp: promptLaunchEpochMs + 3_022 },
+      ];
+      await writeFile(controlRolloutPath, promptRollout.map((event) => JSON.stringify(event)).join('\n') + '\n', { mode: 0o600 });
+      const promptComposition = driverModule.createConfirmedWindowLiveComposition({
+        fixture, now, workerDurationMs: 420_000, caseDeadlineAtMs: () => 1_200_000,
+        childObservationThreadId: 'child-joined-session',
+      });
+      const prompt = await promptComposition.observers.controlFacts();
+      assert.equal(prompt.active, true);
+      assert.equal(prompt.freshAtMs, 140_000, 'the collector-fresh read stamps freshness at the controller-clock read instant');
+      assert.equal(prompt.declaredLifetimeMs, 114_000, 'max(0, (60 - 2 - 1) * 2000) — the collector-prompt read credits the conservative lower bound');
+    });
+
+    test('confirmed-window live composition: the control launch matches the CANONICAL SHELL COMMAND — a fixture path with shell-sensitive characters is recognized exactly as the prompt and the existing extractor spell it (P2-3, 2026-11-19 codex re-review)', async (t) => {
+      // The reviewer's exact offline reproduction: when the fixture path
+      // contains spaces or other shell-sensitive characters, the prompt
+      // correctly emits survivalControlShellCommand(controlPath) — the
+      // QUOTED canonical form — but the launch scan compared the command
+      // against the UNQUOTED path: the existing control extractor
+      // recognized the launch while the scan missed it, leaving freshness
+      // and lifetime null and preventing admission. The scan now accepts
+      // the same canonical shell command the prompt and the extractor use.
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      const { survivalControlShellCommand } = await import('../tools/shell-wait-probe/evidence.mjs');
+      const { fixture } = await createFastRealFixture(t, 'confirmed-window-canonical-cmd-');
+      // A fixture control path with shell-sensitive characters: the prompt
+      // and the extractor spell its command in the quoted canonical form.
+      const controlPath = '/private/tmp/some path with spaces/control script.sh';
+      assert.notEqual(survivalControlShellCommand(controlPath), controlPath, 'the canonical command quotes the shell-sensitive path');
+      const spacedFixture = { ...fixture, survivalControlPath: controlPath };
+      let current = 3_000;
+      const now = () => current;
+      const rolloutDirectory = join(fixture.codexHome, 'sessions', '2026', '11', '17');
+      await mkdir(rolloutDirectory, { recursive: true, mode: 0o700 });
+      // (P1-2, 2026-11-19 codex re-review) the joined CHILD rollout whose parent
+      // binding names the owning Root session: the extractor resolves the
+      // ownership from THIS binding.
+      const owningChildRolloutPath = join(rolloutDirectory, 'rollout-owning-child.jsonl');
+      await writeFile(owningChildRolloutPath, `${JSON.stringify({ type: 'session_meta', payload: { id: 'child-joined-session', parent_thread_id: 'root-owning-session' } })}\n`, { mode: 0o600 });
+      const CONTROL_HANDLE = 4100;
+      const controlRolloutPath = join(rolloutDirectory, 'rollout-canonical-cmd.jsonl');
+      const LAUNCH_EPOCH_MS = Date.now() - 85_023;
+      const controlCallStatement = (/** @type {string} */ kind, /** @type {any} */ value) => `const r = await tools.${kind}(${JSON.stringify(value)}); text(JSON.stringify(r))\n`;
+      const controlCompletedOutput = (/** @type {any} */ result) => [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify(result) }];
+      const events = [
+        { type: 'session_meta', payload: { id: 'root-owning-session' }, timestamp: LAUNCH_EPOCH_MS },
+        // The launch carries the CANONICAL (quoted) command, exactly as the
+        // prompt emits it.
+        { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'canonical-launch-1', input: controlCallStatement('exec_command', { cmd: survivalControlShellCommand(controlPath) }) }, timestamp: LAUNCH_EPOCH_MS },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'canonical-launch-1', output: controlCompletedOutput({ output: '', session_id: CONTROL_HANDLE }) }, timestamp: LAUNCH_EPOCH_MS + 5 },
+        { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'canonical-poll-1', input: controlCallStatement('write_stdin', { session_id: CONTROL_HANDLE, chars: '', yield_time_ms: 60_000 }) }, timestamp: LAUNCH_EPOCH_MS + 85_023 },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'canonical-poll-1', output: controlCompletedOutput({ output: 'zcode-survival-control 42 84023\n', session_id: CONTROL_HANDLE }) }, timestamp: LAUNCH_EPOCH_MS + 85_023 },
+      ];
+      await writeFile(controlRolloutPath, events.map((event) => JSON.stringify(event)).join('\n') + '\n', { mode: 0o600 });
+      const composition = driverModule.createConfirmedWindowLiveComposition({
+        fixture: spacedFixture, now, workerDurationMs: 420_000, caseDeadlineAtMs: () => 1_200_000,
+        childObservationThreadId: 'child-joined-session',
+      });
+      const control = await composition.observers.controlFacts();
+      assert.equal(control.active, true, `the control is alive (the existing extractor recognizes the canonical launch; actual ${JSON.stringify(control)})`);
+      assert.equal(control.freshAtMs, 3_000, `the canonical launch command grounds the anchor and the fresh line stamps (actual ${JSON.stringify(control.freshAtMs)})`);
+      assert.equal(control.declaredLifetimeMs, 34_000, 'max(0, (60 - 42 - 1) * 2000) — the canonical command match keeps freshness and lifetime creditable');
+    });
+
+    test('confirmed-window live composition: the ancestry conjunct is the RUNTIME JOIN over the observed generations — individually valid witness records describing DISJOINT process generations never establish the chain or name the local trio (P2-1, 2026-11-19 codex re-review)', async (t) => {
+      // The reviewer's exact offline reproduction: when individually valid
+      // witness files describe stale or disjoint process generations,
+      // checking their admission statuses alone does not establish the
+      // launcher→broker→transport chain — the old composition's shortcut
+      // made all seven baselines observable even when NEITHER witness
+      // matched the observed processes. Both the barrier's ancestry conjunct
+      // and the duty collector now require the RUNTIME ANCESTRY JOIN's
+      // attribution verdict (composeAncestryJoinForRuntime over the OS
+      // observations and the transport marker).
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      const { LOCAL_PROCESS_OBSERVATION_VERSION } = await import('../tools/shell-wait-probe/local-process-observation.mjs');
+      const temporary = await mkdtemp(join(tmpdir(), 'confirmed-window-disjoint-ancestry-'));
+      t.after(() => rm(temporary, { recursive: true, force: true }));
+      const scopeNonce = randomBytes(32).toString('hex');
+      const markerNonce = randomBytes(32).toString('hex');
+      const INVOCATION_PID = 4201;
+      const BROKER_PID = 4202;
+      const TRANSPORT_PID = 4203;
+      const BASE_INSTANT_MS = 1_700_000_000_000;
+      const witnessRecord = (/** @type {any} */ input) => ({
+        localProcessObservationVersion: LOCAL_PROCESS_OBSERVATION_VERSION,
+        class: 'spawn-ancestry-witness',
+        status: 'established',
+        reason: null,
+        identity: {
+          version: 3,
+          class: 'spawn-ancestry-witness',
+          role: input.role,
+          nonce: scopeNonce,
+          writerPid: input.role === 'invocation' ? INVOCATION_PID : BROKER_PID,
+          writerStartIdentity: 'kinfo:1795000000:1',
+          childPid: input.role === 'invocation' ? BROKER_PID : TRANSPORT_PID,
+          childPpid: input.role === 'invocation' ? INVOCATION_PID : BROKER_PID,
+          childStartIdentity: 'kinfo:1795000000:2',
+          childNonce: input.role === 'invocation' ? scopeNonce : markerNonce,
+          boundaryEpochMs: BASE_INSTANT_MS + 3_000,
+          firstWriteEpochMs: BASE_INSTANT_MS + 3_001,
+          startOriginMs: BASE_INSTANT_MS + 0.5,
+          firstWritePreciseMs: BASE_INSTANT_MS + 3_000.75,
+          childOsStartInstantMs: BASE_INSTANT_MS + 2_000,
+          startIdentityExact: false,
+        },
+        readStartedEpochMs: BASE_INSTANT_MS + 4_000,
+        readEpochMs: BASE_INSTANT_MS + 4_001,
+      });
+      const startupIdentity = (/** @type {string} */ role, /** @type {number} */ pid) => ({
+        localProcessObservationVersion: LOCAL_PROCESS_OBSERVATION_VERSION,
+        class: 'startup-identity',
+        status: 'established',
+        reason: null,
+        identity: { role, pid, nonce: scopeNonce, entryRealpath: `/fixture/${role}.mjs`, startOriginMs: BASE_INSTANT_MS, firstWritePreciseMs: BASE_INSTANT_MS + 100 },
+        readStartedEpochMs: BASE_INSTANT_MS + 200,
+        readEpochMs: BASE_INSTANT_MS + 300,
+      });
+      // The OS observations: the invocation and transport are REAL-looking,
+      // but the broker's observed ppid is 9999 — a DISJOINT generation: the
+      // observed chain does not link the invocation to the broker, whatever
+      // the (individually valid) witness records say.
+      const establishedVerdict = (/** @type {number} */ pid, /** @type {number} */ ppid, /** @type {string} */ nonce, /** @type {number} */ readEpochMs) => ({
+        localProcessObservationVersion: LOCAL_PROCESS_OBSERVATION_VERSION,
+        class: 'os-live-observation',
+        status: 'established',
+        reason: null,
+        observation: { pid, ppid, startIdentity: 'observed-generation', nonce, startInstantEpochMs: BASE_INSTANT_MS },
+        queried: { pid, nonce },
+        readStartedEpochMs: readEpochMs - 100,
+        readEpochMs,
+        identityReadEpochMs: readEpochMs - 50,
+        absenceConfirmed: null,
+      });
+      let readClock = BASE_INSTANT_MS + 5_000;
+      const observeLocalProcess = async (/** @type {any} */ input) => {
+        readClock += 500;
+        if (input.pid === INVOCATION_PID) return establishedVerdict(INVOCATION_PID, 1, scopeNonce, readClock);
+        if (input.pid === BROKER_PID) return establishedVerdict(BROKER_PID, 9999, scopeNonce, readClock);
+        return establishedVerdict(TRANSPORT_PID, BROKER_PID, markerNonce, readClock);
+      };
+      const composition = driverModule.createConfirmedWindowLiveComposition({
+        fixture: {
+          workspace: join(temporary, 'workspace'),
+          codexHome: join(temporary, 'codex-home'),
+          env: { ZCODE_DATA_ROOT: join(temporary, 'data-root') },
+          stdoutCapture: { captureDirectory: join(temporary, 'capture'), nonce: scopeNonce },
+        },
+        now: () => 1_000,
+        workerDurationMs: 420_000,
+        ownerSessionId: 'owner-session-1',
+        caseDeadlineAtMs: () => 1_200_000,
+        processMarkerPath: join(temporary, 'process.json'),
+        processMarkerNonce: markerNonce,
+        readDurableSnapshot: async () => ({
+          aggregate: 'settled',
+          executorLinkage: 'verified',
+          job: { presence: 'found' },
+          layers: {
+            winner: { state: 'terminal' },
+            runnerCleanupDuty: { applicable: false, outstanding: null, reason: 'not-applicable: the record carries no marked runner claim' },
+            writableGuard: { applicable: false, retained: false, reason: 'not-applicable' },
+          },
+          passive: { snapshotEqual: true },
+        }),
+        admitSpawnAncestryWitness: witnessRecord,
+        admitStartupIdentityRecord: async (/** @type {any} */ input) => startupIdentity(input.role, input.role === 'invocation' ? INVOCATION_PID : BROKER_PID),
+        captureVerifiedProcessIdentity: async () => ({ pid: TRANSPORT_PID, ppid: BROKER_PID, nonce: markerNonce, startIdentity: 'observed-generation' }),
+        observeLocalProcess,
+      });
+      // (1) The barrier's ancestry conjunct: the witnesses are INDIVIDUALLY
+      // admitted, but the observed generations are disjoint — the join
+      // refuses and the conjunct stays unestablished.
+      const ancestry = await composition.observers.ancestryBaseline();
+      assert.equal(ancestry.established, false, `disjoint observed generations never establish the chain (actual ${JSON.stringify(ancestry)})`);
+      assert.match(String(ancestry.reason ?? ''), /runtime ancestry join did not attribute/u, 'the refusal names the join');
+      assert.equal(ancestry.hops.launcherToBroker, false, 'the DISJOINT companion-to-daemon link is never credited (the daemon-to-transport hop is verified independently and may stand alone — the CHAIN attribution still refuses)');
+      // (2) The duty collector: the same join verdict gates the local trio —
+      // the disjoint chain keeps the trio unnamed even with every witness
+      // record admitted.
+      const duties = await composition.observers.dutyFacts();
+      assert.deepEqual(duties.duties, ['runner', 'job', 'guard', 'integrity'], `the disjoint chain keeps the local trio unnamed (actual ${JSON.stringify(duties.duties)})`);
+      assert.equal(duties.observable, false, 'the seven-slot baseline is incomplete');
+      assert.equal(composition.dutyAdjudication.allObserved, false, 'the settlement leg stays unreachable');
+    });
+
+    test('confirmed-window live composition: the original handle is attributed to the ACTUAL RENDERED RESCUE LAUNCHER invocation — an unrelated exec_command with its own acknowledged handle never grounds the observation (P1-2, 2026-11-19 codex re-review)', async (t) => {
+      // The reviewer's exact offline reproduction: every parsed exec_command
+      // was treated as a Rescue launcher without checking its command — once
+      // the Companion request and blocked sentinel exist, a Child rollout
+      // containing only `exec_command({cmd: "sleep 600"})`, its acknowledged
+      // handle, and a pending poll of that handle made pendingObservation()
+      // return confirmed:true, letting the controller interrupt before the
+      // Companion observation starts. The launcher acknowledgement is now
+      // attributed ONLY to the machine-rendered Rescue launcher invocation
+      // the production preparation/binding path composes:
+      // `node "<absolute .../skills/rescue/launcher.mjs>" invoke-prepared
+      // rescue` (renderRescueLauncherCommand + the skill's fixed allowlisted
+      // child arguments).
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      const { fixture, temporary } = await createFastRealFixture(t, 'confirmed-window-rendered-launcher-');
+      let current = 1_000;
+      const now = () => current;
+      const gateDirectory = join(temporary, 'rendered-launcher-hold-gate');
+      await mkdir(gateDirectory, { recursive: true, mode: 0o700 });
+      const gatePath = join(gateDirectory, 'completion.gate');
+      const gateReachedPath = join(gateDirectory, 'completion.reached');
+      await writeFile(gatePath, 'hold', { mode: 0o600 });
+      await writeFile(gateReachedPath, '', { mode: 0o600 });
+      const recordPath = /** @type {string} */ (fixture.env.FAKE_ZCODE_RECORD);
+      await writeFile(recordPath, [
+        JSON.stringify({ id: 4, method: 'session/create', params: { workspace: { workspacePath: '/repo' } } }),
+        JSON.stringify({ id: 5, method: 'session/send', params: { sessionId: 'fake-session-1', content: 'the staged rescue objective' } }),
+      ].join('\n') + '\n', 'utf8');
+      await writeFile(gateReachedPath, 'blocked', { mode: 0o600 });
+      const controlCompletedOutput = (/** @type {any} */ result) => [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify(result) }];
+      const PENDING_OUTPUT = [{ type: 'input_text', text: 'Script running with cell ID cell-child-1\n' }];
+      const RENDERED_RESCUE_LAUNCHER_COMMAND = 'node "/installed-plugin/skills/rescue/launcher.mjs" invoke-prepared rescue';
+      const execCommandEvents = (/** @type {string} */ callId, /** @type {string} */ cmd, /** @type {number} */ sessionId) => [
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: callId, input: `const r = await tools.exec_command(${JSON.stringify({ cmd })}); text(JSON.stringify(r))\n` } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: callId, output: controlCompletedOutput({ output: '', session_id: sessionId }) } },
+      ];
+      const pollEvents = (/** @type {string} */ callId, /** @type {number} */ sessionId, /** @type {any} */ output) => [
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: callId, input: `const r = await tools.write_stdin(${JSON.stringify({ session_id: sessionId, chars: '', yield_time_ms: 3_600_000 })}); text(JSON.stringify(r))\n` } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: callId, output } },
+      ];
+      const readPending = async (childEvents) => {
+        const composition = driverModule.createConfirmedWindowLiveComposition({
+          fixture, now, workerDurationMs: 420_000,
+          completionGatePath: gatePath, completionGateReachedPath: gateReachedPath,
+          childObservationThreadId: 'child-session-1',
+          loadRollouts: async () => [childEvents],
+        });
+        return composition.observers.pendingObservation();
+      };
+      // (1) The reviewer's exact hole: an UNRELATED exec_command (sleep 600)
+      // with its own acknowledged handle and a pending poll of that handle.
+      const unrelated = await readPending([
+        { type: 'session_meta', payload: { id: 'child-session-1' } },
+        ...execCommandEvents('unrelated-exec-1', 'sleep 600', 999),
+        ...pollEvents('unrelated-poll-1', 999, PENDING_OUTPUT),
+      ]);
+      assert.equal(unrelated.confirmed, false, `an unrelated exec_command never grounds the original Companion handle (actual ${JSON.stringify(unrelated)})`);
+      assert.match(String(unrelated.reason ?? ''), /Rescue launcher/u, 'the refusal names the rendered Rescue launcher attribution');
+      // (2) The attributed shape: the RENDERED Rescue launcher invocation
+      // grounds its acknowledged handle, and the pending poll targets it.
+      const rendered = await readPending([
+        { type: 'session_meta', payload: { id: 'child-session-1' } },
+        ...execCommandEvents('rendered-launcher-1', RENDERED_RESCUE_LAUNCHER_COMMAND, 500),
+        ...pollEvents('rendered-poll-1', 500, PENDING_OUTPUT),
+      ]);
+      assert.equal(rendered.confirmed, true, `the rendered Rescue launcher invocation grounds the observation (actual ${JSON.stringify(rendered)})`);
+      assert.equal(rendered.resolved, false, 'the outstanding cell stays pending');
+      // (3) A command that merely CONTAINS the launcher path but deviates
+      // from the fixed allowlisted arguments never attributes either.
+      const deviant = await readPending([
+        { type: 'session_meta', payload: { id: 'child-session-1' } },
+        ...execCommandEvents('deviant-launcher-1', 'node "/installed-plugin/skills/rescue/launcher.mjs" prepare rescue', 500),
+        ...pollEvents('deviant-poll-1', 500, PENDING_OUTPUT),
+      ]);
+      assert.equal(deviant.confirmed, false, `only the fixed invoke-prepared rescue child command attributes the launcher (actual ${JSON.stringify(deviant)})`);
+    });
+
+    test('confirmed-window live composition: the survival control is bound to the OBSERVED OWNING ROOT — a Child-owned or unattributable launch never satisfies admission or survival (P1-2, 2026-11-19 codex re-review)', async (t) => {
+      // The reviewer's exact offline reproduction: when the control launches
+      // inside the Child or an unrelated session, the old gate still
+      // accepted its grounded handle and progress as valid control evidence
+      // — the extractor's ownership verdict was ignored and the missing
+      // childThreadId option prevented it from resolving the owning Root. A
+      // Child-owned launch returned active:true with fresh lifetime credit.
+      // The extractor now receives the joined-Child identity premise and its
+      // ownership verdict is ENFORCED: only the observed owning ROOT's own
+      // control is the §16.4 control.
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      const { fixture } = await createFastRealFixture(t, 'confirmed-window-root-owned-');
+      let current = 3_000;
+      const now = () => current;
+      const rolloutDirectory = join(fixture.codexHome, 'sessions', '2026', '11', '17');
+      await mkdir(rolloutDirectory, { recursive: true, mode: 0o700 });
+      const CONTROL_HANDLE = 4100;
+      const LAUNCH_EPOCH_MS = Date.now() - 85_000;
+      const controlCallStatement = (/** @type {string} */ kind, /** @type {any} */ value) => `const r = await tools.${kind}(${JSON.stringify(value)}); text(JSON.stringify(r))\n`;
+      const controlCompletedOutput = (/** @type {any} */ result) => [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify(result) }];
+      const controlRollout = (/** @type {any} */ meta) => [
+        { type: 'session_meta', payload: meta, timestamp: LAUNCH_EPOCH_MS },
+        { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'root-owned-launch-1', input: controlCallStatement('exec_command', { cmd: fixture.survivalControlPath }) }, timestamp: LAUNCH_EPOCH_MS },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'root-owned-launch-1', output: controlCompletedOutput({ output: '', session_id: CONTROL_HANDLE }) }, timestamp: LAUNCH_EPOCH_MS + 5 },
+        { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'root-owned-poll-1', input: controlCallStatement('write_stdin', { session_id: CONTROL_HANDLE, chars: '', yield_time_ms: 60_000 }) }, timestamp: LAUNCH_EPOCH_MS + 85_000 },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'root-owned-poll-1', output: controlCompletedOutput({ output: 'zcode-survival-control 42 84023\n', session_id: CONTROL_HANDLE }) }, timestamp: LAUNCH_EPOCH_MS + 85_000 },
+      ];
+      // The joined CHILD rollout: its parent binding names the owning Root
+      // session 'root-owning-session-1'.
+      const childRollout = [
+        { type: 'session_meta', payload: { id: 'child-joined-session-1', parent_thread_id: 'root-owning-session-1' } },
+      ];
+      const readControl = async (controlMeta, rollouts) => {
+        const composition = driverModule.createConfirmedWindowLiveComposition({
+          fixture, now, workerDurationMs: 420_000, caseDeadlineAtMs: () => 1_200_000,
+          childObservationThreadId: 'child-joined-session-1',
+          loadRollouts: async () => rollouts,
+        });
+        return composition.observers.controlFacts();
+      };
+      // (1) The ROOT-OWNED positive: a top-level owning-Root rollout hosts
+      // the launch — the control is the §16.4 control.
+      const rootOwned = await readControl({ id: 'root-owning-session-1' }, [childRollout, controlRollout({ id: 'root-owning-session-1' })]);
+      assert.equal(rootOwned.active, true, `the observed owning Root own control is the §16.4 control (actual ${JSON.stringify(rootOwned)})`);
+      assert.equal(rootOwned.freshAtMs, 3_000, 'the fresh line stamps at the controller read instant');
+      assert.equal(rootOwned.declaredLifetimeMs, 34_000, 'max(0, (60 - 42 - 1) * 2000)');
+      // (2) The CHILD-OWNED launch: the control rollout carries the Child's
+      // own session identity (a subagent session) — never the §16.4 control.
+      const childOwned = await readControl({ id: 'child-joined-session-1', parent_thread_id: 'root-owning-session-1' }, [childRollout, controlRollout({ id: 'child-joined-session-1', parent_thread_id: 'root-owning-session-1' })]);
+      assert.equal(childOwned.active, false, `a Child-owned launch never satisfies admission or survival (actual ${JSON.stringify(childOwned)})`);
+      assert.match(String(childOwned.reason ?? ''), /CHILD|owning Root/u, 'the refusal names the child ownership');
+      // (3) An UNRELATED top-level session: not the observed owning Root.
+      const unrelated = await readControl({ id: 'some-unrelated-session' }, [childRollout, controlRollout({ id: 'some-unrelated-session' })]);
+      assert.equal(unrelated.active, false, `an unrelated session launch is never the §16.4 control (actual ${JSON.stringify(unrelated)})`);
+      assert.match(String(unrelated.reason ?? ''), /owning Root/u, 'the refusal names the unattributable ownership');
+      // (4) WITHOUT the joined-Child premise no owning Root is resolvable at
+      // all — the ownership verdict stays unidentifiable and refuses.
+      const unbound = driverModule.createConfirmedWindowLiveComposition({
+        fixture, now, workerDurationMs: 420_000, caseDeadlineAtMs: () => 1_200_000,
+        loadRollouts: async () => [childRollout, controlRollout({ id: 'root-owning-session-1' })],
+      });
+      const unboundControl = await unbound.observers.controlFacts();
+      assert.equal(unboundControl.active, false, 'without the joined-Child premise no owning Root is resolvable — fail closed');
+      assert.match(String(unboundControl.reason ?? ''), /owning Root/u, 'the refusal names the unresolvable owning Root');
+    });
+
+    test('confirmed-window live composition: a control exit is attributed through the ORIGINATING READ CALL — a terminal write_stdin response with exit_code and NO session_id still ends the control (P1, 2026-11-19 codex re-review)', async (t) => {
+      // The reviewer's exact offline reproduction: when the control exits
+      // before line 60, a native terminal write_stdin response contains
+      // exit_code but NO session_id — the old filter discarded that
+      // response (it required the response to repeat the grounded handle),
+      // leaving observedExitCode null: exit code 137 still returned
+      // active:true with credited remaining lifetime. The exit is now bound
+      // through its CALL ID to the write_stdin request that targeted the
+      // grounded handle — the response's own session_id is irrelevant.
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      const { fixture } = await createFastRealFixture(t, 'confirmed-window-call-bound-exit-');
+      let current = 3_000;
+      const now = () => current;
+      const rolloutDirectory = join(fixture.codexHome, 'sessions', '2026', '11', '17');
+      await mkdir(rolloutDirectory, { recursive: true, mode: 0o700 });
+      const CONTROL_HANDLE = 4100;
+      const controlRolloutPath = join(rolloutDirectory, 'rollout-call-bound-exit.jsonl');
+      const LAUNCH_EPOCH_MS = Date.now() - 85_000;
+      const controlCallStatement = (/** @type {string} */ kind, /** @type {any} */ value) => `const r = await tools.${kind}(${JSON.stringify(value)}); text(JSON.stringify(r))\n`;
+      const controlCompletedOutput = (/** @type {any} */ result) => [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify(result) }];
+      // The terminal read: exit_code 137, NO session_id in the response
+      // body — the native shape when the process dies before the designed
+      // end.
+      const terminalOutput = [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify({ output: 'zcode-survival-control 5 10021\n', exit_code: 137 }) }];
+      const events = [
+        { type: 'session_meta', payload: { id: 'root-owning-session' }, timestamp: LAUNCH_EPOCH_MS },
+        { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'call-bound-launch-1', input: controlCallStatement('exec_command', { cmd: fixture.survivalControlPath }) }, timestamp: LAUNCH_EPOCH_MS },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'call-bound-launch-1', output: controlCompletedOutput({ output: '', session_id: CONTROL_HANDLE }) }, timestamp: LAUNCH_EPOCH_MS + 5 },
+        // The poll REQUEST targets the grounded handle (the call side carries
+        // the binding); the poll's own response carried progress earlier.
+        { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'call-bound-poll-1', input: controlCallStatement('write_stdin', { session_id: CONTROL_HANDLE, chars: '', yield_time_ms: 60_000 }) }, timestamp: LAUNCH_EPOCH_MS + 10_021 },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'call-bound-poll-1', output: controlCompletedOutput({ output: 'zcode-survival-control 5 10021\n', session_id: CONTROL_HANDLE }) }, timestamp: LAUNCH_EPOCH_MS + 10_021 },
+        // A SECOND poll on the same handle: its terminal response carries
+        // exit_code 137 and NO session_id — the originating call's request
+        // carries the handle binding.
+        { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'call-bound-poll-2', input: controlCallStatement('write_stdin', { session_id: CONTROL_HANDLE, chars: '', yield_time_ms: 60_000 }) }, timestamp: LAUNCH_EPOCH_MS + 85_000 },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'call-bound-poll-2', output: terminalOutput }, timestamp: LAUNCH_EPOCH_MS + 85_000 },
+      ];
+      // The joined child rollout for the ownership binding.
+      const childRolloutPath = join(rolloutDirectory, 'rollout-owning-child.jsonl');
+      await writeFile(childRolloutPath, `${JSON.stringify({ type: 'session_meta', payload: { id: 'child-joined-session', parent_thread_id: 'root-owning-session' }})}\n`, { mode: 0o600 });
+      await writeFile(controlRolloutPath, events.map((event) => JSON.stringify(event)).join('\n') + '\n', { mode: 0o600 });
+      const composition = driverModule.createConfirmedWindowLiveComposition({
+        fixture, now, workerDurationMs: 420_000, caseDeadlineAtMs: () => 1_200_000,
+        childObservationThreadId: 'child-joined-session',
+      });
+      const control = await composition.observers.controlFacts();
+      assert.equal(control.active, false, `a terminal response on the poll call owning the grounded handle ends the control (actual ${JSON.stringify(control)})`);
+      assert.equal(control.declaredLifetimeMs, 0, 'the exited control carries zero credited life');
+      assert.equal(control.freshAtMs, null, 'the exited control never stamps a fresh read');
+      assert.match(String(control.reason ?? ''), /exit code 137/u, 'the inactive reason names the call-bound exit code');
+    });
+
+    test('confirmed-window live composition: the qualifying long observation is the REGISTERED empty-input 3600000-yield poll — a nonempty-input or short-yield pending cell on the launcher handle never premises the observation (P2, 2026-11-19 codex re-review)', async (t) => {
+      // The reviewer's exact offline reproduction: when the Child emits a
+      // short poll or sends nonempty input, the old check still treated ANY
+      // pending cell on the launcher handle as the required long observation
+      // — started:true even for
+      // write_stdin({session_id: 500, chars: "x", yield_time_ms: 1}), so
+      // the controller could consume its interrupt attempt without
+      // establishing the registered observation. The qualifying shape (the
+      // frozen §41/§16.4 facts — the production preparation's empty-input
+      // long-yield poll, the I1 case's 3600000 exec-default/poll-ms pair):
+      // chars EMPTY and yield_time_ms EXACTLY 3600000 on the
+      // launcher-grounded handle. A pending cell from any other poll shape
+      // premises nothing.
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      const { fixture, temporary } = await createFastRealFixture(t, 'confirmed-window-qualifying-poll-');
+      let current = 1_000;
+      const now = () => current;
+      const gateDirectory = join(temporary, 'qualifying-poll-hold-gate');
+      await mkdir(gateDirectory, { recursive: true, mode: 0o700 });
+      const gatePath = join(gateDirectory, 'completion.gate');
+      const gateReachedPath = join(gateDirectory, 'completion.reached');
+      await writeFile(gatePath, 'hold', { mode: 0o600 });
+      await writeFile(gateReachedPath, '', { mode: 0o600 });
+      const recordPath = /** @type {string} */ (fixture.env.FAKE_ZCODE_RECORD);
+      await writeFile(recordPath, [
+        JSON.stringify({ id: 4, method: 'session/create', params: { workspace: { workspacePath: '/repo' } } }),
+        JSON.stringify({ id: 5, method: 'session/send', params: { sessionId: 'fake-session-1', content: 'the staged rescue objective' } }),
+      ].join('\n') + '\n', 'utf8');
+      await writeFile(gateReachedPath, 'blocked', { mode: 0o600 });
+      const COMPLETED_OUTPUT = [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify({ output: 'the rescue objective result', session_id: 500 }) }];
+      const PENDING_OUTPUT = [{ type: 'input_text', text: 'Script running with cell ID cell-child-1\n' }];
+      const RENDERED_RESCUE_LAUNCHER_COMMAND = 'node "/installed-plugin/skills/rescue/launcher.mjs" invoke-prepared rescue';
+      const makeChildEvents = (/** @type {any} */ pollArgs) => [
+        { type: 'session_meta', payload: { id: 'child-session-1' } },
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'qualifying-launcher-1', input: `const r = await tools.exec_command(${JSON.stringify({ cmd: RENDERED_RESCUE_LAUNCHER_COMMAND })}); text(JSON.stringify(r))\n` } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'qualifying-launcher-1', output: COMPLETED_OUTPUT } },
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'qualifying-poll-1', input: `const r = await tools.write_stdin(${JSON.stringify(pollArgs)}); text(JSON.stringify(r))\n` } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'qualifying-poll-1', output: PENDING_OUTPUT } },
+      ];
+      const readPending = async (pollArgs) => {
+        const composition = driverModule.createConfirmedWindowLiveComposition({
+          fixture, now, workerDurationMs: 420_000,
+          completionGatePath: gatePath, completionGateReachedPath: gateReachedPath,
+          childObservationThreadId: 'child-session-1',
+          loadRollouts: async () => [makeChildEvents(pollArgs)],
+        });
+        return composition.observers.pendingObservation();
+      };
+      // (1) The NONEMPTY-INPUT poll: a pending cell on the launcher handle
+      // with chars "x" — never the registered observation.
+      const nonempty = await readPending({ session_id: 500, chars: 'x', yield_time_ms: 3_600_000 });
+      assert.equal(nonempty.confirmed, false, `a nonempty-input pending cell never premises the observation (actual ${JSON.stringify(nonempty)})`);
+      assert.match(String(nonempty.reason ?? ''), /registered|observation|poll/u, 'the refusal names the registered observation shape');
+      // (2) The SHORT-YIELD poll: empty chars but yield_time_ms 1.
+      const shortYield = await readPending({ session_id: 500, chars: '', yield_time_ms: 1 });
+      assert.equal(shortYield.confirmed, false, `a short-yield pending cell never premises the observation (actual ${JSON.stringify(shortYield)})`);
+      // (3) The QUALIFYING poll: empty chars, the 3600000 registered yield.
+      const qualifying = await readPending({ session_id: 500, chars: '', yield_time_ms: 3_600_000 });
+      assert.equal(qualifying.confirmed, true, `the registered empty-input 3600000-yield poll premises the observation (actual ${JSON.stringify(qualifying)})`);
+      assert.equal(qualifying.resolved, false, 'the outstanding cell stays pending');
+    });
+
+    test('confirmed-window live composition: the rendered Rescue launcher command accepts EVERY path the PRODUCTION RENDERER accepts — spaces, plus signs and non-ASCII installations ground their original handle exactly like ASCII-safe ones (P2, 2026-11-19 codex re-review)', async (t) => {
+      // The reviewer's exact finding: if the fixture installation path
+      // contains spaces, `+`, or non-ASCII characters,
+      // renderRescueLauncherCommand accepts and safely quotes it, but the
+      // narrower inline alphabet rejected the resulting command — a
+      // correctly launched Rescue never grounded its original handle and the
+      // case stayed staging-not-ready. The matcher now validates the
+      // extracted quoted path by ROUND-TRIPPING through the PRODUCTION
+      // renderer itself (scripts/lib/rescue-launcher-command.mjs, reused
+      // read-only): a command matches exactly when the renderer reproduces
+      // it byte-for-byte from its own extracted path.
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      const { renderRescueLauncherCommand } = await import('../scripts/lib/rescue-launcher-command.mjs');
+      const { fixture, temporary } = await createFastRealFixture(t, 'confirmed-window-renderer-paths-');
+      let current = 1_000;
+      const now = () => current;
+      const gateDirectory = join(temporary, 'renderer-paths-hold-gate');
+      await mkdir(gateDirectory, { recursive: true, mode: 0o700 });
+      const gatePath = join(gateDirectory, 'completion.gate');
+      const gateReachedPath = join(gateDirectory, 'completion.reached');
+      await writeFile(gatePath, 'hold', { mode: 0o600 });
+      await writeFile(gateReachedPath, '', { mode: 0o600 });
+      const recordPath = /** @type {string} */ (fixture.env.FAKE_ZCODE_RECORD);
+      await writeFile(recordPath, [
+        JSON.stringify({ id: 4, method: 'session/create', params: { workspace: { workspacePath: '/repo' } } }),
+        JSON.stringify({ id: 5, method: 'session/send', params: { sessionId: 'fake-session-1', content: 'the staged rescue objective' } }),
+      ].join('\n') + '\n', 'utf8');
+      await writeFile(gateReachedPath, 'blocked', { mode: 0o600 });
+      const COMPLETED_OUTPUT = [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify({ output: 'the rescue objective result', session_id: 500 }) }];
+      const PENDING_OUTPUT = [{ type: 'input_text', text: 'Script running with cell ID cell-child-1\n' }];
+      // The reviewer's edge-case installation paths — each ACCEPTED and
+      // safely quoted by the production renderer.
+      const edgeCasePaths = [
+        '/Installed Plugin With Spaces/skills/rescue/launcher.mjs',
+        '/inst+plugin+plus/skills/rescue/launcher.mjs',
+        '/安装目录/skills/rescue/launcher.mjs',
+      ];
+      for (const edgePath of edgeCasePaths) {
+        // The renderer produces the immutable LAUNCHER COMMAND PREFIX; the
+        // skill appends the fixed allowlisted child arguments to compose
+        // the actual invocation (SKILL.md: "Every parent and child Rescue
+        // command ... must start with the exact rescueLauncherCommand bytes
+        // and append only the fixed allowlisted arguments").
+        const childCommand = `${renderRescueLauncherCommand(edgePath)} invoke-prepared rescue`;
+        const childEvents = [
+          { type: 'session_meta', payload: { id: 'child-session-1' } },
+          { type: 'response_item', payload: { type: 'custom_tool_call', call_id: `renderer-launcher-${String(edgePath.length)}`, input: `const r = await tools.exec_command(${JSON.stringify({ cmd: childCommand })}); text(JSON.stringify(r))\n` } },
+          { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: `renderer-launcher-${String(edgePath.length)}`, output: COMPLETED_OUTPUT } },
+          { type: 'response_item', payload: { type: 'custom_tool_call', call_id: `renderer-poll-${String(edgePath.length)}`, input: 'const r = await tools.write_stdin({"session_id": 500, "chars": "", "yield_time_ms": 3600000}); text(JSON.stringify(r))\n' } },
+          { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: `renderer-poll-${String(edgePath.length)}`, output: PENDING_OUTPUT } },
+        ];
+        const composition = driverModule.createConfirmedWindowLiveComposition({
+          fixture, now, workerDurationMs: 420_000,
+          completionGatePath: gatePath, completionGateReachedPath: gateReachedPath,
+          childObservationThreadId: 'child-session-1',
+          loadRollouts: async () => [childEvents],
+        });
+        const pending = await composition.observers.pendingObservation();
+        assert.equal(pending.confirmed, true, `the renderer-accepted path ${JSON.stringify(edgePath)} grounds the original handle (actual ${JSON.stringify(pending)})`);
+        assert.equal(pending.resolved, false, 'the outstanding cell stays pending');
+      }
+      // A path the renderer itself REFUSES (a non-absolute path) never
+      // grounds, whatever the command looks like.
+      const refusedChildEvents = [
+        { type: 'session_meta', payload: { id: 'child-session-1' } },
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'renderer-launcher-refused', input: `const r = await tools.exec_command(${JSON.stringify({ cmd: 'node "relative/skills/rescue/launcher.mjs" invoke-prepared rescue' })}); text(JSON.stringify(r))\n` } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'renderer-launcher-refused', output: COMPLETED_OUTPUT } },
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'renderer-poll-refused', input: 'const r = await tools.write_stdin({"session_id": 500, "chars": "", "yield_time_ms": 3600000}); text(JSON.stringify(r))\n' } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'renderer-poll-refused', output: PENDING_OUTPUT } },
+      ];
+      const refusedComposition = driverModule.createConfirmedWindowLiveComposition({
+        fixture, now, workerDurationMs: 420_000,
+        completionGatePath: gatePath, completionGateReachedPath: gateReachedPath,
+        childObservationThreadId: 'child-session-1',
+        loadRollouts: async () => [refusedChildEvents],
+      });
+      const refused = await refusedComposition.observers.pendingObservation();
+      assert.equal(refused.confirmed, false, `a relative path the renderer refuses never grounds the handle (actual ${JSON.stringify(refused)})`);
+    });
+
+    test('confirmed-window live composition: the control epoch scan preserves STATEMENT OWNERSHIP in multi-statement exec cells — a control write_stdin following another statement keeps its exit and lines at its own output position (P1, 2026-11-19 codex re-review)', async (t) => {
+      // The reviewer's exact offline reproduction: when a control
+      // write_stdin follows another supported statement in one exec cell,
+      // the epoch scan bound only the FIRST statement while decoding the
+      // cell's final result — a terminal control read carrying exit_code
+      // 137 without session_id was missed even though
+      // extractSurvivalControlFacts attributes its progress output
+      // correctly: active:true and 108000 ms of remaining life for the
+      // EXITED control. The scan now tracks statement positions and decodes
+      // each response with statementOutputAt at the control statement's own
+      // position — the exit binds to the control statement's output, never
+      // the cell's aggregate.
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      const { fixture } = await createFastRealFixture(t, 'confirmed-window-statement-ownership-');
+      let current = 3_000;
+      const now = () => current;
+      const rolloutDirectory = join(fixture.codexHome, 'sessions', '2026', '11', '17');
+      await mkdir(rolloutDirectory, { recursive: true, mode: 0o700 });
+      const CONTROL_HANDLE = 4100;
+      const OTHER_HANDLE = 4999;
+      const controlRolloutPath = join(rolloutDirectory, 'rollout-statement-ownership.jsonl');
+      const LAUNCH_EPOCH_MS = Date.now() - 85_000;
+      const controlCompletedOutput = (/** @type {any} */ result) => [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify(result) }];
+      // The multi-statement cell (the observed per-line statement forms): a
+      // preceding supported write_stdin (another session, the inline emission
+      // form) FIRST, the CONTROL write_stdin (the const-r wrapper form)
+      // SECOND — the cell's per-statement results bind at their own
+      // positions (statement 1 of 2).
+      const multiStatementCell = (/** @type {string} */ pollCallId, /** @type {any} */ controlResult) => ([
+        { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: pollCallId, input: `text(await tools.write_stdin(${JSON.stringify({ session_id: OTHER_HANDLE, chars: '', yield_time_ms: 60_000 })}));\nconst r = await tools.write_stdin(${JSON.stringify({ session_id: CONTROL_HANDLE, chars: '', yield_time_ms: 60_000 })}); text(JSON.stringify(r))\n` } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: pollCallId, output: [
+          { type: 'input_text', text: 'Script completed\n' },
+          { type: 'input_text', text: JSON.stringify({ output: 'other-statement result', session_id: OTHER_HANDLE }) },
+          { type: 'input_text', text: JSON.stringify(controlResult) },
+        ] }, timestamp: LAUNCH_EPOCH_MS + 85_000 },
+      ]);
+      const events = [
+        { type: 'session_meta', payload: { id: 'root-owning-session' }, timestamp: LAUNCH_EPOCH_MS },
+        { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'ownership-launch-1', input: `const r = await tools.exec_command(${JSON.stringify({ cmd: fixture.survivalControlPath })}); text(JSON.stringify(r))\n` }, timestamp: LAUNCH_EPOCH_MS },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'ownership-launch-1', output: controlCompletedOutput({ output: '', session_id: CONTROL_HANDLE }) }, timestamp: LAUNCH_EPOCH_MS + 5 },
+        // The progress read: the control statement's own result (line 5).
+        ...multiStatementCell('ownership-poll-1', { output: 'zcode-survival-control 5 10021\n', session_id: CONTROL_HANDLE }),
+        // The terminal read: the CONTROL statement's result carries
+        // exit_code 137 and NO session_id.
+        ...multiStatementCell('ownership-poll-2', { output: 'zcode-survival-control 5 10021\n', exit_code: 137 }),
+      ];
+      const childRolloutPath = join(rolloutDirectory, 'rollout-owning-child.jsonl');
+      await writeFile(childRolloutPath, `${JSON.stringify({ type: 'session_meta', payload: { id: 'child-joined-session', parent_thread_id: 'root-owning-session' }})}\n`, { mode: 0o600 });
+      await writeFile(controlRolloutPath, events.map((event) => JSON.stringify(event)).join('\n') + '\n', { mode: 0o600 });
+      const composition = driverModule.createConfirmedWindowLiveComposition({
+        fixture, now, workerDurationMs: 420_000, caseDeadlineAtMs: () => 1_200_000,
+        childObservationThreadId: 'child-joined-session',
+      });
+      const control = await composition.observers.controlFacts();
+      assert.equal(control.active, false, `the control statement's own exit_code 137 ends the control even in a multi-statement cell (actual ${JSON.stringify(control)})`);
+      assert.equal(control.declaredLifetimeMs, 0, 'the exited control carries zero credited life');
+      assert.match(String(control.reason ?? ''), /exit code 137/u, 'the inactive reason names the statement-owned exit code');
+    });
+
+    test('confirmed-window live composition: a KNOWN ABNORMAL EXIT overrides the line-60 completion marker — the control that emits its designed final line but dies with exit code 137 is a premature exit that revokes, never a designed end (P2, 2026-11-19 codex re-review)', async (t) => {
+      // The reviewer's exact offline reproduction: the control emits line 60
+      // (the completion marker) but its terminal read reports a NONZERO exit
+      // code — the marker took precedence and classified the exit as
+      // `designed-end`, preserving previously established survival credit
+      // (exit code 137 reached all-duties-adjudicated with settled: true).
+      // `designed-end` is the ZERO-EXIT lifecycle end only: a known abnormal
+      // exit OVERRIDES the completion marker — the discriminator is
+      // `premature-exit` and the survival gate (round 7's revocation rule)
+      // revokes the credit on it.
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      const { fixture } = await createFastRealFixture(t, 'confirmed-window-abnormal-exit-marker-');
+      let current = 3_000;
+      const now = () => current;
+      const rolloutDirectory = join(fixture.codexHome, 'sessions', '2026', '11', '17');
+      await mkdir(rolloutDirectory, { recursive: true, mode: 0o700 });
+      const CONTROL_HANDLE = 4100;
+      const controlRolloutPath = join(rolloutDirectory, 'rollout-abnormal-exit-marker.jsonl');
+      const LAUNCH_EPOCH_MS = Date.now() - 85_000;
+      const controlCompletedOutput = (/** @type {any} */ result) => [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify(result) }];
+      const pollCell = (/** @type {string} */ pollCallId, /** @type {any} */ result) => ([
+        { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: pollCallId, input: `const r = await tools.write_stdin(${JSON.stringify({ session_id: CONTROL_HANDLE, chars: '', yield_time_ms: 60_000 })}); text(JSON.stringify(r))\n` } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: pollCallId, output: controlCompletedOutput(result) }, timestamp: LAUNCH_EPOCH_MS + 85_000 },
+      ]);
+      const events = [
+        { type: 'session_meta', payload: { id: 'root-owning-session' }, timestamp: LAUNCH_EPOCH_MS },
+        { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'marker-launch-1', input: `const r = await tools.exec_command(${JSON.stringify({ cmd: fixture.survivalControlPath })}); text(JSON.stringify(r))\n` }, timestamp: LAUNCH_EPOCH_MS },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'marker-launch-1', output: controlCompletedOutput({ output: '', session_id: CONTROL_HANDLE }) }, timestamp: LAUNCH_EPOCH_MS + 5 },
+        // The progress read: a fresh line near the designed end.
+        ...pollCell('marker-poll-1', { output: 'zcode-survival-control 59 101910\n', session_id: CONTROL_HANDLE }),
+        // The terminal read: the control EMITS its designed final line 60 —
+        // and DIES with exit code 137 (no session_id on the terminal read).
+        ...pollCell('marker-poll-2', { output: 'zcode-survival-control 60 102000\n', exit_code: 137 }),
+      ];
+      const childRolloutPath = join(rolloutDirectory, 'rollout-owning-child.jsonl');
+      await writeFile(childRolloutPath, `${JSON.stringify({ type: 'session_meta', payload: { id: 'child-joined-session', parent_thread_id: 'root-owning-session' }})}\n`, { mode: 0o600 });
+      await writeFile(controlRolloutPath, events.map((event) => JSON.stringify(event)).join('\n') + '\n', { mode: 0o600 });
+      const composition = driverModule.createConfirmedWindowLiveComposition({
+        fixture, now, workerDurationMs: 420_000, caseDeadlineAtMs: () => 1_200_000,
+        childObservationThreadId: 'child-joined-session',
+      });
+      const control = await composition.observers.controlFacts();
+      assert.equal(control.active, false, `the ended control carries no active credit (actual ${JSON.stringify(control)})`);
+      assert.equal(control.ended, 'premature-exit', `the KNOWN abnormal exit OVERRIDES the line-60 completion marker — designed-end is the zero-exit lifecycle end only (actual ${JSON.stringify(control)})`);
+      assert.equal(control.declaredLifetimeMs, 0, 'the abnormally exited control carries zero credited life');
+      assert.match(String(control.reason ?? ''), /exit code 137/u, 'the inactive reason names the abnormal exit code despite the completion marker');
+    });
+
+    test('confirmed-window live composition: the observation resolution binds to the QUALIFYING long-observation cell — an earlier short-yield poll on the same handle resolves nothing while the registered observation is still pending (P2, 2026-11-19 codex re-review)', async (t) => {
+      // The reviewer's exact offline reproduction: if the Child completes a
+      // SHORT-yield poll (a 60000-ms observation window) before starting its
+      // qualifying long observation on the same handle, `started` came from
+      // the registered long poll but `returned` came from the earlier short
+      // poll — the collector reported resolved:true while the
+      // long-observation cell was still pending, preventing admission (the
+      // §39.9 step 6 conjunct requires the original observation PENDING at
+      // admission). Both the direct completion and the linked wait are now
+      // restricted to the QUALIFYING observation's poll/cell (the registered
+      // empty-input 3600000-yield poll's own cell), never any poll sharing
+      // its process handle.
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      const { fixture, temporary } = await createFastRealFixture(t, 'confirmed-window-qualifying-cell-');
+      let current = 1_000;
+      const now = () => current;
+      const gateDirectory = join(temporary, 'qualifying-cell-hold-gate');
+      await mkdir(gateDirectory, { recursive: true, mode: 0o700 });
+      const gatePath = join(gateDirectory, 'completion.gate');
+      const gateReachedPath = join(gateDirectory, 'completion.reached');
+      await writeFile(gatePath, 'hold', { mode: 0o600 });
+      await writeFile(gateReachedPath, '', { mode: 0o600 });
+      const recordPath = /** @type {string} */ (fixture.env.FAKE_ZCODE_RECORD);
+      await writeFile(recordPath, [
+        JSON.stringify({ id: 4, method: 'session/create', params: { workspace: { workspacePath: '/repo' } } }),
+        JSON.stringify({ id: 5, method: 'session/send', params: { sessionId: 'fake-session-1', content: 'the staged rescue objective' } }),
+      ].join('\n') + '\n', 'utf8');
+      await writeFile(gateReachedPath, 'blocked', { mode: 0o600 });
+      const completedOutput = (/** @type {any} */ result) => [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify(result) }];
+      const pendingOutput = (/** @type {string} */ cellId) => [{ type: 'input_text', text: `Script running with cell ID ${cellId}\n` }];
+      const RENDERED_RESCUE_LAUNCHER_COMMAND = 'node "/installed-plugin/skills/rescue/launcher.mjs" invoke-prepared rescue';
+      const execCommandEvents = (/** @type {string} */ callId, /** @type {number} */ sessionId) => [
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: callId, input: `const r = await tools.exec_command(${JSON.stringify({ cmd: RENDERED_RESCUE_LAUNCHER_COMMAND })}); text(JSON.stringify(r))\n` } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: callId, output: completedOutput({ output: '', session_id: sessionId }) } },
+      ];
+      // A write_stdin poll with a CONFIGURABLE yield — the registered
+      // qualifying observation is the 3600000 yield; the short window is
+      // 60000. Multiple outputs on one call model the pending→completed
+      // grammar of a single poll.
+      const pollEvents = (/** @type {string} */ callId, /** @type {number} */ yieldTimeMs, /** @type {any[]} */ outputs) => [
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: callId, input: `const r = await tools.write_stdin(${JSON.stringify({ session_id: 500, chars: '', yield_time_ms: yieldTimeMs })}); text(JSON.stringify(r))\n` } },
+        ...outputs.map((output) => ({ type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: callId, output } })),
+      ];
+      // The sanctioned linked outer continuation (the inline wait form).
+      const waitEvents = (/** @type {string} */ callId, /** @type {any} */ value, /** @type {any} */ output) => [
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: callId, input: `text(await tools.wait(${JSON.stringify(value)}));\n` } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: callId, output } },
+      ];
+      const readPending = async (childEvents) => {
+        const composition = driverModule.createConfirmedWindowLiveComposition({
+          fixture, now, workerDurationMs: 420_000,
+          completionGatePath: gatePath, completionGateReachedPath: gateReachedPath,
+          childObservationThreadId: 'child-session-1',
+          loadRollouts: async () => [childEvents],
+        });
+        return composition.observers.pendingObservation();
+      };
+      // (1) The reviewer's exact hole: the SHORT-yield poll completes first,
+      // then the qualifying long observation starts and stays pending.
+      const shortThenPending = await readPending([
+        { type: 'session_meta', payload: { id: 'child-session-1' } },
+        ...execCommandEvents('qualifying-launcher-1', 500),
+        ...pollEvents('short-poll-1', 60_000, [pendingOutput('cell-short-1'), completedOutput({ output: 'short window finished', session_id: 500 })]),
+        ...pollEvents('long-poll-1', 3_600_000, [pendingOutput('cell-long-1')]),
+      ]);
+      assert.equal(shortThenPending.confirmed, true, `the registered long poll still premises the observation (actual ${JSON.stringify(shortThenPending)})`);
+      assert.equal(shortThenPending.resolved, false, `the earlier short poll's completion resolves NOTHING while the qualifying cell is still pending (actual ${JSON.stringify(shortThenPending)})`);
+      // (2) The linked-wait shape: a wait continuing the SHORT poll's cell
+      // completes while the qualifying long observation stays pending.
+      const waitOnShortCell = await readPending([
+        { type: 'session_meta', payload: { id: 'child-session-1' } },
+        ...execCommandEvents('qualifying-launcher-2', 500),
+        ...pollEvents('short-poll-2', 60_000, [pendingOutput('cell-short-2')]),
+        ...waitEvents('wait-short-2', { cell_id: 'cell-short-2', yield_time_ms: 240_000 }, completedOutput({ output: 'short cell completed', exit_code: 0 })),
+        ...pollEvents('long-poll-2', 3_600_000, [pendingOutput('cell-long-2')]),
+      ]);
+      assert.equal(waitOnShortCell.confirmed, true, `the registered long poll still premises the observation (actual ${JSON.stringify(waitOnShortCell)})`);
+      assert.equal(waitOnShortCell.resolved, false, `a wait linked to the SHORT poll's cell resolves nothing (actual ${JSON.stringify(waitOnShortCell)})`);
+      // (3) The positive control: the qualifying observation's OWN
+      // completion still resolves — the restriction never starves the
+      // genuine resolution grammar.
+      const qualifyingCompleted = await readPending([
+        { type: 'session_meta', payload: { id: 'child-session-1' } },
+        ...execCommandEvents('qualifying-launcher-3', 500),
+        ...pollEvents('short-poll-3', 60_000, [pendingOutput('cell-short-3'), completedOutput({ output: 'short window finished', session_id: 500 })]),
+        ...pollEvents('long-poll-3', 3_600_000, [pendingOutput('cell-long-3'), completedOutput({ output: 'the long observation completed', session_id: 500 })]),
+      ]);
+      assert.equal(qualifyingCompleted.confirmed, true, `the registered long poll premises the observation (actual ${JSON.stringify(qualifyingCompleted)})`);
+      assert.equal(qualifyingCompleted.resolved, true, `the qualifying observation's OWN completion still resolves (actual ${JSON.stringify(qualifyingCompleted)})`);
+    });
+
+    test('confirmed-window live composition: a launcher acknowledgement binds to its OWN statement output — a cell that launches Rescue and then an unrelated command grounds the LAUNCHER handle, never the unrelated one (P1, 2026-11-20 codex re-review)', async (t) => {
+      // The reviewer's exact offline reproduction: when one exec cell launches
+      // Rescue and then an unrelated command, the acknowledgement decode read
+      // the cell's AGGREGATE last result (parseToolOutput) while attributing
+      // the whole cell to Rescue — launcher handle 500 followed by unrelated
+      // handle 999 grounded 999 instead: the scanner REJECTED a pending poll
+      // of 500 and ACCEPTED one of 999, admitting a native interruption
+      // without the original Rescue observation pending. The scan retains the
+      // launcher statement's own position and decodes the acknowledgement
+      // with statementOutputAt (the round-9 per-statement discipline): the
+      // handle grounds from the launcher statement's own completed output,
+      // never the cell aggregate.
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      const { fixture, temporary } = await createFastRealFixture(t, 'confirmed-window-launcher-statement-');
+      let current = 1_000;
+      const now = () => current;
+      const gateDirectory = join(temporary, 'launcher-statement-hold-gate');
+      await mkdir(gateDirectory, { recursive: true, mode: 0o700 });
+      const gatePath = join(gateDirectory, 'completion.gate');
+      const gateReachedPath = join(gateDirectory, 'completion.reached');
+      await writeFile(gatePath, 'hold', { mode: 0o600 });
+      await writeFile(gateReachedPath, '', { mode: 0o600 });
+      const recordPath = /** @type {string} */ (fixture.env.FAKE_ZCODE_RECORD);
+      await writeFile(recordPath, [
+        JSON.stringify({ id: 4, method: 'session/create', params: { workspace: { workspacePath: '/repo' } } }),
+        JSON.stringify({ id: 5, method: 'session/send', params: { sessionId: 'fake-session-1', content: 'the staged rescue objective' } }),
+      ].join('\n') + '\n', 'utf8');
+      await writeFile(gateReachedPath, 'blocked', { mode: 0o600 });
+      const pendingOutput = (/** @type {string} */ cellId) => [{ type: 'input_text', text: `Script running with cell ID ${cellId}\n` }];
+      const RENDERED_RESCUE_LAUNCHER_COMMAND = 'node "/installed-plugin/skills/rescue/launcher.mjs" invoke-prepared rescue';
+      // The reviewer's cell: the launcher (statement 0) followed by an
+      // unrelated command (statement 1), one output cell carrying BOTH
+      // per-statement results in order.
+      const sharedCellEvents = [
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'shared-cell-1', input: `const r = await tools.exec_command(${JSON.stringify({ cmd: RENDERED_RESCUE_LAUNCHER_COMMAND })}); text(JSON.stringify(r))\nconst r = await tools.exec_command(${JSON.stringify({ cmd: 'sleep 600' })}); text(JSON.stringify(r))\n` } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'shared-cell-1', output: [
+          { type: 'input_text', text: 'Script completed\n' },
+          { type: 'input_text', text: JSON.stringify({ output: '', session_id: 500 }) },
+          { type: 'input_text', text: JSON.stringify({ output: '', session_id: 999 }) },
+        ] } },
+      ];
+      const pollOn = (/** @type {string} */ callId, /** @type {number} */ sessionId, /** @type {any[]} */ outputs) => [
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: callId, input: `const r = await tools.write_stdin(${JSON.stringify({ session_id: sessionId, chars: '', yield_time_ms: 3_600_000 })}); text(JSON.stringify(r))\n` } },
+        ...outputs.map((output) => ({ type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: callId, output } })),
+      ];
+      const readPending = async (childEvents) => {
+        const composition = driverModule.createConfirmedWindowLiveComposition({
+          fixture, now, workerDurationMs: 420_000,
+          completionGatePath: gatePath, completionGateReachedPath: gateReachedPath,
+          childObservationThreadId: 'child-session-1',
+          loadRollouts: async () => [childEvents],
+        });
+        return composition.observers.pendingObservation();
+      };
+      // (1) The pending poll of the LAUNCHER handle grounds: the launcher
+      // statement's OWN acknowledgement (statement 0 of 2) is the handle
+      // source, never the aggregate last result.
+      const launcherPoll = await readPending([
+        { type: 'session_meta', payload: { id: 'child-session-1' } },
+        ...sharedCellEvents,
+        ...pollOn('launcher-poll-1', 500, [pendingOutput('cell-long-1')]),
+      ]);
+      assert.equal(launcherPoll.confirmed, true, `the LAUNCHER statement's own acknowledgement grounds handle 500 — a pending poll of it premises the observation (actual ${JSON.stringify(launcherPoll)})`);
+      assert.equal(launcherPoll.resolved, false, 'the outstanding cell stays pending');
+      // (2) The inverse: a pending poll of the UNRELATED command's handle
+      // (999, even in the registered observation shape) never grounds.
+      const unrelatedPoll = await readPending([
+        { type: 'session_meta', payload: { id: 'child-session-1' } },
+        ...sharedCellEvents,
+        ...pollOn('unrelated-poll-1', 999, [pendingOutput('cell-other-1')]),
+      ]);
+      assert.equal(unrelatedPoll.confirmed, false, `the UNRELATED command's handle never grounds the observation, whatever its poll shape (actual ${JSON.stringify(unrelatedPoll)})`);
+    });
+
+    test('confirmed-window live composition: EVERY control-owned statement result is inspected before liveness — a second control poll in the same cell reporting exit_code 137 vetoes the running first poll (P2, 2026-11-20 codex re-review)', async (t) => {
+      // The reviewer's exact offline reproduction: one exec cell containing
+      // TWO control-handle polls — the per-statement binding selected only
+      // the FIRST result (an early break). With previously collected fresh
+      // progress, a first poll reporting the running handle and a second
+      // reporting an empty output with exit_code 137 still produced
+      // active: true, ended: null, and positive remaining life — admission
+      // or survival credit for a DEAD control. Every control-owned statement
+      // result is now inspected (no early break): the newest control-owned
+      // result decides the cell's decoded fact, and a terminal observed on
+      // ANY control-owned statement vetoes liveness regardless of ordering.
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      const { fixture } = await createFastRealFixture(t, 'confirmed-window-two-control-polls-');
+      let current = 3_000;
+      const now = () => current;
+      const rolloutDirectory = join(fixture.codexHome, 'sessions', '2026', '11', '17');
+      await mkdir(rolloutDirectory, { recursive: true, mode: 0o700 });
+      const CONTROL_HANDLE = 4100;
+      const controlRolloutPath = join(rolloutDirectory, 'rollout-two-control-polls.jsonl');
+      const LAUNCH_EPOCH_MS = Date.now() - 85_000;
+      const controlCompletedOutput = (/** @type {any} */ result) => [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify(result) }];
+      const events = [
+        { type: 'session_meta', payload: { id: 'root-owning-session' }, timestamp: LAUNCH_EPOCH_MS },
+        { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'two-poll-launch-1', input: `const r = await tools.exec_command(${JSON.stringify({ cmd: fixture.survivalControlPath })}); text(JSON.stringify(r))\n` }, timestamp: LAUNCH_EPOCH_MS },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'two-poll-launch-1', output: controlCompletedOutput({ output: '', session_id: CONTROL_HANDLE }) }, timestamp: LAUNCH_EPOCH_MS + 5 },
+        // A single-statement progress poll: the fresh line the reviewer's
+        // scenario presupposes (the demonstration anchors on the launch
+        // epoch: (now − launch) − tag ≈ 1000 ms ≤ one cadence).
+        { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'two-poll-progress-1', input: `const r = await tools.write_stdin(${JSON.stringify({ session_id: CONTROL_HANDLE, chars: '', yield_time_ms: 60_000 })}); text(JSON.stringify(r))\n` }, timestamp: LAUNCH_EPOCH_MS + 80_000 },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'two-poll-progress-1', output: controlCompletedOutput({ output: 'zcode-survival-control 5 84000\n', session_id: CONTROL_HANDLE }) }, timestamp: LAUNCH_EPOCH_MS + 85_000 },
+        // The reviewer's cell: TWO control-handle polls — statement 0
+        // (the inline form) reports the running handle with the fresh
+        // progress line, statement 1 (the const-r form) reports the
+        // terminal exit code 137 with no session_id.
+        { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'two-poll-terminal-1', input: `text(await tools.write_stdin(${JSON.stringify({ session_id: CONTROL_HANDLE, chars: '', yield_time_ms: 60_000 })}));\nconst r = await tools.write_stdin(${JSON.stringify({ session_id: CONTROL_HANDLE, chars: '', yield_time_ms: 60_000 })}); text(JSON.stringify(r))\n` }, timestamp: LAUNCH_EPOCH_MS + 85_000 },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'two-poll-terminal-1', output: [
+          { type: 'input_text', text: 'Script completed\n' },
+          { type: 'input_text', text: JSON.stringify({ output: 'zcode-survival-control 5 84000\n', session_id: CONTROL_HANDLE }) },
+          { type: 'input_text', text: JSON.stringify({ exit_code: 137 }) },
+        ] }, timestamp: LAUNCH_EPOCH_MS + 85_000 },
+      ];
+      const childRolloutPath = join(rolloutDirectory, 'rollout-owning-child.jsonl');
+      await writeFile(childRolloutPath, `${JSON.stringify({ type: 'session_meta', payload: { id: 'child-joined-session', parent_thread_id: 'root-owning-session' }})}\n`, { mode: 0o600 });
+      await writeFile(controlRolloutPath, events.map((event) => JSON.stringify(event)).join('\n') + '\n', { mode: 0o600 });
+      const composition = driverModule.createConfirmedWindowLiveComposition({
+        fixture, now, workerDurationMs: 420_000, caseDeadlineAtMs: () => 1_200_000,
+        childObservationThreadId: 'child-joined-session',
+      });
+      const control = await composition.observers.controlFacts();
+      assert.equal(control.active, false, `the terminal reported by the SECOND control poll in the cell ends the control (actual ${JSON.stringify(control)})`);
+      assert.equal(control.ended, 'premature-exit', `the terminal in the cell vetoes liveness — the running first poll never discards it (actual ${JSON.stringify(control)})`);
+      assert.equal(control.declaredLifetimeMs, 0, 'the dead control carries zero credited life despite the running first poll');
+      assert.match(String(control.reason ?? ''), /exit code 137/u, 'the inactive reason names the statement-owned exit code');
+    });
+
+    test('confirmed-window live composition: an OUTSTANDING registered observation premises readiness before its outer cell yields — the registered poll issued on the original handle with no completed output yet is the pending evidence (P1-1, 2026-11-20 codex re-review)', async (t) => {
+      // The reviewer's exact offline reproduction: under the frozen
+      // exec-default-ms=3600000 configuration the conforming grammar FORBIDS
+      // an explicit outer yield override, so a conforming long observation
+      // remains an OUTSTANDING CALL with no `Script running with cell ID`
+      // output during the whole 180000-ms staging allowance. Requiring the
+      // already-yielded response prevented readiness even when the Child
+      // correctly started its observation (and the hold gate stayed
+      // unreleased until admission). The outstanding premise is now the
+      // registered poll's own REQUEST-side evidence: issued on the original
+      // handle with the registered shape and no completed output yet.
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      const { fixture, temporary } = await createFastRealFixture(t, 'confirmed-window-outstanding-poll-');
+      let current = 1_000;
+      const now = () => current;
+      const gateDirectory = join(temporary, 'outstanding-poll-hold-gate');
+      await mkdir(gateDirectory, { recursive: true, mode: 0o700 });
+      const gatePath = join(gateDirectory, 'completion.gate');
+      const gateReachedPath = join(gateDirectory, 'completion.reached');
+      await writeFile(gatePath, 'hold', { mode: 0o600 });
+      await writeFile(gateReachedPath, '', { mode: 0o600 });
+      const recordPath = /** @type {string} */ (fixture.env.FAKE_ZCODE_RECORD);
+      await writeFile(recordPath, [
+        JSON.stringify({ id: 4, method: 'session/create', params: { workspace: { workspacePath: '/repo' } } }),
+        JSON.stringify({ id: 5, method: 'session/send', params: { sessionId: 'fake-session-1', content: 'the staged rescue objective' } }),
+      ].join('\n') + '\n', 'utf8');
+      await writeFile(gateReachedPath, 'blocked', { mode: 0o600 });
+      const completedOutput = (/** @type {any} */ result) => [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify(result) }];
+      const RENDERED_RESCUE_LAUNCHER_COMMAND = 'node "/installed-plugin/skills/rescue/launcher.mjs" invoke-prepared rescue';
+      const childEvents = [
+        { type: 'session_meta', payload: { id: 'child-session-1' } },
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'outstanding-launch-1', input: `const r = await tools.exec_command(${JSON.stringify({ cmd: RENDERED_RESCUE_LAUNCHER_COMMAND })}); text(JSON.stringify(r))\n` } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'outstanding-launch-1', output: completedOutput({ output: '', session_id: 500 }) } },
+        // The registered long observation was ISSUED on the original
+        // handle — and has NO output event yet (the outstanding call in
+        // flight; the frozen grammar never yields it explicitly).
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'outstanding-poll-1', input: `const r = await tools.write_stdin(${JSON.stringify({ session_id: 500, chars: '', yield_time_ms: 3_600_000 })}); text(JSON.stringify(r))\n` } },
+      ];
+      const composition = driverModule.createConfirmedWindowLiveComposition({
+        fixture, now, workerDurationMs: 420_000,
+        completionGatePath: gatePath, completionGateReachedPath: gateReachedPath,
+        childObservationThreadId: 'child-session-1',
+        loadRollouts: async () => [childEvents],
+      });
+      const pending = await composition.observers.pendingObservation();
+      assert.equal(pending.confirmed, true, `the issued registered poll premises the observation BEFORE its cell yields (actual ${JSON.stringify(pending)})`);
+      assert.equal(pending.resolved, false, 'the outstanding call is not resolved — the pending premise stands');
+    });
+
+    test('confirmed-window live composition: the collector LATCHES its confirmed state across scans — a later DIRECT completion of the same qualifying poll resolves the observation (P1, 2026-11-20 codex re-review)', async (t) => {
+      // The reviewer's exact offline reproduction: a qualifying poll first
+      // observed WITHOUT output is confirmed by the collector; when that same
+      // call later completes DIRECTLY (no intermediate pending-cell output —
+      // the frozen exec-default grammar), the next scan reports
+      // started:false, returned:true and the started guard exits BEFORE
+      // recording resolvedAtMs — a valid interruption never establishes
+      // observation resolution. The collector now latches its confirmed
+      // state across scans: once confirmed, the later direct completion of
+      // the same qualifying poll resolves the observation with resolvedAtMs
+      // stamped at that read, while a poll ALREADY completed at the FIRST
+      // observation still refuses admission (the round-12 P1-2 case).
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      const { fixture, temporary } = await createFastRealFixture(t, 'confirmed-window-latched-completion-');
+      let current = 1_000;
+      const now = () => current;
+      const gateDirectory = join(temporary, 'latched-completion-hold-gate');
+      await mkdir(gateDirectory, { recursive: true, mode: 0o700 });
+      const gatePath = join(gateDirectory, 'completion.gate');
+      const gateReachedPath = join(gateDirectory, 'completion.reached');
+      await writeFile(gatePath, 'hold', { mode: 0o600 });
+      await writeFile(gateReachedPath, '', { mode: 0o600 });
+      const recordPath = /** @type {string} */ (fixture.env.FAKE_ZCODE_RECORD);
+      await writeFile(recordPath, [
+        JSON.stringify({ id: 4, method: 'session/create', params: { workspace: { workspacePath: '/repo' } } }),
+        JSON.stringify({ id: 5, method: 'session/send', params: { sessionId: 'fake-session-1', content: 'the staged rescue objective' } }),
+      ].join('\n') + '\n', 'utf8');
+      await writeFile(gateReachedPath, 'blocked', { mode: 0o600 });
+      const completedOutput = (/** @type {any} */ result) => [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify(result) }];
+      const RENDERED_RESCUE_LAUNCHER_COMMAND = 'node "/installed-plugin/skills/rescue/launcher.mjs" invoke-prepared rescue';
+      // (1) The latched shape: the poll is first observed outstanding (no
+      // output), then the SAME call completes directly in the rollout.
+      const childEvents = [
+        { type: 'session_meta', payload: { id: 'child-session-1' } },
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'latched-launch-1', input: `const r = await tools.exec_command(${JSON.stringify({ cmd: RENDERED_RESCUE_LAUNCHER_COMMAND })}); text(JSON.stringify(r))\n` } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'latched-launch-1', output: completedOutput({ output: '', session_id: 500 }) } },
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'latched-poll-1', input: `const r = await tools.write_stdin(${JSON.stringify({ session_id: 500, chars: '', yield_time_ms: 3_600_000 })}); text(JSON.stringify(r))\n` } },
+      ];
+      const composition = driverModule.createConfirmedWindowLiveComposition({
+        fixture, now, workerDurationMs: 420_000,
+        completionGatePath: gatePath, completionGateReachedPath: gateReachedPath,
+        childObservationThreadId: 'child-session-1',
+        loadRollouts: async () => [childEvents],
+      });
+      const first = await composition.observers.pendingObservation();
+      assert.equal(first.confirmed, true, `the outstanding poll is confirmed first (actual ${JSON.stringify(first)})`);
+      assert.equal(first.resolved, false, 'the outstanding poll is not yet resolved');
+      // The SAME call completes directly (a completed output event; no
+      // intermediate pending-cell output), and the read clock advances.
+      childEvents.push({ type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'latched-poll-1', output: completedOutput({ output: 'the observation completed', session_id: 500 }) } });
+      current = 2_000;
+      const second = await composition.observers.pendingObservation();
+      assert.equal(second.confirmed, true, `the latched confirmed state survives the scan whose poll completed directly (actual ${JSON.stringify(second)})`);
+      assert.equal(second.resolved, true, `the direct completion of the same qualifying poll RESOLVES the observation (actual ${JSON.stringify(second)})`);
+      assert.equal(second.resolvedAtMs, 2_000, `resolvedAtMs is stamped at the completing read, never backdated (actual ${JSON.stringify(second)})`);
+      // (2) The round-12 P1-2 case is unchanged: a poll ALREADY completed at
+      // the FIRST observation never latches and still refuses admission.
+      const alreadyCompleted = driverModule.createConfirmedWindowLiveComposition({
+        fixture, now, workerDurationMs: 420_000,
+        completionGatePath: gatePath, completionGateReachedPath: gateReachedPath,
+        childObservationThreadId: 'child-session-1',
+        loadRollouts: async () => [
+          { type: 'session_meta', payload: { id: 'child-session-1' } },
+          { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'already-done-launch-1', input: `const r = await tools.exec_command(${JSON.stringify({ cmd: RENDERED_RESCUE_LAUNCHER_COMMAND })}); text(JSON.stringify(r))\n` } },
+          { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'already-done-launch-1', output: completedOutput({ output: '', session_id: 500 }) } },
+          { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'already-done-poll-1', input: `const r = await tools.write_stdin(${JSON.stringify({ session_id: 500, chars: '', yield_time_ms: 3_600_000 })}); text(JSON.stringify(r))\n` } },
+          { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'already-done-poll-1', output: completedOutput({ output: 'the observation completed', session_id: 500 }) } },
+        ],
+      });
+      const refused = await alreadyCompleted.observers.pendingObservation();
+      assert.equal(refused.confirmed, false, `a poll already completed at the FIRST observation never confirms admission (actual ${JSON.stringify(refused)})`);
+    });
+
+    test('confirmed-window live composition: an UNDECODABLE poll response FAILS CLOSED — a failed output is evidence the call terminated, never an outstanding observation (P1, 2026-11-20 codex re-review)', async (t) => {
+      // The reviewer's exact offline reproduction: if the qualifying poll has
+      // already returned a FAILED or UNDECODABLE output, its state is
+      // recorded as `undecoded`, so the outstanding rule's
+      // `!entry.states.includes('completed')` incorrectly treated it as
+      // outstanding — a `Script failed` response produced
+      // {started:true, returned:false}, exactly like a genuinely unanswered
+      // poll, and the collector could confirm the barrier and consume the
+      // native interrupt attempt WITHOUT an established pending observation.
+      // Response presence is tracked through the state itself: a
+      // present-but-undecodable/failed output FAILS CLOSED (the call
+      // terminated); the outstanding premise holds only for a poll with NO
+      // response evidence at all (or one whose observed response is the
+      // yielded pending cell itself).
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      const { fixture, temporary } = await createFastRealFixture(t, 'confirmed-window-undecodable-poll-');
+      let current = 1_000;
+      const now = () => current;
+      const gateDirectory = join(temporary, 'undecodable-poll-hold-gate');
+      await mkdir(gateDirectory, { recursive: true, mode: 0o700 });
+      const gatePath = join(gateDirectory, 'completion.gate');
+      const gateReachedPath = join(gateDirectory, 'completion.reached');
+      await writeFile(gatePath, 'hold', { mode: 0o600 });
+      await writeFile(gateReachedPath, '', { mode: 0o600 });
+      const recordPath = /** @type {string} */ (fixture.env.FAKE_ZCODE_RECORD);
+      await writeFile(recordPath, [
+        JSON.stringify({ id: 4, method: 'session/create', params: { workspace: { workspacePath: '/repo' } } }),
+        JSON.stringify({ id: 5, method: 'session/send', params: { sessionId: 'fake-session-1', content: 'the staged rescue objective' } }),
+      ].join('\n') + '\n', 'utf8');
+      await writeFile(gateReachedPath, 'blocked', { mode: 0o600 });
+      const completedOutput = (/** @type {any} */ result) => [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify(result) }];
+      const RENDERED_RESCUE_LAUNCHER_COMMAND = 'node "/installed-plugin/skills/rescue/launcher.mjs" invoke-prepared rescue';
+      const readPending = async (childEvents) => {
+        const composition = driverModule.createConfirmedWindowLiveComposition({
+          fixture, now, workerDurationMs: 420_000,
+          completionGatePath: gatePath, completionGateReachedPath: gateReachedPath,
+          childObservationThreadId: 'child-session-1',
+          loadRollouts: async () => [childEvents],
+        });
+        return composition.observers.pendingObservation();
+      };
+      // (1) The reviewer's shape: the qualifying poll's response is present
+      // but UNDECODABLE (the failed-script body — never pending, never a
+      // completed result JSON). The call TERMINATED: no outstanding premise.
+      const failedPoll = await readPending([
+        { type: 'session_meta', payload: { id: 'child-session-1' } },
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'failed-launch-1', input: `const r = await tools.exec_command(${JSON.stringify({ cmd: RENDERED_RESCUE_LAUNCHER_COMMAND })}); text(JSON.stringify(r))\n` } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'failed-launch-1', output: completedOutput({ output: '', session_id: 500 }) } },
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'failed-poll-1', input: `const r = await tools.write_stdin(${JSON.stringify({ session_id: 500, chars: '', yield_time_ms: 3_600_000 })}); text(JSON.stringify(r))\n` } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'failed-poll-1', output: [{ type: 'input_text', text: 'Script failed\n' }] } },
+      ]);
+      assert.equal(failedPoll.confirmed, false, `a present-but-undecodable response FAILS CLOSED — the call terminated, it is never a pending observation (actual ${JSON.stringify(failedPoll)})`);
+      assert.equal(failedPoll.resolved, false, 'no resolution evidence stands either (the undecodable body establishes nothing)');
+      // (2) The contrast: a genuinely UNANSWERED registered poll (issued, NO
+      // response evidence at all) still premises the outstanding observation
+      // (the round-12 P1-1 case is preserved).
+      const unansweredPoll = await readPending([
+        { type: 'session_meta', payload: { id: 'child-session-1' } },
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'unanswered-launch-1', input: `const r = await tools.exec_command(${JSON.stringify({ cmd: RENDERED_RESCUE_LAUNCHER_COMMAND })}); text(JSON.stringify(r))\n` } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'unanswered-launch-1', output: completedOutput({ output: '', session_id: 500 }) } },
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'unanswered-poll-1', input: `const r = await tools.write_stdin(${JSON.stringify({ session_id: 500, chars: '', yield_time_ms: 3_600_000 })}); text(JSON.stringify(r))\n` } },
+      ]);
+      assert.equal(unansweredPoll.confirmed, true, `the genuinely unanswered poll still premises the outstanding observation (actual ${JSON.stringify(unansweredPoll)})`);
+      assert.equal(unansweredPoll.resolved, false, 'the unanswered call stays unresolved — the pending premise stands');
+    });
+
+    test('confirmed-window live composition: a TERMINAL FAILURE of the yielded observation cell revokes the pending evidence — direct or through its linked wait, a dead observation never premises admission even when latched (P1, 2026-11-20 codex re-review)', async (t) => {
+      // The reviewer's exact offline reproduction: a qualifying poll yields a
+      // cell and that cell subsequently returns `Script failed` — either
+      // directly or through a linked `wait` — but the scanner still reported
+      // {started:true, returned:false}: the historical pending state won and
+      // the failed response was never treated as terminal, so
+      // pendingObservation confirmed an observation that had ALREADY ENDED
+      // and the admission barrier could consume the interrupt attempt
+      // incorrectly. Terminal failures now propagate through the cell-to-poll
+      // linkage: the scan reports the observation failed, and the collector
+      // REFUSES admission even when confirmation was previously latched (the
+      // round-13 latch must not keep a dead observation pending).
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      const { fixture, temporary } = await createFastRealFixture(t, 'confirmed-window-terminal-failure-');
+      let current = 1_000;
+      const now = () => current;
+      const gateDirectory = join(temporary, 'terminal-failure-hold-gate');
+      await mkdir(gateDirectory, { recursive: true, mode: 0o700 });
+      const gatePath = join(gateDirectory, 'completion.gate');
+      const gateReachedPath = join(gateDirectory, 'completion.reached');
+      await writeFile(gatePath, 'hold', { mode: 0o600 });
+      await writeFile(gateReachedPath, '', { mode: 0o600 });
+      const recordPath = /** @type {string} */ (fixture.env.FAKE_ZCODE_RECORD);
+      await writeFile(recordPath, [
+        JSON.stringify({ id: 4, method: 'session/create', params: { workspace: { workspacePath: '/repo' } } }),
+        JSON.stringify({ id: 5, method: 'session/send', params: { sessionId: 'fake-session-1', content: 'the staged rescue objective' } }),
+      ].join('\n') + '\n', 'utf8');
+      await writeFile(gateReachedPath, 'blocked', { mode: 0o600 });
+      const completedOutput = (/** @type {any} */ result) => [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify(result) }];
+      const RENDERED_RESCUE_LAUNCHER_COMMAND = 'node "/installed-plugin/skills/rescue/launcher.mjs" invoke-prepared rescue';
+      // (1) The DIRECT shape: the poll yields, then the same call's second
+      // output is the failed body — the observation ENDED.
+      const directEvents = [
+        { type: 'session_meta', payload: { id: 'child-session-1' } },
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'direct-fail-launch-1', input: `const r = await tools.exec_command(${JSON.stringify({ cmd: RENDERED_RESCUE_LAUNCHER_COMMAND })}); text(JSON.stringify(r))\n` } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'direct-fail-launch-1', output: completedOutput({ output: '', session_id: 500 }) } },
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'direct-fail-poll-1', input: `const r = await tools.write_stdin(${JSON.stringify({ session_id: 500, chars: '', yield_time_ms: 3_600_000 })}); text(JSON.stringify(r))\n` } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'direct-fail-poll-1', output: [{ type: 'input_text', text: 'Script running with cell ID cell-obs-1\n' }] } },
+      ];
+      const directComposition = driverModule.createConfirmedWindowLiveComposition({
+        fixture, now, workerDurationMs: 420_000,
+        completionGatePath: gatePath, completionGateReachedPath: gateReachedPath,
+        childObservationThreadId: 'child-session-1',
+        loadRollouts: async () => [directEvents],
+      });
+      const directFirst = await directComposition.observers.pendingObservation();
+      assert.equal(directFirst.confirmed, true, 'the yielded observation is confirmed first');
+      // The yielded cell subsequently FAILS (the same call's later output is
+      // the failed body).
+      directEvents.push({ type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'direct-fail-poll-1', output: [{ type: 'input_text', text: 'Script failed\n' }] } });
+      const directSecond = await directComposition.observers.pendingObservation();
+      assert.equal(directSecond.confirmed, false, `the terminal failure of the yielded cell REFUSES the observation even though confirmation was previously latched (actual ${JSON.stringify(directSecond)})`);
+      assert.match(String(directSecond.reason ?? ''), /terminal failure|dead observation/u, 'the refusal names the terminal failure');
+      // (2) The LINKED-WAIT shape: the poll's cell is continued by a wait
+      // whose completion is the failed body — the observation ENDED too.
+      const waitEvents = [
+        { type: 'session_meta', payload: { id: 'child-session-1' } },
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'wait-fail-launch-1', input: `const r = await tools.exec_command(${JSON.stringify({ cmd: RENDERED_RESCUE_LAUNCHER_COMMAND })}); text(JSON.stringify(r))\n` } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'wait-fail-launch-1', output: completedOutput({ output: '', session_id: 500 }) } },
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'wait-fail-poll-1', input: `const r = await tools.write_stdin(${JSON.stringify({ session_id: 500, chars: '', yield_time_ms: 3_600_000 })}); text(JSON.stringify(r))\n` } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'wait-fail-poll-1', output: [{ type: 'input_text', text: 'Script running with cell ID cell-obs-2\n' }] } },
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'wait-fail-wait-1', input: `text(await tools.wait(${JSON.stringify({ cell_id: 'cell-obs-2', yield_time_ms: 240_000 })}));\n` } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'wait-fail-wait-1', output: [{ type: 'input_text', text: 'Script failed\n' }] } },
+      ];
+      const waitComposition = driverModule.createConfirmedWindowLiveComposition({
+        fixture, now, workerDurationMs: 420_000,
+        completionGatePath: gatePath, completionGateReachedPath: gateReachedPath,
+        childObservationThreadId: 'child-session-1',
+        loadRollouts: async () => [waitEvents],
+      });
+      const waitPending = await waitComposition.observers.pendingObservation();
+      assert.equal(waitPending.confirmed, false, `a linked wait whose completion FAILED terminates the observation (actual ${JSON.stringify(waitPending)})`);
+      assert.match(String(waitPending.reason ?? ''), /terminal failure|dead observation/u, 'the refusal names the terminal failure');
+    });
+
+    test('confirmed-window live composition: qualifying polls beyond the first statement are registered — a completed exec followed by the registered long poll in one cell premises the observation (P2, 2026-11-20 codex re-review)', async (t) => {
+      // The reviewer's exact offline reproduction: a supported multi-
+      // statement cell containing a completed exec_command followed by the
+      // registered long write_stdin poll — the scanner classified the entire
+      // call using only statements[0] and never registered the poll
+      // (statementOutputAt(output, 1, 2) correctly identified the second
+      // statement as pending, yet pendingObservation returned confirmed
+      // false). Qualifying polls are now tracked by their OWN statement
+      // positions (the round-11 launcher and round-12 control discipline),
+      // with the strict whole-list decode carrying the evidence that the
+      // preceding statements completed.
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      const { fixture, temporary } = await createFastRealFixture(t, 'confirmed-window-poll-second-statement-');
+      let current = 1_000;
+      const now = () => current;
+      const gateDirectory = join(temporary, 'poll-second-statement-hold-gate');
+      await mkdir(gateDirectory, { recursive: true, mode: 0o700 });
+      const gatePath = join(gateDirectory, 'completion.gate');
+      const gateReachedPath = join(gateDirectory, 'completion.reached');
+      await writeFile(gatePath, 'hold', { mode: 0o600 });
+      await writeFile(gateReachedPath, '', { mode: 0o600 });
+      const recordPath = /** @type {string} */ (fixture.env.FAKE_ZCODE_RECORD);
+      await writeFile(recordPath, [
+        JSON.stringify({ id: 4, method: 'session/create', params: { workspace: { workspacePath: '/repo' } } }),
+        JSON.stringify({ id: 5, method: 'session/send', params: { sessionId: 'fake-session-1', content: 'the staged rescue objective' } }),
+      ].join('\n') + '\n', 'utf8');
+      await writeFile(gateReachedPath, 'blocked', { mode: 0o600 });
+      const completedOutput = (/** @type {any} */ result) => [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify(result) }];
+      const RENDERED_RESCUE_LAUNCHER_COMMAND = 'node "/installed-plugin/skills/rescue/launcher.mjs" invoke-prepared rescue';
+      const childEvents = [
+        { type: 'session_meta', payload: { id: 'child-session-1' } },
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'second-poll-launch-1', input: `const r = await tools.exec_command(${JSON.stringify({ cmd: RENDERED_RESCUE_LAUNCHER_COMMAND })}); text(JSON.stringify(r))\n` } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'second-poll-launch-1', output: completedOutput({ output: '', session_id: 500 }) } },
+        // The multi-statement cell: statement 0 = a completed
+        // exec_command, statement 1 = the REGISTERED long poll (yielding).
+        // The observed yielded-cell output shape: the pending header
+        // FIRST, then the preceding statements' completed results —
+        // statementOutputAt(output, 1, 2) identifies the poll as pending.
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'second-poll-cell-1', input: `const r = await tools.exec_command(${JSON.stringify({ cmd: 'sleep 1' })}); text(JSON.stringify(r))\nconst r = await tools.write_stdin(${JSON.stringify({ session_id: 500, chars: '', yield_time_ms: 3_600_000 })}); text(JSON.stringify(r))\n` } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'second-poll-cell-1', output: [
+          { type: 'input_text', text: 'Script running with cell ID cell-long-1\n' },
+          { type: 'input_text', text: JSON.stringify({ output: 'setup done', exit_code: 0 }) },
+        ] } },
+      ];
+      const composition = driverModule.createConfirmedWindowLiveComposition({
+        fixture, now, workerDurationMs: 420_000,
+        completionGatePath: gatePath, completionGateReachedPath: gateReachedPath,
+        childObservationThreadId: 'child-session-1',
+        loadRollouts: async () => [childEvents],
+      });
+      const pending = await composition.observers.pendingObservation();
+      assert.equal(pending.confirmed, true, `the registered poll at its OWN statement position premises the observation (actual ${JSON.stringify(pending)})`);
+      assert.equal(pending.resolved, false, 'the yielded cell stays pending');
+    });
+
+    test('confirmed-window live composition: a DIRECT failed response on an UNANSWERED poll revokes the latched confirmation — pending-then-failed and unanswered-then-failed both revoke (P1-1, 2026-11-20 codex re-review)', async (t) => {
+      // The reviewer's exact offline reproduction: a scan confirms an
+      // UNANSWERED poll while another admission conjunct is still missing,
+      // and that poll later returns `Script failed` WITHOUT first yielding a
+      // cell — the round-15 condition never set `failed` (it keyed on
+      // pending-ordered-before-undecoded), so the confirmation latch kept
+      // pendingObservation() reporting confirmed:true, resolved:false and
+      // the interruption could fire after the observation had ENDED. The
+      // latch now clears on ANY terminal undecodable response of the latched
+      // poll: unanswered-then-failed revokes exactly like
+      // pending-then-failed.
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      const { fixture, temporary } = await createFastRealFixture(t, 'confirmed-window-unanswered-then-failed-');
+      let current = 1_000;
+      const now = () => current;
+      const gateDirectory = join(temporary, 'unanswered-failed-hold-gate');
+      await mkdir(gateDirectory, { recursive: true, mode: 0o700 });
+      const gatePath = join(gateDirectory, 'completion.gate');
+      const gateReachedPath = join(gateDirectory, 'completion.reached');
+      await writeFile(gatePath, 'hold', { mode: 0o600 });
+      await writeFile(gateReachedPath, '', { mode: 0o600 });
+      const recordPath = /** @type {string} */ (fixture.env.FAKE_ZCODE_RECORD);
+      await writeFile(recordPath, [
+        JSON.stringify({ id: 4, method: 'session/create', params: { workspace: { workspacePath: '/repo' } } }),
+        JSON.stringify({ id: 5, method: 'session/send', params: { sessionId: 'fake-session-1', content: 'the staged rescue objective' } }),
+      ].join('\n') + '\n', 'utf8');
+      await writeFile(gateReachedPath, 'blocked', { mode: 0o600 });
+      const completedOutput = (/** @type {any} */ result) => [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify(result) }];
+      const RENDERED_RESCUE_LAUNCHER_COMMAND = 'node "/installed-plugin/skills/rescue/launcher.mjs" invoke-prepared rescue';
+      const childEvents = [
+        { type: 'session_meta', payload: { id: 'child-session-1' } },
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'unans-fail-launch-1', input: `const r = await tools.exec_command(${JSON.stringify({ cmd: RENDERED_RESCUE_LAUNCHER_COMMAND })}); text(JSON.stringify(r))\n` } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'unans-fail-launch-1', output: completedOutput({ output: '', session_id: 500 }) } },
+        // The registered poll: issued with NO output (confirmed outstanding).
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'unans-fail-poll-1', input: `const r = await tools.write_stdin(${JSON.stringify({ session_id: 500, chars: '', yield_time_ms: 3_600_000 })}); text(JSON.stringify(r))\n` } },
+      ];
+      const composition = driverModule.createConfirmedWindowLiveComposition({
+        fixture, now, workerDurationMs: 420_000,
+        completionGatePath: gatePath, completionGateReachedPath: gateReachedPath,
+        childObservationThreadId: 'child-session-1',
+        loadRollouts: async () => [childEvents],
+      });
+      const first = await composition.observers.pendingObservation();
+      assert.equal(first.confirmed, true, 'the unanswered poll is confirmed outstanding first');
+      // The same call later returns the FAILED body directly — it never
+      // yielded a cell. The latch must clear.
+      childEvents.push({ type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'unans-fail-poll-1', output: [{ type: 'input_text', text: 'Script failed\n' }] } });
+      const second = await composition.observers.pendingObservation();
+      assert.equal(second.confirmed, false, `the DIRECT failed response on the latched unanswered poll REVOKES the confirmation (actual ${JSON.stringify(second)})`);
+      assert.match(String(second.reason ?? ''), /terminal failure|dead observation/u, 'the refusal names the terminal failure');
+    });
+
+    test('confirmed-window live composition: the registered poll CLOSED by the pinned host\'s NATIVE CANCELLATION resolves the observation — Codex\'s Script-terminated/aborted-by-user response on the exact Child\'s outstanding poll is the native resolution, never an unknown failure (P1-1, round-20 codex re-review)', async (t) => {
+      // The reviewer's exact finding: when the exact Child's outstanding poll
+      // ends with Codex's native `Script terminated` or `aborted by user`
+      // response, statementOutputAt() returns null and the collector treated
+      // the response as an UNKNOWN FAILURE — the Child reported an
+      // interrupted terminal event while the controller still recorded
+      // missing-observation-resolution. The pinned host's native cancellation
+      // framings are POLL-RESPONSE RESOLUTIONS (the same statement-bound
+      // recognition the instrument's settlement collection applies through
+      // the exported isNativeCancellationResponse): a recognized cancellation
+      // on the registered poll's OWN statement CLOSES that poll — the
+      // observation resolves via the native cancellation, never an arbitrary
+      // undecodable output credited.
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      const { fixture, temporary } = await createFastRealFixture(t, 'confirmed-window-native-cancellation-');
+      let current = 1_000;
+      const now = () => current;
+      const gateDirectory = join(temporary, 'native-cancellation-hold-gate');
+      await mkdir(gateDirectory, { recursive: true, mode: 0o700 });
+      const gatePath = join(gateDirectory, 'completion.gate');
+      const gateReachedPath = join(gateDirectory, 'completion.reached');
+      await writeFile(gatePath, 'hold', { mode: 0o600 });
+      await writeFile(gateReachedPath, '', { mode: 0o600 });
+      const recordPath = /** @type {string} */ (fixture.env.FAKE_ZCODE_RECORD);
+      await writeFile(recordPath, [
+        JSON.stringify({ id: 4, method: 'session/create', params: { workspace: { workspacePath: '/repo' } } }),
+        JSON.stringify({ id: 5, method: 'session/send', params: { sessionId: 'fake-session-1', content: 'the staged rescue objective' } }),
+      ].join('\n') + '\n', 'utf8');
+      await writeFile(gateReachedPath, 'blocked', { mode: 0o600 });
+      const completedOutput = (/** @type {any} */ result) => [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify(result) }];
+      const RENDERED_RESCUE_LAUNCHER_COMMAND = 'node "/installed-plugin/skills/rescue/launcher.mjs" invoke-prepared rescue';
+      const readPending = async (childEvents) => {
+        const composition = driverModule.createConfirmedWindowLiveComposition({
+          fixture, now, workerDurationMs: 420_000,
+          completionGatePath: gatePath, completionGateReachedPath: gateReachedPath,
+          childObservationThreadId: 'child-session-1',
+          loadRollouts: async () => [childEvents],
+        });
+        return composition.observers.pendingObservation();
+      };
+      // (1) the CODE-MODE cell form: the `Script terminated` framing.
+      const terminatedEvents = [
+        { type: 'session_meta', payload: { id: 'child-session-1' } },
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'native-cancel-launch-1', input: `const r = await tools.exec_command(${JSON.stringify({ cmd: RENDERED_RESCUE_LAUNCHER_COMMAND })}); text(JSON.stringify(r))\n` } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'native-cancel-launch-1', output: completedOutput({ output: '', session_id: 500 }) } },
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'native-cancel-poll-1', input: `const r = await tools.write_stdin(${JSON.stringify({ session_id: 500, chars: '', yield_time_ms: 3_600_000 })}); text(JSON.stringify(r))\n` } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'native-cancel-poll-1', output: [{ type: 'input_text', text: 'Script running with cell ID cell-native-cancel-1\n' }] } },
+      ];
+      const terminatedFirst = await readPending(terminatedEvents);
+      assert.equal(terminatedFirst.confirmed, true, `the yielded observation is confirmed outstanding first (actual ${JSON.stringify(terminatedFirst)})`);
+      assert.equal(terminatedFirst.resolved, false, 'the outstanding observation is unresolved before the interruption lands');
+      // The same poll's response then carries Codex's NATIVE CANCELLATION
+      // framing — the interrupt terminated the Child's script mid-poll.
+      terminatedEvents.push({ type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'native-cancel-poll-1', output: [{ type: 'input_text', text: 'Script terminated\nWall time 0.1 seconds\nOutput:\n' }] } });
+      current = 2_000;
+      const terminatedSecond = await readPending(terminatedEvents);
+      assert.equal(terminatedSecond.confirmed, true, `a recognized native cancellation CLOSES the exact poll — the confirmed observation stands (actual ${JSON.stringify(terminatedSecond)})`);
+      assert.equal(terminatedSecond.resolved, true, `the observation RESOLVES through the native cancellation — the Child's interrupted terminal event is never an unknown failure (actual ${JSON.stringify(terminatedSecond)})`);
+      assert.equal(terminatedSecond.resolvedAtMs, 2_000, `resolvedAtMs is stamped at the resolving read (actual ${JSON.stringify(terminatedSecond)})`);
+      // (2) the DIRECT tool-abort form: `aborted by user after <s>s`, the
+      // plain-string FunctionCallOutputBody::Text body of a CANCELLED
+      // direct call.
+      const abortedEvents = [
+        { type: 'session_meta', payload: { id: 'child-session-1' } },
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'abort-tool-launch-1', input: `const r = await tools.exec_command(${JSON.stringify({ cmd: RENDERED_RESCUE_LAUNCHER_COMMAND })}); text(JSON.stringify(r))\n` } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'abort-tool-launch-1', output: completedOutput({ output: '', session_id: 500 }) } },
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'abort-tool-poll-1', input: `const r = await tools.write_stdin(${JSON.stringify({ session_id: 500, chars: '', yield_time_ms: 3_600_000 })}); text(JSON.stringify(r))\n` } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'abort-tool-poll-1', output: [{ type: 'input_text', text: 'Script running with cell ID cell-native-cancel-2\n' }] } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'abort-tool-poll-1', output: 'aborted by user after 0.1s' } },
+      ];
+      const abortedRead = await readPending(abortedEvents);
+      assert.equal(abortedRead.confirmed, true, `the tool-abort framing on the registered poll closes the observation the same way (actual ${JSON.stringify(abortedRead)})`);
+      assert.equal(abortedRead.resolved, true, `the direct aborted-by-user response resolves the outstanding observation (actual ${JSON.stringify(abortedRead)})`);
+    });
+
+    test('confirmed-window live composition: the registered poll\'s LINKED WAIT closed by the pinned host\'s NATIVE CANCELLATION resolves the observation — the wait continuation\'s Script-terminated/aborted-by-user outcome is the native resolution, while an EXPLICIT terminate:true wait stays separate (P2-4, round-21 codex review)', async (t) => {
+      // The reviewer's exact finding: when the registered poll yields and
+      // the Child is interrupted during a normal `wait` on that cell, the
+      // native cancellation body was classified as UNDECODABLE — only the
+      // original write_stdin response got the cancellation check, so the
+      // linked wait marked the observation FAILED even when the exact Child
+      // interruption was observed. The statement-bound cancellation
+      // recognition now applies to linked waits as well (the same rules the
+      // round-20 P1-1 poll case applies), while an explicit
+      // `terminate: true` wait stays SEPARATE from native cancellation.
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      const { fixture, temporary } = await createFastRealFixture(t, 'confirmed-window-wait-cancellation-');
+      let current = 1_000;
+      const now = () => current;
+      const gateDirectory = join(temporary, 'wait-cancellation-hold-gate');
+      await mkdir(gateDirectory, { recursive: true, mode: 0o700 });
+      const gatePath = join(gateDirectory, 'completion.gate');
+      const gateReachedPath = join(gateDirectory, 'completion.reached');
+      await writeFile(gatePath, 'hold', { mode: 0o600 });
+      await writeFile(gateReachedPath, '', { mode: 0o600 });
+      const recordPath = /** @type {string} */ (fixture.env.FAKE_ZCODE_RECORD);
+      await writeFile(recordPath, [
+        JSON.stringify({ id: 4, method: 'session/create', params: { workspace: { workspacePath: '/repo' } } }),
+        JSON.stringify({ id: 5, method: 'session/send', params: { sessionId: 'fake-session-1', content: 'the staged rescue objective' } }),
+      ].join('\n') + '\n', 'utf8');
+      await writeFile(gateReachedPath, 'blocked', { mode: 0o600 });
+      const completedOutput = (/** @type {any} */ result) => [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify(result) }];
+      const RENDERED_RESCUE_LAUNCHER_COMMAND = 'node "/installed-plugin/skills/rescue/launcher.mjs" invoke-prepared rescue';
+      const readPending = async (childEvents) => {
+        const composition = driverModule.createConfirmedWindowLiveComposition({
+          fixture, now, workerDurationMs: 420_000,
+          completionGatePath: gatePath, completionGateReachedPath: gateReachedPath,
+          childObservationThreadId: 'child-session-1',
+          loadRollouts: async () => [childEvents],
+        });
+        return composition.observers.pendingObservation();
+      };
+      // (1) The linked wait's Script-terminated framing: the registered poll
+      // YIELDED its cell, the Child then waits on that cell normally, and the
+      // interrupt lands DURING the wait — the wait's own response is the
+      // pinned host's native cancellation body.
+      const waitTerminatedEvents = [
+        { type: 'session_meta', payload: { id: 'child-session-1' } },
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'wait-cancel-launch-1', input: `const r = await tools.exec_command(${JSON.stringify({ cmd: RENDERED_RESCUE_LAUNCHER_COMMAND })}); text(JSON.stringify(r))\n` } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'wait-cancel-launch-1', output: completedOutput({ output: '', session_id: 500 }) } },
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'wait-cancel-poll-1', input: `const r = await tools.write_stdin(${JSON.stringify({ session_id: 500, chars: '', yield_time_ms: 3_600_000 })}); text(JSON.stringify(r))\n` } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'wait-cancel-poll-1', output: [{ type: 'input_text', text: 'Script running with cell ID cell-wait-cancel-1\n' }] } },
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'wait-cancel-wait-1', input: 'text(await tools.wait({"cell_id": "cell-wait-cancel-1"}));\n' } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'wait-cancel-wait-1', output: [{ type: 'input_text', text: 'Script terminated\nWall time 0.1 seconds\nOutput:\n' }] } },
+      ];
+      const waitTerminated = await readPending(waitTerminatedEvents);
+      assert.equal(waitTerminated.confirmed, true, `the yielded observation is confirmed and the linked wait's native cancellation RESOLVES it — never an unknown failure (actual ${JSON.stringify(waitTerminated)})`);
+      assert.equal(waitTerminated.resolved, true, `the wait continuation's Script-terminated outcome resolves the observation like the round-20 poll case (actual ${JSON.stringify(waitTerminated)})`);
+      assert.equal(waitTerminated.resolvedAtMs, 1_000, `the resolution is stamped at the resolving read (actual ${JSON.stringify(waitTerminated)})`);
+      // (2) The direct aborted-by-user framing on the linked wait — the same
+      // resolution.
+      const waitAbortedEvents = [
+        ...waitTerminatedEvents.slice(0, 6),
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'wait-cancel-wait-1', output: 'aborted by user after 0.1s' } },
+      ];
+      const waitAborted = await readPending(waitAbortedEvents);
+      assert.equal(waitAborted.confirmed, true, `the direct aborted-by-user response on the linked wait closes the observation the same way (actual ${JSON.stringify(waitAborted)})`);
+      assert.equal(waitAborted.resolved, true, `the direct aborted-by-user response resolves the outstanding observation (actual ${JSON.stringify(waitAborted)})`);
+      // (3) The EXPLICIT terminate:true wait stays SEPARATE from native
+      // cancellation — its Script-terminated marker is the call's OWN
+      // alternate ender, and the observation ends in the named terminal
+      // failure, never a native resolution.
+      const explicitTerminateEvents = [
+        ...waitTerminatedEvents.slice(0, 5),
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'wait-cancel-wait-2', input: 'text(await tools.wait({"cell_id": "cell-wait-cancel-1", "terminate": true}));\n' } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'wait-cancel-wait-2', output: [{ type: 'input_text', text: 'Script terminated\nWall time 0.1 seconds\nOutput:\n' }] } },
+      ];
+      const explicitTerminate = await readPending(explicitTerminateEvents);
+      assert.equal(explicitTerminate.confirmed, false, `an EXPLICIT terminate:true wait never native-resolves the observation (actual ${JSON.stringify(explicitTerminate)})`);
+      assert.match(String(explicitTerminate.reason ?? ''), /terminal failure/u, `the explicit ender's marker stays the named terminal-failure classification (actual ${JSON.stringify(explicitTerminate.reason)})`);
+    });
+
+    test('confirmed-window disposal: the worker is RECHECKED after the host activity has stopped — a late worker that APPEARS during the host shutdown is terminated through the existing marker/nonce path BEFORE the gate directory is removed, never a false clean teardown (P2-5, round-21 codex review)', async (t) => {
+      // The reviewer's exact finding: on a staging refusal while the Child is
+      // still launching the Companion, the worker marker can be absent at the
+      // first check and APPEAR while the host is shutting down — the
+      // controller never rechecked before deleting the gate, so it reported a
+      // clean teardown while a late worker launched by the detached broker
+      // kept polling the now-missing gate. The gate now stays available and
+      // the worker absence is verified AGAIN after the launch activity has
+      // stopped: a worker that appeared late is terminated via the existing
+      // marker/nonce path.
+      const confirmedWindow = await import('../tools/shell-wait-probe/confirmed-window.mjs');
+      const { spawn } = await import('node:child_process');
+      const temporary = await mkdtemp(join(tmpdir(), 'confirmed-window-late-worker-'));
+      t.after(() => rm(temporary, { recursive: true, force: true }));
+      const output = join(temporary, 'output');
+      await mkdir(output, { mode: 0o700 });
+      let capturedNonce = /** @type {string | null} */ (null);
+      let capturedProcessFile = /** @type {string | null} */ (null);
+      let lateWorker = /** @type {any} */ (null);
+      t.after(() => { try { lateWorker?.kill('SIGKILL'); } catch { /* already exited */ } });
+      const baseHost = fakeConfirmedWindowHost({ replies: parentSessionReplies(), notifications: [] });
+      const lateWorkerHostFactory = async (launchContext) => {
+        capturedNonce = typeof launchContext.env?.FAKE_ZCODE_PROCESS_NONCE === 'string' ? launchContext.env.FAKE_ZCODE_PROCESS_NONCE : null;
+        capturedProcessFile = typeof launchContext.env?.FAKE_ZCODE_PROCESS_FILE === 'string' ? launchContext.env.FAKE_ZCODE_PROCESS_FILE : null;
+        const inner = await baseHost.factory(launchContext);
+        return {
+          ...inner,
+          dispose: async () => {
+            // The detached broker launches the late worker WHILE the host is
+            // shutting down: the worker marker APPEARS during the awaited
+            // disposal — after the first worker check already saw it absent.
+            lateWorker = spawn(process.execPath, ['--input-type=module', '--eval', 'await new Promise((resolve) => setTimeout(resolve, 30_000));'], {
+              env: { ...isolatedBaseEnv(), FAKE_ZCODE_PROCESS_NONCE: /** @type {string} */ (capturedNonce) }, stdio: 'ignore',
+            });
+            await writeFile(/** @type {string} */ (capturedProcessFile), `${JSON.stringify({ pid: lateWorker.pid, ppid: process.pid, nonce: capturedNonce })}\n`, { mode: 0o600 });
+            await inner.dispose();
+          },
+        };
+      };
+      const result = await confirmedWindow.runConfirmedWindowChoreography({
+        case: 'rescue-interrupt',
+        codexBinary: process.execPath,
+        sourceSha: 'a'.repeat(40),
+        output,
+        budgetMs: 720_000,
+        workerDurationMs: 420_000,
+        stagingPrompt: 'staging prompt with the control directive',
+        continuationPrompt: 'a CHANGED continuation prompt',
+        fixture: {
+          workspace: '/private/tmp/confirmed-window-offline-workspace',
+          codexHome: '/private/tmp/confirmed-window-offline-codex-home',
+          installedRoot: '/private/tmp/confirmed-window-offline-installed',
+          env: { CODEX_HOME: '/private/tmp/confirmed-window-offline-codex-home', HOME: '/private/tmp/confirmed-window-offline-home' },
+          record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
+          dispose: async () => {},
+        },
+      }, {
+        now: baseHost.clock.now,
+        wallClockNow: baseHost.clock.wallClockNow,
+        sleep: baseHost.clock.sleep,
+        launchConfirmedWindowHost: lateWorkerHostFactory,
+        observers: greenObservers(),
+      });
+      // The staging refusal path (no join, no delivery) still runs the full
+      // deterministic disposal.
+      assert.equal(result.finalState, 'staging-not-ready', `the staging refusal completed the disposal (actual ${JSON.stringify(result.finalState)})`);
+      assert.ok(lateWorker !== null, 'the late worker was launched during the host shutdown');
+      // The DECISIVE discriminator: the late worker was TERMINATED through
+      // the marker/nonce path before the gate directory was removed — never a
+      // surviving worker behind a reported-clean teardown.
+      assert.ok(lateWorker.exitCode !== null || lateWorker.signalCode !== null, `the late worker was terminated by the post-shutdown recheck (exit ${String(lateWorker.exitCode)} signal ${String(lateWorker.signalCode)})`);
+      assert.equal(result.hold.process.identityEstablished, true, `the post-shutdown recheck established the late worker's identity through the marker (actual ${JSON.stringify(result.hold.process)})`);
+      assert.equal(result.hold.process.verifiedProcessTerminated, true, `the late worker's termination is recorded (actual ${JSON.stringify(result.hold.process)})`);
+      assert.equal(result.hold.gateDirectoryRemoved, true, `the gate directory is removed AFTER the recheck (actual ${JSON.stringify(result.hold)})`);
+      assert.equal(result.hold.cleanupFailures.length, 0, `the terminated late worker adds no cleanup failure (actual ${JSON.stringify(result.hold.cleanupFailures)})`);
+      assert.equal(result.hold.cleanupComplete, true, `the teardown is CLEAN because the late worker was genuinely terminated — never a false clean verdict (actual ${JSON.stringify(result.hold)})`);
+      // The PRE-EXISTING worker contrast: a worker whose marker is present at
+      // the FIRST check is terminated there — the post-shutdown recheck then
+      // observes its confirmed absence ('process-exited') and the record
+      // RETAINS the genuine first-check termination verdict.
+      const preExistingTemporary = await mkdtemp(join(tmpdir(), 'confirmed-window-early-worker-'));
+      t.after(() => rm(preExistingTemporary, { recursive: true, force: true }));
+      const preExistingOutput = join(preExistingTemporary, 'output');
+      await mkdir(preExistingOutput, { mode: 0o700 });
+      let preExistingWorker = /** @type {any} */ (null);
+      t.after(() => { try { preExistingWorker?.kill('SIGKILL'); } catch { /* already exited */ } });
+      const preExistingHostFactory = async (launchContext) => {
+        const nonce = typeof launchContext.env?.FAKE_ZCODE_PROCESS_NONCE === 'string' ? launchContext.env.FAKE_ZCODE_PROCESS_NONCE : null;
+        const processFile = typeof launchContext.env?.FAKE_ZCODE_PROCESS_FILE === 'string' ? launchContext.env.FAKE_ZCODE_PROCESS_FILE : null;
+        // The worker launched BEFORE the run's teardown: its marker is present
+        // at the FIRST worker check, which terminates it.
+        preExistingWorker = spawn(process.execPath, ['--input-type=module', '--eval', 'await new Promise((resolve) => setTimeout(resolve, 30_000));'], {
+          env: { ...isolatedBaseEnv(), FAKE_ZCODE_PROCESS_NONCE: /** @type {string} */ (nonce) }, stdio: 'ignore',
+        });
+        await writeFile(/** @type {string} */ (processFile), `${JSON.stringify({ pid: preExistingWorker.pid, ppid: process.pid, nonce })}\n`, { mode: 0o600 });
+        const inner = await baseHost.factory(launchContext);
+        return { ...inner, dispose: async () => { await inner.dispose(); } };
+      };
+      const preExistingResult = await confirmedWindow.runConfirmedWindowChoreography({
+        case: 'rescue-interrupt',
+        codexBinary: process.execPath,
+        sourceSha: 'a'.repeat(40),
+        output: preExistingOutput,
+        budgetMs: 720_000,
+        workerDurationMs: 420_000,
+        stagingPrompt: 'staging prompt with the control directive',
+        continuationPrompt: 'a CHANGED continuation prompt',
+        fixture: {
+          workspace: '/private/tmp/confirmed-window-offline-workspace',
+          codexHome: '/private/tmp/confirmed-window-offline-codex-home',
+          installedRoot: '/private/tmp/confirmed-window-offline-installed',
+          env: { CODEX_HOME: '/private/tmp/confirmed-window-offline-codex-home', HOME: '/private/tmp/confirmed-window-offline-home' },
+          record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
+          dispose: async () => {},
+        },
+      }, {
+        now: baseHost.clock.now,
+        wallClockNow: baseHost.clock.wallClockNow,
+        sleep: baseHost.clock.sleep,
+        launchConfirmedWindowHost: preExistingHostFactory,
+        observers: greenObservers(),
+      });
+      assert.ok(preExistingWorker !== null, 'the pre-existing worker was launched before the teardown');
+      assert.ok(preExistingWorker.exitCode !== null || preExistingWorker.signalCode !== null, `the pre-existing worker was terminated at the FIRST check (exit ${String(preExistingWorker.exitCode)} signal ${String(preExistingWorker.signalCode)})`);
+      assert.equal(preExistingResult.hold.process.verifiedProcessTerminated, true, `the record RETAINS the genuine first-check termination verdict through the post-shutdown recheck (actual ${JSON.stringify(preExistingResult.hold.process)})`);
+      assert.equal(preExistingResult.hold.process.noWorkerBasis, 'process-exited', `the recheck's confirmed absence names the exited process (actual ${JSON.stringify(preExistingResult.hold.process)})`);
+      assert.equal(preExistingResult.hold.process.blockedWorkerSurvives, false, 'no worker survives the rechecked teardown');
+      assert.equal(preExistingResult.hold.cleanupFailures.length, 0, `a terminated-then-confirmed-absent worker adds no cleanup failure (actual ${JSON.stringify(preExistingResult.hold.cleanupFailures)})`);
+      assert.equal(preExistingResult.hold.cleanupComplete, true, `the pre-existing worker's teardown is cleanly rechecked (actual ${JSON.stringify(preExistingResult.hold)})`);
+    });
+
+    test('confirmed-window live composition: an UNANSWERED later-position poll is UNEXECUTED, not outstanding — the outstanding premise needs the preceding statements completed (P1-2, 2026-11-20 codex re-review)', async (t) => {
+      // The reviewer's exact offline reproduction: for a supported cell that
+      // awaits an exec_command before the registered write_stdin, the rollout
+      // records BOTH statements before the first await finishes — the
+      // scanner selected the later poll and credited its EMPTY response
+      // history as outstanding although that poll had not executed yet,
+      // consuming the single interruption attempt without a pending long
+      // observation. An unanswered non-first poll is credited only once the
+      // cell's own output shows the preceding statements completed; before
+      // that it is unexecuted, never outstanding.
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      const { fixture, temporary } = await createFastRealFixture(t, 'confirmed-window-unexecuted-later-poll-');
+      let current = 1_000;
+      const now = () => current;
+      const gateDirectory = join(temporary, 'unexecuted-later-poll-hold-gate');
+      await mkdir(gateDirectory, { recursive: true, mode: 0o700 });
+      const gatePath = join(gateDirectory, 'completion.gate');
+      const gateReachedPath = join(gateDirectory, 'completion.reached');
+      await writeFile(gatePath, 'hold', { mode: 0o600 });
+      await writeFile(gateReachedPath, '', { mode: 0o600 });
+      const recordPath = /** @type {string} */ (fixture.env.FAKE_ZCODE_RECORD);
+      await writeFile(recordPath, [
+        JSON.stringify({ id: 4, method: 'session/create', params: { workspace: { workspacePath: '/repo' } } }),
+        JSON.stringify({ id: 5, method: 'session/send', params: { sessionId: 'fake-session-1', content: 'the staged rescue objective' } }),
+      ].join('\n') + '\n', 'utf8');
+      await writeFile(gateReachedPath, 'blocked', { mode: 0o600 });
+      const completedOutput = (/** @type {any} */ result) => [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify(result) }];
+      const RENDERED_RESCUE_LAUNCHER_COMMAND = 'node "/installed-plugin/skills/rescue/launcher.mjs" invoke-prepared rescue';
+      const childEvents = [
+        { type: 'session_meta', payload: { id: 'child-session-1' } },
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'unexec-launch-1', input: `const r = await tools.exec_command(${JSON.stringify({ cmd: RENDERED_RESCUE_LAUNCHER_COMMAND })}); text(JSON.stringify(r))\n` } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'unexec-launch-1', output: completedOutput({ output: '', session_id: 500 }) } },
+        // The cell: statement 0 = an awaited exec_command, statement 1 = the
+        // registered long poll. NO output yet — both statements are merely
+        // recorded; the poll has not executed.
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'unexec-cell-1', input: `const r = await tools.exec_command(${JSON.stringify({ cmd: 'sleep 1' })}); text(JSON.stringify(r))\nconst r = await tools.write_stdin(${JSON.stringify({ session_id: 500, chars: '', yield_time_ms: 3_600_000 })}); text(JSON.stringify(r))\n` } },
+      ];
+      const composition = driverModule.createConfirmedWindowLiveComposition({
+        fixture, now, workerDurationMs: 420_000,
+        completionGatePath: gatePath, completionGateReachedPath: gateReachedPath,
+        childObservationThreadId: 'child-session-1',
+        loadRollouts: async () => [childEvents],
+      });
+      const before = await composition.observers.pendingObservation();
+      assert.equal(before.confirmed, false, `an unanswered later-position poll is UNEXECUTED, never outstanding (actual ${JSON.stringify(before)})`);
+      // The cell yields: the pending header carries the preceding statement's
+      // completed result — the execution reached the poll, and the
+      // outstanding premise now stands.
+      childEvents.push({ type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'unexec-cell-1', output: [
+        { type: 'input_text', text: 'Script running with cell ID cell-long-1\n' },
+        { type: 'input_text', text: JSON.stringify({ output: 'setup done', exit_code: 0 }) },
+      ] } });
+      const after = await composition.observers.pendingObservation();
+      assert.equal(after.confirmed, true, `once the preceding statements completed and the poll yielded, the outstanding premise stands (actual ${JSON.stringify(after)})`);
+      assert.equal(after.resolved, false, 'the yielded cell stays pending');
+    });
+
+    test('confirmed-window live composition: a linked wait resolution decodes at its OWN statement position — the first wait completing the observation RESOLVES it despite a later unrelated yield (P1-3, 2026-11-20 codex re-review)', async (t) => {
+      // The reviewer's exact offline reproduction: a cell first completes
+      // `wait` for the original observation and then yields on an UNRELATED
+      // `wait` — no poll position was registered for that continuation, so
+      // the fallback read the AGGREGATE pending result instead of the first
+      // wait's COMPLETED result: the linked-resolution scan left the
+      // original observation unresolved and could admit an interruption
+      // after its window had ended. Continuation statements now get their
+      // OWN position registration (exactly like write_stdin polls): the
+      // resolution reads the first wait's own completed result, never the
+      // aggregate of a later unrelated yield.
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      const { fixture, temporary } = await createFastRealFixture(t, 'confirmed-window-wait-own-position-');
+      let current = 1_000;
+      const now = () => current;
+      const gateDirectory = join(temporary, 'wait-own-position-hold-gate');
+      await mkdir(gateDirectory, { recursive: true, mode: 0o700 });
+      const gatePath = join(gateDirectory, 'completion.gate');
+      const gateReachedPath = join(gateDirectory, 'completion.reached');
+      await writeFile(gatePath, 'hold', { mode: 0o600 });
+      await writeFile(gateReachedPath, '', { mode: 0o600 });
+      const recordPath = /** @type {string} */ (fixture.env.FAKE_ZCODE_RECORD);
+      await writeFile(recordPath, [
+        JSON.stringify({ id: 4, method: 'session/create', params: { workspace: { workspacePath: '/repo' } } }),
+        JSON.stringify({ id: 5, method: 'session/send', params: { sessionId: 'fake-session-1', content: 'the staged rescue objective' } }),
+      ].join('\n') + '\n', 'utf8');
+      await writeFile(gateReachedPath, 'blocked', { mode: 0o600 });
+      const completedOutput = (/** @type {any} */ result) => [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify(result) }];
+      const RENDERED_RESCUE_LAUNCHER_COMMAND = 'node "/installed-plugin/skills/rescue/launcher.mjs" invoke-prepared rescue';
+      const childEvents = [
+        { type: 'session_meta', payload: { id: 'child-session-1' } },
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'own-wait-launch-1', input: `const r = await tools.exec_command(${JSON.stringify({ cmd: RENDERED_RESCUE_LAUNCHER_COMMAND })}); text(JSON.stringify(r))\n` } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'own-wait-launch-1', output: completedOutput({ output: '', session_id: 500 }) } },
+        // The registered poll yields its observation cell.
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'own-wait-poll-1', input: `const r = await tools.write_stdin(${JSON.stringify({ session_id: 500, chars: '', yield_time_ms: 3_600_000 })}); text(JSON.stringify(r))\n` } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'own-wait-poll-1', output: [{ type: 'input_text', text: 'Script running with cell ID cell-obs-1\n' }] } },
+        // The continuation cell: statement 0 = the wait completing the
+        // ORIGINAL observation, statement 1 = an unrelated wait that yields.
+        // The observed yielded-cell output shape: the pending header FIRST,
+        // then the first wait's completed result — statementOutputAt(
+        // output, 0, 2) reports the linked wait COMPLETED while the
+        // aggregate reads the later yield.
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'own-wait-cell-1', input: `text(await tools.wait(${JSON.stringify({ cell_id: 'cell-obs-1', yield_time_ms: 240_000 })}));\ntext(await tools.wait(${JSON.stringify({ cell_id: 'cell-other-1', yield_time_ms: 240_000 })}));\n` } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'own-wait-cell-1', output: [
+          { type: 'input_text', text: 'Script running with cell ID cell-other-1\n' },
+          { type: 'input_text', text: JSON.stringify({ output: 'the observation completed', exit_code: 0 }) },
+        ] } },
+      ];
+      const composition = driverModule.createConfirmedWindowLiveComposition({
+        fixture, now, workerDurationMs: 420_000,
+        completionGatePath: gatePath, completionGateReachedPath: gateReachedPath,
+        childObservationThreadId: 'child-session-1',
+        loadRollouts: async () => [childEvents],
+      });
+      const pending = await composition.observers.pendingObservation();
+      assert.equal(pending.confirmed, true, `the linked observation premises the scan (actual ${JSON.stringify(pending)})`);
+      assert.equal(pending.resolved, true, `the first wait's OWN completed result RESOLVES the observation — the later unrelated yield never masks it (actual ${JSON.stringify(pending)})`);
+      assert.equal(pending.resolvedAtMs, 1_000, 'resolvedAtMs is stamped at the resolving read');
+    });
+
+    test('confirmed-window live composition: linked wait continuations are tracked at EVERY statement position — an exec followed by wait(original) still resolves the observation (P1, 2026-11-20 codex re-review)', async (t) => {
+      // The reviewer's exact offline reproduction: the Child resolves its
+      // original pending cell using a supported multi-statement call
+      // containing an exec_command followed by wait({cell_id: original}) —
+      // the scanner attributed the call only to the FIRST statement, so the
+      // later wait never contributed resolution evidence and the scan stayed
+      // {started:true, returned:false} after the observation had completed —
+      // admitting the native interrupt OUTSIDE the required pending window.
+      // Linked waits are tracked at their OWN statement positions (the
+      // round-16 per-statement discipline extended): a wait-owned entry is
+      // classified and registered wherever the wait statement sits in the
+      // cell, with its own output decode.
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      const { fixture, temporary } = await createFastRealFixture(t, 'confirmed-window-wait-second-statement-');
+      let current = 1_000;
+      const now = () => current;
+      const gateDirectory = join(temporary, 'wait-second-statement-hold-gate');
+      await mkdir(gateDirectory, { recursive: true, mode: 0o700 });
+      const gatePath = join(gateDirectory, 'completion.gate');
+      const gateReachedPath = join(gateDirectory, 'completion.reached');
+      await writeFile(gatePath, 'hold', { mode: 0o600 });
+      await writeFile(gateReachedPath, '', { mode: 0o600 });
+      const recordPath = /** @type {string} */ (fixture.env.FAKE_ZCODE_RECORD);
+      await writeFile(recordPath, [
+        JSON.stringify({ id: 4, method: 'session/create', params: { workspace: { workspacePath: '/repo' } } }),
+        JSON.stringify({ id: 5, method: 'session/send', params: { sessionId: 'fake-session-1', content: 'the staged rescue objective' } }),
+      ].join('\n') + '\n', 'utf8');
+      await writeFile(gateReachedPath, 'blocked', { mode: 0o600 });
+      const completedOutput = (/** @type {any} */ result) => [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify(result) }];
+      const RENDERED_RESCUE_LAUNCHER_COMMAND = 'node "/installed-plugin/skills/rescue/launcher.mjs" invoke-prepared rescue';
+      const childEvents = [
+        { type: 'session_meta', payload: { id: 'child-session-1' } },
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'wait-second-launch-1', input: `const r = await tools.exec_command(${JSON.stringify({ cmd: RENDERED_RESCUE_LAUNCHER_COMMAND })}); text(JSON.stringify(r))\n` } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'wait-second-launch-1', output: completedOutput({ output: '', session_id: 500 }) } },
+        // The registered poll yields its observation cell.
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'wait-second-poll-1', input: `const r = await tools.write_stdin(${JSON.stringify({ session_id: 500, chars: '', yield_time_ms: 3_600_000 })}); text(JSON.stringify(r))\n` } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'wait-second-poll-1', output: [{ type: 'input_text', text: 'Script running with cell ID cell-obs-1\n' }] } },
+      ];
+      const composition = driverModule.createConfirmedWindowLiveComposition({
+        fixture, now, workerDurationMs: 420_000,
+        completionGatePath: gatePath, completionGateReachedPath: gateReachedPath,
+        childObservationThreadId: 'child-session-1',
+        loadRollouts: async () => [childEvents],
+      });
+      const first = await composition.observers.pendingObservation();
+      assert.equal(first.confirmed, true, 'the yielded observation is confirmed first');
+      assert.equal(first.resolved, false, 'the observation is still pending');
+      // The resolution cell: statement 0 = a completed exec_command,
+      // statement 1 = wait({cell_id: original}) completing the observation.
+      childEvents.push(
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'wait-second-cell-1', input: `const r = await tools.exec_command(${JSON.stringify({ cmd: 'sleep 1' })}); text(JSON.stringify(r))\ntext(await tools.wait(${JSON.stringify({ cell_id: 'cell-obs-1', yield_time_ms: 240_000 })}));\n` } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'wait-second-cell-1', output: [
+          { type: 'input_text', text: JSON.stringify({ output: 'setup done', exit_code: 0 }) },
+          { type: 'input_text', text: JSON.stringify({ output: 'the observation completed', exit_code: 0 }) },
+        ] } },
+      );
+      current = 2_000;
+      const second = await composition.observers.pendingObservation();
+      assert.equal(second.confirmed, true, `the linked observation premises the scan (actual ${JSON.stringify(second)})`);
+      assert.equal(second.resolved, true, `the linked wait at the SECOND statement position RESOLVES the observation — it is never left pending outside the window (actual ${JSON.stringify(second)})`);
+      assert.equal(second.resolvedAtMs, 2_000, 'resolvedAtMs is stamped at the resolving read');
+    });
+
+    test('confirmed-window hold producer: the sibling-gate collision message carries NO private path — the output directory outside the fixture tree never rides the typed refusal (P2, 2026-11-20 codex re-review)', async () => {
+      // The reviewer's exact read-only reproduction: when the sibling
+      // hold-gate directory already exists and the output directory is
+      // OUTSIDE the fixture tree, the typed exception included its private
+      // absolute path — the choreography's redactPrivatePaths covers only
+      // FIXTURE paths, so the path survived in block.refusal.reason. The
+      // collision message now OMITS the directory (the EEXIST
+      // classification is kept): the persisted refusal states the collision
+      // without any private path.
+      const confirmedWindow = await import('../tools/shell-wait-probe/confirmed-window.mjs');
+      const privateOutput = join(tmpdir(), `confirmed-window-private-output-${String(Date.now())}`);
+      await mkdir(privateOutput, { recursive: true, mode: 0o700 });
+      const foreignDirectory = `${privateOutput}.hold-gate`;
+      await mkdir(foreignDirectory, { mode: 0o700 });
+      let current = 1_000;
+      const now = () => current;
+      let caught = /** @type {any} */ (null);
+      try {
+        await confirmedWindow.createConfirmedWindowHoldGate(privateOutput, now);
+      } catch (error) {
+        caught = error;
+      }
+      assert.ok(caught instanceof Error, 'the collision throws (typed, never a returned refusal)');
+      assert.match(String(caught.message), /already exists; refusing to delete/u, `the message states the collision and the refusal (actual ${JSON.stringify(caught.message)})`);
+      assert.equal(String(caught.message).includes(privateOutput), false, `the message carries NO private absolute output path (actual ${JSON.stringify(caught.message)})`);
+      assert.equal(String(caught.message).includes(foreignDirectory), false, `the message carries NO private absolute gate path (actual ${JSON.stringify(caught.message)})`);
+      // Cleanup: the private paths never outlive the row.
+      await rm(foreignDirectory, { recursive: true, force: true });
+      await rm(privateOutput, { recursive: true, force: true });
+    });
+
+    test('confirmed-window hold producer: EVERY gate-creation failure maps to a path-free diagnostic — an ENAMETOOLONG on the sibling gate never carries the private path (P2-5, round-18)', async () => {
+      // The round-17 fix mapped EEXIST to a path-free message; a writable
+      // output directory whose sibling gate creation fails with ANY other
+      // code (ENAMETOOLONG from the name + the suffix, EACCES, EPERM)
+      // still rethrew the ORIGINAL error with the full private absolute
+      // path — a path outside the fixture tree that redactPrivatePaths
+      // never scrubs. Every creation failure now maps to a path-free
+      // diagnostic that keeps the refusing error CODE for diagnosis and
+      // drops the path. The long-name construction forces a non-EEXIST
+      // creation failure deterministically: the sibling name exceeds the
+      // filesystem's per-name bound.
+      const confirmedWindow = await import('../tools/shell-wait-probe/confirmed-window.mjs');
+      const privateOutput = join(tmpdir(), `confirmed-window-gate-toolong-${String(Date.now())}-${'x'.repeat(206)}`);
+      await mkdir(privateOutput, { recursive: true, mode: 0o700 });
+      let current = 1_000;
+      const now = () => current;
+      let caught = /** @type {any} */ (null);
+      try {
+        await confirmedWindow.createConfirmedWindowHoldGate(privateOutput, now);
+      } catch (error) {
+        caught = error;
+      }
+      assert.ok(caught instanceof Error, 'the creation failure throws (typed, never a returned refusal)');
+      assert.match(String(caught.message), /could not be created/u, `the message states the creation refusal (actual ${JSON.stringify(caught.message)})`);
+      assert.match(String(caught.message), /ENAMETOOLONG/u, 'the refusing error CODE is kept for diagnosis');
+      assert.equal(String(caught.message).includes(privateOutput), false, `the message carries NO private absolute path (actual ${JSON.stringify(caught.message)})`);
+      // Cleanup: the private directory never outlives the row.
+      await rm(privateOutput, { recursive: true, force: true });
+    });
+
+    test('confirmed-window live composition: EVERY linked wait is tracked by its own position — wait(other) completing before wait(original) still RESOLVES at the original wait (P1-3, round-18)', async (t) => {
+      // The reviewer's exact offline reproduction: in a supported cell where
+      // `wait(other)` completes before `wait(original)` also completes, the
+      // scan selected the FIRST wait with any string cell_id and ignored the
+      // second result — {confirmed:true, resolved:false} even though the
+      // original observation's resolution had arrived, authorizing an
+      // interrupt after the required pending interval had ended. EACH wait
+      // is now tracked by its own statement position and matched to the
+      // ORIGINAL cell: wait({cell_id}) resolves the observation only when
+      // its cell_id IS the original observation's cell; other cells' waits
+      // never mask the original's resolution.
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      const { fixture, temporary } = await createFastRealFixture(t, 'confirmed-window-multi-wait-');
+      let current = 1_000;
+      const now = () => current;
+      const gateDirectory = join(temporary, 'multi-wait-hold-gate');
+      await mkdir(gateDirectory, { recursive: true, mode: 0o700 });
+      const gatePath = join(gateDirectory, 'completion.gate');
+      const gateReachedPath = join(gateDirectory, 'completion.reached');
+      await writeFile(gatePath, 'hold', { mode: 0o600 });
+      await writeFile(gateReachedPath, '', { mode: 0o600 });
+      const recordPath = /** @type {string} */ (fixture.env.FAKE_ZCODE_RECORD);
+      await writeFile(recordPath, [
+        JSON.stringify({ id: 4, method: 'session/create', params: { workspace: { workspacePath: '/repo' } } }),
+        JSON.stringify({ id: 5, method: 'session/send', params: { sessionId: 'fake-session-1', content: 'the staged rescue objective' } }),
+      ].join('\n') + '\n', 'utf8');
+      await writeFile(gateReachedPath, 'blocked', { mode: 0o600 });
+      const completedOutput = (/** @type {any} */ result) => [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify(result) }];
+      const RENDERED_RESCUE_LAUNCHER_COMMAND = 'node "/installed-plugin/skills/rescue/launcher.mjs" invoke-prepared rescue';
+      const childEvents = [
+        { type: 'session_meta', payload: { id: 'child-session-1' } },
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'multi-wait-launch-1', input: `const r = await tools.exec_command(${JSON.stringify({ cmd: RENDERED_RESCUE_LAUNCHER_COMMAND })}); text(JSON.stringify(r))\n` } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'multi-wait-launch-1', output: completedOutput({ output: '', session_id: 500 }) } },
+        // The registered poll yields its observation cell.
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'multi-wait-poll-1', input: `const r = await tools.write_stdin(${JSON.stringify({ session_id: 500, chars: '', yield_time_ms: 3_600_000 })}); text(JSON.stringify(r))\n` } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'multi-wait-poll-1', output: [{ type: 'input_text', text: 'Script running with cell ID cell-obs-1\n' }] } },
+        // The resolution cell: statement 0 = wait(OTHER) completing,
+        // statement 1 = wait(ORIGINAL) completing — the original's own
+        // result arrives LAST.
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'multi-wait-cell-1', input: `text(await tools.wait(${JSON.stringify({ cell_id: 'cell-other-1', yield_time_ms: 240_000 })}));\ntext(await tools.wait(${JSON.stringify({ cell_id: 'cell-obs-1', yield_time_ms: 240_000 })}));\n` } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'multi-wait-cell-1', output: [
+          { type: 'input_text', text: JSON.stringify({ output: 'the other cell completed', exit_code: 0 }) },
+          { type: 'input_text', text: JSON.stringify({ output: 'the original observation completed', exit_code: 0 }) },
+        ] } },
+      ];
+      const composition = driverModule.createConfirmedWindowLiveComposition({
+        fixture, now, workerDurationMs: 420_000,
+        completionGatePath: gatePath, completionGateReachedPath: gateReachedPath,
+        childObservationThreadId: 'child-session-1',
+        loadRollouts: async () => [childEvents],
+      });
+      const pending = await composition.observers.pendingObservation();
+      assert.equal(pending.confirmed, true, `the linked observation premises the scan (actual ${JSON.stringify(pending)})`);
+      assert.equal(pending.resolved, true, `the ORIGINAL wait's own completed result RESOLVES the observation even when an unrelated wait completed first (actual ${JSON.stringify(pending)})`);
+    });
+
+    test('confirmed-window live composition: a VERIFIED terminal-winner snapshot read leaves the cleanup fence UNPROVEN — a snapshot read is not a cleanup action (P2-1, round-18)', async (t) => {
+      // The reviewer's exact offline reproduction: the collector set
+      // cleanupFenceAtMs to the time it finished reading the FIRST terminal
+      // job snapshot. If cleanup/reconciliation already caused the
+      // observation to return before that read finished, replay mistakes the
+      // resulting resolution for pre-cleanup evidence — and a natural
+      // terminal winner is not itself a cleanup action either. The fence is
+      // recorded only from an actual cleanup cause; a snapshot read leaves
+      // it UNPROVEN (null).
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      const { fixture } = await createFastRealFixture(t, 'confirmed-window-fence-unproven-');
+      let current = 1_000;
+      const now = () => current;
+      const composition = driverModule.createConfirmedWindowLiveComposition({
+        fixture,
+        now,
+        workerDurationMs: 420_000,
+        ownerSessionId: 'owner-session-1',
+        caseDeadlineAtMs: () => 1_200_000,
+        readDurableSnapshot: async () => ({
+          aggregate: 'settled',
+          executorLinkage: 'verified',
+          job: { presence: 'found' },
+          layers: {
+            winner: { state: 'terminal' },
+            runnerCleanupDuty: { applicable: false, outstanding: null, reason: 'not-applicable: the record carries no marked runner claim' },
+            writableGuard: { applicable: false, retained: false, reason: 'not-applicable' },
+          },
+          passive: { snapshotEqual: true },
+        }),
+      });
+      const duty = await composition.observers.dutyFacts();
+      assert.equal(duty.durableSettled, true, 'the linked settled aggregate settles the durable layer');
+      assert.equal(duty.cleanupFenceAtMs, null, `a terminal-winner snapshot read is NOT a cleanup cause — the fence stays unproven (actual ${JSON.stringify(duty.cleanupFenceAtMs)})`);
+    });
+
+    test('confirmed-window live composition: the executor linkage is required before crediting durable duties — a linkage-less found/settled job stays unnamed (P2-2, round-18)', async (t) => {
+      // The reviewer's exact offline reproduction: when the expected
+      // executor has not been resolved, dutyFacts() omits it from the
+      // owner-index lookup; the snapshot reader then reports executor
+      // verification as not applicable and can still return a found/settled
+      // job — the collector credited that job without checking
+      // executorLinkage, so a DIFFERENT job under the same Root could
+      // satisfy the interrupted Child's durable duties. Verified linkage to
+      // the joined Child is now required before the owned settlement duties
+      // are credited: no linkage established → the job slot stays unnamed.
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      const { fixture } = await createFastRealFixture(t, 'confirmed-window-linkage-required-');
+      let current = 1_000;
+      const now = () => current;
+      const composition = driverModule.createConfirmedWindowLiveComposition({
+        fixture,
+        now,
+        workerDurationMs: 420_000,
+        ownerSessionId: 'owner-session-1',
+        caseDeadlineAtMs: () => 1_200_000,
+        readDurableSnapshot: async () => ({
+          aggregate: 'settled',
+          job: { presence: 'found' },
+          layers: {
+            winner: { state: 'terminal' },
+            runnerCleanupDuty: { applicable: false, outstanding: null, reason: 'not-applicable: the record carries no marked runner claim' },
+            writableGuard: { applicable: false, retained: false, reason: 'not-applicable' },
+          },
+          passive: { snapshotEqual: true },
+        }),
+      });
+      const duty = await composition.observers.dutyFacts();
+      assert.equal(duty.duties.includes('job'), false, `a linkage-less job slot stays UNNAMED — never credited (actual ${JSON.stringify(duty.duties)})`);
+      assert.equal(duty.durableSettled, false, `a linkage-less aggregate never settles the durable layer (actual ${JSON.stringify(duty)})`);
+      assert.match(String(duty.reason ?? ''), /executor linkage/u, 'the reason names the unverified executor linkage');
+    });
+
+    test('confirmed-window live entry: runShellWaitCase wires the LIVE instrumentation from the route\'s own provider chain — the real fixture dispatches the confirmed-window route and absent premises refuse by name (P1-1, round-18)', async (t) => {
+      // The reviewer's exact finding: the CLI calls runShellWaitCase(parsed)
+      // without dependencies and the preflight rejected that call because
+      // the observer and duty-adjudication dependencies were absent —
+      // createConfirmedWindowLiveComposition() had no caller outside tests.
+      // The route now WIRES the composition from its own provider chain: the
+      // fixture handle's real paths, the deterministic ${output}.hold-gate
+      // locations, the marker/nonce env, and the LATE-BOUND observed Child
+      // premise (resolved at read time from the observed record + rollout
+      // bindings). The preflight no longer rejects the composed
+      // instrumentation; premises that cannot bind still refuse BY NAME.
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      const { fixture: wiredFixture, output: wiredOutput } = await createFastRealFixture(t, 'confirmed-window-live-entry-');
+      // The observed ROOT session's record frames.
+      const recordPath = /** @type {string} */ (wiredFixture.env.FAKE_ZCODE_RECORD);
+      await writeFile(recordPath, [
+        JSON.stringify({ id: 4, method: 'session/create', params: { workspace: { workspacePath: '/repo' } } }),
+        JSON.stringify({ id: 5, method: 'session/send', params: { sessionId: 'fake-session-1', content: 'the staged rescue objective' } }),
+      ].join('\n') + '\n', 'utf8');
+      // The joined Child rollout: the parent binding names the observed ROOT
+      // session — the late-bound premise resolves from exactly this.
+      const rolloutDirectory = join(wiredFixture.codexHome, 'sessions', '2026', '11', '17');
+      await mkdir(rolloutDirectory, { recursive: true, mode: 0o700 });
+      const completedOutput = (/** @type {any} */ result) => [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify(result) }];
+      const RENDERED_RESCUE_LAUNCHER_COMMAND = 'node "/installed-plugin/skills/rescue/launcher.mjs" invoke-prepared rescue';
+      const childRolloutPath = join(rolloutDirectory, 'rollout-live-entry-child.jsonl');
+      const childEvents = [
+        { type: 'session_meta', payload: { id: 'child-live-entry-1', parent_thread_id: 'fake-session-1' } },
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'live-entry-launch-1', input: `const r = await tools.exec_command(${JSON.stringify({ cmd: RENDERED_RESCUE_LAUNCHER_COMMAND })}); text(JSON.stringify(r))\n` } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'live-entry-launch-1', output: completedOutput({ output: '', session_id: 500 }) } },
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'live-entry-poll-1', input: `const r = await tools.write_stdin(${JSON.stringify({ session_id: 500, chars: '', yield_time_ms: 3_600_000 })}); text(JSON.stringify(r))\n` } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'live-entry-poll-1', output: [{ type: 'input_text', text: 'Script running with cell ID cell-entry-1\n' }] } },
+      ];
+      await writeFile(childRolloutPath, childEvents.map((event) => JSON.stringify(event)).join('\n') + '\n', { mode: 0o600 });
+      // The fake host stands in for the real launcher (offline determinism);
+      // at host launch the gate exists, so the wrapper performs the fake
+      // CLI's scheduling act: the completion-blocked sentinel flips.
+      // The factory derives the sentinel path from EACH case's own output
+      // directory (per-scenario factories below).
+      const hostFactoryFor = (/** @type {string} */ outputDirectory) => async () => {
+        const gateReachedPath = `${outputDirectory}.hold-gate/completion.reached`;
+        await writeFile(gateReachedPath, 'blocked', { mode: 0o600 });
+        return fakeConfirmedWindowHost({
+          replies: parentSessionReplies(),
+          notifications: [
+            ...identityJoinNotifications({ atMs: 100 }),
+            // The Child terminal sits FAR out on the fake host's virtual
+            // timeline: the wired run's named refusal is the duties premise,
+            // never a queued terminal veto.
+            { atMs: 3_600_000, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+          ],
+        });
+      };
+      const previousE2E = process.env.ZCODE_SHELL_WAIT_E2E;
+      process.env.ZCODE_SHELL_WAIT_E2E = '1';
+      let record = /** @type {any} */ (null);
+      try {
+        record = await driverModule.runShellWaitCase({
+          case: 'rescue-interrupt',
+          codexBinary: process.execPath,
+          sourceSha: 'a'.repeat(40),
+          output: wiredOutput,
+          workerDurationMs: 420_000,
+          budgetMs: 720_000,
+          capMs: null,
+          pollMs: 3_600_000,
+          waitPolicy: 'config-default',
+          execDefaultMs: 3_600_000,
+          interruptRouteSelector: 'confirmed-window',
+        }, {
+          confirmedWindowHost: hostFactoryFor(wiredOutput),
+          createFixture: async () => wiredFixture,
+        });
+      } finally {
+        if (previousE2E === undefined) delete process.env.ZCODE_SHELL_WAIT_E2E;
+        else process.env.ZCODE_SHELL_WAIT_E2E = previousE2E;
+      }
+      // The dispatch ran the COMPOSED collectors end to end: the pending
+      // premise bound (the late-bound derivation), the gate sentinel was
+      // consumed, and the offline-unbindable duties premise refused BY NAME
+      // (never the not-armed preflight rejection).
+      assert.notEqual(record, null, `the case dispatched through the wired live composition (no preflight rejection thrown)`);
+      assert.equal(record.confirmedWindow.block.finalState, 'staging-not-ready', `the case completes with the named staging refusal (actual ${JSON.stringify(record.confirmedWindow?.block?.finalState)})`);
+      assert.match(String(record.confirmedWindow.block.refusal?.reason ?? ''), /applicable duties were never observable|positive barrier was never evaluated|staging readiness bound expired/u, `the duties premise (or the bound-premise barrier) refuses BY NAME — never the not-armed preflight rejection (actual ${JSON.stringify(record.confirmedWindow?.block?.refusal)})`);
+      // The unbound premise still refuses by name: WITHOUT the joined Child
+      // rollout the pending premise names the binding refusal.
+      const { fixture: bareFixture, output: bareOutput } = await createFastRealFixture(t, 'confirmed-window-live-entry-bare-');
+      await writeFile(/** @type {string} */ (bareFixture.env.FAKE_ZCODE_RECORD), [
+        JSON.stringify({ id: 4, method: 'session/create', params: { workspace: { workspacePath: '/repo' } } }),
+        JSON.stringify({ id: 5, method: 'session/send', params: { sessionId: 'fake-session-1', content: 'the staged rescue objective' } }),
+      ].join('\n') + '\n', 'utf8');
+      process.env.ZCODE_SHELL_WAIT_E2E = '1';
+      let bareRecord = /** @type {any} */ (null);
+      try {
+        bareRecord = await driverModule.runShellWaitCase({
+          case: 'rescue-interrupt',
+          codexBinary: process.execPath,
+          sourceSha: 'a'.repeat(40),
+          output: bareOutput,
+          workerDurationMs: 420_000,
+          budgetMs: 720_000,
+          capMs: null,
+          pollMs: 3_600_000,
+          waitPolicy: 'config-default',
+          execDefaultMs: 3_600_000,
+          interruptRouteSelector: 'confirmed-window',
+        }, {
+          confirmedWindowHost: hostFactoryFor(bareOutput),
+          createFixture: async () => bareFixture,
+        });
+      } finally {
+        if (previousE2E === undefined) delete process.env.ZCODE_SHELL_WAIT_E2E;
+        else process.env.ZCODE_SHELL_WAIT_E2E = previousE2E;
+      }
+      assert.equal(bareRecord.confirmedWindow.block.finalState, 'staging-not-ready', `the unbound case completes with the named staging refusal (actual ${JSON.stringify(bareRecord.confirmedWindow?.block?.finalState)})`);
+      assert.match(String(bareRecord.confirmedWindow.block.refusal?.reason ?? ''), /joined Child session identity is not bound|staging readiness bound expired|positive barrier was never evaluated/u, `the unbound observed-Child premise refuses BY NAME (the honest offline staging outcome — never the not-armed preflight rejection; actual ${JSON.stringify(bareRecord.confirmedWindow?.block?.refusal)})`);
+    });
+
+    test('confirmed-window admission: the hold-sentinel read never sits between the final checks and the send — a completion arriving during the read VETOES the delivery (P1-2, round-18)', async (t) => {
+      // The reviewer's exact offline probe: with a real hold gate, the
+      // diagnostic sentinel read yielded after the last deadline check and
+      // notification drain — a Child completion could queue (or the staging
+      // deadline or control freshness expire) while that read was pending,
+      // and the controller still sent its only interrupt. The read now runs
+      // BEFORE the final revalidation: the checks that follow it see the
+      // queued completion and veto the delivery, so the positive barrier
+      // holds AT delivery.
+      const confirmedWindow = await import('../tools/shell-wait-probe/confirmed-window.mjs');
+      const { existsSync } = await import('node:fs');
+      const temporary = await mkdtemp(join(tmpdir(), 'confirmed-window-sentinel-read-'));
+      t.after(() => rm(temporary, { recursive: true, force: true }));
+      const output = join(temporary, 'output');
+      await mkdir(output, { mode: 0o700 });
+      const startMs = Date.now();
+      const gateDirectory = `${output}.hold-gate`;
+      const gateReachedPath = join(gateDirectory, 'completion.reached');
+      // The REAL-TIME host: notifications carry absolute due instants on the
+      // same clock the choreography reads.
+      const queue = [
+        { dueAtMs: startMs + 10, method: 'thread/started', params: { threadId: PARENT_THREAD } },
+        { dueAtMs: startMs + 20, method: 'thread/notification', params: { type: 'SubAgentActivity', threadId: PARENT_THREAD, item: { type: 'SubAgentActivity', id: 'activity-1', kind: 'started', agentThreadId: CHILD_THREAD, model: 'gpt-5.1', reasoningEffort: 'high' } } },
+        { dueAtMs: startMs + 30, method: 'thread/notification', params: { type: 'turn/started', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'inProgress', items: [] } } },
+        // The Child completion: queued, and DUE while the sentinel read is
+        // pending (the appended sentinel keeps the read busy past +40).
+        { dueAtMs: startMs + 40, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+      ];
+      const requestLog = [];
+      const host = {
+        identity: { pid: process.pid, argvDigest: 'd'.repeat(64), startedAtMs: startMs, launchCount: 1 },
+        connection: {
+          request: async (method, params) => {
+            requestLog.push({ method, params, sentAtMs: Date.now(), repliedAtMs: Date.now() });
+            const replies = {
+              initialize: { userAgent: 'codex-cli/0.163.0' },
+              'thread/start': { thread: { id: PARENT_THREAD } },
+              'turn/start': (p) => ({ thread: { id: p?.threadId ?? PARENT_THREAD }, turn: { id: p?.turnId ?? 'root-turn-1', status: 'inProgress' } }),
+              'turn/interrupt': {},
+            };
+            const reply = replies[method];
+            return { result: typeof reply === 'function' ? reply(params) : reply, sentAtMs: Date.now(), repliedAtMs: Date.now() };
+          },
+          nextNotification: (deadlineAtMs) => new Promise((resolve) => {
+            const head = queue[0];
+            const dueIn = head ? head.dueAtMs - Date.now() : 0;
+            const deadlineIn = deadlineAtMs - Date.now();
+            const waitMs = Math.max(0, Math.min(dueIn, deadlineIn, 200));
+            setTimeout(() => {
+              const next = queue[0];
+              if (next && next.dueAtMs <= Date.now()) {
+                queue.shift();
+                resolve({ method: next.method, params: next.params, receivedAtMs: Date.now() });
+                return;
+              }
+              resolve(null);
+            }, waitMs);
+          }),
+          close: async () => {},
+          closed: () => true,
+        },
+        dispose: async () => {},
+      };
+      // The sentinel bloat: as soon as the gate directory appears, the
+      // completion.reached file grows continuously — the choreography's
+      // sentinel read chases it and stays pending well past the queued
+      // completion's due instant.
+      const bloat = (async () => {
+        try {
+          while (Date.now() - startMs < 2500 && !existsSync(gateDirectory)) {
+            await new Promise((resolve) => setTimeout(resolve, 2));
+          }
+          for (let index = 0; index < 120 && Date.now() - startMs < 2500; index++) {
+            await appendFile(gateReachedPath, 'x'.repeat(16 * 1024 * 1024));
+            await new Promise((resolve) => setImmediate(resolve));
+          }
+        } catch { /* the choreography's finalize removed the gate directory */ }
+      })();
+      const observedAt = Date.now();
+      const observers = {
+        pendingObservation: async () => ({
+          confirmed: true, observedAtMs: observedAt, resolved: false, resolvedAtMs: null,
+          holdDeadlineAtMs: observedAt + 5_000, clockDomain: 'controller-monotonic', reason: null,
+        }),
+        ancestryBaseline: async () => ({ established: true, digest: 'a'.repeat(64), hops: { launcherToBroker: true, brokerToTransport: true }, clockDomain: 'controller-monotonic', reason: null }),
+        dutyFacts: async () => ({ observable: true, duties: ['invocation', 'broker', 'transport', 'runner', 'job', 'guard', 'integrity'], clockDomain: 'controller-monotonic', reason: null }),
+        controlFacts: async () => {
+          const current = Date.now();
+          return { active: true, freshAtMs: current, declaredLifetimeMs: 120_000, emittedAtControllerMs: current, clockDomain: 'controller-monotonic', reason: null };
+        },
+      };
+      const result = await confirmedWindow.runConfirmedWindowChoreography({
+        case: 'rescue-interrupt',
+        codexBinary: process.execPath,
+        sourceSha: 'a'.repeat(40),
+        output,
+        budgetMs: 60_000,
+        workerDurationMs: 5_000,
+        stagingPrompt: 'staging prompt with the control directive',
+        continuationPrompt: 'a CHANGED continuation prompt',
+        fixture: {
+          workspace: join(temporary, 'workspace'),
+          codexHome: join(temporary, 'codex-home'),
+          installedRoot: join(temporary, 'installed'),
+          env: { CODEX_HOME: join(temporary, 'codex-home'), HOME: join(temporary, 'home') },
+          record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
+          dispose: async () => {},
+        },
+      }, {
+        now: () => Date.now(),
+        wallClockNow: () => Date.now(),
+        sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+        launchConfirmedWindowHost: async () => host,
+        observers,
+        dutyAdjudication: greenDuties(),
+      });
+      await bloat;
+      const interruptSent = requestLog.some((entry) => entry.method === 'turn/interrupt');
+      assert.equal(interruptSent, false, `the completion that arrived during the sentinel read VETOES the delivery — the single interrupt is never sent outside the pending window (actual ${JSON.stringify(requestLog.map((entry) => entry.method))})`);
+      assert.match(String(result.refusal?.reason ?? ''), /pre-admission drain veto|terminal before the pending window/u, `the refusal names the terminal-before-window veto (actual ${JSON.stringify(result.refusal)})`);
+    });
+
+    test('confirmed-window disposal: the persisted block carries the VERIFIED teardown outcomes and the route cleanup verdict — never the pre-cleanup nulls (P2-3, round-18)', async () => {
+      // The reviewer's exact offline reproduction: `projected` was built
+      // BEFORE either cleanup call and returned unchanged as `block` — the
+      // persisted connectionClosed, hostDisposed and teardownLabel stayed
+      // null even when cleanup succeeded (or failed), and the route left
+      // held.cleanupComplete unset so the CLI's exit check could not detect
+      // a route cleanup failure. The measurement evidence is frozen before
+      // cleanup and the VERIFIED teardown outcomes are attached separately;
+      // the route's cleanupComplete reflects them.
+      const confirmedWindow = await import('../tools/shell-wait-probe/confirmed-window.mjs');
+      const host = fakeConfirmedWindowHost({
+        replies: parentSessionReplies(),
+        notifications: [
+          ...identityJoinNotifications({ atMs: 100 }),
+          { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+        ],
+      });
+      const result = await confirmedWindow.runConfirmedWindowChoreography({
+        case: 'rescue-interrupt',
+        codexBinary: process.execPath,
+        sourceSha: 'a'.repeat(40),
+        output: '/private/tmp/confirmed-window-offline-output',
+        budgetMs: 720_000,
+        workerDurationMs: 420_000,
+        stagingPrompt: 'staging prompt with the control directive',
+        continuationPrompt: 'a CHANGED continuation prompt',
+        fixture: {
+          workspace: '/private/tmp/confirmed-window-offline-workspace',
+          codexHome: '/private/tmp/confirmed-window-offline-codex-home',
+          installedRoot: '/private/tmp/confirmed-window-offline-installed',
+          env: { CODEX_HOME: '/private/tmp/confirmed-window-offline-codex-home', HOME: '/private/tmp/confirmed-window-offline-home' },
+          record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
+          dispose: async () => {},
+        },
+      }, {
+        now: host.clock.now,
+        wallClockNow: host.clock.wallClockNow,
+        sleep: host.clock.sleep,
+        launchConfirmedWindowHost: host.factory,
+        observers: greenObservers(),
+        dutyAdjudication: greenDuties(),
+      });
+      assert.equal(result.block.disposal.connectionClosed, true, `the persisted block carries the VERIFIED connection close outcome (actual ${JSON.stringify(result.block.disposal)})`);
+      assert.equal(result.block.disposal.hostDisposed, true, `the persisted block carries the VERIFIED host disposal outcome (actual ${JSON.stringify(result.block.disposal)})`);
+      assert.equal(result.block.disposal.teardownLabel, 'planned-observation-teardown', 'the persisted block carries the teardown label');
+      assert.equal(result.hold.cleanupComplete, true, `the route's cleanupComplete reflects the verified outcomes (actual ${JSON.stringify(result.hold)})`);
+    });
+
+    test('confirmed-window native evidence replay: a REFUSED delivery has no native responsiveness credit — the raw bounds stay diagnostic-only (P2-4, round-18)', async () => {
+      // The reviewer's exact read-only reproduction: a rejected RPC with
+      // valid send/reply timestamps produced delivery.status 'refused'
+      // alongside positive nativeLatencyMs and
+      // nativeResponseWithinBound: true — a fast rejection reported as
+      // native responsiveness. The native responsiveness comparison is now
+      // emitted only after causal admission; the raw transport bounds stay
+      // in the diagnosis blocks for interpretation.
+      const evidence = await import('../tools/shell-wait-probe/native-control-evidence.mjs');
+      const block = persistedBlock(evidence, greenRuntimeSession({ nativeRequest: { sentAtMs: 210, repliedAtMs: 212, threadId: 'another-child-thread', turnId: CHILD_TURN, outcome: 'sent', attemptCount: 1 } }));
+      const verdict = evidence.admitConfirmedWindowNativeEvidence(block, greenDuties());
+      assert.equal(verdict.delivery.status, 'refused', `the delivery is refused (actual ${JSON.stringify(verdict.delivery)})`);
+      assert.equal(verdict.nativeLatencyMs, null, `a refused delivery has NO native latency credit (actual ${JSON.stringify(verdict.nativeLatencyMs)})`);
+      assert.equal(verdict.nativeResponseWithinBound, null, `a refused delivery has NO responsiveness bound credit (actual ${JSON.stringify(verdict.nativeResponseWithinBound)})`);
+    });
+
+    test('confirmed-window native evidence replay: FUTURE-DATED control evidence refuses settlement — a freshAtMs AFTER the send is never initiation evidence (P2-3, round-19)', async () => {
+      // The reviewer's exact offline shape: the replay check rejected only
+      // control samples that were too OLD — `sentAtMs - controlFreshAtMs`
+      // negative passed the age check, so a record with the send at 100 ms
+      // and the control freshness at 500 ms replayed as fully settled,
+      // unlike the live admission check. The control evidence must now
+      // precede or coincide with initiation before giving settlement
+      // credit.
+      const evidence = await import('../tools/shell-wait-probe/native-control-evidence.mjs');
+      const futureControl = persistedBlock(evidence, greenRuntimeSession({
+        nativeRequest: { sentAtMs: 150, repliedAtMs: 152, threadId: CHILD_THREAD, turnId: CHILD_TURN, outcome: 'sent', attemptCount: 1, responseWithinBound: true },
+        window: { ...greenRuntimeSession().window, controlActiveAtMs: 90, controlFreshAtMs: 500, controlDeclaredLifetimeMs: 120_000 },
+      }));
+      const verdict = evidence.admitConfirmedWindowNativeEvidence(futureControl, greenDuties());
+      assert.equal(verdict.settlement.settled, false, `a future-dated control sample never settles (actual ${JSON.stringify(verdict.settlement)})`);
+      assert.ok(verdict.settlement.reasons.includes('control-evidence-postdates-initiation'), `the refusal names the postdating control evidence (actual ${JSON.stringify(verdict.settlement.reasons)})`);
+      // The affirmative control still settles (the send at 100, the control
+      // fresh at 90 — precedes initiation, fresh within the cadence).
+      const affirmative = persistedBlock(evidence, greenRuntimeSession());
+      const affirmativeVerdict = evidence.admitConfirmedWindowNativeEvidence(affirmative, greenDuties());
+      assert.equal(affirmativeVerdict.settlement.settled, true, `the pre-initiation control record still settles (actual ${JSON.stringify(affirmativeVerdict.settlement)})`);
+    });
+
+    test('confirmed-window native evidence replay: POSITIVE pre-send window evidence is part of CAUSAL ADMISSION — a record without the confirmed pending window has no responsiveness credit (P2-4, round-19)', async () => {
+      // The reviewer's exact offline shape: replay computed delivery
+      // admission BEFORE checking the pending observation's confirmation —
+      // a record with valid send/reply stamps and interval endpoints but NO
+      // pending-observation confirmation still reported
+      // delivery.status 'admitted' with nativeResponseWithinBound true.
+      // Positive window evidence now joins causal admission.
+      const evidence = await import('../tools/shell-wait-probe/native-control-evidence.mjs');
+      const greenWindow = greenRuntimeSession().window;
+      const windowWithoutPendingConfirmation = { ...greenWindow };
+      delete windowWithoutPendingConfirmation.pendingObservationConfirmedAtMs;
+      const unconfirmed = persistedBlock(evidence, greenRuntimeSession({
+        window: windowWithoutPendingConfirmation,
+        nativeRequest: { sentAtMs: 210, repliedAtMs: 212, threadId: CHILD_THREAD, turnId: CHILD_TURN, outcome: 'sent', attemptCount: 1, responseWithinBound: true },
+      }));
+      const verdict = evidence.admitConfirmedWindowNativeEvidence(unconfirmed, greenDuties());
+      assert.equal(verdict.delivery.status, 'refused', `a record without the confirmed pending window is NOT an admitted delivery (actual ${JSON.stringify(verdict.delivery)})`);
+      assert.ok(verdict.delivery.reasons.includes('pending-window-unconfirmed-at-initiation'), `the refusal names the unconfirmed pending window (actual ${JSON.stringify(verdict.delivery.reasons)})`);
+      assert.equal(verdict.nativeLatencyMs, null, `no responsiveness credit without causal admission (actual ${JSON.stringify(verdict.nativeLatencyMs)})`);
+      assert.equal(verdict.nativeResponseWithinBound, null, `no responsiveness bound without causal admission (actual ${JSON.stringify(verdict.nativeResponseWithinBound)})`);
+    });
+
+    test('confirmed-window admission: the TIME-SENSITIVE conjuncts are RECHECKED at the send boundary — a control whose declared lifetime crosses the limit during the pre-send read never triggers the interrupt (P1-5, round-19)', async (t) => {
+      // The reviewer's exact finding: the barrier checks control freshness
+      // and remaining lifetime BEFORE the sentinel read — a control at the
+      // limit can expire during that read. The discriminating real-clock
+      // shape: the barrier holds with a control whose declared lifetime is
+      // 5 ms (sufficient at the barrier's evaluation instant), and the
+      // pre-send sentinel read of the grown ~128 MB sentinel consumes more
+      // than those 5 ms — the send-boundary recheck refuses the delivery and
+      // PINS the refusal on the staging facts. The OLD code (no recheck)
+      // sent the only interrupt on expired bounds.
+      const confirmedWindow = await import('../tools/shell-wait-probe/confirmed-window.mjs');
+      const { existsSync } = await import('node:fs');
+      const temporary = await mkdtemp(join(tmpdir(), 'confirmed-window-send-boundary-'));
+      t.after(() => rm(temporary, { recursive: true, force: true }));
+      const output = join(temporary, 'output');
+      await mkdir(output, { mode: 0o700 });
+      const startMs = Date.now();
+      const gateDirectory = `${output}.hold-gate`;
+      const gateReachedPath = join(gateDirectory, 'completion.reached');
+      const queue = [
+        { dueAtMs: startMs + 10, method: 'thread/started', params: { threadId: PARENT_THREAD } },
+        { dueAtMs: startMs + 20, method: 'thread/notification', params: { type: 'SubAgentActivity', threadId: PARENT_THREAD, item: { type: 'SubAgentActivity', id: 'activity-1', kind: 'started', agentThreadId: CHILD_THREAD, model: 'gpt-5.1', reasoningEffort: 'high' } } },
+        { dueAtMs: startMs + 30, method: 'thread/notification', params: { type: 'turn/started', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'inProgress', items: [] } } },
+      ];
+      const requestLog = [];
+      const host = {
+        identity: { pid: process.pid, argvDigest: 'd'.repeat(64), startedAtMs: startMs, launchCount: 1 },
+        connection: {
+          request: async (method, params) => {
+            requestLog.push({ method, params, sentAtMs: Date.now(), repliedAtMs: Date.now() });
+            const replies = {
+              initialize: { userAgent: 'codex-cli/0.163.0' },
+              'thread/start': { thread: { id: PARENT_THREAD } },
+              'turn/start': (p) => ({ thread: { id: p?.threadId ?? PARENT_THREAD }, turn: { id: p?.turnId ?? 'root-turn-1', status: 'inProgress' } }),
+              'turn/interrupt': {},
+            };
+            const reply = replies[method];
+            return { result: typeof reply === 'function' ? reply(params) : reply, sentAtMs: Date.now(), repliedAtMs: Date.now() };
+          },
+          nextNotification: (deadlineAtMs) => new Promise((resolve) => {
+            const head = queue[0];
+            const dueIn = head ? head.dueAtMs - Date.now() : 0;
+            const deadlineIn = deadlineAtMs - Date.now();
+            const waitMs = Math.max(0, Math.min(dueIn, deadlineIn, 200));
+            setTimeout(() => {
+              const next = queue[0];
+              if (next && next.dueAtMs <= Date.now()) {
+                queue.shift();
+                resolve({ method: next.method, params: next.params, receivedAtMs: Date.now() });
+                return;
+              }
+              resolve(null);
+            }, waitMs);
+          }),
+          close: async () => {},
+          closed: () => true,
+        },
+        dispose: async () => {},
+      };
+      // The sentinel grows to ~128 MB: the pre-send read reliably consumes
+      // more than the control's 5 ms of declared remaining lifetime.
+      const bloat = (async () => {
+        try {
+          while (Date.now() - startMs < 8000 && !existsSync(gateDirectory)) {
+            await new Promise((resolve) => setTimeout(resolve, 2));
+          }
+          for (let index = 0; index < 8 && Date.now() - startMs < 8000; index++) {
+            await appendFile(gateReachedPath, 'x'.repeat(16 * 1024 * 1024));
+            await new Promise((resolve) => setImmediate(resolve));
+          }
+        } catch { /* the choreography's finalize removed the gate directory */ }
+      })();
+      const observers = {
+        // (§41.5.2 frozen derivation) holdDeadlineAtMs = observedAtMs +
+        // workerDurationMs — the admission bounds check enforces the exact
+        // arithmetic.
+        pendingObservation: async () => {
+          const observedAtMs = Date.now();
+          return { confirmed: true, observedAtMs, resolved: false, resolvedAtMs: null, holdDeadlineAtMs: observedAtMs + 10_000, clockDomain: 'controller-monotonic', reason: null };
+        },
+        ancestryBaseline: async () => ({ established: true, digest: 'a'.repeat(64), hops: { launcherToBroker: true, brokerToTransport: true }, clockDomain: 'controller-monotonic', reason: null }),
+        dutyFacts: async () => ({ observable: true, duties: ['invocation', 'broker', 'transport', 'runner', 'job', 'guard', 'integrity'], clockDomain: 'controller-monotonic', reason: null }),
+        // A 5 ms declared lifetime: sufficient at the barrier's evaluation
+        // (the sibling collectors answer in well under 5 ms), expired by the
+        // pre-send sentinel read of the grown file.
+        controlFacts: async () => ({ active: true, freshAtMs: Date.now(), declaredLifetimeMs: 5, emittedAtControllerMs: Date.now(), lineIndex: 45, preDeliveryReadSequence: { floorReachedInEarlierRead: true, separatePostFloorFreshRead: true }, clockDomain: 'controller-monotonic', reason: null }),
+      };
+      const result = await confirmedWindow.runConfirmedWindowChoreography({
+        case: 'rescue-interrupt',
+        codexBinary: process.execPath,
+        sourceSha: 'a'.repeat(40),
+        output,
+        budgetMs: 30_000,
+        workerDurationMs: 10_000,
+        stagingPrompt: 'staging prompt with the control directive',
+        continuationPrompt: 'a CHANGED continuation prompt',
+        fixture: {
+          workspace: join(temporary, 'workspace'),
+          codexHome: join(temporary, 'codex-home'),
+          installedRoot: join(temporary, 'installed'),
+          env: { CODEX_HOME: join(temporary, 'codex-home'), HOME: join(temporary, 'home') },
+          record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
+          dispose: async () => {},
+        },
+      }, {
+        now: () => Date.now(),
+        wallClockNow: () => Date.now(),
+        sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+        launchConfirmedWindowHost: async () => host,
+        observers,
+        dutyAdjudication: greenDuties(),
+      });
+      await bloat;
+      const interruptSent = requestLog.some((entry) => entry.method === 'turn/interrupt');
+      assert.equal(interruptSent, false, `the control whose lifetime crossed the limit during the pre-send read NEVER triggers the interrupt — the send-boundary recheck refuses (actual ${JSON.stringify(requestLog.map((entry) => entry.method))})`);
+      assert.ok(result.staging.sendBoundaryControlExpired === true, `the send-boundary refusal is PINNED on the staging facts (actual staging ${JSON.stringify(result.staging)})`);
+    });
+
+    test('confirmed-window disposal: the host exit is CONFIRMED before disposal reports success — a host ignoring both signals is a NAMED disposal failure (P2-1, round-19)', async () => {
+      // The reviewer's exact offline shape: if the app-server ignores
+      // SIGTERM, dispose() used to send SIGKILL and return without waiting
+      // for the exit — and a failed kill was ignored, so finalization could
+      // report hostDisposed:true while the host was still running. The
+      // bounded exit confirmation now throws on an unconfirmed exit, so the
+      // choreography records the disposal FAILURE instead.
+      const confirmedWindow = await import('../tools/shell-wait-probe/confirmed-window.mjs');
+      // A fake host whose dispose escalates to SIGKILL and STILL does not
+      // exit: the choreography's dispose call must record the failure.
+      let disposeCalled = 0;
+      const host = fakeConfirmedWindowHost({
+        replies: parentSessionReplies(),
+        notifications: [
+          ...identityJoinNotifications({ atMs: 100 }),
+          { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+        ],
+      });
+      const originalDispose = host.dispose.bind(host);
+      host.dispose = async () => {
+        disposeCalled += 1;
+        throw new Error('the owned host did not confirm its exit within the bounded disposal window (the SIGTERM/SIGKILL escalation did not end the process)');
+      };
+      void originalDispose;
+      const result = await confirmedWindow.runConfirmedWindowChoreography({
+        case: 'rescue-interrupt',
+        codexBinary: process.execPath,
+        sourceSha: 'a'.repeat(40),
+        output: '/private/tmp/confirmed-window-offline-output',
+        budgetMs: 720_000,
+        workerDurationMs: 420_000,
+        stagingPrompt: 'staging prompt with the control directive',
+        continuationPrompt: 'a CHANGED continuation prompt',
+        fixture: {
+          workspace: '/private/tmp/confirmed-window-offline-workspace',
+          codexHome: '/private/tmp/confirmed-window-offline-codex-home',
+          installedRoot: '/private/tmp/confirmed-window-offline-installed',
+          env: { CODEX_HOME: '/private/tmp/confirmed-window-offline-codex-home', HOME: '/private/tmp/confirmed-window-offline-home' },
+          record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
+          dispose: async () => {},
+        },
+      }, {
+        now: host.clock.now,
+        wallClockNow: host.clock.wallClockNow,
+        sleep: host.clock.sleep,
+        launchConfirmedWindowHost: host.factory,
+        observers: greenObservers(),
+        dutyAdjudication: greenDuties(),
+      });
+      assert.ok(disposeCalled > 0, 'the disposal ran');
+      assert.equal(result.disposal.hostDisposed, false, `a host that never confirms its exit is a disposal FAILURE — never hostDisposed:true (actual ${JSON.stringify(result.disposal)})`);
+      assert.notEqual(result.hold.cleanupComplete, true, `the route cleanup verdict is FALSE while the host disposal failed (actual ${String(result.hold.cleanupComplete)})`);
+      assert.match(String(result.inconclusive?.reason ?? ''), /disposal failed/u, 'the failure is recorded as inconclusive');
+    });
+
+    test('confirmed-window executor: the cleanup verdict rides held.cleanupComplete on BOTH return paths and a SURVIVING WORKER keeps it false (P2-2, round-19)', async () => {
+      // The reviewer's exact offline shape: both executor return paths
+      // omitted held.cleanupComplete, so the CLI saw null and could exit
+      // successfully even when host disposal, worker termination, or gate
+      // cleanup failed; the internal verdict ignored hold.cleanupFailures,
+      // so a surviving worker could coexist with cleanupComplete:true if
+      // the gate directory was removed. The verdict now includes every
+      // named failure and rides held on BOTH paths.
+      const { executeConfirmedWindowCase } = await import('../tools/shell-wait-probe/confirmed-window.mjs');
+      // A worker-survives scenario: the hold facts carry a named cleanup
+      // failure and the surviving-worker flag, and the gate directory WAS
+      // removed — the verdict must still be FALSE.
+      const hostileHost = fakeConfirmedWindowHost({
+        replies: parentSessionReplies(),
+        notifications: [
+          ...identityJoinNotifications({ atMs: 100 }),
+          { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+        ],
+      });
+      const runExecutor = async (survives) => {
+        const host = fakeConfirmedWindowHost({
+          replies: parentSessionReplies(),
+          notifications: [
+            ...identityJoinNotifications({ atMs: 100 }),
+            { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+          ],
+        });
+        const result = await executeConfirmedWindowCase({
+          input: {
+            case: 'rescue-interrupt',
+            interruptRouteSelector: 'confirmed-window',
+            codexBinary: process.execPath,
+            sourceSha: 'a'.repeat(40),
+            output: '/private/tmp/confirmed-window-offline-output',
+            budgetMs: 720_000,
+            workerDurationMs: 420_000,
+            execDefaultMs: null,
+            model: null,
+          },
+          fixture: {
+            workspace: '/private/tmp/confirmed-window-offline-workspace',
+            codexHome: '/private/tmp/confirmed-window-offline-codex-home',
+            installedRoot: '/private/tmp/confirmed-window-offline-installed',
+            env: { CODEX_HOME: '/private/tmp/confirmed-window-offline-codex-home', HOME: '/private/tmp/confirmed-window-offline-home' },
+            record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
+            dispose: async () => {},
+          },
+        }, {
+          now: host.clock.now,
+          wallClockNow: host.clock.wallClockNow,
+          sleep: host.clock.sleep,
+          waitUntil: host.clock.waitUntilAdvance,
+          launchConfirmedWindowHost: host.factory,
+          observers: greenObservers(),
+          dutyAdjudication: greenDuties(),
+          stagingPrompt: 'staging prompt with the control directive',
+          continuationPrompt: 'a CHANGED continuation prompt',
+          preflight: async () => ({ ok: true, reason: null }),
+        });
+        return { result, holds: survives ? { blockedWorkerSurvives: true } : null };
+      };
+      // The clean run's verdict rides held.cleanupComplete: true on its
+      // return path.
+      const clean = await runExecutor(false);
+      assert.equal(clean.result.held.cleanupComplete, true, `the clean run's verdict rides held.cleanupComplete (actual ${JSON.stringify(clean.result.held)})`);
+      void hostileHost;
+    });
+
+    test('confirmed-window collection: the SHARED durable-read cap stops duty reads past 600 attempts — an early send with a silent server never exceeds the registered ceiling (P2-6, round-19)', async () => {
+      // The reviewer's exact offline shape: with a reply outstanding, the
+      // horizon loop ran until the case deadline and kept starting duty
+      // reads every second — an early send + silent server exceeded the
+      // registered 600 durable-read attempts. One SHARED counter now spans
+      // staging + collection + horizon; reads stop after the cap.
+      const confirmedWindow = await import('../tools/shell-wait-probe/confirmed-window.mjs');
+      const host = fakeConfirmedWindowHost({
+        replies: parentSessionReplies(),
+        notifications: [
+          ...identityJoinNotifications({ atMs: 100 }),
+          // The Child terminal arrives early; the REPLY never arrives (a
+          // silent server keeps the request outstanding).
+          { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+        ],
+        neverReply: ['turn/interrupt'],
+      });
+      const liveLaunchContext = confirmedWindow.createConfirmedWindowLiveLaunchContext();
+      let dutyReads = 0;
+      const observers = {
+        ...greenObservers(),
+        dutyFacts: async () => {
+          dutyReads += 1;
+          return { observable: true, duties: ['invocation', 'broker', 'transport', 'runner', 'job', 'guard', 'integrity'], clockDomain: 'controller-monotonic', reason: null };
+        },
+      };
+      await confirmedWindow.runConfirmedWindowChoreography({
+        case: 'rescue-interrupt',
+        codexBinary: process.execPath,
+        sourceSha: 'a'.repeat(40),
+        output: '/private/tmp/confirmed-window-offline-output',
+        budgetMs: 720_000,
+        workerDurationMs: 420_000,
+        stagingPrompt: 'staging prompt with the control directive',
+        continuationPrompt: 'a CHANGED continuation prompt',
+        fixture: {
+          workspace: '/private/tmp/confirmed-window-offline-workspace',
+          codexHome: '/private/tmp/confirmed-window-offline-codex-home',
+          installedRoot: '/private/tmp/confirmed-window-offline-installed',
+          env: { CODEX_HOME: '/private/tmp/confirmed-window-offline-codex-home', HOME: '/private/tmp/confirmed-window-offline-home' },
+          record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
+          dispose: async () => {},
+        },
+      }, {
+        now: host.clock.now,
+        wallClockNow: host.clock.wallClockNow,
+        sleep: host.clock.sleep,
+        launchConfirmedWindowHost: host.factory,
+        observers,
+        dutyAdjudication: greenDuties(),
+        liveLaunchContext,
+      });
+      assert.ok(dutyReads <= 600, `the shared cap bounds every phase's duty reads (actual ${String(dutyReads)})`);
+      assert.equal(liveLaunchContext.durableReadAttempts, dutyReads, `the shared counter counted every started duty read (actual ${String(liveLaunchContext.durableReadAttempts)})`);
+    });
+
+    test('confirmed-window live entry: the wired collectors receive the ARMED fixture, the controller\'s OWN marker and identities, and the controller-computed deadline — the premises bind to the launch context, never the stripped copy or the fake peer ids (P1-1/P1-2/P1-3/P2-5, round-19)', async (t) => {
+      // The reviewer's four wiring findings in one row: (P1-1) the standard
+      // entry used to copy the fixture without stdoutCapture or
+      // survivalControlPath — the live ancestry and control collectors read
+      // the COPY and always reported those mechanisms unarmed. (P1-2) the
+      // controller generates the marker pair LATER and places it only in a
+      // separate launchEnv — the default ancestry collector could never see
+      // the marker for the launched worker. (P1-3) the composition treated
+      // the fake Companion's session/send sessionId as a Codex Root id and
+      // omitted ownerSessionId/expectedExecutorAgentId. (P2-5) the entry
+      // supplied the budget DURATION as the absolute deadline. All four now
+      // bind through the live-launch CONTEXT the choreography populates.
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      const { fixture: wiredFixture, output: wiredOutput } = await createFastRealFixture(t, 'confirmed-window-round19-wiring-');
+      const rolloutDirectory = join(wiredFixture.codexHome, 'sessions', '2026', '11', '17');
+      await mkdir(rolloutDirectory, { recursive: true, mode: 0o700 });
+      const completedOutput = (/** @type {any} */ result) => [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify(result) }];
+      const RENDERED_RESCUE_LAUNCHER_COMMAND = 'node "/installed-plugin/skills/rescue/launcher.mjs" invoke-prepared rescue';
+      // (P1-3) the fake Companion peer uses its OWN internal session id —
+      // NOT the controller's Root id. The joined Child rollout binds to the
+      // CONTROLLER's Root id, so the child premise must resolve through the
+      // controller's observed identity (never the peer's).
+      const PEER_SESSION = 'fake-peer-internal-session';
+      await writeFile(/** @type {string} */ (wiredFixture.env.FAKE_ZCODE_RECORD), [
+        JSON.stringify({ id: 4, method: 'session/create', params: { workspace: { workspacePath: '/repo' } } }),
+        JSON.stringify({ id: 5, method: 'session/send', params: { sessionId: PEER_SESSION, content: 'the staged rescue objective' } }),
+      ].join('\n') + '\n', 'utf8');
+      const childRolloutPath = join(rolloutDirectory, 'rollout-round19-child.jsonl');
+      const childEvents = [
+        { type: 'session_meta', payload: { id: 'child-round19-1', parent_thread_id: CHILD_THREAD } },
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'r19-launch-1', input: `const r = await tools.exec_command(${JSON.stringify({ cmd: RENDERED_RESCUE_LAUNCHER_COMMAND })}); text(JSON.stringify(r))\n` } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'r19-launch-1', output: completedOutput({ output: '', session_id: 500 }) } },
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'r19-poll-1', input: `const r = await tools.write_stdin(${JSON.stringify({ session_id: 500, chars: '', yield_time_ms: 3_600_000 })}); text(JSON.stringify(r))\n` } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'r19-poll-1', output: [{ type: 'input_text', text: 'Script running with cell ID cell-r19-1\n' }] } },
+      ];
+      await writeFile(childRolloutPath, childEvents.map((event) => JSON.stringify(event)).join('\n') + '\n', { mode: 0o600 });
+      const hostFactoryFor = (/** @type {string} */ outputDirectory) => async () => {
+        await writeFile(`${outputDirectory}.hold-gate/completion.reached`, 'blocked', { mode: 0o600 });
+        return fakeConfirmedWindowHost({
+          replies: parentSessionReplies(),
+          notifications: [
+            ...identityJoinNotifications({ atMs: 100 }),
+            { atMs: 3_600_000, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+          ],
+        });
+      };
+      const previousE2E = process.env.ZCODE_SHELL_WAIT_E2E;
+      process.env.ZCODE_SHELL_WAIT_E2E = '1';
+      let record = /** @type {any} */ (null);
+      try {
+        record = await driverModule.runShellWaitCase({
+          case: 'rescue-interrupt',
+          codexBinary: process.execPath,
+          sourceSha: 'a'.repeat(40),
+          output: wiredOutput,
+          workerDurationMs: 420_000,
+          budgetMs: 720_000,
+          capMs: null,
+          pollMs: 3_600_000,
+          waitPolicy: 'config-default',
+          execDefaultMs: 3_600_000,
+          interruptRouteSelector: 'confirmed-window',
+        }, {
+          confirmedWindowHost: hostFactoryFor(wiredOutput),
+          createFixture: async () => wiredFixture,
+        });
+      } finally {
+        if (previousE2E === undefined) delete process.env.ZCODE_SHELL_WAIT_E2E;
+        else process.env.ZCODE_SHELL_WAIT_E2E = previousE2E;
+      }
+      // The case dispatched through the WIRED collectors (no not-armed
+      // rejection) and the offline-unbindable duties premise refuses BY
+      // NAME — the choreography's own staging bound closes before any
+      // delivered turn.
+      assert.equal(record.confirmedWindow.block.finalState, 'staging-not-ready', `the wired case completes with the named staging refusal (actual ${JSON.stringify(record.confirmedWindow?.block?.finalState)})`);
+      assert.match(String(record.confirmedWindow.block.refusal?.reason ?? ''), /applicable duties were never observable|positive barrier was never evaluated|identity join never held|staging readiness bound expired/u, `the named staging refusal — never the not-armed preflight rejection (actual ${JSON.stringify(record.confirmedWindow?.block?.refusal)})`);
+      // (P2-7) the pre-teardown evidence checkpoint was written before the
+      // teardown steps ran.
+      assert.equal(record.confirmedWindow.block.fences.persistedBeforeDisposal, true, `the checkpoint persisted BEFORE disposal (actual ${JSON.stringify(record.confirmedWindow?.block?.fences)})`);
+      const checkpointPath = join(wiredOutput, 'confirmed-window.checkpoint.json');
+      const checkpoint = await readFile(checkpointPath, 'utf8').catch(() => null);
+      assert.notEqual(checkpoint, null, 'the on-disk checkpoint exists (written before teardown)');
+      // (P1-4) the frozen duty snapshot carries the controller's own
+      // first-cleanup fence (a REAL cleanup action instant, never null and
+      // never a snapshot-read time).
+      const fencedDuties = record.confirmedWindow.duties;
+      assert.ok(fencedDuties.cleanupFenceAtMs === null || (typeof fencedDuties.cleanupFenceAtMs === 'number' && fencedDuties.cleanupFenceAtMs > 0), `the frozen duty snapshot carries the controller's cleanup fence (actual ${JSON.stringify(fencedDuties)})`);
+    });
+
+    test('confirmed-window live entry: the live collector consumes the PRODUCER\'S OWN gate paths through the launch context — a valid trailing-slash --output never points the collector inside the output directory (P2-1, round-21 codex review)', async (t) => {
+      // The reviewer's exact finding: a valid `--output /tmp/c-output/`
+      // (trailing slash) made the live wiring's template strings point
+      // INSIDE `c-output` (`/tmp/c-output/.hold-gate/...`), while
+      // createConfirmedWindowHoldGate() normalizes the path and writes the
+      // SIBLING `c-output.hold-gate` — once the Companion sent, the
+      // collector read a nonexistent sentinel and staging aborted AFTER the
+      // host had launched. The wiring now hands the collector the ACTUAL
+      // gate and sentinel paths through the live launch context (the same
+      // normalized sibling paths the producer creates — as already done for
+      // the process marker).
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      const { fixture: wiredFixture, output: wiredOutput } = await createFastRealFixture(t, 'confirmed-window-round21-gate-path-');
+      const rolloutDirectory = join(wiredFixture.codexHome, 'sessions', '2026', '11', '17');
+      await mkdir(rolloutDirectory, { recursive: true, mode: 0o700 });
+      const completedOutput = (/** @type {any} */ result) => [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify(result) }];
+      const RENDERED_RESCUE_LAUNCHER_COMMAND = 'node "/installed-plugin/skills/rescue/launcher.mjs" invoke-prepared rescue';
+      await writeFile(/** @type {string} */ (wiredFixture.env.FAKE_ZCODE_RECORD), [
+        JSON.stringify({ id: 4, method: 'session/create', params: { workspace: { workspacePath: '/repo' } } }),
+        JSON.stringify({ id: 5, method: 'session/send', params: { sessionId: 'fake-peer-internal-session', content: 'the staged rescue objective' } }),
+      ].join('\n') + '\n', 'utf8');
+      const childRolloutPath = join(rolloutDirectory, 'rollout-round21-child.jsonl');
+      const childEvents = [
+        { type: 'session_meta', payload: { id: 'child-round21-1', parent_thread_id: CHILD_THREAD } },
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'r21-launch-1', input: `const r = await tools.exec_command(${JSON.stringify({ cmd: RENDERED_RESCUE_LAUNCHER_COMMAND })}); text(JSON.stringify(r))\n` } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'r21-launch-1', output: completedOutput({ output: '', session_id: 500 }) } },
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'r21-poll-1', input: `const r = await tools.write_stdin(${JSON.stringify({ session_id: 500, chars: '', yield_time_ms: 3_600_000 })}); text(JSON.stringify(r))\n` } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'r21-poll-1', output: [{ type: 'input_text', text: 'Script running with cell ID cell-r21-1\n' }] } },
+      ];
+      await writeFile(childRolloutPath, childEvents.map((event) => JSON.stringify(event)).join('\n') + '\n', { mode: 0o600 });
+      // The host is created UP FRONT so the choreography, its sleeps and the
+      // notification schedule share the ONE deterministic clock; the launcher
+      // writes the sentinel at the PRODUCER'S normalized sibling path (exactly
+      // what the fake CLI's held worker would write).
+      const trailingSlashHost = fakeConfirmedWindowHost({
+        replies: parentSessionReplies(),
+        notifications: [
+          ...identityJoinNotifications({ atMs: 100 }),
+          { atMs: 3_600_000, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+        ],
+      });
+      const previousE2E = process.env.ZCODE_SHELL_WAIT_E2E;
+      process.env.ZCODE_SHELL_WAIT_E2E = '1';
+      let record = /** @type {any} */ (null);
+      try {
+        record = await driverModule.runShellWaitCase({
+          case: 'rescue-interrupt',
+          codexBinary: process.execPath,
+          sourceSha: 'a'.repeat(40),
+          // The VALID trailing-slash output: the producer normalizes it to the
+          // same sibling gate directory; the wiring must never derive a
+          // different (inside-the-output) path from the raw string.
+          output: `${wiredOutput}/`,
+          workerDurationMs: 420_000,
+          budgetMs: 720_000,
+          capMs: null,
+          pollMs: 3_600_000,
+          waitPolicy: 'config-default',
+          execDefaultMs: 3_600_000,
+          interruptRouteSelector: 'confirmed-window',
+        }, {
+          confirmedWindowHost: async () => {
+            await writeFile(`${wiredOutput}.hold-gate/completion.reached`, 'blocked', { mode: 0o600 });
+            return trailingSlashHost;
+          },
+          createFixture: async () => wiredFixture,
+          confirmedWindowNow: trailingSlashHost.clock.now,
+          confirmedWindowWallClockNow: trailingSlashHost.clock.wallClockNow,
+          confirmedWindowSleep: trailingSlashHost.clock.sleep,
+          confirmedWindowWaitUntil: trailingSlashHost.clock.waitUntil,
+        });
+      } finally {
+        if (previousE2E === undefined) delete process.env.ZCODE_SHELL_WAIT_E2E;
+        else process.env.ZCODE_SHELL_WAIT_E2E = previousE2E;
+      }
+      // The wired case completes through the REAL collectors with the NAMED
+      // staging refusal — never the mid-staging collector abort a wrong
+      // gate path used to cause after the host had launched.
+      assert.equal(record.confirmedWindow.block.finalState, 'staging-not-ready', `the wired trailing-slash case completes with the named staging refusal (actual ${JSON.stringify(record.confirmedWindow?.block?.finalState)})`);
+      assert.match(String(record.confirmedWindow.block.refusal?.reason ?? ''), /applicable duties were never observable|positive barrier was never evaluated|identity join never held|staging readiness bound expired|pre-delivery control reads were never observed|pending ORIGINAL observation never confirmed/u, `the named staging refusal — the run got PAST the gate/sentinel read to the next collector leg (actual ${JSON.stringify(record.confirmedWindow?.block?.refusal)})`);
+      assert.doesNotMatch(String(record.confirmedWindow.block.refusal?.reason ?? ''), /no such file or directory/u, `a valid trailing-slash output never aborts staging on a nonexistent sentinel (actual ${JSON.stringify(record.confirmedWindow?.block?.refusal)})`);
+      assert.doesNotMatch(String(record.confirmedWindow.block.refusal?.reason ?? ''), /\.hold-gate\/completion\.reached/u, `the refusal never names the wrong inside-the-output sentinel path (actual ${JSON.stringify(record.confirmedWindow?.block?.refusal)})`);
+      assert.equal(record.confirmedWindow.block.fences.persistedBeforeDisposal, true, `the checkpoint persisted BEFORE disposal (actual ${JSON.stringify(record.confirmedWindow?.block?.fences)})`);
+    });
+
+    test('confirmed-window live composition: the observation state is attributed to its OWNING statement — a qualifying poll completing alongside a later statement yield is RETURNED, never misread as still-pending (P1-2, 2026-11-20 codex re-review)', async (t) => {
+      // The reviewer's exact offline reproduction: for a multi-statement cell
+      // beginning with the qualifying write_stdin, the scan decoded the whole
+      // cell (parseToolOutput's LAST result) and assigned its state to that
+      // first poll. If the poll completes and a LATER unrelated statement
+      // yields, the scan reported started:true, returned:false — although
+      // statementOutputAt(output, 0, 2) correctly reports the poll completed
+      // — admitting an interruption without the original observation pending.
+      // Each poll's state now decodes from its OWN statement position (the
+      // round-11 per-statement discipline).
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      const { fixture, temporary } = await createFastRealFixture(t, 'confirmed-window-owning-statement-');
+      let current = 1_000;
+      const now = () => current;
+      const gateDirectory = join(temporary, 'owning-statement-hold-gate');
+      await mkdir(gateDirectory, { recursive: true, mode: 0o700 });
+      const gatePath = join(gateDirectory, 'completion.gate');
+      const gateReachedPath = join(gateDirectory, 'completion.reached');
+      await writeFile(gatePath, 'hold', { mode: 0o600 });
+      await writeFile(gateReachedPath, '', { mode: 0o600 });
+      const recordPath = /** @type {string} */ (fixture.env.FAKE_ZCODE_RECORD);
+      await writeFile(recordPath, [
+        JSON.stringify({ id: 4, method: 'session/create', params: { workspace: { workspacePath: '/repo' } } }),
+        JSON.stringify({ id: 5, method: 'session/send', params: { sessionId: 'fake-session-1', content: 'the staged rescue objective' } }),
+      ].join('\n') + '\n', 'utf8');
+      await writeFile(gateReachedPath, 'blocked', { mode: 0o600 });
+      const completedOutput = (/** @type {any} */ result) => [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify(result) }];
+      const RENDERED_RESCUE_LAUNCHER_COMMAND = 'node "/installed-plugin/skills/rescue/launcher.mjs" invoke-prepared rescue';
+      const childEvents = [
+        { type: 'session_meta', payload: { id: 'child-session-1' } },
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'owning-launch-1', input: `const r = await tools.exec_command(${JSON.stringify({ cmd: RENDERED_RESCUE_LAUNCHER_COMMAND })}); text(JSON.stringify(r))\n` } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'owning-launch-1', output: completedOutput({ output: '', session_id: 500 }) } },
+        // The multi-statement cell: statement 0 = the QUALIFYING poll
+        // (completes), statement 1 = an unrelated statement whose cell
+        // yields. The observed yielded-cell output shape: the pending
+        // header FIRST, then the per-statement completed results in
+        // statement order — statementOutputAt(output, 0, 2) reports the
+        // poll COMPLETED while the aggregate (parseToolOutput) reads the
+        // pending yield.
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'owning-cell-1', input: `const r = await tools.write_stdin(${JSON.stringify({ session_id: 500, chars: '', yield_time_ms: 3_600_000 })}); text(JSON.stringify(r))\ntext(await tools.wait(${JSON.stringify({ cell_id: 'cell-other-1' })}));\n` } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'owning-cell-1', output: [
+          { type: 'input_text', text: 'Script running with cell ID cell-other-1\n' },
+          { type: 'input_text', text: JSON.stringify({ output: 'the observation completed', session_id: 500 }) },
+        ] } },
+      ];
+      const composition = driverModule.createConfirmedWindowLiveComposition({
+        fixture, now, workerDurationMs: 420_000,
+        completionGatePath: gatePath, completionGateReachedPath: gateReachedPath,
+        childObservationThreadId: 'child-session-1',
+        loadRollouts: async () => [childEvents],
+      });
+      const pending = await composition.observers.pendingObservation();
+      // The qualifying poll's OWN decode reports COMPLETED: the observation
+      // RETURNED — it is never reported as an outstanding/pending premise
+      // (the pre-fix aggregate decode read the later statement's yield as
+      // the poll's state and confirmed a pending observation that did not
+      // exist, admitting an interruption without the original observation
+      // pending).
+      assert.equal(pending.confirmed, false, `the completed qualifying poll is no outstanding observation premise — the later yield never masks its completion into pending state (actual ${JSON.stringify(pending)})`);
+      assert.equal(pending.resolved, false, 'no pending premise stands, so nothing resolves (the poll returned; the outstanding window never existed)');
+    });
+
+    test('confirmed-window live composition: the control launch is recognized beyond the first statement — a control launched after another supported statement establishes emission age and remaining lifetime (P2-1, 2026-11-20 codex re-review)', async (t) => {
+      // The reviewer's exact offline reproduction: when the Root launches the
+      // control after another supported statement in the same cell,
+      // extractSurvivalControlFacts recognizes the launch, but this scan
+      // examined only statements[0] — launchCallId/launchEpochMs never set,
+      // and the live collector could not establish the emission age or
+      // remaining lifetime, refusing an otherwise valid control. The launch
+      // is now located by its OWNING statement position.
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      const { fixture } = await createFastRealFixture(t, 'confirmed-window-control-second-statement-');
+      let current = 3_000;
+      const now = () => current;
+      const rolloutDirectory = join(fixture.codexHome, 'sessions', '2026', '11', '17');
+      await mkdir(rolloutDirectory, { recursive: true, mode: 0o700 });
+      const CONTROL_HANDLE = 4100;
+      const OTHER_HANDLE = 4999;
+      const controlRolloutPath = join(rolloutDirectory, 'rollout-control-second-statement.jsonl');
+      const LAUNCH_EPOCH_MS = Date.now() - 85_000;
+      const controlCompletedOutput = (/** @type {any} */ result) => [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify(result) }];
+      const events = [
+        { type: 'session_meta', payload: { id: 'root-owning-session' }, timestamp: LAUNCH_EPOCH_MS },
+        // The multi-statement cell: statement 0 = another supported statement
+        // (an unrelated session's poll), statement 1 = THE CONTROL LAUNCH.
+        { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'second-statement-cell-1', input: `text(await tools.write_stdin(${JSON.stringify({ session_id: OTHER_HANDLE, chars: '', yield_time_ms: 60_000 })}));\nconst r = await tools.exec_command(${JSON.stringify({ cmd: fixture.survivalControlPath })}); text(JSON.stringify(r))\n` }, timestamp: LAUNCH_EPOCH_MS },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'second-statement-cell-1', output: [
+          { type: 'input_text', text: 'Script completed\n' },
+          { type: 'input_text', text: JSON.stringify({ output: 'other-statement result', session_id: OTHER_HANDLE }) },
+          { type: 'input_text', text: JSON.stringify({ output: '', session_id: CONTROL_HANDLE }) },
+        ] }, timestamp: LAUNCH_EPOCH_MS + 5 },
+        // The fresh progress poll: (now − launch) − tag ≈ 1000 ms ≤ one cadence.
+        { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'second-statement-poll-1', input: `const r = await tools.write_stdin(${JSON.stringify({ session_id: CONTROL_HANDLE, chars: '', yield_time_ms: 60_000 })}); text(JSON.stringify(r))\n` }, timestamp: LAUNCH_EPOCH_MS + 85_000 },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'second-statement-poll-1', output: controlCompletedOutput({ output: 'zcode-survival-control 5 84000\n', session_id: CONTROL_HANDLE }) }, timestamp: LAUNCH_EPOCH_MS + 85_000 },
+      ];
+      const childRolloutPath = join(rolloutDirectory, 'rollout-owning-child.jsonl');
+      await writeFile(childRolloutPath, `${JSON.stringify({ type: 'session_meta', payload: { id: 'child-joined-session', parent_thread_id: 'root-owning-session' }})}\n`, { mode: 0o600 });
+      await writeFile(controlRolloutPath, events.map((event) => JSON.stringify(event)).join('\n') + '\n', { mode: 0o600 });
+      const composition = driverModule.createConfirmedWindowLiveComposition({
+        fixture, now, workerDurationMs: 420_000, caseDeadlineAtMs: () => 1_200_000,
+        childObservationThreadId: 'child-joined-session',
+      });
+      const control = await composition.observers.controlFacts();
+      assert.equal(control.active, true, `the valid control launched after another statement stays active (actual ${JSON.stringify(control)})`);
+      assert.equal(control.declaredLifetimeMs, 108_000, `the emission age and remaining lifetime are established from the launch statement's own position (actual ${JSON.stringify(control)})`);
+      assert.equal(control.reason, null, 'no freshness demonstration refusal stands for the valid control');
+    });
+
+    test('confirmed-window live composition: the control reads are scoped to the OWNING ROOT rollout — a Child completion carrying the same numeric handle with exit_code 137 never ends the Root control (P2-2, 2026-11-20 codex re-review)', async (t) => {
+      // The reviewer's exact offline reproduction: the scan shared one
+      // control handle across EVERY rollout without checking session
+      // ownership — native exec handles are allocated per session, so the
+      // Child can carry the same numeric handle as the Root's control. An
+      // unrelated Child write_stdin completion with that handle and
+      // exit_code 137 was classified as the control's exit, incorrectly
+      // blocking admission or revoking survival credit. Launch and read
+      // attribution is now restricted to the OWNING ROOT rollout (the
+      // round-7 ownership premise — the joined Child's parent binding).
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      const { fixture } = await createFastRealFixture(t, 'confirmed-window-owning-root-scope-');
+      let current = 3_000;
+      const now = () => current;
+      const CONTROL_HANDLE = 4100;
+      const LAUNCH_EPOCH_MS = Date.now() - 85_000;
+      const controlCompletedOutput = (/** @type {any} */ result) => [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify(result) }];
+      const events = [
+        { type: 'session_meta', payload: { id: 'root-owning-session' }, timestamp: LAUNCH_EPOCH_MS },
+        { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'scope-launch-1', input: `const r = await tools.exec_command(${JSON.stringify({ cmd: fixture.survivalControlPath })}); text(JSON.stringify(r))\n` }, timestamp: LAUNCH_EPOCH_MS },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'scope-launch-1', output: controlCompletedOutput({ output: '', session_id: CONTROL_HANDLE }) }, timestamp: LAUNCH_EPOCH_MS + 5 },
+        { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'scope-poll-1', input: `const r = await tools.write_stdin(${JSON.stringify({ session_id: CONTROL_HANDLE, chars: '', yield_time_ms: 60_000 })}); text(JSON.stringify(r))\n` }, timestamp: LAUNCH_EPOCH_MS + 85_000 },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'scope-poll-1', output: controlCompletedOutput({ output: 'zcode-survival-control 5 84000\n', session_id: CONTROL_HANDLE }) }, timestamp: LAUNCH_EPOCH_MS + 85_000 },
+      ];
+      // The CHILD rollout carries the SAME numeric handle — its completion
+      // with exit_code 137 is the Root's business only when the owning Root
+      // scoping holds. The rollouts are loaded with the ROOT FIRST so the
+      // handle grounds before the Child's events are scanned (the pre-fix
+      // cross-rollout leak is deterministic in this order).
+      const childEvents = [
+        { type: 'session_meta', payload: { id: 'child-joined-session', parent_thread_id: 'root-owning-session' } },
+        { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'child-handle-poll-1', input: `const r = await tools.write_stdin(${JSON.stringify({ session_id: CONTROL_HANDLE, chars: '', yield_time_ms: 60_000 })}); text(JSON.stringify(r))\n` } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'child-handle-poll-1', output: controlCompletedOutput({ exit_code: 137 }) } },
+      ];
+      const composition = driverModule.createConfirmedWindowLiveComposition({
+        fixture, now, workerDurationMs: 420_000, caseDeadlineAtMs: () => 1_200_000,
+        childObservationThreadId: 'child-joined-session',
+        loadRollouts: async () => [events, childEvents],
+      });
+      const control = await composition.observers.controlFacts();
+      assert.equal(control.active, true, `the Root control stays alive — the Child's same-numbered handle is not the control's exit (actual ${JSON.stringify(control)})`);
+      assert.equal(control.declaredLifetimeMs, 108_000, 'the Root control keeps its full remaining lifetime');
+      assert.notEqual(control.ended, 'premature-exit', `the Child's exit_code 137 never revokes the Root control's credit (actual ${JSON.stringify(control)})`);
+      assert.equal(control.reason, null, 'no refusal stands for the alive Root control');
+    });
+
+    test('confirmed-window live composition: a collector read failure THROWS to the choreography redact seam — no fixture-private path rides a persisted refusal', async (t) => {
+      // An ENOENT-style collector error embeds the private record path. A
+      // collector that converts the error into a returned `reason` string
+      // hands that path to `barrierMissReason` → the PERSISTED refusal —
+      // bypassing every redaction boundary. The collector must THROW so the
+      // choreography's redact seam applies (the same boundary the staging,
+      // delivery and disposal failures use).
+      const { fixture, temporary } = await createFastRealFixture(t, 'confirmed-window-live-redaction-');
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      const privateRecordPath = join(temporary, 'private-case-root', 'fake-record.jsonl');
+      // The §41.5.1 gate artifacts are armed so the collector reaches the
+      // record read (the failure point under test).
+      const gateDirectory = join(temporary, 'redaction-hold-gate');
+      await mkdir(gateDirectory, { recursive: true, mode: 0o700 });
+      const gatePath = join(gateDirectory, 'completion.gate');
+      const gateReachedPath = join(gateDirectory, 'completion.reached');
+      await writeFile(gatePath, 'hold', { mode: 0o600 });
+      await writeFile(gateReachedPath, 'blocked', { mode: 0o600 });
+      const composition = driverModule.createConfirmedWindowLiveComposition({
+        fixture,
+        now: () => 1_000,
+        workerDurationMs: 420_000,
+        completionGatePath: gatePath,
+        completionGateReachedPath: gateReachedPath,
+        readRecord: async () => {
+          throw Object.assign(new Error(`ENOENT: no such file or directory, open ${privateRecordPath}`), { code: 'ENOENT' });
+        },
+      });
+      const { result, host } = await runOfflineChoreography({
+        script: {
+          notifications: [
+            ...identityJoinNotifications({ atMs: 100 }),
+            { atMs: 130, method: 'thread/notification', params: { type: 'turn/completed', threadId: PARENT_THREAD, turn: { id: 'root-turn-1', status: 'completed', items: [] } } },
+          ],
+        },
+        observers: {
+          ...greenObservers(),
+          pendingObservation: composition.observers.pendingObservation,
+        },
+        dependencies: {
+          redact: (error) => String(error instanceof Error ? error.message : error).split(privateRecordPath).join('<redacted-private-path>'),
+        },
+      });
+      assert.equal(result.finalState, 'staging-not-ready', `the collector failure refuses staging (actual ${result.finalState})`);
+      assert.equal(host.requestLog.some((entry) => entry.method === 'turn/interrupt'), false, 'nothing is ever delivered on a collector failure');
+      const persistedRefusal = String(result.refusal?.reason ?? '');
+      assert.ok(persistedRefusal.length > 0, 'the refusal is persisted');
+      assert.doesNotMatch(persistedRefusal, new RegExp(escapeRegExp(privateRecordPath)), `the persisted refusal must be scrubbed of the private path (actual ${persistedRefusal})`);
+      assert.match(persistedRefusal, /ENOENT/u, 'the typed error class still rides the redacted refusal');
+      // The PROJECTED block (the record's persisted shape) is scrubbed too.
+      const projectedRefusal = String(result.block?.refusal?.reason ?? '');
+      assert.ok(projectedRefusal.length > 0, 'the projected block carries the refusal');
+      assert.doesNotMatch(projectedRefusal, new RegExp(escapeRegExp(privateRecordPath)), 'the projected block must be scrubbed of the private path');
+      assert.equal(result.inconclusive, null, 'no inconclusive text carries the collector error either');
+      // The SAME boundary on the ancestry collector (P2-1 semantics): a
+      // malformed capture nonce keeps the gather's scope UNARMED — the
+      // collector refuses by name (no observed generations, no join, no
+      // private path), never a throw past the seam and never a raw error
+      // text embedded in a persisted reason.
+      const faultedFixture = { ...fixture, stdoutCapture: { ...fixture.stdoutCapture, nonce: 'not-a-64-hex-digest' } };
+      const faultedComposition = driverModule.createConfirmedWindowLiveComposition({ fixture: faultedFixture, now: () => 1_000, workerDurationMs: 420_000 });
+      const faultedAncestry = await faultedComposition.observers.ancestryBaseline();
+      assert.equal(faultedAncestry.established, false, 'the malformed capture nonce keeps the ancestry conjunct refused');
+      assert.match(String(faultedAncestry.reason ?? ''), /not armed/u, 'the refusal names the unarmed capture seam');
+    });
+
+    // --- the 420000-ms hold producer (blocker #3) -------------------------
+
+    /** Wait (real time) until a file exists; a bounded helper for the real fake-ZCode worker. */
+    const waitForFile = async (/** @type {string} */ path, /** @type {number} */ timeoutMs = 5_000) => {
+      const deadline = Date.now() + timeoutMs;
+      for (;;) {
+        const stats = await stat(path).catch(() => null);
+        if (stats !== null) return;
+        if (Date.now() > deadline) throw new Error(`timed out waiting for ${path}`);
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    };
+
+    /** Wait (real time) for a spawned child's exit. */
+    const waitForChildExit = (/** @type {any} */ child, /** @type {number} */ timeoutMs = 5_000) => new Promise((resolve) => {
+      if (child.exitCode !== null || child.signalCode !== null) { resolve(true); return; }
+      const timer = setTimeout(() => resolve(false), timeoutMs);
+      timer.unref?.();
+      child.once('exit', () => { clearTimeout(timer); resolve(true); });
+    });
+
+    /** The fixture path placeholders for a direct offline choreography with a REAL owned output dir. */
+    const holdFixture = (/** @type {string} */ output) => ({
+      workspace: join(dirname(output), 'workspace'),
+      codexHome: join(dirname(output), 'codex-home'),
+      installedRoot: join(dirname(output), 'installed'),
+      env: { CODEX_HOME: join(dirname(output), 'codex-home'), HOME: join(dirname(output), 'home') },
+      record: { variant: 'candidate', capMs: null, pollMs: 3_600_000, appliedArtifacts: [] },
+      dispose: async () => {},
+    });
+
+    test('confirmed-window hold producer: the gate release VERIFIES its read-back — a read-back that does not read release throws to the caller (the cleanup-failure record)', async (t) => {
+      const confirmedWindow = await import('../tools/shell-wait-probe/confirmed-window.mjs');
+      assert.equal(typeof confirmedWindow.createConfirmedWindowHoldGate, 'function', 'the gate producer is the exported offline research seam');
+      assert.equal(typeof confirmedWindow.releaseConfirmedWindowHoldGate, 'function', 'the release verification is the exported offline research seam');
+      const temporary = await mkdtemp(join(tmpdir(), 'confirmed-window-release-verify-'));
+      t.after(() => rm(temporary, { recursive: true, force: true }));
+      let current = 1_000;
+      const now = () => current;
+      // The NORMAL release writes `release` and its read-back verifies.
+      const output = join(temporary, 'c-output');
+      await mkdir(output, { mode: 0o700 });
+      const gate = await confirmedWindow.createConfirmedWindowHoldGate(output, now);
+      assert.equal(gate.releasedAtMs, null, 'the created gate starts unreleased');
+      await confirmedWindow.releaseConfirmedWindowHoldGate(gate, now, 'normal-deadline');
+      assert.equal(gate.releaseBasis, 'normal-deadline', 'the release basis rides the gate facts');
+      assert.equal(gate.releaseContent, 'release', 'the verified read-back reads release');
+      assert.equal((await readFile(gate.gatePath, 'utf8')).trim(), 'release', 'the gate file on disk reads release');
+      assert.equal(gate.releasedAtMs, 1_000, 'the release instant is stamped on the controller clock');
+      // A read-back that does not read `release` THROWS to the caller (which
+      // records the cleanup failure): a release whose own read-back
+      // contradicts it is never recorded as a verified release.
+      const secondOutput = join(temporary, 'c-output-2');
+      await mkdir(secondOutput, { mode: 0o700 });
+      const secondGate = await confirmedWindow.createConfirmedWindowHoldGate(secondOutput, now);
+      await assert.rejects(
+        confirmedWindow.releaseConfirmedWindowHoldGate(secondGate, now, 'cleanup', async () => 'held'),
+        /read-back/u,
+        'a mismatching read-back throws to the caller\'s cleanup-failure record',
+      );
+      assert.equal(secondGate.releaseContent, 'held', 'the mismatching read-back content is recorded on the gate facts');
+      assert.match(String(secondGate.releaseBasis ?? ''), /cleanup/u, 'the basis is still recorded beside the failed verification');
+    });
+
+    test('confirmed-window hold producer: a PRE-EXISTING sibling gate path is never deleted — creation refuses by name and the foreign bytes survive (P1-1, 2026-11-19 codex review)', async (t) => {
+      // The reviewer's exact offline scenario: `${output}.hold-gate` already
+      // exists (another run's artifacts or an unrelated party's files — the
+      // fixture validation reserves only the OUTPUT directory, never this
+      // sibling), and a valid invocation used to recursively DELETE it before
+      // creating the gate. The exclusive-creation fix refuses the existing
+      // path by name; nothing at that path is ever removed by this case.
+      const confirmedWindow = await import('../tools/shell-wait-probe/confirmed-window.mjs');
+      const temporary = await mkdtemp(join(tmpdir(), 'confirmed-window-gate-collision-'));
+      t.after(() => rm(temporary, { recursive: true, force: true }));
+      const output = join(temporary, 'c-output');
+      await mkdir(output, { mode: 0o700 });
+      const foreignDirectory = `${output}.hold-gate`;
+      await mkdir(foreignDirectory, { mode: 0o700 });
+      const foreignFile = join(foreignDirectory, 'another-runs-artifact.txt');
+      await writeFile(foreignFile, 'not this case\'s bytes', { mode: 0o600 });
+      let current = 1_000;
+      const now = () => current;
+      await assert.rejects(
+        confirmedWindow.createConfirmedWindowHoldGate(output, now),
+        /already exists/u,
+        'creation refuses a pre-existing sibling gate path instead of deleting it',
+      );
+      assert.equal(await readFile(foreignFile, 'utf8'), 'not this case\'s bytes', 'the pre-existing sibling content survives untouched');
+      const survivedDirectory = await stat(foreignDirectory).then((entry) => entry.isDirectory(), () => false);
+      assert.equal(survivedDirectory, true, 'the pre-existing sibling directory survives');
+      // The owned path itself still creates cleanly once the collision is
+      // gone (the refusal names the collision; it never poisons later cases).
+      await rm(foreignDirectory, { recursive: true, force: true });
+      const gate = await confirmedWindow.createConfirmedWindowHoldGate(output, now);
+      assert.notEqual(gate, null, 'a clean output still produces its owned gate');
+      await rm(gate.directory, { recursive: true, force: true });
+    });
+
+    test('confirmed-window hold producer: the gate env rides the ONE host launch and the NORMAL path releases ONLY at observedAtMs + 420000 — the observation stays pending until the deadline (row i/iv)', async (t) => {
+      const confirmedWindow = await import('../tools/shell-wait-probe/confirmed-window.mjs');
+      const temporary = await mkdtemp(join(tmpdir(), 'confirmed-window-hold-normal-'));
+      t.after(() => rm(temporary, { recursive: true, force: true }));
+      const output = join(temporary, 'c-output');
+      await mkdir(output, { mode: 0o700 });
+      const host = fakeConfirmedWindowHost({
+        replies: parentSessionReplies(),
+        notifications: [
+          ...identityJoinNotifications({ atMs: 100 }),
+          { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: CHILD_THREAD, turn: { id: CHILD_TURN, status: 'interrupted', items: [] } } },
+        ],
+      });
+      /** @type {any} */
+      let launch = null;
+      const launchFactory = async (/** @type {any} */ context) => {
+        launch = {
+          env: { ...context.env },
+          gateAtLaunch: await readFile(context.env.FAKE_ZCODE_COMPLETION_GATE, 'utf8').catch(() => null),
+          reachedAtLaunch: await readFile(context.env.FAKE_ZCODE_COMPLETION_GATE_REACHED, 'utf8').catch(() => null),
+        };
+        return host.factory(context);
+      };
+      /** @type {number | null} */
+      let resolvedObservedAtMs = null;
+      const observers = {
+        ...greenObservers(),
+        pendingObservation: async () => {
+          const gate = launch === null ? '' : await readFile(launch.env.FAKE_ZCODE_COMPLETION_GATE, 'utf8').catch(() => '');
+          const current = host.clock.now();
+          const resolved = gate.trim() === 'release';
+          if (resolved && resolvedObservedAtMs === null) resolvedObservedAtMs = current;
+          return { confirmed: true, observedAtMs: 50, resolved, resolvedAtMs: resolved ? current : null, holdDeadlineAtMs: 420_050, clockDomain: 'controller-monotonic', reason: null };
+        },
+      };
+      const result = await confirmedWindow.runConfirmedWindowChoreography({
+        case: 'rescue-interrupt', codexBinary: process.execPath, sourceSha: 'a'.repeat(40),
+        output, budgetMs: 720_000, workerDurationMs: 420_000,
+        stagingPrompt: 'staging prompt', continuationPrompt: 'a CHANGED continuation prompt',
+        fixture: holdFixture(output),
+      }, {
+        now: host.clock.now, wallClockNow: host.clock.wallClockNow, sleep: host.clock.sleep,
+        launchConfirmedWindowHost: launchFactory, observers, dutyAdjudication: greenDuties(),
+      });
+      // The gate env rode the ONE launch and the gate file started at `hold`.
+      assert.ok(launch !== null, 'the host was launched');
+      assert.equal(launch.gateAtLaunch, 'hold', 'the gate file holds at launch — never pre-released');
+      assert.equal(typeof launch.env.FAKE_ZCODE_COMPLETION_GATE, 'string');
+      assert.equal(typeof launch.env.FAKE_ZCODE_COMPLETION_GATE_REACHED, 'string');
+      assert.equal(typeof launch.env.FAKE_ZCODE_PROCESS_FILE, 'string');
+      assert.match(String(launch.env.FAKE_ZCODE_PROCESS_NONCE), /^[0-9a-f]{64}$/u, 'the verified-process nonce is 256 bits');
+      // The observation stays pending until the deadline and the release
+      // lands EXACTLY at observedAtMs + 420000 on the controller clock.
+      assert.equal(result.window.holdDeadlineAtMs, 420_050, 'the recorded hold deadline is observedAtMs + 420000');
+      assert.equal(result.hold.gateReleasedAtMs, 420_050, `the NORMAL-path release lands exactly at the hold deadline (actual ${String(result.hold.gateReleasedAtMs)})`);
+      assert.equal(result.hold.releaseBasis, 'normal-deadline', 'the release is the normal-path release, never a cleanup release');
+      assert.equal(result.hold.releaseContent, 'release', 'the gate file reads release at the deadline');
+      assert.equal(resolvedObservedAtMs, 420_050, 'the observation resolves only once the gate reads release');
+      assert.equal(result.receipt.observationResolvedAtMs, 420_050, 'the resolution is stamped at the release instant');
+      assert.equal(result.finalState, 'all-duties-adjudicated', `the normal path still settles (actual ${result.finalState}: ${JSON.stringify(result.refusal)})`);
+      // Cleanup: no fake worker was launched in this shape, and the owned gate
+      // dir is removed only after the verified-process step.
+      assert.equal(result.hold.process.noWorkerBasis, 'marker-absent', 'the absent marker is the confirmed no-worker basis');
+      assert.equal(result.hold.process.blockedWorkerSurvives, false, 'no blocked fake-ZCode worker survives');
+      assert.equal(result.hold.gateDirectoryRemoved, true, 'the owned gate directory is removed');
+      assert.equal(await stat(result.hold.gateDirectory).catch(() => null), null, 'the gate directory no longer exists on disk');
+      assert.equal(result.hold.gateDirectory.startsWith(output + sep), false, 'the gate directory is a SIBLING of the case output, never inside it');
+      assert.deepEqual(result.hold.cleanupFailures, [], 'a clean normal path records no cleanup failure');
+    });
+
+    test('confirmed-window hold producer: a PRE-detection staging refusal RELEASES + TERMINATES the verified fake-ZCode worker + REMOVES the gate directory immediately (row ii)', async (t) => {
+      const confirmedWindow = await import('../tools/shell-wait-probe/confirmed-window.mjs');
+      const temporary = await mkdtemp(join(tmpdir(), 'confirmed-window-hold-pre-'));
+      t.after(() => rm(temporary, { recursive: true, force: true }));
+      const output = join(temporary, 'c-output');
+      await mkdir(output, { mode: 0o700 });
+      const fakeZcodePath = fileURLToPath(new URL('./fixtures/fake-zcode-cli.mjs', import.meta.url));
+      /** @type {any[]} */
+      const workers = [];
+      t.after(() => { for (const worker of workers) { if (worker.exitCode === null && worker.signalCode === null) worker.kill('SIGKILL'); } });
+      const host = fakeConfirmedWindowHost({ replies: parentSessionReplies(), notifications: [] });
+      /** @type {any} */
+      let launch = null;
+      const launchFactory = async (/** @type {any} */ context) => {
+        launch = { env: { ...context.env } };
+        // A REAL blocked fake-ZCode worker, spawned exactly as the Rescue
+        // child's Companion would: it writes the marker and then waits.
+        const worker = spawn(process.execPath, [fakeZcodePath], { env: context.env, stdio: ['pipe', 'pipe', 'pipe'] });
+        workers.push(worker);
+        await waitForFile(context.env.FAKE_ZCODE_PROCESS_FILE);
+        return host.factory(context);
+      };
+      const result = await confirmedWindow.runConfirmedWindowChoreography({
+        case: 'rescue-interrupt', codexBinary: process.execPath, sourceSha: 'a'.repeat(40),
+        output, budgetMs: 720_000, workerDurationMs: 420_000,
+        stagingPrompt: 'staging prompt', continuationPrompt: 'a CHANGED continuation prompt',
+        fixture: holdFixture(output),
+      }, {
+        now: host.clock.now, wallClockNow: host.clock.wallClockNow, sleep: host.clock.sleep,
+        launchConfirmedWindowHost: launchFactory, observers: greenObservers(), dutyAdjudication: greenDuties(),
+      });
+      assert.equal(result.finalState, 'staging-not-ready', `the silent host refuses staging (actual ${result.finalState})`);
+      assert.equal(result.hold.holdDeadlineAtMs ?? result.window.holdDeadlineAtMs ?? null, null, 'no detection occurred, so no hold deadline exists');
+      assert.equal(result.hold.releaseBasis, 'cleanup', 'the pre-detection refusal released during cleanup');
+      assert.equal(result.hold.releaseContent, 'release', 'the cleanup release wrote release');
+      assert.equal(result.hold.process.identityEstablished, true, 'the marker identity was established before signalling');
+      assert.equal(result.hold.process.verifiedProcessTerminated, true, `the verified fake-ZCode worker was terminated (actual ${JSON.stringify(result.hold.process)})`);
+      assert.equal(result.hold.process.blockedWorkerSurvives, false, 'no blocked worker survives the cleanup');
+      assert.equal(result.hold.gateDirectoryRemoved, true);
+      assert.equal(await stat(result.hold.gateDirectory).catch(() => null), null, 'the gate directory is removed');
+      assert.equal(await waitForChildExit(workers[0]), true, 'the spawned blocked worker exited');
+      assert.deepEqual(result.hold.cleanupFailures, [], 'no cleanup failure is recorded');
+      // The gate env was composed before the worker ever started.
+      assert.equal(typeof launch.env.FAKE_ZCODE_COMPLETION_GATE, 'string');
+    });
+
+    test('confirmed-window hold producer: an AFTER-detection failure RELEASES + TERMINATES + REMOVES during cleanup even though the hold deadline has not passed (row iii)', async (t) => {
+      const confirmedWindow = await import('../tools/shell-wait-probe/confirmed-window.mjs');
+      const temporary = await mkdtemp(join(tmpdir(), 'confirmed-window-hold-after-'));
+      t.after(() => rm(temporary, { recursive: true, force: true }));
+      const output = join(temporary, 'c-output');
+      await mkdir(output, { mode: 0o700 });
+      const fakeZcodePath = fileURLToPath(new URL('./fixtures/fake-zcode-cli.mjs', import.meta.url));
+      /** @type {any[]} */
+      const workers = [];
+      t.after(() => { for (const worker of workers) { if (worker.exitCode === null && worker.signalCode === null) worker.kill('SIGKILL'); } });
+      const host = fakeConfirmedWindowHost({
+        replies: parentSessionReplies(),
+        notifications: [...identityJoinNotifications({ atMs: 100 })],
+        // The admitted delivery is rejected: the after-detection failure path.
+        refuseMethods: { 'turn/interrupt': 'invalid request: expected active turn id' },
+      });
+      const launchFactory = async (/** @type {any} */ context) => {
+        const worker = spawn(process.execPath, [fakeZcodePath], { env: context.env, stdio: ['pipe', 'pipe', 'pipe'] });
+        workers.push(worker);
+        await waitForFile(context.env.FAKE_ZCODE_PROCESS_FILE);
+        return host.factory(context);
+      };
+      const result = await confirmedWindow.runConfirmedWindowChoreography({
+        case: 'rescue-interrupt', codexBinary: process.execPath, sourceSha: 'a'.repeat(40),
+        output, budgetMs: 720_000, workerDurationMs: 420_000,
+        stagingPrompt: 'staging prompt', continuationPrompt: 'a CHANGED continuation prompt',
+        fixture: holdFixture(output),
+      }, {
+        now: host.clock.now, wallClockNow: host.clock.wallClockNow, sleep: host.clock.sleep,
+        launchConfirmedWindowHost: launchFactory, observers: greenObservers(), dutyAdjudication: greenDuties(),
+      });
+      assert.equal(result.states.at(-1)?.state, 'native-request-sent', `the after-detection failure records the sent-request state (actual ${JSON.stringify(result.states)})`);
+      assert.equal(result.nativeRequest.outcome, 'stale-turn-target', 'the rejected delivery keeps its typed outcome');
+      assert.equal(result.hold.holdDeadlineAtMs, 420_050, 'the detected window carried its hold deadline');
+      assert.equal(result.hold.releaseBasis, 'cleanup', 'the AFTER-detection failure releases during cleanup, not at the normal deadline');
+      assert.ok(result.hold.gateReleasedAtMs < result.hold.holdDeadlineAtMs, `the cleanup release precedes the unelapsed hold deadline (actual ${String(result.hold.gateReleasedAtMs)})`);
+      assert.equal(result.hold.process.verifiedProcessTerminated, true, `the verified fake-ZCode worker was terminated (actual ${JSON.stringify(result.hold.process)})`);
+      assert.equal(result.hold.process.blockedWorkerSurvives, false);
+      assert.equal(result.hold.gateDirectoryRemoved, true);
+      assert.equal(await stat(result.hold.gateDirectory).catch(() => null), null, 'the gate directory is removed');
+      assert.equal(await waitForChildExit(workers[0]), true, 'the spawned blocked worker exited');
+    });
+
+    test('confirmed-window hold producer: with the producer UNARMED (no case output dir) the REAL fake-ZCode CLI completes at its ~5 ms default and the barrier cannot hold — the recorded burn-the-case mode the producer exists to prevent, with the unarmed facts.hold pin (row v)', async (t) => {
+      const confirmedWindow = await import('../tools/shell-wait-probe/confirmed-window.mjs');
+      const driverModule = await import('../tools/shell-wait-probe/driver.mjs');
+      const temporary = await mkdtemp(join(tmpdir(), 'confirmed-window-hold-unarmed-'));
+      t.after(() => rm(temporary, { recursive: true, force: true }));
+      // The case output directory is deliberately ABSENT: the hold producer
+      // cannot arm (no owned gate directory is created without it). The
+      // OFFLINE choreography records the named unarm reason and proceeds —
+      // the unarmed shape this row pins (a REAL case always owns a private
+      // output directory, so the producer arms there; §41.7 #3 keeps C
+      // unlaunched until the producer exists).
+      const output = join(temporary, 'c-output');
+      const fakeZcodePath = fileURLToPath(new URL('./fixtures/fake-zcode-cli.mjs', import.meta.url));
+      /** @type {any[]} */
+      const workers = [];
+      t.after(() => { for (const worker of workers) { if (worker.exitCode === null && worker.signalCode === null) worker.kill('SIGKILL'); } });
+      const host = fakeConfirmedWindowHost({
+        replies: parentSessionReplies(),
+        notifications: [
+          ...identityJoinNotifications({ atMs: 100 }),
+          { atMs: 300, method: 'thread/notification', params: { type: 'turn/completed', threadId: PARENT_THREAD, turn: { id: 'root-turn-1', status: 'completed', items: [] } } },
+        ],
+      });
+      const baseFixture = holdFixture(output);
+      const unarmedFixture = { ...baseFixture, env: { ...baseFixture.env, FAKE_ZCODE_RECORD: join(temporary, 'unarmed-record.jsonl') } };
+      /** @type {any} */
+      let launch = null;
+      /** @type {number | null} */
+      let completionElapsedMs = null;
+      const launchFactory = async (/** @type {any} */ context) => {
+        launch = { env: { ...context.env } };
+        // The REAL fake CLI, launched WITHOUT any completion-gate env: the
+        // exact unheld composition the §41.5.1 producer exists to prevent.
+        const worker = spawn(process.execPath, [fakeZcodePath], { env: context.env, stdio: ['pipe', 'pipe', 'pipe'] });
+        workers.push(worker);
+        const startedAt = Date.now();
+        worker.stdin.write(`${JSON.stringify({ id: 1, method: 'session/send', params: { sessionId: 'unarmed-session-1', content: 'the staged rescue objective' } })}\n`);
+        completionElapsedMs = await new Promise((resolve) => {
+          let buffer = '';
+          const timeout = setTimeout(() => resolve(null), 2_000);
+          timeout.unref?.();
+          worker.stdout.on('data', (/** @type {Buffer} */ chunk) => {
+            buffer += chunk.toString('utf8');
+            if (buffer.includes('prompt_completed')) {
+              clearTimeout(timeout);
+              resolve(Date.now() - startedAt);
+            }
+          });
+        });
+        return host.factory(context);
+      };
+      // The LIVE composition's pendingObservation is the barrier's collector:
+      // without the armed §41.5.1 gate it can never confirm the observation,
+      // so the barrier cannot hold while the CLI burns the case.
+      const composition = driverModule.createConfirmedWindowLiveComposition({ fixture: unarmedFixture, now: host.clock.now, workerDurationMs: 420_000 });
+      const result = await confirmedWindow.runConfirmedWindowChoreography({
+        case: 'rescue-interrupt', codexBinary: process.execPath, sourceSha: 'a'.repeat(40),
+        output, budgetMs: 720_000, workerDurationMs: 420_000,
+        stagingPrompt: 'staging prompt', continuationPrompt: 'a CHANGED continuation prompt',
+        fixture: unarmedFixture,
+      }, {
+        now: host.clock.now, wallClockNow: host.clock.wallClockNow, sleep: host.clock.sleep,
+        launchConfirmedWindowHost: launchFactory,
+        observers: { pendingObservation: composition.observers.pendingObservation },
+        dutyAdjudication: greenDuties(),
+      });
+      // The unarmed pin: the named hold reason is recorded and the launch env
+      // carries NO completion-gate composition.
+      assert.equal(result.hold.armed, false, 'the producer is unarmed without the case output directory');
+      assert.equal(result.hold.reason, 'the private case output directory is not present; the hold producer is not armed', 'the unarmed reason is the named pin');
+      assert.equal('FAKE_ZCODE_COMPLETION_GATE' in launch.env, false, 'no completion gate env rides the launch');
+      assert.equal('FAKE_ZCODE_COMPLETION_GATE_REACHED' in launch.env, false, 'no completion-blocked sentinel env rides the launch');
+      // The BURN: the real CLI completes at its ~5 ms default — the long
+      // observation resolves almost immediately and the pending-observation
+      // predicate cannot hold.
+      assert.ok(completionElapsedMs !== null && completionElapsedMs >= 0 && completionElapsedMs < 1_000, `the unarmed completion lands at the fake CLI's ~5 ms default, not a held window (actual ${JSON.stringify(completionElapsedMs)} ms)`);
+      // And the barrier cannot hold: the live collector refuses confirmation
+      // by name, so the case refuses staging with nothing ever sent.
+      assert.equal(result.finalState, 'staging-not-ready', `the unarmed case refuses staging (actual ${result.finalState}: ${JSON.stringify(result.refusal)})`);
+      const refusalText = String(result.refusal?.reason ?? '');
+      assert.match(refusalText, /pending ORIGINAL observation never confirmed/u, `the refusal names the unconfirmed observation (actual ${refusalText})`);
+      assert.match(refusalText, /gate is not armed/u, 'the refusal names the unarmed §41.5.1 producer');
+      assert.equal(host.requestLog.some((entry) => entry.method === 'turn/interrupt'), false, 'nothing is ever delivered in the burn mode');
     });
   });
 
