@@ -14,6 +14,8 @@ import { resolveWorkspaceStorage } from './workspace.mjs';
 import { readWorkspaceModelConfig, summarizeWorkspaceModelConfig, writeWorkspaceModelConfig } from './workspace-config.mjs';
 
 const EXPECTED_EVENTS = new Set(['sessionStart', 'userPromptSubmit', 'subagentStart', 'subagentStop', 'stop', 'sessionEnd']);
+// Keep the complete Codex fingerprint when writing trust state, including both digests on newer hosts.
+const HOOK_HASH_PATTERN = /^(?:[a-f0-9]{64}|sha256:[a-f0-9]{64}(?:\/sha256:[a-f0-9]{64})?)$/u;
 const EXPECTED_COMMANDS = new Map([['sessionStart', 'node "$PLUGIN_ROOT/hooks/session-lifecycle-hook.mjs"'], ['userPromptSubmit', 'node "$PLUGIN_ROOT/hooks/user-prompt-hook.mjs"'], ['subagentStart', 'node "$PLUGIN_ROOT/hooks/subagent-hook.mjs"'], ['subagentStop', 'node "$PLUGIN_ROOT/hooks/subagent-hook.mjs"'], ['stop', 'node "$PLUGIN_ROOT/hooks/stop-review-gate-hook.mjs"'], ['sessionEnd', 'node "$PLUGIN_ROOT/hooks/session-end-hook.mjs"']]);
 
 export async function runSetup(input) {
@@ -166,7 +168,7 @@ async function validateHooks(result, cwd, pluginRoot, hooksPath) {
   }
   if (ownHooks.length !== EXPECTED_EVENTS.size) return { ok: false, reason: 'missing-or-invalid-hooks' };
   const seen = new Set();
-  for (const hook of ownHooks) { if (hook.handlerType !== 'command' || hook.command !== EXPECTED_COMMANDS.get(hook.eventName) || !hook.enabled || !EXPECTED_EVENTS.has(hook.eventName) || seen.has(hook.eventName) || typeof hook.key !== 'string' || !hook.key || control(hook.key) || typeof hook.currentHash !== 'string' || !/^(?:sha256:)?[a-f0-9]{64}$/.test(hook.currentHash) || !['managed', 'untrusted', 'trusted', 'modified'].includes(hook.trustStatus)) return { ok: false, reason: 'foreign-or-outdated-hooks' }; seen.add(hook.eventName); }
+  for (const hook of ownHooks) { if (hook.handlerType !== 'command' || hook.command !== EXPECTED_COMMANDS.get(hook.eventName) || !hook.enabled || !EXPECTED_EVENTS.has(hook.eventName) || seen.has(hook.eventName) || typeof hook.key !== 'string' || !hook.key || control(hook.key) || typeof hook.currentHash !== 'string' || !HOOK_HASH_PATTERN.test(hook.currentHash) || !['managed', 'untrusted', 'trusted', 'modified'].includes(hook.trustStatus)) return { ok: false, reason: 'foreign-or-outdated-hooks' }; seen.add(hook.eventName); }
   return { ok: seen.size === EXPECTED_EVENTS.size, hooks: ownHooks };
 }
 /**

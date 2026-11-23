@@ -437,6 +437,9 @@ test('setup accepts Codex sha256-prefixed hook hashes and persists their trust s
     ['non-hex characters', `sha256:${'g'.repeat(64)}`],
     ['wrong length', `sha256:${'a'.repeat(63)}`],
     ['arbitrary hash', 'not-a-hash'],
+    ['malformed second digest', `sha256:${'a'.repeat(64)}/sha256:${'b'.repeat(63)}`],
+    ['unprefixed first digest in a pair', `${'a'.repeat(64)}/sha256:${'b'.repeat(64)}`],
+    ['a third digest', `sha256:${'a'.repeat(64)}/sha256:${'b'.repeat(64)}/sha256:${'c'.repeat(64)}`],
   ]) {
     await t.test(label, async () => {
       const malformed = prefixed.map((hook, index) => index === 0 ? { ...hook, currentHash } : hook);
@@ -447,6 +450,20 @@ test('setup accepts Codex sha256-prefixed hook hashes and persists their trust s
       assert.ok(!(await readFile(malformedContext.record, 'utf8')).includes('config/batchWrite'));
     });
   }
+});
+
+test('setup accepts Codex composite hook hashes and preserves both digests when trusting hooks', async () => {
+  const hooks = hookMetadata(root).map((hook) => ({
+    ...hook,
+    currentHash: `sha256:${hook.currentHash}/sha256:${'a'.repeat(64)}`,
+  }));
+  const ctx = await context({ hooks });
+  const report = await runSetup(ctx.options);
+  assert.equal(report.status, 'ready', JSON.stringify(report));
+  const calls = (await readFile(ctx.record, 'utf8')).trim().split('\n').map(JSON.parse);
+  const batch = calls.find((call) => call.method === 'config/batchWrite');
+  const trust = batch.params.edits.find((edit) => edit.keyPath === 'hooks.state').value;
+  assert.deepEqual(trust, Object.fromEntries(hooks.map((hook) => [hook.key, { trusted_hash: hook.currentHash }])));
 });
 
 test('writable-root bootstrap returns before creating any plugin-data or workspace state', async () => {
